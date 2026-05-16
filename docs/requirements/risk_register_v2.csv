@@ -1,0 +1,8 @@
+ID,Risk,Impact,Likelihood,Mitigation,Owner
+R-001,Scope explosion from Jira+Confluence+GitHub+agents+remote desktop,High,High,Keep phase gates; build agent-native primitives first.,Product Lead
+R-002,Agent credential leakage through prompts/logs/memory,High,High,"Agent Egress Gateway, secret redaction, short-lived tokens, audit.",Security
+R-003,Context bloat causing poor results and high cost,High,Medium,"Context Budget Manager, Context Mode/Dirac-like pruning, code graph.",AI/ML
+R-004,Local models too slow or low quality for users,Medium,High,Model Gateway supports frontier BYOK and company-hosted models.,AI/ML
+R-005,Competing platforms own agent orchestration narrative,Medium,High,Position around self-hosted restricted-network remote execution and evidence.,Marketing
+R-006,Offline deployment complexity delays enterprise adoption,High,Medium,Build Docker/image/package bundle from early releases.,DevOps
+R-007,Avatar UX reduces enterprise trust,Low,Medium,Make avatar optional; default professional assistant/status mode.,UX

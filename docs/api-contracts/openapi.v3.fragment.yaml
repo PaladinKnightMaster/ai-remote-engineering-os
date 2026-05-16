@@ -1,0 +1,34 @@
+openapi: 3.1.0
+info:
+  title: AI Engineering OS v3 API Fragment
+  version: 3.0.0
+paths:
+  /v1/workstreams:
+    get:
+      summary: List workstreams
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Create workstream
+      responses:
+        '201': { description: Created }
+  /v1/workstreams/{workstreamId}/runs:
+    post:
+      summary: Start workstream run
+      responses:
+        '202': { description: Accepted }
+  /v1/workflows/compile:
+    post:
+      summary: Compile agent workflow
+      responses:
+        '200': { description: Compiled workflow }
+  /v1/mcp/tool-calls:
+    post:
+      summary: Request governed MCP tool call
+      responses:
+        '202': { description: Tool call accepted or awaiting approval }
+  /v1/evals/runs:
+    post:
+      summary: Start evaluation run
+      responses:
+        '202': { description: Eval queued }

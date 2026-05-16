@@ -1,0 +1,21 @@
+Requirement ID,Module,Priority,Requirement,Phase
+REQ-001,Remote Cockpit,P0,Provide browser/mobile GUI and terminal access to internal resources.,MVP
+REQ-002,Deployment Profiles,P0,"Support LAN, VPN-first, and DMZ-first deployment profiles.",MVP
+REQ-003,Audit Events,P0,"Record session, tool, file, approval, and admin audit events.",MVP
+REQ-004,Agentic Desktop,P1,"Run local desktop agent with model gateway, files, terminal, browser, and approvals.",Post-MVP
+REQ-005,Agentic Work Board,P1,"Tickets own context, agent runs, approvals, and evidence.",Post-MVP
+REQ-006,Harness Runtime,P1,"Govern models/tools with planning, policy, approval, context budget, evidence, and replay.",Post-MVP
+REQ-007,Living Workstreams,P1,"Support recurring stateful work with memory, rules, sources, next runs, and dashboards.",Post-MVP
+REQ-008,Typed MCP Gateway,P1,"Wrap MCP servers in typed, governed, auditable APIs.",Post-MVP
+REQ-009,Agent Egress Gateway,P1,Broker credentials and outbound access with policy and audit.,Post-MVP
+REQ-010,Workflow Compiler,P2,Compile markdown/spec workflows into safe executable agent runs.,Future
+REQ-011,Desktop Automation,P2,Automate apps via accessibility tree before screenshots.,Future
+REQ-012,Agent Browser CLI,P2,Provide browser automation with JSON logs/audit/evidence.,Future
+REQ-013,Continuous Context Index,P2,Keep repo/docs/tickets/messages fresh through incremental indexing.,Future
+REQ-014,Persistent Memory,P2,Store scoped inspectable memories with export/redaction/audit.,Future
+REQ-015,Git Intelligence,P2,Maintain local issue/PR/CI/code graph for offline use.,Future
+REQ-016,Eval Layer,P2,Run benchmark/regression/safety/evidence-quality evaluations.,Future
+REQ-017,Backend Sandbox,P2,Provide database/auth/storage/compute preview for agent-built apps.,Future
+REQ-018,Domain Packs,P2,Support domain-specific operating system packs and benchmarks.,Future
+REQ-019,Companion UX,P3,Optional buddy/avatar/status voice layer.,Future
+REQ-020,Explain Mode,P3,"Generate human-readable change, risk, test, and learning explanations.",Future

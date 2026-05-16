@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BackendSandboxProfile",
+  "type": "object",
+  "required": [
+    "id",
+    "services"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "database",
+          "auth",
+          "storage",
+          "functions",
+          "logs",
+          "model-gateway",
+          "preview"
+        ]
+      }
+    }
+  }
+}

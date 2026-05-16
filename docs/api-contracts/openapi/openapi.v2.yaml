@@ -1,0 +1,58 @@
+openapi: 3.1.0
+info:
+  title: AI Remote Engineering OS API v2
+  version: 2.0.0
+paths:
+  /v1/tickets:
+    get:
+      summary: List tickets
+      responses: { '200': { description: OK } }
+    post:
+      summary: Create ticket
+      responses: { '201': { description: Created } }
+  /v1/agent-runs:
+    post:
+      summary: Start agent run from a ticket and workspace
+      responses: { '201': { description: Created } }
+  /v1/agent-runs/{runId}/events:
+    get:
+      summary: Stream or list agent run events
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: OK } }
+  /v1/context-packs:
+    post:
+      summary: Build bounded context pack for a ticket or run
+      responses: { '201': { description: Created } }
+  /v1/memory-scopes:
+    get:
+      summary: List memory scopes
+      responses: { '200': { description: OK } }
+    post:
+      summary: Create memory scope
+      responses: { '201': { description: Created } }
+  /v1/model-profiles:
+    get:
+      summary: List model profiles
+      responses: { '200': { description: OK } }
+    post:
+      summary: Register model profile
+      responses: { '201': { description: Created } }
+  /v1/egress/requests:
+    post:
+      summary: Request governed outbound API or credential access
+      responses: { '202': { description: Accepted } }
+  /v1/capability-edges:
+    get:
+      summary: List capability edges
+      responses: { '200': { description: OK } }
+    post:
+      summary: Create capability edge
+      responses: { '201': { description: Created } }
+  /v1/evidence-packets:
+    post:
+      summary: Create evidence packet for a run
+      responses: { '201': { description: Created } }

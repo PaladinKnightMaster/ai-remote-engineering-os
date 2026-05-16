@@ -1,0 +1,135 @@
+openapi: 3.1.0
+info:
+  title: Self-Hosted Agentic Engineering OS API
+  version: 0.1.0
+  description: Starter API contract for Remote Cockpit, Agentic Desktop integration and Agentic Work Board.
+servers:
+  - url: https://cockpit.example.local
+security:
+  - bearerAuth: []
+paths:
+  /v1/resources:
+    get:
+      summary: List resources
+      operationId: listResources
+      responses:
+        "200":
+          description: Resource list
+    post:
+      summary: Create resource
+      operationId: createResource
+      responses:
+        "201":
+          description: Created resource
+  /v1/sessions:
+    get:
+      summary: List sessions
+      operationId: listSessions
+      responses:
+        "200":
+          description: Session list
+    post:
+      summary: Create session
+      operationId: createSession
+      responses:
+        "201":
+          description: Created session
+  /v1/tickets:
+    get:
+      summary: List tickets
+      operationId: listTickets
+      responses:
+        "200":
+          description: Ticket list
+    post:
+      summary: Create ticket
+      operationId: createTicket
+      responses:
+        "201":
+          description: Created ticket
+  /v1/tickets/{ticketId}/agent-runs:
+    post:
+      summary: Start an agent run for a ticket
+      operationId: startAgentRun
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Agent run started
+  /v1/approvals/{approvalId}/approve:
+    post:
+      summary: Approve request
+      operationId: approveRequest
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Approved
+  /v1/pairing-sessions:
+    post:
+      summary: Create QR pairing session
+      operationId: createPairingSession
+      responses:
+        "201":
+          description: Pairing session created
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Resource:
+      type: object
+      required: [id, type, name]
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [rdp, vnc, ssh, meshcentral, workspace, agentic_desktop]
+        name: { type: string }
+        siteId: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+    Session:
+      type: object
+      required: [id, resourceId, mode, status]
+      properties:
+        id: { type: string }
+        resourceId: { type: string }
+        mode:
+          type: string
+          enum: [observe, control, terminal, demo]
+        status:
+          type: string
+          enum: [pending, active, suspended, ended, failed, terminated]
+    Ticket:
+      type: object
+      required: [id, title, state]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        state:
+          type: string
+          enum: [inbox, clarify, planned, ready_for_agent, running, needs_approval, blocked, evidence_review, human_review, ready_to_merge, done, failed, parked]
+        acceptanceCriteria:
+          type: array
+          items: { type: string }
+    AgentRun:
+      type: object
+      required: [id, ticketId, status]
+      properties:
+        id: { type: string }
+        ticketId: { type: string }
+        status:
+          type: string
+          enum: [queued, preparing_workspace, running, needs_approval, paused, completed, failed, killed]

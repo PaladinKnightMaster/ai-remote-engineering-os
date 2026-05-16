@@ -1,0 +1,5 @@
+Priority,Meaning,Release Treatment,Examples
+P0,MVP survival / core platform,Build first,"Remote Cockpit, audit, DMZ/VPN, Agentic Desktop, Board, Harness/Egress MVP"
+P1,Post-MVP defensibility,Build after core flows stabilize,"Memory scopes, code intelligence graph, advanced knowledge base, forge integrations"
+P2,Strategic future research/prototype,"Track, spike, validate; do not block MVP","Multimodal/proactive desktop, perception model profiles, video evidence reasoning"
+P3,Optional delight/brand UX,Optional and themeable,AI Buddy/avatar/pet modes

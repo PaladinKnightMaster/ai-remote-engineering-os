@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: cockpit
+      POSTGRES_USER: cockpit
+      POSTGRES_PASSWORD: change-me
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: change-me
+    volumes:
+      - minio:/data
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: change-me
+    ports:
+      - "8080:8080"
+
+  guacd:
+    image: guacamole/guacd:latest
+
+  guacamole:
+    image: guacamole/guacamole:latest
+    depends_on:
+      - guacd
+      - postgres
+    environment:
+      GUACD_HOSTNAME: guacd
+      POSTGRESQL_HOSTNAME: postgres
+      POSTGRESQL_DATABASE: cockpit
+      POSTGRESQL_USER: cockpit
+      POSTGRESQL_PASSWORD: change-me
+    ports:
+      - "8081:8080"
+
+  cockpit-api:
+    image: example/cockpit-api:dev
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+      - minio
+
+  cockpit-web:
+    image: example/cockpit-web:dev
+    env_file: .env
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  minio:

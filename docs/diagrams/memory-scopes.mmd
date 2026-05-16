@@ -1,0 +1,8 @@
+graph LR
+  Org[Org Memory] --> Project[Project Memory]
+  Team[Team Memory] --> Project
+  User[User Memory] --> Ticket[Ticket Memory]
+  Repo[Repo Memory / Code Graph] --> Ticket
+  Ticket --> Run[Run Memory]
+  Agent[Agent Skill Memory] --> Run
+  Run --> Evidence[Evidence Packet]

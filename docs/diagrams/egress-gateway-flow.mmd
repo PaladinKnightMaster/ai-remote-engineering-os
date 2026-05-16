@@ -1,0 +1,18 @@
+sequenceDiagram
+  participant Agent
+  participant Harness
+  participant Policy
+  participant Approval
+  participant Egress
+  participant SecretStore
+  participant API
+  Agent->>Harness: Request API call
+  Harness->>Policy: Authorize target/action
+  Policy->>Approval: Ask human if sensitive
+  Approval-->>Policy: Approve
+  Policy->>Egress: Issue short-lived capability
+  Egress->>SecretStore: Fetch/inject credential
+  Egress->>API: Call service
+  API-->>Egress: Response
+  Egress-->>Harness: Filtered response + audit id
+  Harness-->>Agent: Minimal result

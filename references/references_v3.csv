@@ -1,0 +1,185 @@
+Reference ID,Name,URL,Tags,Adoption Decision,Priority,Source Batch,Status
+REF-001,OpenAI Symphony,https://openai.com/index/open-source-codex-orchestration-symphony/,[BOARD][ORCH][EVIDENCE],Retain as core issue-tracker-as-control-plane reference.,P0,v3,tracked
+REF-002,holaOS,https://github.com/holaboss-ai/holaOS,[WORKSTREAM][WORKSPACE][MEMORY],Adopt Living Workstream Engine concept: recurring workspaces with context/rules/history/next run.,P1,v3,tracked
+REF-003,MCPorter,https://github.com/openclaw/mcporter,[MCP][TYPED-TOOLS][SECURITY],Adopt typed MCP gateway concept for governed tool access.,P1,v3,tracked
+REF-004,mini-browser,https://github.com/runablehq/mini-browser,[AI-BROWSER][CLI][AUDIT],Adopt command-line browser/audit/logging pattern for Agent Browser CLI.,P1,v3,tracked
+REF-005,OpenAI Codex Windows Sandbox,https://openai.com/index/building-codex-windows-sandbox/,[SANDBOX][SECURITY],Adopt OS-native sandbox/approvals as security benchmark.,P1,v3,tracked
+REF-006,Pika Skills,https://github.com/Pika-Labs/Pika-Skills,[SKILLS][PLUGIN],Adopt SKILL.md + scripts + requirements style with security review.,P1,v3,tracked
+REF-007,Acai CLI,https://github.com/acai-sh/cli,[SPEC-DRIVEN][WORKFLOW],Adopt spec-driven workflow concepts.,P2,v3,tracked
+REF-008,Acai Server,https://github.com/acai-sh/server,[SPEC-DRIVEN][SERVER],Research self-hosted spec server pattern.,P2,v3,tracked
+REF-009,agent-desktop,https://github.com/lahfir/agent-desktop,[DESKTOP][GUI][ACCESSIBILITY],Adopt accessibility-tree-first automation strategy.,P2,v3,tracked
+REF-010,agentmemory,https://github.com/rohitg00/agentmemory,[MEMORY][MCP][REST],Adopt persistent memory server concept with hooks/MCP/REST.,P2,v3,tracked
+REF-011,Alumnium,https://github.com/alumnium-hq/alumnium,[BROWSER][AUTOMATION],Research automation layer.,P2,v3,tracked
+REF-012,better-notify,https://github.com/better-notify/better-notify,[NOTIFICATIONS][MOBILE],Research notification system.,P2,v3,tracked
+REF-013,Claude Code Agent Monitor,https://github.com/hoangsonww/Claude-Code-Agent-Monitor,[MONITORING][OBSERVE],Add to monitoring reference list.,P2,v3,tracked
+REF-014,Claude Managed Agents memory cookbook,https://platform.claude.com/cookbook/managed-agents-cma-remember-user-preferences,[MEMORY][AGENTS],Reference for user preference memory patterns; verify official docs.,P2,v3,tracked
+REF-015,claude-token-efficient,https://github.com/drona23/claude-token-efficient,[TOKEN][CONTEXT],Research context/token efficiency.,P2,v3,tracked
+REF-016,claude-token-optimizer,https://github.com/nadimtuhin/claude-token-optimizer,[TOKEN][CONTEXT],Research Claude token optimization.,P2,v3,tracked
+REF-017,CloakBrowser,https://github.com/CloakHQ/CloakBrowser,[AI-BROWSER][SECURITY],Research secure/browser isolation ideas.,P2,v3,tracked
+REF-018,CocoIndex,https://github.com/cocoindex-io/cocoindex,[KNOWLEDGE][LIVE-INDEX][CONTEXT],Adopt continuous incremental context index concept.,P2,v3,tracked
+REF-019,code-review-graph,https://github.com/tirth8205/code-review-graph,[CODE-INTELLIGENCE][REVIEW],Adopt graph-based code review ideas in Code Intelligence layer.,P2,v3,tracked
+REF-020,Codebuff,https://github.com/CodebuffAI/codebuff,[HARNESS][MULTI-AGENT][CODING],"Adopt specialized agent role pattern: file picker, planner, editor, reviewer.",P2,v3,tracked
+REF-021,DeerFlow,https://github.com/bytedance/deer-flow,[HARNESS][LONG-HORIZON][SUBAGENTS],"Adopt long-horizon harness concepts: sandbox, memory, tools, skills, subagents.",P2,v3,tracked
+REF-022,gitcrawl,https://github.com/openclaw/gitcrawl,[GIT][OFFLINE][ISSUES],Adopt local GitHub issue/PR cache and gh-compatible read shim concept.,P2,v3,tracked
+REF-023,GitHub Agentic Workflows,https://github.com/github/gh-aw,[WORKFLOW][CI-CD][SECURITY],Adopt conceptually for Agent Workflow Compiler; agentic markdown workflows with guardrails.,P2,v3,tracked
+REF-024,Harvey Labs,https://github.com/harveyai/harvey-labs,[EVAL][BENCHMARK][DOMAIN],Adopt benchmark/evaluation pattern for domain packs.,P2,v3,tracked
+REF-025,Hermes Agent Mission Control,https://github.com/Agent-3-7/hermes-agent-mission-control,[MONITORING][MISSION-CONTROL],Research mission control UI patterns.,P2,v3,tracked
+REF-026,InsForge,https://github.com/InsForge/InsForge,[BACKEND][SANDBOX][AGENTIC-CODING],Adopt backend sandbox kit concept for agent-built apps.,P2,v3,tracked
+REF-027,Legora aOS,https://legora.com/product/aos,[DOMAIN-OS][LEGAL][COMPETITOR],Use as signal for domain-specific agentic OS; inspire Domain Packs.,P2,v3,tracked
+REF-028,loopsy,https://github.com/leox255/loopsy,[ORCH][AGENTS],Research; evaluate loops/agent coordination concepts.,P2,v3,tracked
+REF-029,Mercury Agent Skills,https://github.com/cosmicstack-labs/mercury-agent-skills,[SKILLS][COMPETITOR],Competitor/reference for agent skills; track but avoid copying.,P2,v3,tracked
+REF-030,Mirage,https://github.com/strukto-ai/mirage,[KNOWLEDGE][CONTEXT],Research context/memory architecture.,P2,v3,tracked
+REF-031,Mochi,https://github.com/0xchasercat/mochi,[AI-BROWSER][AGENT],Research browser agent ideas.,P2,v3,tracked
+REF-032,Obscura,https://github.com/h4ckf0r0day/obscura,[AI-BROWSER][PRIVACY],Research privacy-focused AI browser concepts.,P2,v3,tracked
+REF-033,Oracle,https://github.com/steipete/oracle,[ESCALATION][MODEL],Adopt oracle escalation profile for hard/stuck tasks.,P2,v3,tracked
+REF-034,PageIndex,https://github.com/VectifyAI/PageIndex,[KNOWLEDGE][RAG][TREE-INDEX],Adopt tree/reasoning retrieval as alternative to vector-only RAG.,P2,v3,tracked
+REF-035,Pika Plugins,https://github.com/Pika-Labs/Pika-Plugins,[SKILLS][PLUGIN][MEDIA],Use as skill/plugin packaging reference; do not allow unreviewed plugins.,P2,v3,tracked
+REF-036,Raindrop AI,https://www.raindrop.ai/,[MONITORING][AGENT-OPS],Competitor/reference for agent monitoring.,P2,v3,tracked
+REF-037,Raindrop Workshop,https://github.com/raindrop-ai/workshop,[MONITORING][WORKSHOP],Research agent monitoring/workshop concepts.,P2,v3,tracked
+REF-038,React Doctor,https://github.com/millionco/react-doctor,[CODE-INTELLIGENCE][FRONTEND],Use as frontend diagnostics inspiration.,P2,v3,tracked
+REF-039,ruflo,https://github.com/ruvnet/ruflo,[ORCH][WORKFLOW],Research; workflow/orchestration reference.,P2,v3,tracked
+REF-040,Rusty Browser,https://github.com/dashn9/rusty-browser,[AI-BROWSER][BROWSER],Research agent browser implementation ideas.,P2,v3,tracked
+REF-041,Statewright,https://github.com/statewright/statewright,[STATE][WORKFLOW],Research state machine/workflow validation.,P2,v3,tracked
+REF-042,token-optimizer,https://github.com/alexgreensh/token-optimizer,[TOKEN][CONTEXT],Research token saving techniques.,P2,v3,tracked
+REF-043,token-savior,https://github.com/Mibayy/token-savior,[TOKEN][CONTEXT],Research token savings.,P2,v3,tracked
+REF-044,Understand Anything,https://github.com/Lum1104/Understand-Anything,[KNOWLEDGE][DOCS],Research universal understanding/context.,P2,v3,tracked
+REF-045,Unsloth API Guide,https://unsloth.ai/docs/basics/api,[LOCAL-MODEL][LLAMA.CPP][AGENTIC-CODING],Add local model usage profile for Claude Code/Codex/OpenClaw compatible endpoints.,P2,v3,tracked
+REF-046,Vercel Open Agents,https://github.com/vercel-labs/open-agents,[AGENTS][HARNESS],Research agent framework patterns and UI/runtime inspiration.,P2,v3,tracked
+REF-047,AI Engineering from Scratch,https://github.com/rohitg00/ai-engineering-from-scratch,[SELF-IMPROVEMENT][EDUCATION],"Use as learning/reference source, not production dependency.",P3,v3,tracked
+REF-048,AIRI,https://github.com/moeru-ai/airi,[COMPANION][VOICE][AVATAR],Optional P3 companion UX reference; self-hosted voice/avatar pattern.,P3,v3,tracked
+REF-049,Avi Chawla post,https://x.com/_avichawla/status/2052326975034048754,[SOCIAL][SIGNAL],Track as social signal; verify before adoption.,P3,v3,tracked
+REF-050,caveman,https://github.com/JuliusBrussee/caveman,[TOKEN][CONTEXT],Research context-minimal tooling.,P3,v3,tracked
+REF-051,cli-printing-press,https://github.com/mvanhorn/cli-printing-press,[TOKEN][CLI],Research CLI output formatting/token control.,P3,v3,tracked
+REF-052,Codebase primary reader article,https://dev.to/jucelinux/your-codebase-has-a-new-primary-reader-and-its-paying-75x-more-3khn,[COST][TOKEN][MARKET],Use as market/cost signal; verify with primary metrics.,P3,v3,tracked
+REF-053,Contral AI,https://contral.ai/,[EXPLAIN][LEARNING][UX],Adopt Explain Mode concepts for teaching/review.,P3,v3,tracked
+REF-054,CraftBot,https://github.com/CraftOS-dev/CraftBot,[AGENTS][IDEA],Research agent implementation patterns.,P3,v3,tracked
+REF-055,cyrilXBT post,https://x.com/cyrilXBT/status/2052235121416188114,[SOCIAL][KNOWLEDGE],Track as social signal; verify primary source.,P3,v3,tracked
+REF-056,DeepSeek-TUI,https://github.com/Hmbown/DeepSeek-TUI,[TERMINAL][MODEL],Research TUI patterns for local agent control.,P3,v3,tracked
+REF-057,ds4,https://github.com/antirez/ds4,[RESEARCH][SYSTEMS],Research; possible systems/design inspiration.,P3,v3,tracked
+REF-058,Flue,https://github.com/withastro/flue,[HARNESS][WORKFLOW],Research workflow/harness patterns.,P3,v3,tracked
+REF-059,GoalBuddy,https://github.com/tolibear/goalbuddy,[GOALS][BUDDY],Research goal tracking and companion UX.,P3,v3,tracked
+REF-060,jcode,https://github.com/1jehuang/jcode,[HARNESS][CODING],Research coding harness ideas.,P3,v3,tracked
+REF-061,Kuku,https://www.kuku.mom/,[KNOWLEDGE][MEMORY],Research memory/knowledge UX.,P3,v3,tracked
+REF-062,larsencc post,https://x.com/larsencc/status/2027225210412470668,[SOCIAL][SIGNAL],Track as social signal; verify before adoption.,P3,v3,tracked
+REF-063,LumiChats Docs,https://lumichats.com/docs,[LOCAL-MODEL][AGENTS],Research local/chat workflow documentation.,P3,v3,tracked
+REF-064,Mercury Agent,https://github.com/cosmicstack-labs/mercury-agent,[TOKEN][COMPETITOR],Track competitor tooling; inspect token/context ideas.,P3,v3,tracked
+REF-065,MiroFish,https://github.com/666ghj/MiroFish,[DESKTOP][AGENT-UX],Research; evaluate for desktop/agent UX ideas.,P3,v3,tracked
+REF-066,OpenGravity,https://github.com/ab-613/OpenGravity,[ORCH][AGENTS],Research; possible agent orchestration ideas.,P3,v3,tracked
+REF-067,OpenHuman,https://github.com/tinyhumansai/openhuman,[COMPANION][AVATAR],Optional avatar/companion reference.,P3,v3,tracked
+REF-068,OpenSquilla,https://github.com/OpenSquilla/opensquilla,[TOKEN][AGENT],Research agent/token optimization ideas.,P3,v3,tracked
+REF-069,Phil Schmid post,https://x.com/_philschmid/status/2051674663965606052,[SOCIAL][MODEL][SIGNAL],Track as social signal; verify primary source before adoption.,P3,v3,tracked
+REF-070,Pipali,https://github.com/khoj-ai/pipali,[AGENTS][KNOWLEDGE],Research knowledge-agent interface ideas.,P3,v3,tracked
+REF-071,Plannotator,https://github.com/backnotprop/plannotator,[PLANNING][ANNOTATION],Research planning annotation/evidence UX.,P3,v3,tracked
+REF-072,rtk,https://github.com/rtk-ai/rtk,[TOKEN][RUNTIME],Research token/runtime kit ideas.,P3,v3,tracked
+REF-073,Threadreader agent thread,https://threadreaderapp.com/thread/2055032115964870838.html,[SOCIAL][SIGNAL],Track as social signal; verify primary sources.,P3,v3,tracked
+REF-074,vmiss33 post,https://x.com/vmiss33/status/2050984556790939731,[SOCIAL][SIGNAL],Track as social signal; verify primary source before adoption.,P3,v3,tracked
+REF-075,agency-agents,https://github.com/msitarzewski/agency-agents,[TEAM][SKILLS],AI agency roles and deliverables.,,v1/v2,Reference
+REF-076,Agent of Empires,https://github.com/njbrake/agent-of-empires,[REMOTE][TERMINAL][MOBILE][SANDBOX],"Terminal-first multi-agent/session dashboard; use ideas for tmux persistence, QR/passphrase access, git worktrees, Docker sandboxing.",,v1/v2,Reference
+REF-077,AgentField,https://github.com/Agent-Field/agentfield,[ORCH][HARNESS][SECURITY][OBSERVE],"Agents as observable, auditable, identity-aware API/microservices.",,v1/v2,Reference
+REF-078,Agentic coding token paper,https://arxiv.org/abs/2604.22750,[COST][OBSERVE][RESEARCH],"Use for token budget, cache/context policy rationale.",,v1/v2,Reference
+REF-079,AI Harness Engineering list,https://github.com/ai-boost/awesome-harness-engineering,[HARNESS][OBSERVE][SECURITY],"Awesome list for harness engineering: tools, patterns, evals, memory, MCP, permissions.",,v1/v2,Reference
+REF-080,AI Website Cloner Template,https://github.com/JCodesMore/ai-website-cloner-template,[SKILLS][DESIGN],Task-specific workflow template example.,,v1/v2,Reference
+REF-081,Amazon Quick coverage,https://www.aboutamazon.com/news/aws/amazon-quick-desktop-ai-assistant,[DESKTOP][PROACTIVE][MEMORY],Desktop proactive AI assistant signal.,,v1/v2,Competitor/signal
+REF-082,andrej-karpathy-skills,https://github.com/forrestchang/andrej-karpathy-skills,[SKILLS][QUALITY],Coding behavior rules/pitfall guidance.,,v1/v2,Reference
+REF-083,Anuma,https://www.anuma.ai/,[MEMORY][MOBILE][MODEL],Private portable on-device memory across models and messaging surfaces.,,v1/v2,Reference
+REF-084,Apache Guacamole,https://guacamole.apache.org/,[REMOTE][GUI],Clientless browser remote desktop gateway for RDP/VNC/SSH.,,v1/v2,Candidate dependency
+REF-085,Aperant,https://github.com/AndyMik90/Aperant,[BOARD][DESKTOP][SANDBOX],Kanban + multi-session agent/worktree/QA loop inspiration.,,v1/v2,Reference
+REF-086,Archon,https://github.com/coleam00/Archon,[ORCH][APPROVAL][WORKFLOW],"Deterministic workflow, validation and approval gate inspiration.",,v1/v2,Reference
+REF-087,Atlassian Confluence knowledge base,https://www.atlassian.com/software/confluence/resources/guides/best-practices/knowledge-base,[DOCS][KNOWLEDGE],"Knowledge-base spaces, templates, permissions, articles.",,v1/v2,Reference
+REF-088,Atlassian Jira Agile docs,https://confluence.atlassian.com/agile064,[BOARD][AGILE][SCRUM][KANBAN],Agile/Scrum/Kanban board patterns.,,v1/v2,Reference
+REF-089,Authentik,https://docs.goauthentik.io/,[IDENTITY][SSO][SECURITY],Self-hosted identity provider supporting OIDC/SAML/LDAP/SCIM.,,v1/v2,Candidate dependency
+REF-090,awesome-agent-skills,https://github.com/VoltAgent/awesome-agent-skills,[SKILLS][SECURITY],Skill discovery; must be reviewed before production use.,,v1/v2,Reference only
+REF-091,awesome-cursorrules,https://github.com/PatrickJS/awesome-cursorrules,[SKILLS][QUALITY],Rule-library inspiration for project-specific agent behavior.,,v1/v2,Reference
+REF-092,awesome-design-md,https://github.com/VoltAgent/awesome-design-md,[DESIGN],Design.md examples.,,v1/v2,Reference
+REF-093,Bitwarden Agent Access SDK,https://bitwarden.com/blog/introducing-agent-access-sdk/,[SECURITY][SECRETS][APPROVAL],Credential access protocol/toolkit for AI agents with human oversight and encryption.,,v1/v2,Reference
+REF-094,cco,https://github.com/nikvdp/cco,[SECURITY][WRAPPER],Protective wrapper idea for Claude Code-style agents.,,v1/v2,Reference
+REF-095,Claude Code Remote Control,https://code.claude.com/docs/en/remote-control,[MOBILE][QR][REMOTE][AGENT],QR/session URL mobile continuation pattern; adapt as short-lived pairing not credential transfer.,,v1/v2,Product reference
+REF-096,claude-context,https://github.com/zilliztech/claude-context,[CONTEXT][RAG][CODE],Code search/context grounding reference.,,v1/v2,Reference
+REF-097,claude-skills,https://github.com/jezweb/claude-skills,[SKILLS],Full-stack and integration skill examples.,,v1/v2,Reference
+REF-098,claude-video-vision,https://github.com/jordanrendric/claude-video-vision,[GUI][EVIDENCE][VIDEO],Video/screen recording analysis and evidence idea.,,v1/v2,Reference
+REF-099,Cline,https://github.com/cline/cline,[DESKTOP][SECURITY][TERMINAL][GUI],Approval-first tool execution UX reference.,,v1/v2,Adapter/reference
+REF-100,codebase-to-course,https://github.com/zarazhangrui/codebase-to-course,[DOCS][SKILLS],Codebase education/onboarding artifact generation.,,v1/v2,Reference
+REF-101,Context Mode,https://github.com/mksglu/context-mode,[CONTEXT][TOKEN][MCP],Context-window optimization and tool-output sandboxing reference.,,v1/v2,Reference
+REF-102,Continue model providers,https://docs.continue.dev/customize/model-providers/overview,[IDE][MODEL][LOCAL],IDE extension with many model providers and self-hosted model support.,,v1/v2,Reference
+REF-103,Cua,https://github.com/trycua/cua,[GUI][SANDBOX][DESKTOP][EVIDENCE],Open-source computer-use agent desktop/sandbox infrastructure.,,v1/v2,Future candidate
+REF-104,CubeSandbox,https://github.com/TencentCloud/CubeSandbox,[SANDBOX][SECURITY],Sandbox infrastructure for AI/container workloads; evaluate after MVP.,,v1/v2,Future evaluation
+REF-105,Cursor Agent Kanban,https://github.com/cursor/cookbook/tree/main/sdk/agent-kanban,[BOARD][ORCH][AGENT],Kanban board for viewing/creating agent runs and artifacts.,,v1/v2,Reference
+REF-106,Cursor SDK blog,https://cursor.com/blog/typescript-sdk,[BOARD][SDK][ORCH],"Kanban SDK example: drag card, agent runs, PR, result attachment.",,v1/v2,Reference
+REF-107,design.md,https://github.com/google-labs-code/design.md,[DESIGN][SKILLS],Machine-readable design identity for agents.,,v1/v2,Reference
+REF-108,Digital Cat Gatekeeper,https://chromewebstore.google.com/detail/cat-gatekeeper/elbikiflgfhjdjmficnigpeegjbhdidh,[AVATAR][BUDDY][UX],Inspiration for optional AI buddy/pet/avatar UX layer.,,v1/v2,Reference
+REF-109,Dirac,https://github.com/dirac-run/dirac,[CODING][TOKEN][CONTEXT],Token-efficient coding agent with hash-anchored/AST edits.,,v1/v2,Reference
+REF-110,frontend-slides,https://github.com/zarazhangrui/frontend-slides,[SKILLS][DESIGN][EVIDENCE],Progressive-disclosure skill design example.,,v1/v2,Reference
+REF-111,GenericAgent,https://github.com/lsdefine/GenericAgent,[GUI][DESKTOP][SKILLS][RESEARCH],Computer-control/self-evolving skill reference; high-risk inspiration only.,,v1/v2,Reference
+REF-112,Gitea,https://docs.gitea.com/,[CODE][FORGE][SELFHOST],"Self-hosted Git hosting, code review, packages, CI/CD.",,v1/v2,Candidate integration
+REF-113,GitLab,https://gitlab.com/gitlab-org/gitlab,[FORGE][VERSIONING][DEVOPS],Self-hosted DevSecOps/code forge reference.,,v1/v2,Reference
+REF-114,GitLab CI/CD,https://docs.gitlab.com/ci/,[CODE][CICD][DEVSECOPS],CI/CD and DevSecOps reference.,,v1/v2,Candidate integration
+REF-115,GitNexus,https://github.com/abhigyanpatwari/GitNexus,[CONTEXT][CODEGRAPH][MCP],Code knowledge graph and Graph RAG reference.,,v1/v2,Reference
+REF-116,GLM-4.5,https://github.com/zai-org/GLM-4.5,[MODEL][REASONING][CODING],Local/enterprise model option.,,v1/v2,Evaluate later
+REF-117,GLM-5,https://huggingface.co/zai-org/GLM-5,[MODEL][REASONING],Large local/enterprise model candidate; likely heavy infrastructure.,,v1/v2,Evaluate later
+REF-118,goose,https://github.com/aaif-goose/goose,[DESKTOP][SKILLS][MODEL],Extensible local/open-source agent runtime.,,v1/v2,Adapter candidate
+REF-119,goose docs,https://goose-docs.ai/,[DESKTOP][SKILLS][MODEL],Docs for goose agent runtime.,,v1/v2,Reference
+REF-120,Grass Expo,https://github.com/anildukkipatty/grass-expo,[MOBILE][QR][APPROVAL],Mobile chat/review/approval UX inspiration.,,v1/v2,Reference
+REF-121,Grass IDE,https://github.com/anildukkipatty/grass-ide,[MOBILE][QR][REMOTE],"Run command, scan QR, control coding agent from phone.",,v1/v2,Reference
+REF-122,gstack,https://github.com/garrytan/gstack,[TEAM][SKILLS],Specialized agent/team role inspiration.,,v1/v2,Reference
+REF-123,Harness,https://github.com/revfactory/harness,[SKILLS][ORCH][TEAM],Meta-skill for designing agent teams.,,v1/v2,Reference
+REF-124,Headscale,https://headscale.net/,[VPN][SELFHOST],Self-hosted Tailscale control server; narrow single-tailnet scope.,,v1/v2,Optional dependency
+REF-125,Hermes IDE,https://github.com/hermes-hq/hermes-ide,[DESKTOP][UX][ORCH],Multi-session IDE/timeline/git/context UX inspiration.,,v1/v2,Reference
+REF-126,Impeccable,https://github.com/pbakaus/impeccable,[DESIGN][UI][QUALITY],Design quality vocabulary and UI generation guidance.,,v1/v2,Reference
+REF-127,Keycloak,https://www.keycloak.org/,[IDENTITY][SSO][SECURITY],Open-source identity and access management.,,v1/v2,Candidate dependency
+REF-128,Kilo Code,https://github.com/Kilo-Org/kilocode,[DESKTOP][TERMINAL][GUI],Agentic engineering platform UX and modes reference.,,v1/v2,Adapter/reference
+REF-129,Kimi K2.5,https://huggingface.co/moonshotai/Kimi-K2.5,[MODEL][FRONTIER-LIKE],High-end model option; heavy infrastructure.,,v1/v2,Evaluate later
+REF-130,Laguna XS.2,https://huggingface.co/poolside/Laguna-XS.2,[MODEL][LOCAL][CODING],Local agentic coding model candidate behind Model Gateway.,,v1/v2,Model candidate
+REF-131,Learn Harness Engineering,https://github.com/walkinglabs/learn-harness-engineering,[HARNESS][QUALITY][EVAL],Harness engineering methodology for reliable coding agents.,,v1/v2,Reference
+REF-132,LiteLLM Proxy,https://docs.litellm.ai/docs/simple_proxy,[MODEL][GATEWAY],Self-hosted/OpenAI-compatible model gateway.,,v1/v2,Candidate dependency
+REF-133,LM Studio local server,https://lmstudio.ai/docs/developer/core/server,[MODEL][LOCAL][OFFLINE],Local LLM server with REST and OpenAI/Anthropic compatibility endpoints.,,v1/v2,Dependency/reference
+REF-134,LM Studio OpenAI compatibility,https://lmstudio.ai/docs/developer/openai-compat,[MODEL][LOCAL][OPENAI_COMPAT],OpenAI-compatible local endpoint pattern.,,v1/v2,Reference
+REF-135,manus-evolve,https://github.com/evolving-machines-lab/manus-evolve,[RESEARCH][ORCH],Agent evolution research/reference.,,v1/v2,Reference
+REF-136,Matchlock,https://github.com/jingkaihe/matchlock,[SANDBOX][SECURITY][SECRETS],Ephemeral microVM sandbox with network allowlist and secret proxying.,,v1/v2,Future candidate
+REF-137,mattpocock skills,https://github.com/mattpocock/skills,[SKILLS][QUALITY],Practical engineering skill examples.,,v1/v2,Reference
+REF-138,MeshCentral,https://github.com/Ylianst/MeshCentral,[REMOTE][GUI][DEVICE],"Self-hosted device management with web remote desktop, terminal, and file management.",,v1/v2,Candidate dependency
+REF-139,MiMo-V2.5-Pro,https://huggingface.co/XiaomiMiMo/MiMo-V2.5-Pro,[MODEL][LONG_CONTEXT][CODING],Long-horizon agentic software engineering model candidate.,,v1/v2,Model candidate
+REF-140,Multica,https://github.com/multica-ai/multica,[ORCH][BOARD][SKILLS],"Managed coding-agent lifecycle, skills, task assignment.",,v1/v2,Reference
+REF-141,NetBird,https://docs.netbird.io/selfhosted/selfhosted-guide,[VPN][REMOTE][SELFHOST],Self-hosted WireGuard management/signal/relay/COTURN architecture.,,v1/v2,Candidate dependency
+REF-142,NVIDIA Nemotron 3 Nano Omni,https://developer.nvidia.com/blog/nvidia-nemotron-3-nano-omni-powers-multimodal-agent-reasoning-in-a-single-efficient-open-model/,[MODEL][MULTIMODAL][PERCEPTION],Open multimodal model for sub-agents and low-latency perception.,,v1/v2,Model candidate
+REF-143,NVIDIA Nemotron overview,https://www.nvidia.com/en-us/ai-data-science/foundation-models/nemotron/,[MODEL][MULTIMODAL][PERCEPTION],Nemotron foundation model product overview.,,v1/v2,Reference
+REF-144,Ollama,https://ollama.com/,[MODEL][LOCAL][DEV],Simple local model runtime for development/testing.,,v1/v2,Candidate dependency
+REF-145,Ollama qwen3-coder-next,https://ollama.com/library/qwen3-coder-next,[MODEL][LOCAL][CODING],Easy local coding model runtime for dev/testing.,,v1/v2,Candidate runtime
+REF-146,Open Design,https://github.com/nexu-io/open-design,[DESIGN][SKILLS][LOCAL],Local-first design generation and UI/design skill reference.,,v1/v2,Reference
+REF-147,Open Notebook,https://github.com/lfnovo/open-notebook,[CONTEXT][DOCS][MODEL],Self-hosted NotebookLM-like knowledge workspace with model choice.,,v1/v2,Reference
+REF-148,OpenAI Codex,https://github.com/openai/codex,[CODING][AGENT][CLI],Coding agent adapter candidate.,,v1/v2,Adapter candidate
+REF-149,OpenAI Symphony,https://github.com/openai/symphony,[BOARD][ORCH][EVIDENCE][SANDBOX],Issue tracker as agent control plane; isolated workspaces and continuous runs.,,v1/v2,Primary reference
+REF-150,opencode,https://github.com/anomalyco/opencode,[DESKTOP][TERMINAL][AGENT],Open-source coding agent candidate behind adapter interface.,,v1/v2,Adapter candidate
+REF-151,OpenMythos,https://github.com/kyegomez/OpenMythos,[RESEARCH],Theory/reconstruction reference; do not base MVP assumptions on it.,,v1/v2,Reference only
+REF-152,openskills,https://github.com/numman-ali/openskills,[SKILLS],Universal skills loader idea.,,v1/v2,Reference
+REF-153,OpenZiti,https://netfoundry.io/docs/openziti/learn/introduction/,[REMOTE][ZTNA][SECURITY],"Open-source zero-trust overlay network with controllers, routers, tunnelers and SDKs.",,v1/v2,Candidate dependency
+REF-154,Pangolin,https://docs.pangolin.net/,[REMOTE][DMZ][VPN][ZTNA],Open-source identity-based WireGuard remote access/reverse proxy.,,v1/v2,Candidate dependency
+REF-155,Paperclip,https://github.com/paperclipai/paperclip,[BOARD][ORCH][GOVERNANCE],AI organization/governance/goal alignment inspiration.,,v1/v2,Long-term inspiration
+REF-156,pi-mono,https://github.com/badlogic/pi-mono,[MODEL][TERMINAL][OBSERVE],"Toolkit ideas: coding CLI, unified model API, TUI/web UI, Slack bot, vLLM pods.",,v1/v2,Reference
+REF-157,Plane,https://github.com/makeplane/plane,[BOARD][DOCS][SELFHOST],Open-source Jira/Linear-style project management.,,v1/v2,Reference/optional integration
+REF-158,Playwright MCP,https://github.com/microsoft/playwright-mcp,[GUI][BROWSER][MCP][TESTING],Browser automation via MCP; good for QA and browser tasks.,,v1/v2,Tool candidate
+REF-159,Potpie,https://github.com/potpie-ai/potpie,[CONTEXT][CODE][AGENT],Codebase knowledge graph / code intelligence for agent context.,,v1/v2,Reference
+REF-160,Project Nomad,https://github.com/Crosstalk-Solutions/project-nomad,[OFFLINE][DOCS][MODEL],Offline/field bundle mindset.,,v1/v2,Reference
+REF-161,Qwen3-Coder-Next,https://huggingface.co/Qwen/Qwen3-Coder-Next,[MODEL][LOCAL][CODING],Open coding model candidate behind model gateway.,,v1/v2,Candidate model
+REF-162,Qwen3.5 Claude 4.6 Opus Distilled,https://huggingface.co/Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled,[MODEL][RESEARCH],Community model reference; verify license/quality before use.,,v1/v2,Evaluate later
+REF-163,React Native Vibe Code SDK,https://github.com/react-native-vibe-code/react-native-vibe-code-sdk,[MOBILE][SKILLS],Mobile-generation workflow reference.,,v1/v2,Reference
+REF-164,Routa,https://github.com/phodal/routa,[BOARD][ORCH][EVIDENCE][DESKTOP],"Workspace-first multi-agent coordination with tasks, sessions, traces, evidence and review visible on board.",,v1/v2,Reference
+REF-165,RustDesk OSS,https://rustdesk.com/docs/en/self-host/,[REMOTE][GUI][RELAY],Self-hosted ID/rendezvous and relay infrastructure for RustDesk clients.,,v1/v2,Optional backend/reference
+REF-166,Stable-DiffCoder-8B-Instruct,https://huggingface.co/ByteDance-Seed/Stable-DiffCoder-8B-Instruct,[MODEL][RESEARCH][CODING],Research model; not default serving path.,,v1/v2,Evaluate later
+REF-167,Stash,https://github.com/alash3al/stash,[MEMORY][CONTEXT][MCP],Persistent agent memory reference.,,v1/v2,Reference
+REF-168,Superpowers,https://github.com/obra/superpowers,[SKILLS][WORKFLOW][QUALITY],Structured spec-plan-implementation-review workflow.,,v1/v2,Reference
+REF-169,SyncVibe,https://github.com/Curious1008/syncvibe,[TERMINAL][COLLAB][TEAM],Human/agent collaborative terminal/team-room inspiration.,,v1/v2,Reference
+REF-170,TalkCody,https://github.com/talkcody/talkcody,[DESKTOP][LOCAL][AGENT],Local-first coding agent reference.,,v1/v2,Reference
+REF-171,Thunderbolt,https://github.com/thunderbird/thunderbolt,[MODEL][LOCAL][PRIVACY],Local/private model choice and vendor-lock-in positioning reference.,,v1/v2,Reference
+REF-172,token-optimizer-mcp,https://github.com/ooples/token-optimizer-mcp,[CONTEXT][MODEL][COST],Token/cost optimization reference.,,v1/v2,Reference
+REF-173,Tolaria,https://github.com/refactoringhq/tolaria,[DOCS][CONTEXT],Markdown knowledge-base desktop app pattern.,,v1/v2,Reference
+REF-174,Trellis,https://github.com/mindfold-ai/Trellis,[WORKFLOW][BOARD][MEMORY],Specs/tasks/journals/workflows/worktrees inspiration.,,v1/v2,Reference
+REF-175,User v2 idea file,/mnt/data/Pasted text.txt,[USER_INPUT][V2],Uploaded reference list and notes for v2 brainstorm.,,v1/v2,Source input
+REF-176,Vercel agent-skills,https://github.com/vercel-labs/agent-skills,[SKILLS],Skill packaging reference.,,v1/v2,Reference
+REF-177,vLLM OpenAI-compatible server,https://docs.vllm.ai/en/v0.8.3/serving/openai_compatible_server.html,[MODEL][LOCAL][SERVER],Production local model serving with OpenAI-compatible API.,,v1/v2,Candidate dependency
+REF-178,VoltAgent,https://github.com/voltagent/voltagent/,[ORCH][OBSERVE][SKILLS],TypeScript agent framework with memory/RAG/guardrails/tools/MCP/workflows and ops console.,,v1/v2,Reference/candidate
+REF-179,VoltAgent org,https://github.com/VoltAgent,[ORCH][SKILLS],Organization-level skill/framework repository index.,,v1/v2,Reference
+REF-180,Warden AI egress gateway,https://github.com/stephnangue/warden,[SECURITY][EGRESS][SECRETS],"AI agent egress gateway: authenticated, authorized, audited API calls with no credentials reaching agents.",,v1/v2,Reference
+REF-181,Warp,https://github.com/warpdotdev/warp,[TERMINAL][IDE][DESKTOP][AGENT],Agentic development environment born from terminal; use for Workbench/terminal-first UX.,,v1/v2,Reference
+REF-182,Warp website,https://www.warp.dev/,[TERMINAL][IDE][AGENT],Market reference for agentic terminal and cloud agent platform.,,v1/v2,Reference
+REF-183,WUPHF,https://github.com/nex-crm/wuphf,[ORCH][CONTEXT][TEAM],Collaborative AI employee/knowledge-base reference.,,v1/v2,Reference
+REF-184,Zed,https://github.com/zed-industries/zed,[IDE][COLLAB][AI],High-performance collaborative AI editor reference.,,v1/v2,Reference

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/agent-run.schema.json",
+  "title": "AgentRun",
+  "type": "object",
+  "required": [
+    "id",
+    "ticketId",
+    "status",
+    "modelProfileId"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "ticketId": {
+      "type": "string"
+    },
+    "agentAdapter": {
+      "type": "string"
+    },
+    "modelProfileId": {
+      "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "preparing_workspace",
+        "running",
+        "needs_approval",
+        "paused",
+        "completed",
+        "failed",
+        "killed"
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

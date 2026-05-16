@@ -1,0 +1,7 @@
+graph LR
+  Agent --> Gateway[Typed MCP Gateway]
+  Gateway --> Policy[Policy Engine]
+  Gateway --> Vault[Secret / Egress Broker]
+  Gateway --> MCP[MCP Server]
+  Gateway --> Audit[Audit Log]
+  Policy --> Approval[Human Approval]

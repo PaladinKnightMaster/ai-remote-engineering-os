@@ -1,0 +1,8 @@
+ID,Decision,Status,Date,Trace
+D-001,Keep Remote Execution Cockpit as first MVP,Accepted,2026-05-01,docs/29
+D-002,Add Agent Harness Runtime as reliability core,Accepted,2026-05-01,ADR-0019
+D-003,Use model gateway to avoid model lock-in,Accepted,2026-05-01,ADR-0021
+D-004,Add Agent Egress Gateway for secrets/API safety,Accepted,2026-05-01,ADR-0022
+D-005,Make AI Buddy optional and post-MVP,Accepted,2026-05-01,ADR-0026
+D-006,Treat tickets as executable work contracts,Accepted,2026-05-01,ADR-0023
+D-007,Track Multimodal/Proactive Desktop as P2 research lane and AI Buddy as P3 optional delight lane,Accepted,2026-05-04,"docs/16, requirements/priority_legend.csv"

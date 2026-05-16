@@ -1,0 +1,15 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Staging
+/_v3_*.md
+
+# Release binaries live in sibling ../artifacts/, never in this repo.
+# (No rules needed here — kept for documentation.)
+
+# Language-specific ignores deferred until ADR-0001 picks the toolchain.

@@ -1,0 +1,5 @@
+Date,Decision,Status,Notes
+2026-04-28,"Split into Remote Cockpit, Agentic Desktop and Agentic Work Board",Accepted,Keep shared protocols but independent runtime.
+2026-04-28,Treat QR as short-lived pairing not credential transfer,Accepted,"Use nonce, expiry, public keys and mutual confirmation."
+2026-04-28,Build agent-native board before full Jira clone,Accepted,Future Jira/Confluence/Git forge are roadmap items.
+2026-04-28,Integrate Git forges before native forge,Draft,Start with Gitea/GitLab/GitHub Enterprise connectors.

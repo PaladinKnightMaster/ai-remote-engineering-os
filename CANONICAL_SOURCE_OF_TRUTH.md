@@ -1,0 +1,84 @@
+# CANONICAL SOURCE OF TRUTH — AI Remote Engineering OS
+
+Baseline: **v3.0.1** (APPROVED FOR DEVELOPMENT — see `docs/releases/v3.0.1/development_readiness_audit_v3_0_1.md`).
+
+Earlier versions (v1, v2, v2.2, v3.0.0) are retained under `docs/deep-dive/` for historical traceability only. Do not start new work from them.
+
+## Workspace layout
+
+This product repo is one of three siblings under `AI-Agentic-OS/`:
+
+| Sibling | Owns |
+|---|---|
+| `../agency-kit/` | Generic Claude war-room agency kit v4.2: base CLAUDE.md template, core modules, templates, 15 generic core roles, 12 generic specialist roles, scripts. Upgraded independently. |
+| `../artifacts/ai-remote-engineering-os/v3.0.1/` | Release binaries: ZIP starter pack, executive PDF, traceability XLSX, SHA256 manifest. Not in this repo's git history. |
+| `./` (this repo) | Product source, project-customized agency overlays, project specialists, v3.0.1 canonical docs. |
+
+## Read in this order
+
+1. `docs/executive/vision.md` — strategic vision and wedge.
+2. `docs/executive/strategy.md` — go-to-market and defensibility.
+3. `docs/executive/north-star-roadmap.md` — roadmap.
+4. `docs/architecture/module-map.md` — the 14 modules and dependencies.
+5. `docs/architecture/agent-harness-architecture.md` — agent harness runtime.
+6. `docs/architecture/memory-context-architecture-v3.md` — memory scopes and context.
+7. `docs/security/agent-permission-model.md` — capability-edge model.
+8. `docs/security/egress-policy.md` — outbound traffic governance.
+9. `docs/security/sandbox-security.md` — execution sandbox boundaries.
+10. `docs/requirements/requirements_v3.csv` — requirements table.
+11. `docs/requirements/backlog_v3.csv` — backlog table.
+12. `docs/requirements/priority_legend_v3.csv` — P0/P1/P2/P3 meaning.
+13. `references/references_v3.csv` — adoption decisions for external references.
+
+## Authoritative directories (this repo)
+
+| Concern | Path |
+|---|---|
+| Executive vision / roadmap | `docs/executive/` |
+| Product / PRDs | `docs/product/` |
+| Architecture / module map | `docs/architecture/` |
+| Security / permission / egress | `docs/security/` |
+| Requirements / backlog / priority legend | `docs/requirements/` |
+| API contracts / OpenAPI / event catalog | `docs/api-contracts/` (and `docs/api-contracts/openapi/`) |
+| UI / UX specs | `docs/ui-ux/` |
+| DevOps / offline install | `docs/devops/` |
+| Evaluation / domain packs | `docs/evaluation/` |
+| ADRs (40+ accepted) | `docs/adr/` |
+| Diagrams (mermaid) | `docs/diagrams/` |
+| Schemas (JSON) | `packages/shared-schemas/` |
+| Skeleton / compose / Makefile | `infra/docker-compose/` (entry: `docker-compose.mvp.yml`) |
+| Release pointer + audit + manifest | `docs/releases/v3.0.1/` |
+| Reference inventory | `references/references_v3.csv` |
+| Reference tags | `references/reference-tags-v3.md` |
+| Deep-dive / historical docs | `docs/deep-dive/` |
+
+## Agency instructions
+
+- Claude Code agents: read `CLAUDE.md` first.
+- Codex and other agents: read `AGENTS.md` first.
+- **Generic kit content** (core modules, templates, generic roles): `../agency-kit/ai/`.
+- **Project agency overlays**:
+  - `ai/roles/specialists/*.md` (6 project specialists).
+  - `ai/war-room/TEAM.overlay.md` — extends `../agency-kit/ai/war-room/TEAM.md`.
+  - `ai/war-room/activation-matrix.overlay.md` — extends `../agency-kit/ai/war-room/activation-matrix.md`.
+  - `ai/war-room/role-router.overlay.md` — extends `../agency-kit/ai/war-room/role-router.md`.
+  - `claude-desktop/project-instructions-v4.md` — project-customized Claude Desktop instructions.
+
+## Development rule
+
+Build P0 first. Do not implement P1/P2/P3 without an explicit ticket (`.github/ISSUE_TEMPLATE/ticket.md`) and an approved ADR.
+
+## Release artifacts
+
+Heavy binaries live in `../artifacts/ai-remote-engineering-os/v3.0.1/`, separate from this repo's git history:
+
+- `ai_remote_engineering_os_starter_pack_v3_0_1_dev_ready.zip` (canonical content source).
+- `AI_Remote_Engineering_OS_Executive_Spec_v3.pdf` (when delivered).
+- `requirements_roadmap_traceability_v3.xlsx` (when delivered).
+- `sha256_manifest.txt` (when delivered).
+
+See `docs/releases/v3.0.1/manifest_reference.md` for verification commands.
+
+## Notes
+
+If a path referenced here does not resolve on disk, the v3.0.1 ZIP under `../artifacts/ai-remote-engineering-os/v3.0.1/` is the binary source of truth. Re-extract and re-map per `docs/superpowers/plans/2026-05-15-kit-install-and-repo-structuring.md` (see addendum for current sibling layout).

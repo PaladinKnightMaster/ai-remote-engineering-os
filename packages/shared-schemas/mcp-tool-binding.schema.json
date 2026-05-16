@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpToolBinding",
+  "type": "object",
+  "required": [
+    "id",
+    "serverId",
+    "toolName",
+    "riskLevel",
+    "policyId"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "serverId": {
+      "type": "string"
+    },
+    "toolName": {
+      "type": "string"
+    },
+    "riskLevel": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "policyId": {
+      "type": "string"
+    }
+  }
+}

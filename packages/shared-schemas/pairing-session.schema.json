@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/pairing-session.schema.json",
+  "title": "PairingSession",
+  "type": "object",
+  "required": [
+    "id",
+    "deviceId",
+    "nonce",
+    "expiresAt",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "gatewayUrl": {
+      "type": "string",
+      "format": "uri"
+    },
+    "deviceId": {
+      "type": "string"
+    },
+    "desktopPublicKey": {
+      "type": "string"
+    },
+    "nonce": {
+      "type": "string"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "phone_confirmed",
+        "desktop_confirmed",
+        "paired",
+        "expired",
+        "revoked"
+      ]
+    }
+  }
+}

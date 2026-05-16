@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EvidencePacket",
+  "type": "object",
+  "required": [
+    "id",
+    "ticketId",
+    "agentRunId",
+    "artifacts"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "ticketId": {
+      "type": "string"
+    },
+    "agentRunId": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "reviewStatus": {
+      "enum": [
+        "pending",
+        "accepted",
+        "changes_requested",
+        "rejected"
+      ]
+    }
+  }
+}

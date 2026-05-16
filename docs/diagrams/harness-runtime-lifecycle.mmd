@@ -1,0 +1,18 @@
+sequenceDiagram
+  participant User
+  participant Board
+  participant Harness
+  participant Policy
+  participant Desktop
+  participant Egress
+  participant Evidence
+  User->>Board: Move ticket to Ready for Agent
+  Board->>Harness: Start run
+  Harness->>Policy: Build context and capability scope
+  Harness->>Desktop: Execute file/terminal/browser tool
+  Desktop-->>Harness: Tool result
+  Harness->>Policy: Risk check
+  Policy-->>User: Approval request if needed
+  Harness->>Egress: Governed API/credential access
+  Harness->>Evidence: Store logs, diffs, screenshots, tests
+  Evidence-->>Board: Evidence packet

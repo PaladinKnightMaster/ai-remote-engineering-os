@@ -1,0 +1,19 @@
+ID,Version,Area,Requirement,Priority,Phase,Status,Trace
+REQ-001,MVP,Remote Cockpit,System shall provide browser/mobile access to internal GUI sessions through self-hosted control plane.,Must,MVP,Open,"docs/04, docs/03"
+REQ-002,MVP,Topology,"System shall support LAN, VPN-first, and DMZ-first deployment profiles.",Must,MVP,Open,docs/03
+REQ-003,MVP,Audit,System shall log session start/join/leave/terminate and control events.,Must,MVP,Open,docs/08
+REQ-101,V2,Harness,"System shall include an Agent Harness Runtime for run lifecycle, tools, policy, approvals, evidence, replay, and token budgets.",Must,Phase 4,New,docs/19
+REQ-102,V2,Memory,System shall support scoped memory for org/team/project/repo/ticket/user/agent/run scopes.,Must,Phase 5,New,docs/20
+REQ-103,V2,Memory,"Memory entries shall be inspectable, exportable, versioned, redactable, and auditable.",Must,Phase 5,New,docs/20
+REQ-104,V2,Context,System shall build bounded context packs for agent runs with token/cost budgets.,Must,Phase 4,New,docs/28
+REQ-105,V2,Model Gateway,"System shall support frontier BYOK, company-hosted, laptop-local, and perception model profiles.",Must,Phase 2-6,New,docs/21
+REQ-106,V2,Local AI,"System shall provide setup profiles for LM Studio, Ollama, Continue, and OpenAI-compatible local endpoints.",Should,Phase 2,New,docs/21
+REQ-107,V2,Egress,System shall broker outbound API/credential access through an Agent Egress Gateway.,Must,Phase 4,New,docs/22
+REQ-108,V2,Secrets,"Raw long-lived credentials shall not be exposed to prompts, memories, tool outputs, or agent environments.",Must,Phase 4,New,docs/22
+REQ-109,V2,Board,Tickets shall act as executable work contracts for agent runs and evidence packets.,Must,Phase 3,New,"docs/06, docs/23"
+REQ-110,V2,Evidence,Every completed agent run shall produce an evidence packet.,Must,Phase 3,New,schemas/evidence-packet
+REQ-111,V2,Capability Edges,System shall model communication and resource permissions as capability edges.,Should,Phase 4,New,schemas/capability-edge
+REQ-112,V2,Code Intelligence,System shall support a code intelligence service for graph/context packs.,Should,Phase 5,New,"docs/20, docs/25"
+REQ-113,V2,Multimodal,System shall support future multimodal perception profiles without depending on one specific model.,Could,Phase 6,New,docs/21
+REQ-114,V2,Avatar,"System shall support optional AI buddy/avatar UX as a non-core, post-MVP feature.",Could,Phase 7,New,docs/24
+REQ-115,V2.2,Priority Governance,System shall track P2 Multimodal/Proactive Desktop as a future research/prototype lane separate from P0/P1 delivery commitments.,Could/P2,Phase 6,New,"docs/16, requirements/priority_legend.csv, B-110"

@@ -1,0 +1,62 @@
+# AGENTS.md — AI Remote Engineering OS
+
+This project follows v3.0.1 of the AI Remote Engineering OS kit. Companion file for non-Claude agents (Codex, etc.). Claude Code uses `CLAUDE.md`.
+
+## Workspace layout
+
+This product repo lives at `AI-Agentic-OS/ai-remote-engineering-os/`. Two sibling concerns:
+
+- `../agency-kit/` — generic war-room agency kit. Owns base CLAUDE.md template, core modules, templates, generic role cards, kit scripts. Read its content when this repo references `../agency-kit/...`.
+- `../artifacts/ai-remote-engineering-os/v3.0.1/` — release binaries (ZIP/PDF/XLSX). Not part of this repo's git history.
+
+Key sources of truth (this repo):
+- `CANONICAL_SOURCE_OF_TRUTH.md`
+- `docs/releases/v3.0.1/README.md`
+- `docs/architecture/module-map.md`
+- `docs/security/agent-permission-model.md`
+
+## What this project is
+
+A self-hosted AI Engineering Operating System for restricted networks. Combines remote execution, human/AI work boards, agentic desktops, living workstreams, governed memory, code intelligence, tool gateways, and evidence-driven review.
+
+P0 modules: Remote Execution Cockpit, Audit Service, Permission Model, Offline Install.
+P1+ modules are blocked until P0 ships.
+
+## Setup commands
+
+TBD per ADR-0001 (monorepo tooling) and ADR-0002 (backend language). The skeleton intentionally does not commit a package manager lockfile until those ADRs are approved.
+
+## Test / Lint / Build
+
+TBD per ADR-0001. The kit lint script lives at `../agency-kit/scripts/war_room_lint.py` and runs against this repo as `python ../agency-kit/scripts/war_room_lint.py .`.
+
+## Code style
+
+Deferred to per-language conventions. Decided in ADR-0002 and subsequent language-specific ADRs.
+
+## Repo-wide expectations
+
+- Build P0 first. P1/P2/P3 features require an explicit ticket and an approved ADR.
+- No SaaS runtime dependency.
+- No AI autonomy before audit + policy + approval primitives exist.
+- All major dependency choices need an ADR.
+- Diff budget: ≤12 files / ≤500 LoC per ticket unless explicitly approved.
+- Read v3.0.1 docs before changing related code. Start at `docs/executive/`, `docs/architecture/module-map.md`, `docs/security/agent-permission-model.md`.
+- Match existing conventions. Do not introduce new patterns without an ADR.
+- Do not edit files under `../agency-kit/` from this repo's tickets. Kit upgrades happen in their own repo.
+
+## Forbidden work (bootstrap phase)
+
+- Adding business logic before T-002 (Docker Compose) and T-003 (shared types) are complete.
+- Touching `services/`, `apps/`, or `packages/shared-types/` with non-scaffolding code in this bootstrap phase.
+- Introducing network-egress code paths before the egress policy in `docs/security/` is implemented.
+- Modifying existing ADRs under `docs/adr/` — propose a new ADR instead.
+- `git init` or destructive git ops without explicit user direction.
+
+## Verification
+
+Every claim in a PR description must resolve to a path in this repo or `../agency-kit/`. PRs that fail this check are returned.
+
+## Ticket format
+
+See `.github/ISSUE_TEMPLATE/ticket.md`. Tickets are T-NNN, aligned with the v3.0.1 backlog under `docs/requirements/`.

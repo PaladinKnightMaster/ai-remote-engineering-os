@@ -1,0 +1,10 @@
+Phase,Priority,Name,Description
+Phase 0,P0,Foundation,"Auth, database, gateway, audit base, offline packaging."
+Phase 1,P0,Remote Cockpit MVP,"GUI/terminal access, mobile controls, DMZ/VPN/LAN profiles."
+Phase 2,P1,Agentic Desktop,"Desktop worker, model gateway, QR dispatch, approvals."
+Phase 3,P1,Agentic Work Board,"Ticket-native agent runs, evidence, approvals."
+Phase 4,P1,Harness + Gateway,"Harness runtime, MCP gateway, egress gateway, skill registry."
+Phase 5,P1/P2,Living Workstreams,"Recurring workspaces, memory, rules, next-run loop."
+Phase 6,P2,Memory + Git Intelligence,"Continuous context index, persistent memory, local issue/PR cache."
+Phase 7,P2,Automation + Evaluation,"Browser CLI, desktop automation, workflow compiler, evals."
+Phase 8,P3,Companion + Explain,"Buddy/avatar, voice, explain mode, domain personas."

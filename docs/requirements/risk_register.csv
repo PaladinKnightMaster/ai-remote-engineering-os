@@ -1,0 +1,11 @@
+ID,Risk,Impact,Likelihood,Mitigation,Owner
+RISK-001,Scope explosion into Jira+Confluence+GitHub clone too early,High,High,"Treat as north-star; MVP only board/tickets/evidence, integrate existing forge/docs first.",Product Lead
+RISK-002,Direct exposure of RDP/SSH/VNC,High,Medium,Enforce gateway/VPN only; add deployment scanner and security checklist.,Security
+RISK-003,AI agent destructive action,High,Medium,Approval-first tool policy; command allowlists; sandbox; audit.,Security / AI
+RISK-004,Offline install complexity,High,High,Make offline bundle a product feature from day one; CI tests install without internet.,DevOps
+RISK-005,Local model quality too low,Medium,High,Support BYOK frontier models and internal model gateways; local is optional/fallback.,AI/ML
+RISK-006,Mobile remote GUI poor usability,Medium,Medium,"Design touch mapping, shortcut drawer, zoom/pan; test early on iOS/Android.",UX
+RISK-007,License contamination from AGPL projects,High,Medium,Legal review before embedding/forking; prefer adapters/integration boundaries.,Tech Lead
+RISK-008,Prompt injection / malicious skills,High,Medium,Private reviewed skill registry; MCP/tool allowlists; least privilege.,Security / AI
+RISK-009,Vendor API credential leakage,High,Medium,Use OS keychain; never encode credentials in QR; audit access; secret redaction.,Security
+RISK-010,Agent orchestration unreliable at scale,Medium,High,"Run state machine, retries, heartbeats, evidence packets and human review.",Backend

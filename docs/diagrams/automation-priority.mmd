@@ -1,0 +1,6 @@
+graph TD
+  Task[Agent UI Task] --> A11y[1 Accessibility Tree]
+  A11y --> DOM[2 DOM/CDP/Playwright]
+  DOM --> Vision[3 OCR/Vision]
+  Vision --> Raw[4 Raw Input Fallback]
+  Raw --> Audit[Audit + Evidence]

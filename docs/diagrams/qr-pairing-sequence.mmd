@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant Desktop
+    participant Phone
+    participant Gateway
+    Desktop->>Gateway: Create pairing session
+    Gateway-->>Desktop: pairing_id + nonce + expiry
+    Desktop-->>Phone: QR payload
+    Phone->>Gateway: Authenticate + scan pairing_id
+    Gateway-->>Phone: Desktop identity
+    Gateway-->>Desktop: Phone identity
+    Phone->>Gateway: Confirm pairing
+    Desktop->>Gateway: Confirm pairing
+    Gateway-->>Phone: Short-lived scoped token
+    Gateway-->>Desktop: Device link established

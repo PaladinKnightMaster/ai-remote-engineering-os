@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DesktopAction",
+  "type": "object",
+  "required": [
+    "id",
+    "target",
+    "action"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
+    },
+    "action": {
+      "enum": [
+        "snapshot",
+        "click",
+        "type",
+        "press",
+        "scroll",
+        "focus"
+      ]
+    },
+    "args": {
+      "type": "object"
+    },
+    "automationMode": {
+      "enum": [
+        "accessibility",
+        "dom",
+        "vision",
+        "raw-input"
+      ]
+    }
+  }
+}

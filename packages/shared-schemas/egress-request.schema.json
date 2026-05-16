@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EgressRequest",
+  "type": "object",
+  "required": [
+    "id",
+    "agentRunId",
+    "target",
+    "action",
+    "credentialPolicyId"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "agentRunId": {
+      "type": "string"
+    },
+    "ticketId": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "credentialPolicyId": {
+      "type": "string"
+    },
+    "approvalId": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "requested",
+        "approved",
+        "denied",
+        "executed",
+        "failed",
+        "expired"
+      ]
+    }
+  }
+}

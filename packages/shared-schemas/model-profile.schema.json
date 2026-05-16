@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelProfile",
+  "type": "object",
+  "required": [
+    "id",
+    "mode",
+    "endpointType",
+    "capabilities"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "frontier_byok",
+        "company_hosted",
+        "laptop_local",
+        "perception"
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "endpointType": {
+      "enum": [
+        "openai_compatible",
+        "anthropic_compatible",
+        "native",
+        "ollama",
+        "lmstudio",
+        "vllm",
+        "litellm",
+        "nim"
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "chat",
+          "coding",
+          "tool_calling",
+          "vision",
+          "audio",
+          "video",
+          "embeddings",
+          "rerank",
+          "long_context"
+        ]
+      }
+    },
+    "policyId": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+ID,Title,Priority,Track,User Story / Description
+EPIC-A1,Remote Cockpit Foundation,P0,A,"Set up auth, DB, event bus, gateway and bootstrap admin."
+US-A1-001,OIDC login,P0,A,As a user I can log into the cockpit with SSO.
+US-A1-002,Resource registry,P0,A,As an admin I can register internal RDP/VNC/SSH resources.
+US-A2-001,Guacamole session launch,P0,A,As a user I can open a remote desktop in the browser.
+US-A2-002,Mobile controls,P0,A,As a mobile user I can control remote GUI without native app.
+US-A3-001,Terminal persistence,P0,A,As a developer I can reconnect to a terminal session without losing work.
+US-A4-001,Demo share link,P1,A,As a user I can share read-only session with expiry.
+US-A5-001,Audit log,P0,A,As a security officer I can inspect session events.
+EPIC-B1,Agentic Desktop Foundation,P1,B,Desktop app with local worker and model provider registry.
+US-B1-001,Desktop worker health,P1,B,As a user I can see whether the local agent worker is online.
+US-B2-001,Model profile config,P1,B,As a user I can add frontier API key or local endpoint.
+US-B3-001,Approval timeline,P1,B,As a user I approve/deny tool calls from desktop/mobile.
+US-B4-001,QR phone dispatch,P1,B,As a user I pair phone to desktop session via short-lived QR.
+EPIC-C1,Agentic Work Board,P1,C,Agent-native ticket board with run timeline and evidence packets.
+US-C1-001,Create ticket,P1,C,As a user I can create a ticket with acceptance criteria.
+US-C2-001,Attach agent run,P1,C,As a user I can start/watch an agent run from a ticket.
+US-C3-001,Evidence packet,P1,C,"As a reviewer I can inspect diff, logs and screenshots before accepting."
+EPIC-D1,Knowledge Base Roadmap,P2,D,Confluence-style docs linked to tickets/code/runs.
+EPIC-E1,Code Forge Integration,P2,E,Connect to Gitea/GitLab/GitHub Enterprise before native forge.

@@ -1,0 +1,8 @@
+graph TD
+  Task[Task Request] --> Router[Model Gateway Router]
+  Router --> Frontier[Frontier BYOK]
+  Router --> Company[Company-hosted LiteLLM/vLLM/Ollama/NIM]
+  Router --> Local[Local LM Studio/Ollama]
+  Router --> Perception[Multimodal Perception Model]
+  Router --> Budget[Cost/Token/Privacy Policy]
+  Budget --> Decision[Selected Model Profile]

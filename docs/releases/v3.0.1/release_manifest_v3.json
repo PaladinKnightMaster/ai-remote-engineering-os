@@ -1,0 +1,29 @@
+{
+  "version": "v3.0.1",
+  "release_date": "2026-05-15",
+  "inherits_from": "v2.2 audited package",
+  "root": "ai_remote_engineering_os_starter_pack_v3_0_1",
+  "major_additions": [
+    "Living Workspace / Workstream Engine",
+    "Agent Workflow Compiler",
+    "Typed MCP Gateway",
+    "Agent Browser CLI",
+    "Desktop Accessibility Automation",
+    "Continuous Context Index",
+    "Persistent Memory Service",
+    "Code + Git Intelligence Layer",
+    "Agent Backend Sandbox",
+    "Evaluation and Benchmark Layer",
+    "Domain Pack Architecture",
+    "Optional Companion and Explain Mode"
+  ],
+  "reference_count": 184,
+  "v3_reference_count_added": 74,
+  "patch_notes": [
+    "Regenerated SHA256 manifest",
+    "Added canonical source-of-truth guide",
+    "Archived earlier AI_Agentic_Architecture markdown package",
+    "Added development readiness audit"
+  ],
+  "development_baseline": "approved"
+}

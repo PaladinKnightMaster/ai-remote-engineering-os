@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentWorkflow",
+  "type": "object",
+  "required": [
+    "id",
+    "trigger",
+    "steps",
+    "sandboxProfileId"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "trigger": {
+      "type": "string"
+    },
+    "sandboxProfileId": {
+      "type": "string"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "evidenceRequired": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

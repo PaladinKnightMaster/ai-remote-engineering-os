@@ -1,0 +1,12 @@
+flowchart LR
+    Human[Human employee / admin / reviewer] --> PWA[Phone or Browser PWA]
+    PWA --> Gateway[Self-hosted DMZ/VPN Gateway]
+    Gateway --> Cockpit[Remote Execution Cockpit]
+    Cockpit --> GUI[Guacamole / MeshCentral / RustDesk / KasmVNC]
+    Cockpit --> Terminal[xterm.js + tmux]
+    Cockpit --> Board[Agentic Work Board]
+    Board --> Agent[Agentic Desktop / Agent Runner]
+    Agent --> Model[Frontier BYOK / Internal model / Local model]
+    Agent --> Tools[Files / Terminal / Browser / IDE / Apps]
+    Board --> Evidence[Evidence Packet]
+    Evidence --> Review[Human Review]

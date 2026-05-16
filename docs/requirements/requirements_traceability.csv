@@ -1,0 +1,25 @@
+ID,Module,Release,Priority,Status,Requirement,Acceptance Criteria,Owner
+REQ-A-001,Remote Cockpit,MVP,Must,Accepted,System supports self-hosted login through Keycloak or Authentik with local fallback admin.,Authenticate to cockpit via OIDC and create first admin.,Security / Backend
+REQ-A-002,Remote Cockpit,MVP,Must,Accepted,"System supports LAN, VPN-first and DMZ-first deployment profiles.",Deploy all three profiles in lab with documented runbook.,Infra
+REQ-A-003,Remote Cockpit,MVP,Must,Accepted,"Resource registry stores RDP, VNC, SSH, MeshCentral and workspace resources.",CRUD resources and enforce resource policy.,Backend
+REQ-A-004,Remote Cockpit,MVP,Must,Accepted,Users can launch browser GUI sessions through Guacamole.,Open RDP and VNC resources from mobile and laptop browsers.,Frontend / Backend
+REQ-A-005,Remote Cockpit,MVP,Must,Accepted,"Mobile viewer supports tap/click, long-press/right-click, two-finger scroll, zoom and soft keyboard.",Pass mobile usability test on iOS Safari and Android Chrome.,Frontend / UX
+REQ-A-006,Remote Cockpit,MVP,Must,Accepted,Terminal sessions use xterm.js and tmux for persistence.,Disconnect/reconnect without killing command.,Backend / Frontend
+REQ-A-007,Remote Cockpit,MVP,Must,Accepted,"Read-only demo links have expiry, passcode, watermark and revoke controls.",Create/revoke share link and verify no input allowed.,Backend / Security
+REQ-A-008,Remote Cockpit,MVP,Must,Accepted,All session actions emit audit events.,"Audit contains user, resource, session, network profile and action metadata.",Security / Backend
+REQ-A-009,Remote Cockpit,Post-MVP,Should,Draft,MeshCentral adapter enrolls and controls managed PCs.,Enroll Windows/Linux/macOS test devices and open desktop/terminal/files.,Backend
+REQ-B-001,Agentic Desktop,MVP-B,Must,Accepted,Desktop app runs a local background agent worker.,App can start/stop worker and show health.,Desktop
+REQ-B-002,Agentic Desktop,MVP-B,Must,Accepted,Model provider registry supports BYOK frontier APIs and OpenAI-compatible local/internal endpoints.,"Create model profiles for frontier, LiteLLM, Ollama, vLLM.",AI/ML
+REQ-B-003,Agentic Desktop,MVP-B,Must,Accepted,"Agent tool layer supports file read/write with diff, shell command request, git diff, and artifact output.",Agent completes safe local coding task with approval.,AI/ML / Security
+REQ-B-004,Agentic Desktop,MVP-B,Must,Accepted,Every risky tool call requires user approval by default.,Denied command stops execution and logs audit event.,Security / UX
+REQ-B-005,Agentic Desktop,MVP-B,Should,Accepted,"QR phone dispatch creates short-lived pairing session, not credential transfer.","QR expires, is single-use, and requires confirmation on both devices.",Security / Mobile
+REQ-C-001,Agentic Work Board,MVP-C,Must,Accepted,"Board supports projects, tickets, states, acceptance criteria, comments and attachments.",Create ticket and move across agent-native workflow.,Product / Backend
+REQ-C-002,Agentic Work Board,MVP-C,Must,Accepted,"Ticket owns agent run timeline, approvals and evidence packet.","Agent run produces summary, diff, test log, artifact links.",Backend / AI/ML
+REQ-C-003,Agentic Work Board,MVP-C,Must,Accepted,"Board has agent-native states: Clarify, Planned, Ready for Agent, Running, Needs Approval, Evidence Review, Human Review, Done.",State transitions are validated by workflow engine.,Backend
+REQ-C-004,Agentic Work Board,Post-MVP,Should,Draft,Board supports Scrum/Kanban/Lean/SAFe-inspired views.,"Epics, sprints/cycles, WIP limits, dependencies and releases available.",Product
+REQ-D-001,Knowledge Base,Future,Should,Draft,"Confluence-style docs store PRDs, ADRs, runbooks, research notes and agent memory snapshots.","Docs can be linked to tickets, code, agent runs and releases.",Product / Backend
+REQ-D-002,Code Forge,Future,Could,Draft,Integrate first with Gitea/Forgejo/GitLab/GitHub Enterprise before building native forge.,"Ticket links to branch, PR, CI and release artifacts.",Backend / DevOps
+REQ-S-001,Security,MVP,Must,Accepted,No direct public exposure of SSH/RDP/VNC is permitted.,Network scan confirms only gateway ports are exposed.,Security / Infra
+REQ-S-002,Security,MVP,Must,Accepted,"Clipboard, file transfer and control permissions are policy-gated per session.",Policy matrix tests pass.,Security
+REQ-S-003,Security,MVP,Must,Accepted,"Offline release bundle includes container images, checksums, SBOM and install/upgrade/backup/restore scripts.",Install succeeds on isolated lab network.,DevOps
+REQ-S-004,Security,Future,Should,Draft,"Agent sandboxing supports container/worktree first, microVM later.",Agent run cannot access unauthorized filesystem/network/secrets.,Security / AI/ML

@@ -1,0 +1,15 @@
+graph TD
+  User[Human / Mobile / Browser] --> Board[Agentic Work Board]
+  Board --> Workstream[Living Workstream Engine]
+  Board --> Harness[Agent Harness Runtime]
+  Workstream --> Harness
+  Harness --> Desktop[Agentic Desktop]
+  Harness --> Cockpit[Remote Execution Cockpit]
+  Harness --> MCP[Typed MCP Gateway]
+  Harness --> Memory[Memory + Context Index]
+  Harness --> Git[Code + Git Intelligence]
+  Harness --> Egress[Agent Egress Gateway]
+  Harness --> Eval[Evaluation Layer]
+  Desktop --> Browser[Agent Browser CLI]
+  Desktop --> DeskAuto[Desktop Automation]
+  Cockpit --> InternalPC[Internal PCs / Workspaces]

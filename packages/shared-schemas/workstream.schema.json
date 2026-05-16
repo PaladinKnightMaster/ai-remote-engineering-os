@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workstream",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "ownerId",
+    "state",
+    "memoryScope"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "active",
+        "paused",
+        "archived"
+      ]
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "memoryScope": {
+      "type": "string"
+    },
+    "schedule": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

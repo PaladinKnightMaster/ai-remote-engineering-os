@@ -1,0 +1,13 @@
+flowchart TD
+    subgraph LAN
+      LPhone[Phone on Wi-Fi] --> LCockpit[cockpit.company.lan]
+    end
+    subgraph VPN
+      VPhone[External phone] --> VPN[Self-hosted VPN/mesh]
+      VPN --> VCockpit[internal cockpit]
+    end
+    subgraph DMZ
+      DPhone[External browser] --> DMZ[DMZ gateway]
+      DMZ --> Connector[Internal connector]
+      Connector --> DCockpit[control plane]
+    end

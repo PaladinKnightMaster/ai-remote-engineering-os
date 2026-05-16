@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryScope",
+  "type": "object",
+  "required": [
+    "id",
+    "scopeType",
+    "ownerRef",
+    "visibility",
+    "storageMode"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "scopeType": {
+      "enum": [
+        "org",
+        "team",
+        "project",
+        "repo",
+        "ticket",
+        "user",
+        "agent",
+        "run"
+      ]
+    },
+    "ownerRef": {
+      "type": "string"
+    },
+    "visibility": {
+      "enum": [
+        "private",
+        "team",
+        "org",
+        "public-within-org"
+      ]
+    },
+    "storageMode": {
+      "enum": [
+        "filesystem",
+        "database",
+        "object",
+        "vector",
+        "hybrid"
+      ]
+    },
+    "retentionPolicyId": {
+      "type": "string"
+    }
+  }
+}

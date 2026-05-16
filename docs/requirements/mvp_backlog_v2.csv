@@ -1,0 +1,13 @@
+ID,Epic,Story,Phase,Priority,Area
+B-001,Remote Cockpit Alpha,Deploy Guacamole and launch RDP/VNC/SSH sessions from web UI,MVP,P0,Remote Execution
+B-002,Session Audit,Persist session events and participant timeline,MVP,P0,Security
+B-101,Harness Runtime Skeleton,Implement agent run state machine and event model,Phase 4,P0,Harness
+B-102,Context Pack Builder,Build ticket/doc/repo/memory bounded context packs,Phase 4,P0,AI/ML
+B-103,Model Gateway Profiles,"Add frontier, company, local, perception model profile registry",Phase 2,P0,AI/ML
+B-104,Agent Egress Gateway Spike,Prototype governed API call with credential broker,Phase 4,P0,Security
+B-105,Memory Scope Service,Implement scoped memory metadata and filesystem-backed store,Phase 5,P1,Knowledge
+B-106,Code Graph Spike,Prototype GitNexus/Potpie-style code graph context extraction,Phase 5,P1,Code Intelligence
+B-107,Mobile Approval Cards,Approve/deny/edit/takeover from phone,Phase 3,P0,UX
+B-108,Evidence Packet MVP,"Generate summary, diff, tests, screenshots/logs artifacts",Phase 3,P0,Evidence
+B-109,AI Buddy Concept,Professional status avatar + optional pet mode concept only,Phase 7,P3,UX
+B-110,Multimodal/Proactive Desktop Spike,Evaluate perception model profiles for screen/audio/video understanding and proactive desktop assistance without committing to a model dependency.,Phase 6,P2,Multimodal / Desktop AI

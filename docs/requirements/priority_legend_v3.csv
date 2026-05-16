@@ -1,0 +1,5 @@
+Priority,Meaning,Rule
+P0,Foundation / MVP survival,Must be built first for useful product.
+P1,Defensibility,Critical to win in market after MVP.
+P2,Strategic advanced capability,Prototype/research track; useful for future differentiation.
+P3,Delight / brand / optional UX,Do later; should not block core platform.

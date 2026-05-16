@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/ticket.schema.json",
+  "title": "Ticket",
+  "type": "object",
+  "required": [
+    "id",
+    "projectId",
+    "title",
+    "state",
+    "acceptanceCriteria"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "projectId": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "epic",
+        "feature",
+        "bug",
+        "task",
+        "spike",
+        "refactor",
+        "test",
+        "documentation",
+        "incident",
+        "demo_request",
+        "remote_session_request",
+        "agent_skill_request"
+      ]
+    },
+    "state": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowedTools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidenceRequired": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

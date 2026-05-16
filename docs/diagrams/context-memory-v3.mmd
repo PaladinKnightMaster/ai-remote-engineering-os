@@ -1,0 +1,9 @@
+graph TD
+  Sources[Repos Docs Tickets Chats PDFs Videos] --> Live[Live Incremental Index]
+  Runs[Agent Runs] --> Memory[Persistent Memory]
+  Live --> Retrieve[Retrieval Router]
+  Memory --> Retrieve
+  Tree[Tree/Page Reasoning] --> Retrieve
+  Graph[Code/Knowledge Graph] --> Retrieve
+  Retrieve --> ContextPack[Context Pack]
+  ContextPack --> Harness[Agent Harness]

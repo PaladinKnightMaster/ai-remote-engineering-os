@@ -1,0 +1,14 @@
+sequenceDiagram
+  participant H as Human
+  participant W as Workstream
+  participant A as Agent Harness
+  participant M as Memory
+  participant E as Evidence
+  H->>W: define objective, sources, rules
+  W->>A: start run
+  A->>M: load context/memory pack
+  A->>A: execute tools in sandbox
+  A->>E: attach evidence packet
+  E->>H: request review
+  H->>W: approve or correct
+  W->>M: store reviewed memory/rules

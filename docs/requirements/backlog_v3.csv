@@ -1,0 +1,14 @@
+Backlog ID,Priority,Title,Description,Requirement ID
+B-001,P0,Remote Cockpit MVP,Build browser/mobile GUI/terminal access with Guacamole/MeshCentral adapters.,REQ-001
+B-002,P0,DMZ/VPN Profiles,"Document and implement LAN, VPN, DMZ deployment.",REQ-002
+B-003,P1,Harness Runtime Skeleton,"Implement run lifecycle, tool call, approval, evidence APIs.",REQ-006
+B-004,P1,Living Workstream Prototype,"Create workstream CRUD, run history, next-run metadata.",REQ-007
+B-005,P1,Typed MCP Gateway Spike,Generate typed clients and enforce policy wrappers.,REQ-008
+B-006,P2,Agent Workflow Compiler Spike,Compile workflow spec into safe runner definition.,REQ-010
+B-007,P2,Agent Browser CLI Spike,Implement open/snap/click/type/logs/audit JSON commands.,REQ-012
+B-008,P2,Desktop Accessibility Automation Spike,Evaluate OS accessibility-tree control.,REQ-011
+B-009,P2,Continuous Context Index Spike,Index repo/docs/tickets incrementally.,REQ-013
+B-010,P2,Persistent Memory Service,"Implement memory scopes, export, redact, audit.",REQ-014
+B-011,P2,Git Intelligence Cache,Mirror issues/PRs/CI locally for offline search.,REQ-015
+B-012,P2,Eval Layer Baseline,Create task fixtures and evidence quality rubric.,REQ-016
+B-013,P3,Companion Status UX,Add professional status orb and optional avatar mode.,REQ-019

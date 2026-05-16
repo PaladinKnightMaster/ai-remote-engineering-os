@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> Inbox
+    Inbox --> Clarify
+    Clarify --> Planned
+    Planned --> ReadyForAgent
+    ReadyForAgent --> Running
+    Running --> NeedsApproval
+    NeedsApproval --> Running: approved
+    NeedsApproval --> Blocked: denied
+    Running --> EvidenceReview
+    EvidenceReview --> HumanReview
+    HumanReview --> Done: accepted
+    HumanReview --> ReadyForAgent: changes requested
+    Running --> Failed

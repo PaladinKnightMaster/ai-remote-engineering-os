@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EvalRun",
+  "type": "object",
+  "required": [
+    "id",
+    "benchmarkId",
+    "agentProfileId",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "benchmarkId": {
+      "type": "string"
+    },
+    "agentProfileId": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "evidencePacketId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

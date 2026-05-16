@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/approval-request.schema.json",
+  "title": "ApprovalRequest",
+  "type": "object",
+  "required": [
+    "id",
+    "subjectType",
+    "subjectId",
+    "status",
+    "requestedAction"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "subjectType": {
+      "type": "string",
+      "enum": [
+        "tool_call",
+        "session_control",
+        "share_link",
+        "deployment",
+        "secret_access"
+      ]
+    },
+    "subjectId": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "denied",
+        "expired",
+        "auto_denied"
+      ]
+    },
+    "requestedAction": {
+      "type": "string"
+    },
+    "riskLevel": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  }
+}

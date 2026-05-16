@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContextPack",
+  "type": "object",
+  "required": [
+    "id",
+    "ticketId",
+    "budget",
+    "sections"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "ticketId": {
+      "type": "string"
+    },
+    "agentRunId": {
+      "type": "string"
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "maxInputTokens": {
+          "type": "integer"
+        },
+        "maxOutputTokens": {
+          "type": "integer"
+        },
+        "maxCostUsd": {
+          "type": "number"
+        }
+      }
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sourceType": {
+            "type": "string"
+          },
+          "tokenEstimate": {
+            "type": "integer"
+          },
+          "uri": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
