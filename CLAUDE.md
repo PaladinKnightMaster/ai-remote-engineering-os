@@ -43,7 +43,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 ## Project stack (per ADRs)
 - Backend language: **Go** primary; TypeScript for `apps/web` only; Python as sanctioned AI sidecar in P1+. See ADR-0041.
 - Monorepo tooling: **Go workspaces (`go.work`) + pnpm workspaces (`pnpm-workspace.yaml`) + top-level `Taskfile.yml`**. No JS-side orchestrator (no Turborepo/Nx) at P0; no Bazel. See ADR-0042.
-- API framework: TBD per ADR-0043 (Go: `net/http` baseline candidates `chi`/`fiber`/`echo`).
+- API framework: **`go-chi/chi` v5 on `net/http`**, server stubs via `oapi-codegen` (`chi-server` generator); shared capability-edge middleware in `packages/go/middleware/`. See ADR-0043.
 - DB migration tool: TBD per ADR-0044.
 - Event bus: TBD per ADR-0045.
 - Auth adapter: TBD per ADR-0046.
