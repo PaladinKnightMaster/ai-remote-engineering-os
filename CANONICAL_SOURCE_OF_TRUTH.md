@@ -14,6 +14,8 @@ This product repo is one of three siblings under `AI-Agentic-OS/`:
 | `../artifacts/ai-remote-engineering-os/v3.0.1/` | Release binaries: ZIP starter pack, executive PDF, traceability XLSX, SHA256 manifest. Not in this repo's git history. |
 | `./` (this repo) | Product source, project-customized agency overlays, project specialists, v3.0.1 canonical docs. |
 
+Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (refresh procedures for `agency-kit/`, integrity verification for `artifacts/`, branching policy for this repo).
+
 ## Read in this order
 
 1. `docs/executive/vision.md` — strategic vision and wedge.
