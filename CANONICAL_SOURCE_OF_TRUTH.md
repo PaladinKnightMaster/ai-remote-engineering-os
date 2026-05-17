@@ -66,6 +66,19 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
   - `ai/war-room/role-router.overlay.md` — extends `../agency-kit/ai/war-room/role-router.md`.
   - `claude-desktop/project-instructions-v4.md` — project-customized Claude Desktop instructions.
 
+## ADR ladder
+
+| Range | Topic | Status |
+|---|---|---|
+| ADR-0001..ADR-0040 | Product decisions (from v3.0.1 baseline) | Accepted/Proposed per individual files |
+| ADR-0041 | Backend language: Go primary, TS frontend-only, Python sanctioned sidecar | Accepted 2026-05-16 |
+| ADR-0042 | Monorepo tooling for a Go-primary + TS-frontend repo | Pending |
+| ADR-0043 | API framework selection (Go) | Pending |
+| ADR-0044 | DB migration tool | Pending |
+| ADR-0045 | Event bus (NATS / Redis Streams / Postgres LISTEN/NOTIFY) | Pending |
+| ADR-0046 | Auth adapter (Keycloak / AuthentiK / Zitadel) | Pending |
+| ADR-0047 | Frontend framework for `apps/web` | Pending |
+
 ## Development rule
 
 Build P0 first. Do not implement P1/P2/P3 without an explicit ticket (`.github/ISSUE_TEMPLATE/ticket.md`) and an approved ADR.

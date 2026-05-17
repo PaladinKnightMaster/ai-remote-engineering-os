@@ -40,15 +40,19 @@ Prefer index → summary → targeted section → full source.
 Do not load old sessions, archived docs, huge logs, or full research packs unless needed.
 Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map.md`.
 
-## Project placeholders
-- Stack: TBD per ADR-0002 (placeholder TypeScript/Node + Python tooling)
-- Package manager: TBD per ADR-0001 (placeholder pnpm workspaces)
-- Dev: TBD per ADR-0001
-- Test: TBD per ADR-0001
-- Lint: TBD per ADR-0001
-- Build: TBD per ADR-0001
-- Current phase: P0 — MVP survival
-- Release target: v0.1.0 P0 vertical slice
+## Project stack (per ADRs)
+- Backend language: **Go** primary; TypeScript for `apps/web` only; Python as sanctioned AI sidecar in P1+. See ADR-0041.
+- Monorepo tooling: TBD per ADR-0042.
+- API framework: TBD per ADR-0043 (Go: `net/http` baseline candidates `chi`/`fiber`/`echo`).
+- DB migration tool: TBD per ADR-0044.
+- Event bus: TBD per ADR-0045.
+- Auth adapter: TBD per ADR-0046.
+- Frontend framework: TBD per ADR-0047.
+- Dev / Test / Lint / Build commands: TBD per ADR-0042.
+- Current phase: P0 — MVP survival.
+- Release target: v0.1.0 P0 vertical slice.
+
+> ADR numbering: v3.0.1 ADRs (`docs/adr/ADR-0001.md` through `ADR-0040.md`) cover product decisions. New meta-decisions (language, tooling, frameworks) start at **ADR-0041**.
 
 ## Project doctrine
 - Build P0 first. P1/P2/P3 features require an explicit ticket and an approved ADR.

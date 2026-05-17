@@ -24,11 +24,13 @@ P1+ modules are blocked until P0 ships.
 
 ## Setup commands
 
-TBD per ADR-0001 (monorepo tooling) and ADR-0002 (backend language). The skeleton intentionally does not commit a package manager lockfile until those ADRs are approved.
+Backend language is **Go** (ADR-0041). Monorepo tooling is pending in ADR-0042. The skeleton intentionally does not commit a Go module file or any package-manager lockfile until ADR-0042 lands.
+
+> v3.0.1 ADRs (`docs/adr/ADR-0001.md` through `ADR-0040.md`) cover product decisions. New meta-decisions start at **ADR-0041**.
 
 ## Test / Lint / Build
 
-TBD per ADR-0001. The kit lint script lives at `../agency-kit/scripts/war_room_lint.py` and runs against this repo as `python ../agency-kit/scripts/war_room_lint.py .`.
+TBD per ADR-0042 (monorepo tooling). The kit lint script lives at `../agency-kit/scripts/war_room_lint.py` and runs against this repo as `python ../agency-kit/scripts/war_room_lint.py .` — note: a non-zero exit on the product repo is expected (kit assumes self-containment; run against `../agency-kit/` for kit-health checks).
 
 ## Code style
 
