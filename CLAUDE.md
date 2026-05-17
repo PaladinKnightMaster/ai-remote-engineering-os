@@ -45,7 +45,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 - Monorepo tooling: **Go workspaces (`go.work`) + pnpm workspaces (`pnpm-workspace.yaml`) + top-level `Taskfile.yml`**. No JS-side orchestrator (no Turborepo/Nx) at P0; no Bazel. See ADR-0042.
 - API framework: **`go-chi/chi` v5 on `net/http`**, server stubs via `oapi-codegen` (`chi-server` generator); shared capability-edge middleware in `packages/go/middleware/`. See ADR-0043.
 - DB migration tool: **`golang-migrate/migrate` v4 in library mode**, embedded per service via `embed.FS`; shared runner in `packages/go/migrate/`; per-service `services/<name>/migrations/` directories with pure-SQL files; `audit-service` is forward-only by policy. Invoked via `task migrate -- <service> <action>`. See ADR-0044.
-- Event bus: TBD per ADR-0045.
+- Event bus: **no broker at P0**; Postgres transactional outbox in producers + sync HTTP append-only ingest into `audit-service` (chained-hash extended in-process at the chain authority); shared `packages/go/outbox/` module follows the `packages/go/middleware/` and `packages/go/migrate/` shape; relay exposed as `<service> outbox relay` subcommand, woken by Postgres `LISTEN/NOTIFY` with periodic-sweep fallback; **NATS JetStream held as the named P1 reserve pick**. See ADR-0045.
 - Auth adapter: TBD per ADR-0046.
 - Frontend framework: TBD per ADR-0047.
 - Dev / Test / Lint / Build commands: canonical entry points are `task lint`, `task test`, `task build`, `task offline-bundle` (per ADR-0042).
