@@ -24,7 +24,7 @@ P1+ modules are blocked until P0 ships.
 
 ## Setup commands
 
-Backend language is **Go** (ADR-0041). Monorepo tooling is **Go workspaces + pnpm workspaces + top-level Taskfile** (ADR-0042). HTTP framework for `services/*` is **`go-chi/chi` v5 on `net/http`** with `oapi-codegen` (`chi-server` generator) producing server stubs from `docs/api-contracts/openapi.v3.fragment.yaml`; capability-edge middleware lives in a shared `packages/go/middleware/` module (ADR-0043). T-002 will land `go.work`, `pnpm-workspace.yaml`, `.npmrc`, and `Taskfile.yml` at the repo root. Until then the skeleton intentionally does not commit a Go module file or any package-manager lockfile.
+Backend language is **Go** (ADR-0041). Monorepo tooling is **Go workspaces + pnpm workspaces + top-level Taskfile** (ADR-0042). HTTP framework for `services/*` is **`go-chi/chi` v5 on `net/http`** with `oapi-codegen` (`chi-server` generator) producing server stubs from `docs/api-contracts/openapi.v3.fragment.yaml`; capability-edge middleware lives in a shared `packages/go/middleware/` module (ADR-0043). DB schema migrations use **`golang-migrate/migrate` v4 in library mode**, embedded per service via `embed.FS`, with a shared runner in `packages/go/migrate/` and per-service `services/<name>/migrations/` directories; `audit-service` is forward-only by policy. Invoked via `task migrate -- <service> <action>` (ADR-0044). T-002 will land `go.work`, `pnpm-workspace.yaml`, `.npmrc`, and `Taskfile.yml` at the repo root. Until then the skeleton intentionally does not commit a Go module file or any package-manager lockfile.
 
 > v3.0.1 ADRs (`docs/adr/ADR-0001.md` through `ADR-0040.md`) cover product decisions. New meta-decisions start at **ADR-0041**.
 

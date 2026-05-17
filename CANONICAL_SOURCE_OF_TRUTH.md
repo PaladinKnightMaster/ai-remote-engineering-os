@@ -74,7 +74,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | ADR-0041 | Backend language: Go primary, TS frontend-only, Python sanctioned sidecar | Accepted 2026-05-16 |
 | ADR-0042 | Monorepo tooling: Go workspaces + pnpm workspaces + Taskfile | Accepted 2026-05-16 |
 | ADR-0043 | API framework: `go-chi/chi` v5 on `net/http`, `oapi-codegen` chi-server stubs | Accepted 2026-05-17 |
-| ADR-0044 | DB migration tool | Pending |
+| ADR-0044 | DB migration tool: `golang-migrate/migrate` v4 (library mode, embedded per service); shared runner in `packages/go/migrate/`; per-service migrations; `audit-service` forward-only | Accepted 2026-05-17 |
 | ADR-0045 | Event bus (NATS / Redis Streams / Postgres LISTEN/NOTIFY) | Pending |
 | ADR-0046 | Auth adapter (Keycloak / AuthentiK / Zitadel) | Pending |
 | ADR-0047 | Frontend framework for `apps/web` | Pending |
