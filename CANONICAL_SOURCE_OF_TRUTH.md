@@ -76,7 +76,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | ADR-0043 | API framework: `go-chi/chi` v5 on `net/http`, `oapi-codegen` chi-server stubs | Accepted 2026-05-17 |
 | ADR-0044 | DB migration tool: `golang-migrate/migrate` v4 (library mode, embedded per service); shared runner in `packages/go/migrate/`; per-service migrations; `audit-service` forward-only | Accepted 2026-05-17 |
 | ADR-0045 | Event bus: no broker at P0; Postgres transactional outbox + sync HTTP append-only ingest into `audit-service`; shared `packages/go/outbox/`; NATS JetStream held as the named P1 reserve pick | Accepted 2026-05-17 |
-| ADR-0046 | Auth adapter (Keycloak / AuthentiK / Zitadel) | Pending |
+| ADR-0046 | Auth adapter: no IdP daemon at P0; in-process `packages/go/auth/` issuing PASETO v4 capability tokens; PASETO service tokens with workload identity for service-to-service (closes ADR-0045 S2S hangover); Zitadel held as the named P1 reserve pick | Accepted 2026-05-18 |
 | ADR-0047 | Frontend framework for `apps/web` | Pending |
 
 ## Development rule
