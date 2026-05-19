@@ -77,7 +77,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | ADR-0044 | DB migration tool: `golang-migrate/migrate` v4 (library mode, embedded per service); shared runner in `packages/go/migrate/`; per-service migrations; `audit-service` forward-only | Accepted 2026-05-17 |
 | ADR-0045 | Event bus: no broker at P0; Postgres transactional outbox + sync HTTP append-only ingest into `audit-service`; shared `packages/go/outbox/`; NATS JetStream held as the named P1 reserve pick | Accepted 2026-05-17 |
 | ADR-0046 | Auth adapter: no IdP daemon at P0; in-process `packages/go/auth/` issuing PASETO v4 capability tokens; PASETO service tokens with workload identity for service-to-service (closes ADR-0045 S2S hangover); Zitadel held as the named P1 reserve pick | Accepted 2026-05-18 |
-| ADR-0047 | Frontend framework for `apps/web` | Pending |
+| ADR-0047 | Frontend framework for `apps/web`: no meta-framework at P0; plain Vite 6 + React 18 SPA built to static assets; `react-router` v7 SPA mode; TS client via `openapi-typescript` + `openapi-fetch` (same OpenAPI fragment as Go server stubs); Tailwind v4 + vendored shadcn/ui + Radix; httpOnly + SameSite=Strict session cookie with server-side sliding-refresh + double-submit CSRF; capability-edge UI via `GET /v1/auth/me` + `<CapabilityProvider>` + `<CapabilityGate>`; same stack commits to `apps/admin`; Remix (SPA mode) / TanStack Start held as the named P1 reserve; Next.js explicitly NOT held in reserve | Accepted 2026-05-19 |
 
 ## Development rule
 
