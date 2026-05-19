@@ -41,6 +41,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | Architecture / module map | `docs/architecture/` |
 | Security / permission / egress | `docs/security/` |
 | Requirements / backlog / priority legend | `docs/requirements/` |
+| Tickets (T-NNN ladder) | `docs/tickets/` |
 | API contracts / OpenAPI / event catalog | `docs/api-contracts/` (and `docs/api-contracts/openapi/`) |
 | UI / UX specs | `docs/ui-ux/` |
 | DevOps / offline install | `docs/devops/` |
