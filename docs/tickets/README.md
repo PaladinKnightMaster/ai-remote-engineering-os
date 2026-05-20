@@ -21,7 +21,7 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 - **T-006** session-broker skeleton — *pending*.
 - **T-007** web dashboard shell — *pending*.
 - **T-008** auth placeholder adapter — *pending* (now framed by ADR-0046; the placeholder is `packages/go/auth/`).
-- **T-009** OpenAPI spec + generated client types — *pending*.
+- [T-009 — OpenAPI contract scaffold (shared components + security + envelopes)](T-009-openapi-contract.md) — *complete*. (Backlog title "+ generated client types" predates ADR-0043/0047, which assign codegen to the consumer tickets — T-004 Go stubs, T-007 TS types; T-009 lands the contract they generate from.)
 - **T-010** CI checks (lint, typecheck, test, schema validation) — *pending*.
 
 ### Verification-gap closures (T-011..)

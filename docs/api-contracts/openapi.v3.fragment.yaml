@@ -2,6 +2,29 @@ openapi: 3.1.0
 info:
   title: AI Engineering OS v3 API Fragment
   version: 3.0.0
+  description: >-
+    Canonical API contract for AI Remote Engineering OS (ADR-0041,
+    ADR-0043, ADR-0047). T-009 lands the shared scaffold: security
+    scheme, the P0 domain components (mirrored from the authoritative
+    JSON Schemas in packages/shared-schemas/), and the cross-cutting
+    Error / pagination envelopes. Per-service paths are added by their
+    owning tickets (audit ingest + read -> T-004; resource CRUD ->
+    T-005; session lifecycle -> T-006), each referencing these shared
+    components. Code generation (oapi-codegen chi-server, ADR-0043;
+    openapi-typescript, ADR-0047) is wired by those consumer tickets,
+    not here.
+servers:
+  - url: /
+    description: Same-origin deploy (ADR-0047).
+security:
+  - bearerAuth: []
+# Paths below the workstream/workflow/mcp/eval stubs are P1 module
+# placeholders predating the P0 ladder; left untouched. P0 service
+# paths are contributed by T-004 / T-005 / T-006 using the shared
+# components defined at the end of this file.
+#
+# operationId convention for added paths: <verb><Entity>[Qualifier],
+# e.g. listResources, createResource, getResource, terminateSession.
 paths:
   /v1/workstreams:
     get:
@@ -32,3 +55,144 @@ paths:
       summary: Start evaluation run
       responses:
         '202': { description: Eval queued }
+components:
+  securitySchemes:
+    # PASETO v4 local capability token (ADR-0046). The bearer value is
+    # opaque to clients; format kept generic so codegen does not assume JWT.
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    CursorParam:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Request failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid capability token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Capability edge does not permit this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    # The three P0 domain schemas are mirrored from the authoritative
+    # JSON Schema files in packages/shared-schemas/ (T-003). Those files
+    # remain the human source-of-record; these mirrors exist so
+    # oapi-codegen / openapi-typescript resolve them without external
+    # file $refs. Keep the two in sync until a bundling step de-dups them.
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    PageMeta:
+      type: object
+      properties:
+        nextCursor:
+          type: string
+        total:
+          type: integer
+    Resource:
+      type: object
+      required: [id, type, name]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [rdp, vnc, ssh, meshcentral, workspace, agentic_desktop]
+        name:
+          type: string
+        siteId:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    Session:
+      type: object
+      required: [id, resourceId, mode, status]
+      properties:
+        id:
+          type: string
+        resourceId:
+          type: string
+        mode:
+          type: string
+          enum: [observe, control, terminal, demo]
+        status:
+          type: string
+          enum: [pending, active, suspended, ended, failed, terminated]
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required: [id, timestamp, actor, edge, target]
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        actor:
+          type: string
+        edge:
+          type: string
+          enum:
+            - human-agent
+            - agent-agent
+            - agent-tool
+            - agent-workspace
+            - agent-repo
+            - agent-memory
+            - agent-remote-session
+            - service-service
+        target:
+          type: string
+        outcome:
+          type: string
+        evidencePacketId:
+          type: string
+        idempotencyKey:
+          type: string
+          description: UUID v7; the chain authority dedupes on this (ADR-0045).
+        prevHash:
+          type: string
+          description: Assigned by the audit-service chain authority, not producers (ADR-0045).
+        chainHash:
+          type: string
+          description: Assigned by the audit-service chain authority, not producers (ADR-0045).
