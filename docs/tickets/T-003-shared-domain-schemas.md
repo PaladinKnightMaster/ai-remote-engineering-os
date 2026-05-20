@@ -95,8 +95,15 @@ P0. Bootstrap; unblocks T-004..T-009.
   shared-type concern.
 - Renaming `Session` → `RemoteSession`, or reconciling the data-model ER
   diagram's `Device ⟶ RemoteSession` naming against the
-  `Resource ⟶ Session` naming used here and in `openapi.yaml` — a
-  doc-hygiene ticket, not T-003.
+  `Resource ⟶ Session` naming used here and in `openapi.yaml`. This is
+  **not a standalone hygiene ticket** — the deciding constraint is the
+  generated Go/TS symbol name (a bare `Session` is ambiguous next to
+  `PairingSession`), which only becomes load-bearing when the OpenAPI
+  contract + codegen land. **Whichever ticket assembles the OpenAPI
+  `components/schemas` and wires `task codegen` (currently T-009) must
+  resolve the `Session`/`RemoteSession` name and reconcile the ER-diagram
+  prose at that point.** The `docs/deep-dive/11-data-model.md` diagram is
+  historical (per `CANONICAL_SOURCE_OF_TRUTH.md`) and is not edited here.
 
 ## Diff budget
 
