@@ -50,15 +50,15 @@ Command(s) and expected output.
 
 ---
 
-## Reference: v3.0.1 first-10 backlog
+## Reference: the T-NNN ladder
 
-- T-001 Repo skeleton + root documentation
-- T-002 Docker Compose for Postgres + Redis/NATS + API + web
-- T-003 Shared domain types/schemas (Organization, User, Resource, Session, AuditEvent)
-- T-004 audit-service minimal append-only API
-- T-005 resource registry CRUD API
-- T-006 session-broker skeleton (no real remote desktop yet)
-- T-007 web dashboard shell
-- T-008 auth placeholder adapter (Keycloak/AuthentiK boundary)
-- T-009 OpenAPI spec + generated client types
-- T-010 CI checks (lint, typecheck, test, schema validation)
+The live, authoritative ticket ladder — including the bootstrap row
+descriptions (T-001..T-010) and every post-bootstrap ticket — lives in
+[`docs/tickets/README.md`](../../docs/tickets/README.md). Start there.
+
+This template intentionally does **not** duplicate the ladder. The
+earlier inline first-10 list drifted out of sync with ADR-0041..ADR-0047
+(its event-bus, auth-boundary, and frontend-runtime descriptions all
+predated the ADRs that settled those decisions). Keeping a single source
+of truth in `docs/tickets/README.md` eliminates that drift class. See
+T-013 for the rationale.
