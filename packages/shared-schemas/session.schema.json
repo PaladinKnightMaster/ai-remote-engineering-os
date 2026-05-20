@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/session.schema.json",
+  "title": "Session",
+  "type": "object",
+  "required": [
+    "id",
+    "resourceId",
+    "mode",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "resourceId": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "observe",
+        "control",
+        "terminal",
+        "demo"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "active",
+        "suspended",
+        "ended",
+        "failed",
+        "terminated"
+      ]
+    }
+  }
+}

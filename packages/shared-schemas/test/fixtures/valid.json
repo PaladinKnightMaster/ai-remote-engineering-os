@@ -1,0 +1,44 @@
+{
+  "Organization": {
+    "id": "org_01HZ0000000000000000000000",
+    "name": "Bootstrap Operator Org",
+    "createdAt": "2026-05-20T12:00:00Z"
+  },
+  "User": {
+    "id": "usr_01HZ0000000000000000000001",
+    "email": "operator@example.local",
+    "organizationId": "org_01HZ0000000000000000000000",
+    "displayName": "Bootstrap Operator",
+    "authMode": "local",
+    "role": "operator",
+    "status": "active",
+    "createdAt": "2026-05-20T12:00:00Z"
+  },
+  "Resource": {
+    "id": "res_01HZ0000000000000000000002",
+    "type": "ssh",
+    "name": "edge-node-01",
+    "siteId": "site-eu-west",
+    "labels": {
+      "env": "prod"
+    }
+  },
+  "Session": {
+    "id": "ses_01HZ0000000000000000000003",
+    "resourceId": "res_01HZ0000000000000000000002",
+    "mode": "terminal",
+    "status": "active"
+  },
+  "AuditEvent": {
+    "id": "evt_01HZ0000000000000000000004",
+    "timestamp": "2026-05-20T12:00:01Z",
+    "actor": "usr_01HZ0000000000000000000001",
+    "edge": "human-agent",
+    "target": "res_01HZ0000000000000000000002",
+    "outcome": "success",
+    "evidencePacketId": "ep_01HZ0000000000000000000005",
+    "idempotencyKey": "018f3c00-0000-7000-8000-000000000000",
+    "prevHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "chainHash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  }
+}

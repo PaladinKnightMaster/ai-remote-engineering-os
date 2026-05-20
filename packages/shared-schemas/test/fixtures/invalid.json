@@ -1,0 +1,30 @@
+{
+  "Organization": {
+    "id": "org_01HZ0000000000000000000000"
+  },
+  "User": {
+    "id": "usr_01HZ0000000000000000000001",
+    "email": "operator@example.local",
+    "organizationId": "org_01HZ0000000000000000000000",
+    "authMode": "kerberos"
+  },
+  "Resource": {
+    "id": "res_01HZ0000000000000000000002",
+    "type": "telnet",
+    "name": "edge-node-01"
+  },
+  "Session": {
+    "id": "ses_01HZ0000000000000000000003",
+    "resourceId": "res_01HZ0000000000000000000002",
+    "mode": "terminal",
+    "status": "paused"
+  },
+  "AuditEvent": {
+    "id": "evt_01HZ0000000000000000000004",
+    "timestamp": "2026-05-20T12:00:01Z",
+    "actor": "usr_01HZ0000000000000000000001",
+    "edge": "human-agent",
+    "target": "res_01HZ0000000000000000000002",
+    "forgedChainHash": "deadbeef"
+  }
+}

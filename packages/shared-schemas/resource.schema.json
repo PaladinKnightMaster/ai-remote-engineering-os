@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/resource.schema.json",
+  "title": "Resource",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "name"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "rdp",
+        "vnc",
+        "ssh",
+        "meshcentral",
+        "workspace",
+        "agentic_desktop"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "siteId": {
+      "type": "string"
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/audit-event.schema.json",
+  "title": "AuditEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "timestamp",
+    "actor",
+    "edge",
+    "target"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "edge": {
+      "type": "string",
+      "enum": [
+        "human-agent",
+        "agent-agent",
+        "agent-tool",
+        "agent-workspace",
+        "agent-repo",
+        "agent-memory",
+        "agent-remote-session",
+        "service-service"
+      ]
+    },
+    "target": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "evidencePacketId": {
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "description": "UUID v7 assigned when the source row is enqueued; the chain authority dedupes on this (ADR-0045)."
+    },
+    "prevHash": {
+      "type": "string",
+      "description": "Assigned by the audit-service chain authority, not by producers (ADR-0045)."
+    },
+    "chainHash": {
+      "type": "string",
+      "description": "Assigned by the audit-service chain authority, not by producers (ADR-0045)."
+    }
+  }
+}
