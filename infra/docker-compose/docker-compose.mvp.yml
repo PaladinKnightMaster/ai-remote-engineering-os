@@ -1,3 +1,16 @@
+# AI Remote Engineering OS — MVP docker-compose (T-002).
+#
+# Scope at P0 per ADR-0045 (no broker), ADR-0046 (no IdP daemon), and
+# ADR-0047 (no Node runtime in production):
+#
+#   Postgres only.
+#
+# Producer services (services/api, services/audit-service, …) build to
+# single static Go binaries per ADR-0041 and run via their own compose
+# entries when their per-service tickets land. apps/web builds to static
+# files per ADR-0047 and is served by Caddy/Traefik (deep-dive 09) — no
+# Node runtime appears in this compose at any phase.
+
 services:
   postgres:
     image: postgres:16
@@ -7,60 +20,38 @@ services:
       POSTGRES_PASSWORD: change-me
     volumes:
       - pgdata:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7
-    command: ["redis-server", "--appendonly", "yes"]
-
-  minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: change-me
-    volumes:
-      - minio:/data
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:latest
-    command: start-dev
-    environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: change-me
     ports:
-      - "8080:8080"
-
-  guacd:
-    image: guacamole/guacd:latest
-
-  guacamole:
-    image: guacamole/guacamole:latest
-    depends_on:
-      - guacd
-      - postgres
-    environment:
-      GUACD_HOSTNAME: guacd
-      POSTGRESQL_HOSTNAME: postgres
-      POSTGRESQL_DATABASE: cockpit
-      POSTGRESQL_USER: cockpit
-      POSTGRESQL_PASSWORD: change-me
-    ports:
-      - "8081:8080"
-
-  cockpit-api:
-    image: example/cockpit-api:dev
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-      - minio
-
-  cockpit-web:
-    image: example/cockpit-web:dev
-    env_file: .env
-    ports:
-      - "3000:3000"
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cockpit -d cockpit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pgdata:
-  minio:
+
+# --- Future services (added by the ticket that activates each) -----------
+#
+#   services/api               — first service ticket (ADR-0043 chi stubs,
+#                                 ADR-0046 PASETO auth surface).
+#   services/audit-service     — T-004 (ADR-0044 migrations,
+#                                 ADR-0045 sync HTTP append-only ingest).
+#   services/policy-service    — feature ticket per docs/architecture/.
+#   services/connector-service — feature ticket per docs/security/egress-policy.md.
+#   services/session-broker    — T-006 (HTTP/2 + WebSocket per ADR-0043).
+#
+#   caddy or traefik           — static-asset reverse proxy for apps/web
+#                                 per docs/deep-dive/09-offline-self-hosting-deployment.md
+#                                 (added with the first frontend ticket).
+#   guacd / guacamole          — GUI gateway for <RemoteSessionView>
+#                                 per deep-dive 09 (added with the first
+#                                 remote-session ticket).
+#   minio                      — object storage (not on the P0 wedge;
+#                                 added when an evidence-storage feature
+#                                 ticket calls for it).
+#   meshcentral                — device management per deep-dive 09 (P1+).
+#
+# Brokers, IdP daemons, and Node runtimes are out of scope at every
+# phase of T-002. See ADR-0045 (NATS JetStream held as P1 reserve),
+# ADR-0046 (Zitadel held as P1 reserve), ADR-0047 (no meta-framework).

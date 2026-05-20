@@ -1,0 +1,20 @@
+# pnpm workspace for AI Remote Engineering OS — ADR-0042.
+#
+# Members materialize as each ticket lands its package.json:
+#   apps/web                — first frontend ticket (ADR-0047)
+#   apps/admin              — P1+ frontend ticket (ADR-0047)
+#   packages/ui             — first frontend ticket (ADR-0047)
+#   packages/shared-types   — first frontend ticket (ADR-0047)
+#   packages/config         — first frontend ticket (ADR-0047, T-012 extends)
+#   packages/shared-schemas — when it gains a package.json and becomes a
+#                             JS-consumed workspace member
+#
+# pnpm ignores directories that lack a package.json, so the globs are safe
+# pre-materialization. `packages/go/*` is intentionally excluded — those
+# are Go modules under go.work, not pnpm members.
+
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "!packages/go"
+  - "!packages/go/**"

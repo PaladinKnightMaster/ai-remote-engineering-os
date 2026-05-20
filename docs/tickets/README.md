@@ -14,7 +14,7 @@ Two ladders coexist in this repo and should not be confused:
 These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked there until each is filed as a ticket file in this directory.
 
 - **T-001** Repo skeleton + root documentation — *complete* (the existing repo is the artifact; see commit history).
-- **T-002** Docker Compose for Postgres + Redis/NATS + API + web — *pending*.
+- [T-002 — Repo skeleton commit (go.work, pnpm-workspace, Taskfile, MVP compose)](T-002-repo-skeleton-commit.md) — *complete*. (Backlog row title "Postgres + Redis/NATS + API + web" predates ADR-0045 and ADR-0047; the actual P0 compose is Postgres only.)
 - **T-003** Shared domain types/schemas (Organization, User, Resource, Session, AuditEvent) — *pending*.
 - **T-004** audit-service minimal append-only API — *pending*.
 - **T-005** resource registry CRUD API — *pending*.

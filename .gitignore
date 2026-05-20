@@ -12,4 +12,24 @@ Thumbs.db
 # Release binaries live in sibling ../artifacts/, never in this repo.
 # (No rules needed here — kept for documentation.)
 
-# Language-specific ignores deferred until ADR-0001 picks the toolchain.
+# Go (ADR-0041 / ADR-0042)
+/bin/
+*.exe
+*.test
+*.test.exe
+*.out
+
+# Node / pnpm (ADR-0042 / ADR-0047)
+node_modules/
+.pnpm-store/
+dist/
+.vite/
+
+# Task (ADR-0042)
+.task/
+
+# Env files
+.env
+.env.local
+**/.env
+!**/env.example

@@ -1,0 +1,54 @@
+# Taskfile for AI Remote Engineering OS — ADR-0042.
+#
+# Canonical entry points (ADR-0042 §Decision):
+#   task lint           — code/style/dep checks across Go + TS
+#   task test           — unit/integration tests across Go + TS
+#   task build          — produce per-service Go binaries + apps/* dist
+#   task offline-bundle — populate Go module cache + pnpm content store
+#                          for restricted-network install
+#
+# Targets named by follow-up ADRs land with the tickets that need them:
+#   task codegen        — oapi-codegen + openapi-typescript (ADR-0043 / ADR-0047)
+#   task migrate        — per-service migrate subcommand    (ADR-0044)
+#   task auth rotate-key — packages/go/auth key rotation     (ADR-0046)
+#   task outbox         — relay subcommand                    (ADR-0045)
+#
+# The four canonical entry points are stubbed below to exit 0 with a
+# "not-yet-implemented" banner so dormant verification tickets (T-011,
+# T-012) can extend them without their "passes on main" criterion
+# failing today.
+
+version: '3'
+
+tasks:
+  default:
+    desc: List available tasks.
+    cmds:
+      - task -l
+    silent: true
+
+  lint:
+    desc: Run all linters (extended by T-011 for Go, T-012 for JS).
+    cmds:
+      - echo "task lint: not-yet-implemented at T-002. Extended by T-011 (Go-side) and T-012 (JS-side)."
+
+  test:
+    desc: Run all tests (extended by per-service tickets).
+    cmds:
+      - echo "task test: not-yet-implemented at T-002. Per-service test targets land with their service tickets."
+
+  build:
+    desc: Build all Go services and apps/* (extended by per-service tickets).
+    cmds:
+      - echo "task build: not-yet-implemented at T-002. Per-service build targets land with their service tickets."
+
+  offline-bundle:
+    desc: Populate Go module cache + pnpm content store for restricted-network install.
+    cmds:
+      - echo "task offline-bundle: not-yet-implemented at T-002. Playbook lands with the docs/devops/offline-install-v3.md update."
+
+  # codegen:   added by the first service ticket (ADR-0043) and extended
+  #            by the first frontend ticket (ADR-0047).
+  # migrate:   added by the first stateful-service ticket (ADR-0044).
+  # auth:      added by the first auth-touching service ticket (ADR-0046).
+  # outbox:    added by the first producer ticket (ADR-0045).

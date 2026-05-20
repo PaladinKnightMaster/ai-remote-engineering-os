@@ -1,0 +1,21 @@
+// Go workspace for AI Remote Engineering OS — ADR-0042.
+//
+// Minimal-valid form at T-002: no `use` directives yet. Each per-package
+// or per-service ticket that introduces a Go module activates its own
+// entry via `go work edit -use ./<path>`:
+//
+//   ./packages/go/auth         (ADR-0046 — first auth-touching service ticket)
+//   ./packages/go/middleware   (ADR-0043 — first service ticket)
+//   ./packages/go/migrate      (ADR-0044 — first stateful-service ticket,
+//                                typically services/audit-service)
+//   ./packages/go/outbox       (ADR-0045 — first producer ticket)
+//   ./services/api             (per-service ticket)
+//   ./services/audit-service   (T-004)
+//   ./services/connector-service
+//   ./services/policy-service
+//   ./services/session-broker  (T-006)
+//   ./tools/...                (T-011 lint tools)
+//
+// Per-service toolchain is pinned via that service's own go.mod.
+
+go 1.23
