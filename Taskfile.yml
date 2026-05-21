@@ -38,8 +38,9 @@ tasks:
       # audit-service + shared packages (T-004b). Unit tests run here; the
       # store integration tests are tagged `integration` and need a Postgres
       # (see task test-integration).
-      - go test ./packages/go/... ./services/audit-service/...
-      - echo "task test: other services' targets land with their service tickets."
+      # Explicit per-module patterns: a bare ./... or ./packages/go/... does not
+      # resolve from the workspace root (the modules live one level deeper).
+      - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/session-broker/...
 
   test-integration:
     desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup."
@@ -55,7 +56,8 @@ tasks:
     desc: Build all Go services and apps/* (extended by per-service tickets).
     cmds:
       - go build -o bin/audit-service ./services/audit-service
-      - echo "task build: other services' targets land with their service tickets."
+      - go build -o bin/api ./services/api
+      - go build -o bin/session-broker ./services/session-broker
 
   offline-bundle:
     desc: Populate Go module cache + pnpm content store for restricted-network install.

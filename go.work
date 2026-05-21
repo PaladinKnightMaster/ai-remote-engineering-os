@@ -31,4 +31,5 @@ use (
 	./packages/go/migrate
 	./services/api
 	./services/audit-service
+	./services/session-broker
 )
