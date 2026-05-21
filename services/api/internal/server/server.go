@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/store"
@@ -28,15 +30,87 @@ type Store interface {
 	Delete(ctx context.Context, id string) error
 }
 
-type apiHandlers struct{ store Store }
+// Authenticator verifies operator credentials (services/api/internal/account).
+type Authenticator interface {
+	Authenticate(username, password string) (subject string, ok bool)
+}
 
-// New returns the api router: the generated chi-server routes wrapped in
-// RequireCapability over the human-agent (operator) and service-service edges.
-func New(s Store, v mw.Verifier) http.Handler {
-	return HandlerWithOptions(&apiHandlers{store: s}, ChiServerOptions{
+type apiHandlers struct {
+	store  Store
+	authn  Authenticator // nil → operator login disabled (503)
+	signer *auth.Signer  // nil → operator login disabled (503)
+}
+
+// New returns the api router. Routes that declared security in the contract are
+// gated by RequireCapability over the human-agent (operator) and service-service
+// edges; POST /v1/auth/login (security: []) is public — see gateByDeclaredSecurity.
+func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier) http.Handler {
+	h := &apiHandlers{store: s, authn: authn, signer: signer}
+	return HandlerWithOptions(h, ChiServerOptions{
 		BaseRouter:  chi.NewRouter(),
-		Middlewares: []MiddlewareFunc{MiddlewareFunc(mw.RequireCapability(v, "human-agent", "service-service"))},
+		Middlewares: []MiddlewareFunc{gateByDeclaredSecurity(v)},
 	})
+}
+
+// gateByDeclaredSecurity enforces RequireCapability only on operations that
+// declared security (the generated wrapper marks them with BearerAuthScopes in
+// the request context). Operations with `security: []` (login) are public.
+func gateByDeclaredSecurity(v mw.Verifier) MiddlewareFunc {
+	require := mw.RequireCapability(v, "human-agent", "service-service")
+	return func(next http.Handler) http.Handler {
+		enforced := require(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Context().Value(BearerAuthScopes) != nil {
+				enforced.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Login (POST /v1/auth/login) verifies operator credentials and mints an
+// operator session token (ADR-0046). Public route.
+func (a *apiHandlers) Login(w http.ResponseWriter, r *http.Request) {
+	if a.authn == nil || a.signer == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "operator login is not configured")
+		return
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := dec.Decode(&req); err != nil || req.Username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "username and password are required")
+		return
+	}
+	subject, ok := a.authn.Authenticate(req.Username, req.Password)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid credentials")
+		return
+	}
+	// Operator tokens are scoped to this gateway's audience ("api").
+	token, err := a.signer.IssueOperator(subject, "api")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "issue token failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"token":     token,
+		"expiresAt": time.Now().Add(auth.OperatorTTL).UTC().Format(time.RFC3339),
+	})
+}
+
+// GetMe (GET /v1/auth/me) returns the verified capability of the current token.
+func (a *apiHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
+	c, ok := mw.CapabilityFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"subject": c.Subject, "edge": c.Edge})
 }
 
 func (a *apiHandlers) decodeInput(w http.ResponseWriter, r *http.Request) (resource.Input, bool) {

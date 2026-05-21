@@ -123,9 +123,11 @@ func (s *Signer) IssueService(subject, audience string) (string, error) {
 	return s.Issue(IssueParams{Subject: subject, Edge: "service-service", Audience: audience, TTL: ServiceTTL})
 }
 
-// IssueOperator mints an operator session token (edge human-agent, 8h TTL).
-func (s *Signer) IssueOperator(subject string) (string, error) {
-	return s.Issue(IssueParams{Subject: subject, Edge: "human-agent", TTL: OperatorTTL})
+// IssueOperator mints an operator session token (edge human-agent, 8h TTL) for
+// the given audience (the service the operator authenticates to, e.g. "api"), so
+// the token is rejected by other services' verifiers.
+func (s *Signer) IssueOperator(subject, audience string) (string, error) {
+	return s.Issue(IssueParams{Subject: subject, Edge: "human-agent", Audience: audience, TTL: OperatorTTL})
 }
 
 // Verifier verifies tokens under the cluster key, enforcing expiry and

@@ -26,6 +26,8 @@ tags:
     description: Append-only audit chain authority (ADR-0045, T-004b).
   - name: resources
     description: Resource registry CRUD on services/api (T-005b).
+  - name: auth
+    description: Operator login + identity on services/api (T-015b, ADR-0046).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -233,6 +235,42 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  # --- operator auth (T-015b, services/api) -----------------------------------
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Operator login — exchange credentials for a capability token
+      # Public: this endpoint issues the token, so it carries no bearer itself.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: An operator session token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/auth/me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: The verified capability of the current token (capability-edge UI, ADR-0047)
+      responses:
+        '200':
+          description: The caller's identity + capability edge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Identity'
+        '401': { $ref: '#/components/responses/Unauthorized' }
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -431,3 +469,31 @@ components:
         idempotencyKey:
           type: string
           description: UUID v7 minted at outbox enqueue; the chain authority dedupes on this (ADR-0045).
+    # Operator auth (T-015b).
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+    LoginResponse:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token:
+          type: string
+          description: PASETO v4 operator session token (opaque to clients).
+        expiresAt:
+          type: string
+          format: date-time
+    Identity:
+      type: object
+      required: [subject, edge]
+      properties:
+        subject:
+          type: string
+        edge:
+          type: string

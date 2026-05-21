@@ -31,7 +31,7 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 ### Operator login (T-015) — closes the auth bits ADR-0046 deferred from T-008
 
 - [T-015a — Operator auth primitives + provisioning (argon2id + authctl)](T-015a-auth-primitives-provisioning.md) — *complete*. argon2id password hashing in `packages/go/auth`, the env-provisioned bootstrap operator account in `services/api`, and the `authctl` (`task auth`) provisioning CLI.
-- **T-015b** — operator login HTTP surface (`POST /v1/auth/login` public, `GET /v1/auth/me` gated) + Signer wiring — *pending*.
+- [T-015b — operator login HTTP surface (`/v1/auth/login` + `/v1/auth/me`)](T-015b-operator-login-surface.md) — *complete*. Public `POST /v1/auth/login` issues an audience-scoped operator PASETO token; gated `GET /v1/auth/me` returns the verified capability. Mixed public/gated routing via the generated `BearerAuthScopes` marker; closes the operator-login bits ADR-0046 deferred from T-008.
 
 ### Verification-gap closures (T-011..)
 

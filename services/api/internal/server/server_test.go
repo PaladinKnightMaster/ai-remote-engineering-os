@@ -2,13 +2,16 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
+	"aireos.local/services/api/internal/account"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/store"
 )
@@ -96,7 +99,7 @@ func req(t *testing.T, h http.Handler, method, path, body string, auth bool) *ht
 const validBody = `{"type":"ssh","name":"edge-01","siteId":"eu","labels":{"env":"prod"}}`
 
 func TestCreateGetUpdateDelete(t *testing.T) {
-	h := New(newFake(), allowAll{})
+	h := New(newFake(), nil, nil, allowAll{})
 
 	// create
 	rec := req(t, h, http.MethodPost, "/v1/resources", validBody, true)
@@ -136,7 +139,7 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 
 func TestListReturnsItems(t *testing.T) {
 	f := newFake()
-	h := New(f, allowAll{})
+	h := New(f, nil, nil, allowAll{})
 	for i := 0; i < 3; i++ {
 		req(t, h, http.MethodPost, "/v1/resources", validBody, true)
 	}
@@ -151,7 +154,7 @@ func TestListReturnsItems(t *testing.T) {
 
 // Validation: bad type and client-supplied id are both 400.
 func TestCreateValidation(t *testing.T) {
-	h := New(newFake(), allowAll{})
+	h := New(newFake(), nil, nil, allowAll{})
 	for _, body := range []string{
 		`{"type":"telnet","name":"x"}`,            // type not in enum
 		`{"name":"x"}`,                            // missing type
@@ -164,8 +167,54 @@ func TestCreateValidation(t *testing.T) {
 }
 
 func TestUnauthorizedWithoutBearer(t *testing.T) {
-	h := New(newFake(), allowAll{})
+	h := New(newFake(), nil, nil, allowAll{})
 	if rec := req(t, h, http.MethodGet, "/v1/resources", "", false); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401 without bearer, got %d", rec.Code)
+	}
+}
+
+// End-to-end operator login: real key/signer/account/verifier. Login is public
+// (no bearer); a valid login yields a token that GET /v1/auth/me accepts.
+func TestOperatorLoginAndMe(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	const cluster = "cluster-test"
+	hash, _ := auth.HashPassword("hunter2")
+	op := account.New("admin", hash)
+	signer := auth.NewSigner(key, cluster)
+	verifier := auth.AsMiddlewareVerifier(auth.NewVerifier(key, cluster, "api"))
+	h := New(newFake(), op, signer, verifier)
+
+	// login is public (no bearer sent)
+	rec := req(t, h, http.MethodPost, "/v1/auth/login", `{"username":"admin","password":"hunter2"}`, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	var lr struct {
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &lr); err != nil || lr.Token == "" {
+		t.Fatalf("login response missing token: %s", rec.Body)
+	}
+
+	// the issued token is accepted by GET /v1/auth/me
+	meReq := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+lr.Token)
+	meRec := httptest.NewRecorder()
+	h.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("me: want 200, got %d: %s", meRec.Code, meRec.Body)
+	}
+	if !strings.Contains(meRec.Body.String(), `"subject":"operator:admin"`) || !strings.Contains(meRec.Body.String(), `"edge":"human-agent"`) {
+		t.Fatalf("me: unexpected identity: %s", meRec.Body)
+	}
+
+	// wrong password → 401
+	if rec := req(t, h, http.MethodPost, "/v1/auth/login", `{"username":"admin","password":"nope"}`, false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad login: want 401, got %d", rec.Code)
+	}
+	// /v1/auth/me without a token → 401
+	if rec := req(t, h, http.MethodGet, "/v1/auth/me", "", false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("me without token: want 401, got %d", rec.Code)
 	}
 }
