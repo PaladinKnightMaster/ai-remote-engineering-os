@@ -8,6 +8,8 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres" // registers the postgres database driver
@@ -45,11 +47,31 @@ func (r Runner) instance() (*migrate.Migrate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("migrate: load embedded source: %w", err)
 	}
-	m, err := migrate.NewWithSourceInstance("iofs", src, r.DSN)
+	dsn, err := r.dsn()
+	if err != nil {
+		return nil, err
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", src, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("migrate: open %s: %w", r.Service, err)
 	}
 	return m, nil
+}
+
+// dsn returns the DSN with a per-service golang-migrate version table
+// (x-migrations-table). Services share one Postgres database, so the default
+// single `schema_migrations` table would make one service's version mask
+// another's — each service must track its own migration version.
+func (r Runner) dsn() (string, error) {
+	u, err := url.Parse(r.DSN)
+	if err != nil {
+		return "", fmt.Errorf("migrate: parse dsn for %s: %w", r.Service, err)
+	}
+	table := strings.ReplaceAll(r.Service, "-", "_") + "_schema_migrations"
+	q := u.Query()
+	q.Set("x-migrations-table", table)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // Up applies all pending migrations. A no-op (migrate.ErrNoChange) is not an

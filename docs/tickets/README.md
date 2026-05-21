@@ -19,7 +19,9 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 - **T-004** audit-service minimal append-only API — *split* (a whole service plus the shared Go packages exceeds the diff budget; split into a scaffolding half and a service half at consult sign-off):
   - [T-004a — Shared Go scaffolding (middleware + migrate + codegen wiring)](T-004a-shared-go-scaffolding.md) — *complete*. Lands `packages/go/middleware/` + `packages/go/migrate/`, `task codegen` / `task migrate`, and the `aireos.local` module-path prefix (ADR-0043 / ADR-0044 §Hand-off).
   - [T-004b — audit-service minimal append-only API](T-004b-audit-service.md) — *complete*. The chain-authority service: `POST /v1/events` ingest (dedup + chained-hash), read surface, forward-only migration, tests (ADR-0045 / ADR-0044).
-- **T-005** resource registry CRUD API — *pending*.
+- **T-005** resource registry CRUD API — *split* (owning service: `services/api`; split at consult sign-off):
+  - [T-005a — services/api skeleton + resource-registry store + migration](T-005a-api-skeleton-resource-store.md) — *complete*. Stands up `services/api` with the `resources` table, store CRUD, `0001` up/down migration, and a per-service migrations-table fix to `packages/go/migrate`.
+  - **T-005b** — resource HTTP surface (`/v1/resources` CRUD) + oapi-codegen slice + handler tests — *pending*.
 - **T-006** session-broker skeleton — *pending*.
 - **T-007** web dashboard shell — *pending*.
 - [T-008 — Auth placeholder adapter (packages/go/auth/, PASETO v4)](T-008-auth-placeholder.md) — *complete*. In-process PASETO v4 capability tokens (`Signer`/`Verifier`/`CapabilityToken`), `AsMiddlewareVerifier` adapter to the T-004a port, and audit-service wired to verify real tokens (`AIREOS_PASETO_KEY`). Operator login + key rotation + `install.sh` deferred to the `services/api` ticket (ADR-0046 §Hand-off).

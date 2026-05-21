@@ -29,5 +29,6 @@ use (
 	./packages/go/auth
 	./packages/go/middleware
 	./packages/go/migrate
+	./services/api
 	./services/audit-service
 )
