@@ -31,6 +31,7 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 - [T-011 — Go-side lint suite (ADR-0044/0045/0046)](T-011-go-lint-suite.md) — P1. Closes the four ADR-0044 / ADR-0045 / ADR-0046 review-enforced verification gaps on the Go stack. Owner: Tech Lead.
 - [T-012 — JS-side lint suite (ADR-0047)](T-012-js-lint-suite.md) — P1. Closes the two ADR-0047 review-enforced verification gaps on the JS stack. Owner: Frontend Lead.
 - [T-013 — Issue-template ladder drift](T-013-issue-template-drift.md) — P2, *complete*. Replaced the stale inline first-10 list in `.github/ISSUE_TEMPLATE/ticket.md` with a pointer to this file. Surfaced during T-002.
+- [T-014 — Per-service OpenAPI contract slicing for oapi-codegen](T-014-per-service-openapi-codegen-slice.md) — P1, *pending*. Make `task codegen` emit only the owning service's chi-server surface, then re-seat audit-service onto the generated `ServerInterface`. Closes ADR-0043 §Verification item 2; surfaced during T-004b. Owner: Tech Lead.
 
 ## Conventions
 
