@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
 	"aireos.local/services/audit-service/internal/server"
@@ -83,17 +84,27 @@ func serve(dsn string) error {
 	return srv.ListenAndServe()
 }
 
-// capabilityVerifier resolves the capability Verifier (ADR-0046). The real
-// PASETO verifier (packages/go/auth/) lands in T-008. Until then the service
-// FAILS LOUD: it refuses to serve unless AUDIT_DEV_INSECURE_AUTH=1 explicitly
-// opts into the dev-only allow-all verifier. There is no silent unauthenticated
-// path on the chain-authority endpoint.
+// capabilityVerifier resolves the capability Verifier (ADR-0046).
+//
+//   - AIREOS_PASETO_KEY (hex cluster key) set → real PASETO v4 verifier from
+//     packages/go/auth, requiring audience "audit-service".
+//   - else AUDIT_DEV_INSECURE_AUTH=1 → dev-only allow-all verifier.
+//   - else FAIL LOUD: there is no silent unauthenticated path on the
+//     chain-authority endpoint.
 func capabilityVerifier() (mw.Verifier, error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
+		}
+		issuer := os.Getenv("AIREOS_CLUSTER_ID") // optional; empty skips the issuer rule
+		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "audit-service")), nil
+	}
 	if os.Getenv("AUDIT_DEV_INSECURE_AUTH") == "1" {
-		log.Print("WARNING: AUDIT_DEV_INSECURE_AUTH=1 — using dev allow-all capability verifier; NOT for production (real PASETO verifier lands in T-008)")
+		log.Print("WARNING: AUDIT_DEV_INSECURE_AUTH=1 — using dev allow-all capability verifier; NOT for production")
 		return devAllowAll{}, nil
 	}
-	return nil, errors.New("no capability verifier configured: packages/go/auth PASETO verifier lands in T-008 (ADR-0046); set AUDIT_DEV_INSECURE_AUTH=1 only for local dev")
+	return nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY (hex cluster key, ADR-0046) or AUDIT_DEV_INSECURE_AUTH=1 for local dev")
 }
 
 type devAllowAll struct{}

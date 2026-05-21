@@ -22,7 +22,7 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 - **T-005** resource registry CRUD API — *pending*.
 - **T-006** session-broker skeleton — *pending*.
 - **T-007** web dashboard shell — *pending*.
-- **T-008** auth placeholder adapter — *pending* (now framed by ADR-0046; the placeholder is `packages/go/auth/`).
+- [T-008 — Auth placeholder adapter (packages/go/auth/, PASETO v4)](T-008-auth-placeholder.md) — *complete*. In-process PASETO v4 capability tokens (`Signer`/`Verifier`/`CapabilityToken`), `AsMiddlewareVerifier` adapter to the T-004a port, and audit-service wired to verify real tokens (`AIREOS_PASETO_KEY`). Operator login + key rotation + `install.sh` deferred to the `services/api` ticket (ADR-0046 §Hand-off).
 - [T-009 — OpenAPI contract scaffold (shared components + security + envelopes)](T-009-openapi-contract.md) — *complete*. (Backlog title "+ generated client types" predates ADR-0043/0047, which assign codegen to the consumer tickets — T-004 Go stubs, T-007 TS types; T-009 lands the contract they generate from.)
 - [T-010 — CI checks (build, test, schema validation, codegen drift, lint hook)](T-010-ci-checks.md) — *complete*. GitHub Actions `ci.yml`: Go build/vet/test + Postgres-backed integration, oapi-codegen drift gate, OpenAPI + JSON-Schema validation (`infra/scripts/validate_contracts.py`), and the `task lint` stub hook. Dormant until a remote is configured; validation Python-based (npm precedent deferred to T-007).
 

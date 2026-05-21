@@ -1,0 +1,36 @@
+package auth
+
+import (
+	"context"
+
+	mw "aireos.local/packages/go/middleware"
+)
+
+// asMiddleware adapts a *Verifier to the middleware.Verifier port (defined in
+// packages/go/middleware, T-004a) so it can be passed to RequireCapability.
+//
+// ADR-0046 §Verification phrases this as "RequireCapability imports
+// packages/go/auth/"; we invert the dependency instead — middleware stays
+// dependency-free (it shipped before auth, and every service imports it) and
+// auth provides this adapter. The net behavior is identical: RequireCapability
+// verifies via the PASETO Verifier and extracts edge + scope.
+type asMiddleware struct{ v *Verifier }
+
+func (a asMiddleware) Verify(ctx context.Context, bearer string) (mw.Capability, error) {
+	ct, err := a.v.Verify(ctx, bearer)
+	if err != nil {
+		return mw.Capability{}, err
+	}
+	return mw.Capability{
+		Subject: ct.Subject,
+		Edge:    ct.Edge,
+		Scope: mw.Scope{
+			Resource:   ct.Scope.Resource,
+			Operations: ct.Scope.Operations,
+			LeaseID:    ct.Scope.LeaseID,
+		},
+	}, nil
+}
+
+// AsMiddlewareVerifier wraps a *Verifier so it satisfies middleware.Verifier.
+func AsMiddlewareVerifier(v *Verifier) mw.Verifier { return asMiddleware{v} }
