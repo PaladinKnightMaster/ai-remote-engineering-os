@@ -24,6 +24,8 @@ security:
 tags:
   - name: audit
     description: Append-only audit chain authority (ADR-0045, T-004b).
+  - name: resources
+    description: Resource registry CRUD on services/api (T-005b).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -134,6 +136,103 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  # --- resource registry (T-005b, services/api) -------------------------------
+  /v1/resources:
+    post:
+      tags: [resources]
+      operationId: createResource
+      summary: Register a resource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceInput'
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [resources]
+      operationId: listResources
+      summary: List resources
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of resources.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Resource'
+                  page:
+                    $ref: '#/components/schemas/PageMeta'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/resources/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [resources]
+      operationId: getResource
+      summary: Fetch a resource
+      responses:
+        '200':
+          description: The resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [resources]
+      operationId: updateResource
+      summary: Replace a resource's mutable fields
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceInput'
+      responses:
+        '200':
+          description: The updated resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [resources]
+      operationId: deleteResource
+      summary: Delete a resource
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -212,6 +311,25 @@ components:
       properties:
         id:
           type: string
+        type:
+          type: string
+          enum: [rdp, vnc, ssh, meshcentral, workspace, agentic_desktop]
+        name:
+          type: string
+        siteId:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    # Create/update body for /v1/resources (T-005b). id is server-assigned, so
+    # it is not part of the input; additionalProperties:false rejects a
+    # client-supplied id with 400.
+    ResourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, name]
+      properties:
         type:
           type: string
           enum: [rdp, vnc, ssh, meshcentral, workspace, agentic_desktop]

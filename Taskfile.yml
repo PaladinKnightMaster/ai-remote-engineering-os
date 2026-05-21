@@ -69,6 +69,7 @@ tasks:
     cmds:
       # One config per service (include-tags slices the canonical contract).
       - go run {{.OAPI_CODEGEN}} --config oapi-codegen.audit.yaml docs/api-contracts/openapi.v3.fragment.yaml
+      - go run {{.OAPI_CODEGEN}} --config oapi-codegen.api.yaml docs/api-contracts/openapi.v3.fragment.yaml
 
   migrate:
     desc: "Run a service's embedded migrations: task migrate -- <service> <up|version|force <v>> (ADR-0044)."

@@ -45,19 +45,24 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: Build
-        run: go build ./packages/go/middleware/... ./packages/go/migrate/... ./services/audit-service/...
+        run: go build ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/...
       - name: Vet
-        run: go vet ./packages/go/middleware/... ./packages/go/migrate/... ./services/audit-service/...
+        run: go vet ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/...
       - name: Unit tests
-        run: go test ./packages/go/middleware/... ./packages/go/migrate/... ./services/audit-service/...
-      - name: Apply migrations (forward-only)
-        run: go run ./services/audit-service migrate up
+        run: go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/...
+      - name: Apply migrations
+        run: |
+          go run ./services/audit-service migrate up
+          go run ./services/api migrate up
         env:
           DATABASE_URL: ${{ env.DSN }}
-      - name: Integration tests (chain integrity + dedup)
-        run: go test -tags integration ./services/audit-service/internal/store/...
+      - name: Integration tests (audit chain + dedup; resource CRUD)
+        run: |
+          go test -tags integration ./services/audit-service/internal/store/...
+          go test -tags integration ./services/api/internal/store/...
         env:
           AUDIT_TEST_DATABASE_URL: ${{ env.DSN }}
+          API_TEST_DATABASE_URL: ${{ env.DSN }}
 
   codegen:
     name: Codegen drift (oapi-codegen)
@@ -69,10 +74,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-      - name: Regenerate chi-server stub
-        run: go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 --config oapi-codegen.audit.yaml docs/api-contracts/openapi.v3.fragment.yaml
+      - name: Regenerate chi-server stubs
+        run: |
+          go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 --config oapi-codegen.audit.yaml docs/api-contracts/openapi.v3.fragment.yaml
+          go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 --config oapi-codegen.api.yaml docs/api-contracts/openapi.v3.fragment.yaml
       - name: Fail if generated code is stale
-        run: git diff --exit-code services/audit-service/internal/server/gen.go
+        run: git diff --exit-code services/audit-service/internal/server/gen.go services/api/internal/server/gen.go
 
   contract:
     name: Contract + schema validation

@@ -21,7 +21,7 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
   - [T-004b — audit-service minimal append-only API](T-004b-audit-service.md) — *complete*. The chain-authority service: `POST /v1/events` ingest (dedup + chained-hash), read surface, forward-only migration, tests (ADR-0045 / ADR-0044).
 - **T-005** resource registry CRUD API — *split* (owning service: `services/api`; split at consult sign-off):
   - [T-005a — services/api skeleton + resource-registry store + migration](T-005a-api-skeleton-resource-store.md) — *complete*. Stands up `services/api` with the `resources` table, store CRUD, `0001` up/down migration, and a per-service migrations-table fix to `packages/go/migrate`.
-  - **T-005b** — resource HTTP surface (`/v1/resources` CRUD) + oapi-codegen slice + handler tests — *pending*.
+  - [T-005b — resource registry HTTP surface (`/v1/resources` CRUD)](T-005b-resource-http-surface.md) — *complete*. chi-server resource CRUD on `services/api`, generated per-service from the contract (include-tags), gated by `RequireCapability` + PASETO; CI extended to cover `auth` + `api`.
 - **T-006** session-broker skeleton — *pending*.
 - **T-007** web dashboard shell — *pending*.
 - [T-008 — Auth placeholder adapter (packages/go/auth/, PASETO v4)](T-008-auth-placeholder.md) — *complete*. In-process PASETO v4 capability tokens (`Signer`/`Verifier`/`CapabilityToken`), `AsMiddlewareVerifier` adapter to the T-004a port, and audit-service wired to verify real tokens (`AIREOS_PASETO_KEY`). Operator login + key rotation + `install.sh` deferred to the `services/api` ticket (ADR-0046 §Hand-off).

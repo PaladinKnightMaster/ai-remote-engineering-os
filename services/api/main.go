@@ -1,6 +1,6 @@
-// Command api is the operator-facing gateway (ADR-0043). T-005a stands up the
-// skeleton + the resource-registry store/migration; the resource HTTP surface
-// is wired in T-005b, and operator login (ADR-0046) in the auth ticket.
+// Command api is the operator-facing gateway (ADR-0043). It serves the resource
+// registry (T-005b) gated by capability tokens; operator login (ADR-0046) lands
+// in a later auth ticket.
 //
 // Subcommands:
 //
@@ -22,10 +22,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"aireos.local/packages/go/auth"
+	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
+	"aireos.local/services/api/internal/server"
+	"aireos.local/services/api/internal/store"
 )
 
 //go:embed migrations/*.sql
@@ -67,24 +70,43 @@ func serve(dsn string) error {
 	}
 	defer pool.Close()
 
-	r := chi.NewRouter()
-	// Readiness only at T-005a; the resource routes (gated by RequireCapability)
-	// land in T-005b.
-	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
-		if err := pool.Ping(req.Context()); err != nil {
-			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write([]byte("ok"))
-	})
+	v, err := capabilityVerifier()
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
-		Handler:           r,
+		Handler:           server.New(store.New(pool), v),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("api listening on %s", srv.Addr)
 	return srv.ListenAndServe()
+}
+
+// capabilityVerifier resolves the capability Verifier (ADR-0046): real PASETO
+// verifier (audience "api") when AIREOS_PASETO_KEY is set, else the dev allow-all
+// verifier with API_DEV_INSECURE_AUTH=1, else fail loud.
+func capabilityVerifier() (mw.Verifier, error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
+		}
+		issuer := os.Getenv("AIREOS_CLUSTER_ID") // optional; empty skips the issuer rule
+		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "api")), nil
+	}
+	if os.Getenv("API_DEV_INSECURE_AUTH") == "1" {
+		log.Print("WARNING: API_DEV_INSECURE_AUTH=1 — using dev allow-all capability verifier; NOT for production")
+		return devAllowAll{}, nil
+	}
+	return nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY (hex cluster key, ADR-0046) or API_DEV_INSECURE_AUTH=1 for local dev")
+}
+
+type devAllowAll struct{}
+
+func (devAllowAll) Verify(_ context.Context, _ string) (mw.Capability, error) {
+	return mw.Capability{Subject: "dev", Edge: "human-agent"}, nil
 }
 
 func firstNonEmpty(vals ...string) string {
