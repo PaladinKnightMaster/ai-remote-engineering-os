@@ -37,9 +37,19 @@ tasks:
     cmds:
       # audit-service + shared packages (T-004b). Unit tests run here; the
       # store integration tests are tagged `integration` and need a Postgres
-      # (see services/audit-service/internal/store/store_integration_test.go).
+      # (see task test-integration).
       - go test ./packages/go/... ./services/audit-service/...
       - echo "task test: other services' targets land with their service tickets."
+
+  test-integration:
+    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup."
+    cmds:
+      - go test -tags integration ./services/audit-service/internal/store/...
+
+  validate:
+    desc: "Validate the OpenAPI fragment + JSON Schema fixtures (T-010). Needs python3 + jsonschema + pyyaml."
+    cmds:
+      - python3 infra/scripts/validate_contracts.py
 
   build:
     desc: Build all Go services and apps/* (extended by per-service tickets).

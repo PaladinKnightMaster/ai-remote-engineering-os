@@ -1,0 +1,103 @@
+# CI — T-010. Runs the build/test/validation loop that was verified by hand
+# during T-004/T-014 on every push and PR.
+#
+# NOTE: the repo has no git remote yet (see ../../VERSION_CONTROL.md), so this
+# workflow is dormant until the repo is pushed to a GitHub remote. It is
+# committed now so it activates the moment a remote exists. Each job mirrors a
+# command already proven locally against the docker-compose Postgres.
+#
+# Go version is pinned to 1.23 to match go.work / the go.mod files; the
+# oapi-codegen runtime is pinned to a 1.23-compatible release (see
+# oapi-codegen.audit.yaml + services/audit-service/go.mod).
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23"
+  DSN: postgres://cockpit:change-me@localhost:5432/cockpit?sslmode=disable
+
+jobs:
+  go:
+    name: Go build + test (with Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: cockpit
+          POSTGRES_USER: cockpit
+          POSTGRES_PASSWORD: change-me
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cockpit -d cockpit"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        run: go build ./packages/go/middleware/... ./packages/go/migrate/... ./services/audit-service/...
+      - name: Vet
+        run: go vet ./packages/go/middleware/... ./packages/go/migrate/... ./services/audit-service/...
+      - name: Unit tests
+        run: go test ./packages/go/middleware/... ./packages/go/migrate/... ./services/audit-service/...
+      - name: Apply migrations (forward-only)
+        run: go run ./services/audit-service migrate up
+        env:
+          DATABASE_URL: ${{ env.DSN }}
+      - name: Integration tests (chain integrity + dedup)
+        run: go test -tags integration ./services/audit-service/internal/store/...
+        env:
+          AUDIT_TEST_DATABASE_URL: ${{ env.DSN }}
+
+  codegen:
+    name: Codegen drift (oapi-codegen)
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Regenerate chi-server stub
+        run: go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 --config oapi-codegen.audit.yaml docs/api-contracts/openapi.v3.fragment.yaml
+      - name: Fail if generated code is stale
+        run: git diff --exit-code services/audit-service/internal/server/gen.go
+
+  contract:
+    name: Contract + schema validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install validators
+        run: pip install jsonschema pyyaml
+      - name: Validate OpenAPI + JSON Schema fixtures
+        run: python infra/scripts/validate_contracts.py
+
+  lint:
+    name: Lint (stub hook for T-011/T-012)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@v3.39.2
+      - name: task lint
+        # Currently a no-op banner (T-002); the Go-side suite lands with T-011
+        # and the JS-side suite with T-012, both of which extend `task lint`.
+        run: task lint
