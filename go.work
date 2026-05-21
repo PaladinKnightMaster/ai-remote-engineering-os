@@ -17,5 +17,15 @@
 //   ./tools/...                (T-011 lint tools)
 //
 // Per-service toolchain is pinned via that service's own go.mod.
+//
+// Module-path prefix: aireos.local/... — a dot-qualified internal vanity
+// prefix (offline-first per ADR-0001; no remote is implied for this
+// deliberately-unpushed repo). Mirrors the example.local posture used in the
+// shared-schema $ids. Rewrites to a real path via `go mod edit` if published.
 
 go 1.23
+
+use (
+	./packages/go/middleware
+	./packages/go/migrate
+)

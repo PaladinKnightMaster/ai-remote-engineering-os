@@ -47,8 +47,18 @@ tasks:
     cmds:
       - echo "task offline-bundle: not-yet-implemented at T-002. Playbook lands with the docs/devops/offline-install-v3.md update."
 
-  # codegen:   added by the first service ticket (ADR-0043) and extended
-  #            by the first frontend ticket (ADR-0047).
-  # migrate:   added by the first stateful-service ticket (ADR-0044).
-  # auth:      added by the first auth-touching service ticket (ADR-0046).
+  codegen:
+    desc: "Generate Go chi-server stubs from the OpenAPI fragment (ADR-0043). Extended by the first frontend ticket for openapi-typescript (ADR-0047)."
+    cmds:
+      - oapi-codegen --config oapi-codegen.yaml docs/api-contracts/openapi.v3.fragment.yaml
+
+  migrate:
+    desc: "Run a service's embedded migrations: task migrate -- <service> <up|version|force <v>> (ADR-0044)."
+    cmds:
+      - |
+        set -- {{.CLI_ARGS}}
+        svc="$1"; shift
+        go run ./services/"$svc" migrate "$@"
+
+  # auth:      added by the first auth-touching service ticket (ADR-0046, T-008).
   # outbox:    added by the first producer ticket (ADR-0045).

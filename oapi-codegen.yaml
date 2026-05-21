@@ -1,0 +1,23 @@
+# oapi-codegen configuration — ADR-0043 (chi-server generator).
+#
+# `task codegen` runs oapi-codegen against the canonical contract
+# (docs/api-contracts/openapi.v3.fragment.yaml) to produce committed chi-server
+# stubs + models for the Go services. Generated code is committed and reviewed
+# as a normal diff; it is never regenerated at runtime.
+#
+# NOTE (T-004a, toolchain gap): oapi-codegen is not on PATH in the authoring
+# environment, so the generated stub was NOT produced here. Run `task codegen`
+# where the Go toolchain + oapi-codegen are installed to materialize
+# services/audit-service/internal/server/gen.go. Until then the audit-service
+# handlers (T-004b) are wired with plain chi routes against the same contract.
+package: server
+generate:
+  chi-server: true
+  models: true
+  strict-server: false
+output: services/audit-service/internal/server/gen.go
+output-options:
+  # Only emit the audit-service surface; the P1 path stubs and other services'
+  # paths in the shared fragment are filtered out by include-tags / by a future
+  # per-service split of the contract.
+  skip-prune: false
