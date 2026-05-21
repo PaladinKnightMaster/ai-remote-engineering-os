@@ -28,4 +28,5 @@ go 1.23
 use (
 	./packages/go/middleware
 	./packages/go/migrate
+	./services/audit-service
 )

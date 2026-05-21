@@ -55,6 +55,76 @@ paths:
       summary: Start evaluation run
       responses:
         '202': { description: Eval queued }
+  # --- audit-service (T-004b) -------------------------------------------------
+  # Append-only chain authority (ADR-0045). Producers fan in over the
+  # service-service capability edge; the service assigns id/prevHash/chainHash
+  # and dedupes on idempotencyKey. Client-supplied chain fields are rejected.
+  /v1/events:
+    post:
+      operationId: appendEvent
+      summary: Append an audit event (append-only; chain authority assigns the hashes)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditEventIngest'
+      responses:
+        '200':
+          description: >-
+            Event appended, or — on a replayed idempotencyKey — the existing
+            event returned unchanged (at-least-once dedup, ADR-0045). Returned
+            only after the row + chained-hash extension commit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEvent'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      operationId: listEvents
+      summary: List audit events in chain order (forward-only cursor)
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of audit events in ascending chain order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  page:
+                    $ref: '#/components/schemas/PageMeta'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/events/{id}:
+    get:
+      operationId: getEvent
+      summary: Fetch a single audit event by its server-assigned id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The audit event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEvent'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -196,3 +266,41 @@ components:
         chainHash:
           type: string
           description: Assigned by the audit-service chain authority, not producers (ADR-0045).
+    # The POST /v1/events request body (T-004b). The producer supplies only the
+    # semantic fields; id, prevHash, and chainHash are assigned by the chain
+    # authority (ADR-0045). additionalProperties:false rejects any client-
+    # supplied chain field (prevHash/chainHash/id) with a 400 — a forged-chain
+    # attempt cannot enter the pipeline. idempotencyKey is a body field, not a
+    # header: it is the evidence-row identity minted at outbox enqueue and
+    # replayed verbatim by the relay, so it travels with the payload.
+    AuditEventIngest:
+      type: object
+      additionalProperties: false
+      required: [timestamp, actor, edge, target, idempotencyKey]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Producer occurrence time (RFC3339). Distinct from the server ingest time.
+        actor:
+          type: string
+        edge:
+          type: string
+          enum:
+            - human-agent
+            - agent-agent
+            - agent-tool
+            - agent-workspace
+            - agent-repo
+            - agent-memory
+            - agent-remote-session
+            - service-service
+        target:
+          type: string
+        outcome:
+          type: string
+        evidencePacketId:
+          type: string
+        idempotencyKey:
+          type: string
+          description: UUID v7 minted at outbox enqueue; the chain authority dedupes on this (ADR-0045).

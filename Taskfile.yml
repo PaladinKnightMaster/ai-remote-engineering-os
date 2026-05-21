@@ -35,12 +35,17 @@ tasks:
   test:
     desc: Run all tests (extended by per-service tickets).
     cmds:
-      - echo "task test: not-yet-implemented at T-002. Per-service test targets land with their service tickets."
+      # audit-service + shared packages (T-004b). Unit tests run here; the
+      # store integration tests are tagged `integration` and need a Postgres
+      # (see services/audit-service/internal/store/store_integration_test.go).
+      - go test ./packages/go/... ./services/audit-service/...
+      - echo "task test: other services' targets land with their service tickets."
 
   build:
     desc: Build all Go services and apps/* (extended by per-service tickets).
     cmds:
-      - echo "task build: not-yet-implemented at T-002. Per-service build targets land with their service tickets."
+      - go build -o bin/audit-service ./services/audit-service
+      - echo "task build: other services' targets land with their service tickets."
 
   offline-bundle:
     desc: Populate Go module cache + pnpm content store for restricted-network install.

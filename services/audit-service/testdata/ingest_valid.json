@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-05-20T00:00:00Z",
+  "actor": "svc:policy-service",
+  "edge": "service-service",
+  "target": "decision:42",
+  "outcome": "allow",
+  "evidencePacketId": "ep-01J0",
+  "idempotencyKey": "018f5e2a-0000-7000-8000-000000000001"
+}

@@ -18,7 +18,7 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 - [T-003 — Shared domain schemas (Organization, User, Resource, Session, AuditEvent)](T-003-shared-domain-schemas.md) — *complete*.
 - **T-004** audit-service minimal append-only API — *split* (a whole service plus the shared Go packages exceeds the diff budget; split into a scaffolding half and a service half at consult sign-off):
   - [T-004a — Shared Go scaffolding (middleware + migrate + codegen wiring)](T-004a-shared-go-scaffolding.md) — *complete*. Lands `packages/go/middleware/` + `packages/go/migrate/`, `task codegen` / `task migrate`, and the `aireos.local` module-path prefix (ADR-0043 / ADR-0044 §Hand-off).
-  - **T-004b** audit-service minimal append-only API — *pending*. The chain-authority service: `POST /v1/events` ingest (dedup + chained-hash), read surface, forward-only migration, tests (ADR-0045 / ADR-0044).
+  - [T-004b — audit-service minimal append-only API](T-004b-audit-service.md) — *complete*. The chain-authority service: `POST /v1/events` ingest (dedup + chained-hash), read surface, forward-only migration, tests (ADR-0045 / ADR-0044).
 - **T-005** resource registry CRUD API — *pending*.
 - **T-006** session-broker skeleton — *pending*.
 - **T-007** web dashboard shell — *pending*.
