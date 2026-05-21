@@ -1,0 +1,29 @@
+# oapi-codegen config for services/audit-service — ADR-0043 (chi-server), T-014.
+#
+# Per-service slicing: include-tags filters the single canonical contract
+# (docs/api-contracts/openapi.v3.fragment.yaml) down to the operations tagged
+# `audit`, so this generates ONLY audit-service's chi-server surface — not the
+# P1 stub paths or other services' operations. Each future service gets its own
+# oapi-codegen.<service>.yaml with its own include-tags.
+#
+# models: true is required — the chi-server output references generated param
+# structs (ListEventsParams), security-scope constants, and error types that are
+# emitted by the models generator; chi-server does not compile without them.
+#
+# The generated request/response *body* models (AuditEvent, AuditEventIngest)
+# are intentionally NOT used by the handlers: the chained-hash design stores
+# `timestamp` verbatim as a string, but oapi-codegen maps format:date-time to
+# time.Time (which would re-normalize it and break chain stability — see
+# T-004b), and the internal event additionally carries a `seq` not on the wire.
+# Handlers therefore decode/encode the hash-stable domain types in
+# internal/audit; the generated body models stand as contract reference and a
+# future strict-server migration path. The load-bearing generated artifact is
+# the ServerInterface + routing + query-param structs (the ADR-0043 deliverable).
+package: server
+output: services/audit-service/internal/server/gen.go
+generate:
+  chi-server: true
+  models: true
+output-options:
+  include-tags:
+    - audit

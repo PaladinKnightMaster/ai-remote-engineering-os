@@ -47,6 +47,33 @@ Two viable shapes; pick one in the ticket consult:
 
 Recommendation: **A** — minimal change, single source of truth preserved.
 
+### Decisions settled during implementation
+
+- **Option A adopted.** Operations tagged `audit`; one `oapi-codegen.audit.yaml`
+  with `include-tags: [audit]`. Pruning confirmed: `gen.go` contains only the
+  three audit operations + their referenced models (AuditEvent, AuditEventIngest,
+  Error, PageMeta, Limit/CursorParam) — no Resource/Session/workstream/mcp/eval.
+- **`models: true` (not false).** chi-server output references generated param
+  structs / error types / scope consts that the models generator emits, so it
+  does not compile with `models: false`. The generated request/response *body*
+  models are deliberately **unused** by the handlers: the chained-hash design
+  stores `timestamp` verbatim as a string but oapi-codegen maps `date-time` to
+  `time.Time`, and the stored event carries an internal `seq`. Handlers
+  decode/encode the hash-stable `internal/audit` domain types; the generated
+  body models stand as contract reference / future strict-server path.
+- **`oapi-codegen/runtime` pinned to `v1.1.1`.** The current runtime (`v1.4.1`)
+  requires Go ≥ 1.24; the project is on Go 1.23. `v1.1.1` is Go-1.23-compatible
+  and exposes the only API the generated code uses (`BindQueryParameter`). This
+  keeps the Go-version bump out of a codegen-slice ticket; revisit when the repo
+  moves to Go 1.24+.
+- **`oapi-codegen` emits a 3.1.x-support warning** (it targets 3.0.x). Harmless
+  here — chi-server routing + the simple models we use generate correctly — but
+  noted: a future move to full 3.1 codegen features may need a 3.0 down-conversion
+  step or a newer oapi-codegen.
+- **Tool stays a dev dependency.** `task codegen` runs oapi-codegen via
+  `go run …@v2.4.1`; nothing new ships in the service binary (Offline-Install
+  Engineer lens).
+
 ## Files in scope (under option A)
 
 - **Modify:**
@@ -119,3 +146,23 @@ go build ./services/audit-service/...
 go test ./services/audit-service/...
 go test -tags integration ./services/audit-service/internal/store/...
 ```
+
+### Verification — run and passed
+
+In a `golang:1.23` container against the docker-compose Postgres:
+
+- `task codegen` (via `go run …/oapi-codegen@v2.4.1`) regenerated
+  `services/audit-service/internal/server/gen.go`; the generated `ServerInterface`
+  contains exactly `AppendEvent` / `ListEvents` / `GetEvent` and no non-audit
+  symbols.
+- `go build` / `go vet` over `packages/go/...` + `services/audit-service/...` —
+  **clean**.
+- Unit tests (`internal/chain`, `internal/server`) — **pass** unchanged after the
+  re-seat (handlers are now methods on the generated interface, mounted via
+  `HandlerWithOptions` with `RequireCapability` as a `MiddlewareFunc`).
+- `migrate up` — no-op (already version 1).
+- Integration tests (`-tags integration`) — **pass** (concurrent-append
+  integrity + dedup).
+
+`go.sum` updated by `go mod tidy` (adds `oapi-codegen/runtime v1.1.1` +
+`apapsch/go-jsonmerge`). Committed.

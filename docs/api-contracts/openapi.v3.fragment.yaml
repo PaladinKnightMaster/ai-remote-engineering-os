@@ -18,6 +18,12 @@ servers:
     description: Same-origin deploy (ADR-0047).
 security:
   - bearerAuth: []
+# Operation tags scope per-service codegen (T-014): `oapi-codegen` runs with
+# include-tags filtering so each service generates only its own chi-server
+# surface from this one canonical contract.
+tags:
+  - name: audit
+    description: Append-only audit chain authority (ADR-0045, T-004b).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -61,6 +67,7 @@ paths:
   # and dedupes on idempotencyKey. Client-supplied chain fields are rejected.
   /v1/events:
     post:
+      tags: [audit]
       operationId: appendEvent
       summary: Append an audit event (append-only; chain authority assigns the hashes)
       requestBody:
@@ -83,6 +90,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
     get:
+      tags: [audit]
       operationId: listEvents
       summary: List audit events in chain order (forward-only cursor)
       parameters:
@@ -107,6 +115,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
   /v1/events/{id}:
     get:
+      tags: [audit]
       operationId: getEvent
       summary: Fetch a single audit event by its server-assigned id
       parameters:
