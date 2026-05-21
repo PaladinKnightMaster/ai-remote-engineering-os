@@ -13,11 +13,11 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/services/audit-service/internal/audit"
@@ -38,7 +38,9 @@ func testStore(t *testing.T) *Store {
 	return New(pool)
 }
 
-func ingest(key string) audit.Ingest {
+// ingest builds a valid ingest payload with a fresh UUID v7 idempotency key.
+func ingest() audit.Ingest {
+	key := uuid.Must(uuid.NewV7()).String()
 	return audit.Ingest{
 		Timestamp: "2026-05-20T00:00:00Z", Actor: "svc:test",
 		Edge: "service-service", Target: "t:" + key, IdempotencyKey: key,
@@ -55,7 +57,7 @@ func TestConcurrentAppendIntegrity(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if _, _, err := s.Append(ctx, ingest(fmt.Sprintf("conc-%d", i))); err != nil {
+			if _, _, err := s.Append(ctx, ingest()); err != nil {
 				t.Errorf("append %d: %v", i, err)
 			}
 		}(i)
@@ -78,7 +80,7 @@ func TestConcurrentAppendIntegrity(t *testing.T) {
 func TestDedupReplayIntegrity(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	in := ingest("dedup-key")
+	in := ingest()
 
 	first, deduped1, err := s.Append(ctx, in)
 	if err != nil || deduped1 {

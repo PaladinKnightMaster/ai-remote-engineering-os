@@ -131,7 +131,7 @@ func (s *Store) List(ctx context.Context, afterSeq int64, limit int) ([]audit.Ev
 }
 
 const selectCols = `
-	SELECT seq, id, timestamp, actor, edge, target,
+	SELECT seq, id, idempotency_key, timestamp, actor, edge, target,
 	       COALESCE(outcome,''), COALESCE(evidence_packet_id,''), prev_hash, chain_hash
 	FROM audit_events`
 
@@ -141,7 +141,7 @@ type scanner interface {
 
 func scanOne(row scanner) (audit.Event, error) {
 	var e audit.Event
-	err := row.Scan(&e.Seq, &e.ID, &e.Timestamp, &e.Actor, &e.Edge, &e.Target,
+	err := row.Scan(&e.Seq, &e.ID, &e.IdempotencyKey, &e.Timestamp, &e.Actor, &e.Edge, &e.Target,
 		&e.Outcome, &e.EvidencePacketID, &e.PrevHash, &e.ChainHash)
 	return e, err
 }

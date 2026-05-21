@@ -82,7 +82,7 @@ func do(t *testing.T, h http.Handler, method, path, body string) *httptest.Respo
 	return rec
 }
 
-const validBody = `{"timestamp":"2026-05-20T00:00:00Z","actor":"svc:policy-service","edge":"service-service","target":"decision:1","idempotencyKey":"k-1"}`
+const validBody = `{"timestamp":"2026-05-20T00:00:00Z","actor":"svc:policy-service","edge":"service-service","target":"decision:1","idempotencyKey":"018f5e2a-0000-7000-8000-000000000010"}`
 
 func TestAppendAssignsChainFields(t *testing.T) {
 	h := New(newFake(), allowAll{})

@@ -6,7 +6,12 @@
 // the models via `task codegen` should produce equivalent shapes.
 package audit
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // Edges is the closed set of capability edges (docs/security/agent-permission-model.md
 // plus service-service, ADR-0046). The DB enforces the same set via a CHECK.
@@ -34,8 +39,10 @@ type Ingest struct {
 	IdempotencyKey   string `json:"idempotencyKey"`
 }
 
-// Validate checks the required fields and the edge enum. It does NOT check for
-// forbidden chain fields — that is the decoder's job (DisallowUnknownFields).
+// Validate checks the required fields, formats, and the edge enum at the API
+// boundary so a malformed request fails with 400 rather than surfacing as a DB
+// error later. It does NOT check for forbidden chain fields — that is the
+// decoder's job (DisallowUnknownFields).
 func (in Ingest) Validate() error {
 	switch {
 	case in.Timestamp == "":
@@ -46,6 +53,12 @@ func (in Ingest) Validate() error {
 		return fmt.Errorf("target is required")
 	case in.IdempotencyKey == "":
 		return fmt.Errorf("idempotencyKey is required")
+	}
+	if _, err := uuid.Parse(in.IdempotencyKey); err != nil {
+		return fmt.Errorf("idempotencyKey must be a UUID: %w", err)
+	}
+	if _, err := time.Parse(time.RFC3339, in.Timestamp); err != nil {
+		return fmt.Errorf("timestamp must be RFC3339: %w", err)
 	}
 	if _, ok := Edges[in.Edge]; !ok {
 		return fmt.Errorf("edge %q is not a recognised capability edge", in.Edge)

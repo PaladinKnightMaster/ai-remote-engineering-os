@@ -52,7 +52,7 @@ P0. Bootstrap; unblocks T-004b and every subsequent Go service ticket.
 ## Files in scope
 
 - **Create:**
-  - `packages/go/middleware/go.mod` — `aireos.local/packages/go/middleware`; requires `github.com/go-chi/chi/v5`.
+  - `packages/go/middleware/go.mod` — `aireos.local/packages/go/middleware`; **no third-party deps** (pure `net/http`; `RequireCapability` is `func(http.Handler) http.Handler`, so chi is not imported here — confirmed by `go mod tidy`).
   - `packages/go/middleware/middleware.go` — `RequireCapability(Verifier, allowedEdges...) func(http.Handler) http.Handler`, `CapabilityFromContext`, the `Error`-envelope writer.
   - `packages/go/middleware/verifier.go` — the `Verifier` port, `Capability` / `Scope` types, `ErrUnauthorized`.
   - `packages/go/migrate/go.mod` — `aireos.local/packages/go/migrate`; requires `github.com/golang-migrate/migrate/v4`.
@@ -127,18 +127,17 @@ go build ./packages/go/...
 go vet ./packages/go/...
 ```
 
-### Verification gap (toolchain absent in authoring environment)
+### Verification — run and passed
 
-`go`, `task`, and `oapi-codegen` were **not on PATH** when this ticket was
-authored (only Docker was available). Therefore:
+Verified in a `golang:1.23` container: `go mod tidy` over all three modules,
+`go work sync`, `go build`, and `go vet` over `packages/go/middleware/...` and
+`packages/go/migrate/...` — **clean**. `go.sum` files were generated and are
+committed. (The packages have no tests of their own; they are exercised by the
+audit-service unit + integration tests in T-004b, which pass.)
 
-- `go work sync`, `go build ./packages/go/...`, and `go vet` were **NOT run** —
-  the modules are authored but uncompiled.
-- `go.sum` files are absent (`go mod tidy` could not run); they materialize on
-  first build where the toolchain + module cache exist.
-- `task codegen` was **NOT run**; the generated stub does not exist yet (see
-  `oapi-codegen.yaml` header). T-004b wires the audit handlers with plain chi
-  routes against the same contract until codegen is run.
+### Remaining deferred item
 
-These are the only known gaps; run the commands above where the Go toolchain is
-installed to close them.
+- `task codegen` is intentionally **not run yet** — the shared fragment still
+  carries the P1 stub paths, so `oapi-codegen` would emit a whole-product
+  `ServerInterface`. A per-service contract slice (include-tags or split
+  fragment) is the prerequisite; tracked as a follow-up (T-004b *Out of scope*).
