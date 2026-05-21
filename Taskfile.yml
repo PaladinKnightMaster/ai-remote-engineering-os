@@ -79,5 +79,11 @@ tasks:
         svc="$1"; shift
         go run ./services/"$svc" migrate "$@"
 
-  # auth:      added by the first auth-touching service ticket (ADR-0046, T-008).
+  auth:
+    desc: "Auth provisioning (ADR-0046): task auth -- genkey | hash <password>. genkey prints a cluster PASETO key; hash prints an argon2id hash for the bootstrap operator."
+    cmds:
+      - go run ./packages/go/auth/cmd/authctl {{.CLI_ARGS}}
+
   # outbox:    added by the first producer ticket (ADR-0045).
+  # Note: `task auth rotate-key` (operator key rotation) lands with the operator
+  # login HTTP surface / a devops ticket; `task auth -- genkey` is the P0 helper.

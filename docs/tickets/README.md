@@ -28,6 +28,11 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 - [T-009 — OpenAPI contract scaffold (shared components + security + envelopes)](T-009-openapi-contract.md) — *complete*. (Backlog title "+ generated client types" predates ADR-0043/0047, which assign codegen to the consumer tickets — T-004 Go stubs, T-007 TS types; T-009 lands the contract they generate from.)
 - [T-010 — CI checks (build, test, schema validation, codegen drift, lint hook)](T-010-ci-checks.md) — *complete*. GitHub Actions `ci.yml`: Go build/vet/test + Postgres-backed integration, oapi-codegen drift gate, OpenAPI + JSON-Schema validation (`infra/scripts/validate_contracts.py`), and the `task lint` stub hook. Dormant until a remote is configured; validation Python-based (npm precedent deferred to T-007).
 
+### Operator login (T-015) — closes the auth bits ADR-0046 deferred from T-008
+
+- [T-015a — Operator auth primitives + provisioning (argon2id + authctl)](T-015a-auth-primitives-provisioning.md) — *complete*. argon2id password hashing in `packages/go/auth`, the env-provisioned bootstrap operator account in `services/api`, and the `authctl` (`task auth`) provisioning CLI.
+- **T-015b** — operator login HTTP surface (`POST /v1/auth/login` public, `GET /v1/auth/me` gated) + Signer wiring — *pending*.
+
 ### Verification-gap closures (T-011..)
 
 - [T-011 — Go-side lint suite (ADR-0044/0045/0046)](T-011-go-lint-suite.md) — P1. Closes the four ADR-0044 / ADR-0045 / ADR-0046 review-enforced verification gaps on the Go stack. Owner: Tech Lead.
