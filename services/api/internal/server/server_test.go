@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
@@ -352,15 +351,28 @@ func TestLogoutClearsCookies(t *testing.T) {
 // TestSlidingRefresh — when an operator's verified token is in the second half
 // of its TTL, the next request rotates both cookies inline with the response.
 // We force the condition by issuing a custom-TTL token directly via Signer.
+//
+// The short TTL is computed from auth.OperatorTTL so the test stays correct
+// if OperatorTTL is ever tuned (refresh threshold is OperatorTTL/2; we pick
+// OperatorTTL/4 to be comfortably inside the refresh window without
+// approaching expiry).
 func TestSlidingRefresh(t *testing.T) {
 	h, signer, _ := loginHandler(t)
 
-	// Token with 30m TTL — well under OperatorTTL/2 (4h) → must refresh.
+	// Establish a baseline csrf cookie via Login so we can assert that the
+	// refresh ROTATES it (not just sets one where none existed).
+	loginRec := req(t, h, http.MethodPost, "/v1/auth/login", `{"username":"admin","password":"hunter2"}`, false)
+	originalCSRF := findCookie(t, loginRec, csrfCookieName)
+	if originalCSRF == nil {
+		t.Fatal("setup: login did not set csrf cookie")
+	}
+
+	// Token with OperatorTTL/4 TTL — comfortably inside the refresh window.
 	shortTok, err := signer.Issue(auth.IssueParams{
 		Subject:  "operator:admin",
 		Edge:     "human-agent",
 		Audience: "api",
-		TTL:      30 * time.Minute,
+		TTL:      auth.OperatorTTL / 4,
 	})
 	if err != nil {
 		t.Fatalf("issue short: %v", err)
@@ -368,24 +380,29 @@ func TestSlidingRefresh(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: shortTok})
+	r.AddCookie(&http.Cookie{Name: csrfCookieName, Value: originalCSRF.Value})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("me: want 200, got %d: %s", rec.Code, rec.Body)
 	}
-	rotated := findCookie(t, rec, sessionCookieName)
-	if rotated == nil {
+	rotatedSession := findCookie(t, rec, sessionCookieName)
+	if rotatedSession == nil {
 		t.Fatal("refresh: no new session cookie issued on response")
 	}
-	if rotated.Value == shortTok {
+	if rotatedSession.Value == shortTok {
 		t.Fatal("refresh: session value unchanged (expected rotation)")
 	}
-	if findCookie(t, rec, csrfCookieName) == nil {
+	rotatedCSRF := findCookie(t, rec, csrfCookieName)
+	if rotatedCSRF == nil {
 		t.Fatal("refresh: csrf cookie not rotated alongside session")
 	}
+	if rotatedCSRF.Value == originalCSRF.Value {
+		t.Fatal("refresh: csrf value unchanged (expected rotation alongside session)")
+	}
 
-	// Sanity: a long-TTL token (full 8h) must NOT trigger refresh.
+	// Sanity: a fresh full-TTL operator token must NOT trigger refresh.
 	longTok, _ := signer.IssueOperator("operator:admin", "api")
 	r2 := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
 	r2.AddCookie(&http.Cookie{Name: sessionCookieName, Value: longTok})

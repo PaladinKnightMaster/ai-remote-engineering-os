@@ -144,13 +144,39 @@ talk to; without it, T-007c can't land authenticated routes.
 ## Out of scope
 
 - **`apps/web` shell + capability UI consumer** — T-007c.
-- **Per-token revocation / signing-key rotation tooling** — ADR-0046 §
+- **Per-token revocation / signing-key rotation tooling** — ADR-0046
   defers `task auth rotate-key` to a devops ticket; here we only
   consume the existing `auth.Signer.IssueOperator` surface.
 - **CSRF rule for service-to-service** — service-service traffic is
   Authorization-only and CSRF-exempt by design (no browser).
 - **Refresh-via-explicit-endpoint** — ADR-0047 commits to inline
   cookie rotation; no `/v1/auth/refresh` route at P0.
+
+## Known limit — Login CSRF
+
+The double-submit CSRF defense gates *gated mutations on the cookie path*
+(see `needsCSRF` in `server.go`: method-is-mutating AND session-cookie-
+present). `POST /v1/auth/login` is public (`security: []`) and runs before
+any session exists — so it is **not** behind a CSRF check.
+
+That means an attacker with same-site-initiator access (e.g. an XSS on a
+sibling subdomain or a same-origin form they can plant) can cross-cause a
+victim's browser to `POST /v1/auth/login` with attacker-controlled
+credentials, logging the victim INTO THE ATTACKER'S account. The victim
+then sees attacker-controlled data and any data they enter goes to the
+attacker. SameSite=Strict on the session cookie blocks *cross-site*
+initiators but not *same-site* ones.
+
+This is the classic "Login CSRF" class. It is not a confidentiality
+break (the attacker doesn't learn anything about the victim's real
+account) but it is an integrity break (the attacker can phish-by-proxy).
+
+**Status at P0:** documented and accepted. Mitigations require either
+(a) a pre-auth CSRF token issued on `GET /v1/auth/login-challenge` and
+echoed in the login POST body, or (b) signed nonces baked into the SPA's
+initial HTML page. Both add a roundtrip / a page-render dependency.
+Defer to a hardening ticket (or to the Zitadel adoption window per
+ADR-0046 — Zitadel's flows handle login-CSRF natively).
 
 ## Diff budget
 

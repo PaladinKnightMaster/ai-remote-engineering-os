@@ -25,6 +25,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -161,21 +162,9 @@ func csrfValid(r *http.Request) bool {
 	if err != nil || c.Value == "" {
 		return false
 	}
-	// Constant-time compare to avoid timing oracles on the CSRF value.
-	return subtleEqual(header, c.Value)
-}
-
-// subtleEqual is crypto/subtle.ConstantTimeCompare wrapped to take strings.
-// Inline to avoid an import for a one-line helper.
-func subtleEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var diff byte
-	for i := 0; i < len(a); i++ {
-		diff |= a[i] ^ b[i]
-	}
-	return diff == 0
+	// Constant-time compare via stdlib to avoid byte-by-byte timing oracles on
+	// the CSRF value. ConstantTimeCompare returns 0/1, not bool.
+	return subtle.ConstantTimeCompare([]byte(header), []byte(c.Value)) == 1
 }
 
 // slidingRefresh rotates the session + CSRF cookies inline with the response
