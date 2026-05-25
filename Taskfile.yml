@@ -65,13 +65,17 @@ tasks:
       - echo "task offline-bundle: not-yet-implemented at T-002. Playbook lands with the docs/devops/offline-install-v3.md update."
 
   codegen:
-    desc: "Generate per-service Go chi-server stubs from the OpenAPI fragment (ADR-0043, T-014). Extended by the first frontend ticket for openapi-typescript (ADR-0047)."
+    desc: "Generate per-service Go chi-server stubs + apps/web TS types from the OpenAPI fragment (ADR-0043, ADR-0047; T-014, T-007a). One schema, two consumers."
     vars:
       OAPI_CODEGEN: github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1
     cmds:
-      # One config per service (include-tags slices the canonical contract).
+      # One Go config per service (include-tags slices the canonical contract).
       - go run {{.OAPI_CODEGEN}} --config oapi-codegen.audit.yaml docs/api-contracts/openapi.v3.fragment.yaml
       - go run {{.OAPI_CODEGEN}} --config oapi-codegen.api.yaml docs/api-contracts/openapi.v3.fragment.yaml
+      # TS types + openapi-fetch client for the SPA (ADR-0047, T-007a). Same
+      # fragment, third consumer. Requires `pnpm install` to have hydrated the
+      # workspace; see .github/workflows/ci.yml `js` job for the install loop.
+      - pnpm --filter @aireos/shared-types run codegen
 
   migrate:
     desc: "Run a service's embedded migrations: task migrate -- <service> <up|version|force <v>> (ADR-0044)."

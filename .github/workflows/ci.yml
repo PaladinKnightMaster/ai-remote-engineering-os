@@ -108,3 +108,25 @@ jobs:
         # Currently a no-op banner (T-002); the Go-side suite lands with T-011
         # and the JS-side suite with T-012, both of which extend `task lint`.
         run: task lint
+
+  js:
+    name: JS typecheck + codegen drift (ADR-0047, T-007a)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - name: Install (frozen lockfile)
+        # .npmrc pins frozen-lockfile=true; this is explicit for clarity.
+        run: pnpm install --frozen-lockfile
+      - name: Codegen (openapi-typescript)
+        run: pnpm --filter @aireos/shared-types run codegen
+      - name: Fail if generated TS is stale
+        run: git diff --exit-code packages/shared-types/src/generated/openapi.ts
+      - name: Typecheck (all workspace members)
+        run: pnpm -r run typecheck

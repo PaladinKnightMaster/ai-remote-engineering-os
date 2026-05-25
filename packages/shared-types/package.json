@@ -1,0 +1,25 @@
+{
+  "name": "@aireos/shared-types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generated OpenAPI types + openapi-fetch client wrapper (ADR-0047, T-007a). One schema, two consumers: oapi-codegen (Go) + openapi-typescript (TS).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./generated/openapi": "./src/generated/openapi.ts"
+  },
+  "scripts": {
+    "codegen": "openapi-typescript ../../docs/api-contracts/openapi.v3.fragment.yaml -o ./src/generated/openapi.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.13.4"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.4.4",
+    "typescript": "^5.6.3"
+  }
+}

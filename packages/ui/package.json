@@ -1,0 +1,24 @@
+{
+  "name": "@aireos/ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared UI primitives + hooks + capability provider (ADR-0047). Skeleton at T-007a; components/hooks land with T-007c.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.6.3"
+  }
+}

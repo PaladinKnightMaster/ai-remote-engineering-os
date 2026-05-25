@@ -1,0 +1,14 @@
+{
+  "name": "ai-remote-engineering-os",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AI Remote Engineering OS — pnpm workspace root (ADR-0042, ADR-0047).",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r run typecheck",
+    "codegen": "pnpm --filter @aireos/shared-types run codegen"
+  }
+}
