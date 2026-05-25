@@ -25,7 +25,14 @@ export interface UseWebSocketChannelOptions {
   /** Initial reconnect delay (ms). Doubles up to maxBackoffMs on consecutive failures. */
   initialBackoffMs?: number;
   maxBackoffMs?: number;
-  /** Optional subprotocols passed to the WebSocket constructor. */
+  /**
+   * Optional subprotocols passed to the WebSocket constructor.
+   *
+   * **Caution: pass a stable reference.** If a consumer passes an inline
+   * array literal (`protocols={["v1"]}`) each render creates a new array
+   * identity, which trips the effect's deps and causes a reconnect on
+   * every parent re-render. Use `useMemo` or a module-level constant.
+   */
   protocols?: string | string[];
 }
 

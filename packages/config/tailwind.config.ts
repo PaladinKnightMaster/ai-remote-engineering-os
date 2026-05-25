@@ -1,28 +1,35 @@
 // Shared Tailwind v4 config — ADR-0047, design-system-governance preflight.
 //
-// Token Map per ../agency-kit/ai/core/design-system-governance.md §2. The
-// seven categories the preflight names and where each one lives at T-007a:
+// Status at T-007c: this file is the ADR-0047 §Decision-named location for
+// the design-system Token Map. With the move to Tailwind v4, the *canonical*
+// token declarations live in `apps/web/src/styles.css` via the `@theme`
+// directive — v4 reads tokens from CSS first, not from a JS config. This file
+// remains as a **typed mirror** of the same tokens so:
 //
-//   colors           — explicit semantic tokens below (CSS custom properties).
-//   radius           — explicit semantic tokens below.
-//   semantic states  — encoded in the color tokens (primary/destructive/etc.)
-//                      and extended once shadcn variants are vendored (T-007c+).
-//   typography       — Tailwind v4 defaults stand in until a concrete consumer
-//   spacing            (apps/web shell, the first shadcn component) needs an
-//   elevation          override. This is an explicit decision in the T-007a
-//   motion             review: speculative tokens for un-built consumers would
-//                      violate "search-before-create" in
-//                      design-system-governance.md §3. When the first SPA
-//                      route ships in T-007c, audit which of these four need
-//                      semantic tokens and add them here in the same diff.
+//   - tooling that wants a Tailwind-typed token map (e.g. design-system
+//     governance audits, future apps/admin migrations, IDE preview) can
+//     import it,
+//   - the ADR-0047-named location still resolves on disk,
+//   - any drift between this file and `apps/web/src/styles.css` shows up in
+//     review (the values must match by construction).
 //
-// Concrete shade values for the color tokens are bound to CSS custom
-// properties (--background, etc.) defined in apps/web/src/styles.css when
-// the SPA shell lands (T-007c). This file is the token *surface*.
+// Token Map per ../agency-kit/ai/core/design-system-governance.md §2.
+// Coverage at T-007c:
+//
+//   colors           — explicit semantic tokens below.
+//   radius           — explicit semantic token below.
+//   semantic states  — encoded via the color tokens (primary, destructive,
+//                      muted, accent) and extended once shadcn variants are
+//                      vendored with their feature tickets.
+//   typography       — Tailwind v4 defaults; audited at T-007c review and
+//   spacing            kept as defaults until a concrete shadcn component or
+//   elevation          apps/admin palette demands an override (per
+//   motion             search-before-create in design-system-governance §3).
 //
 // Style Binding rule: app/UI code references semantic tokens only (e.g.
 // bg-background, text-foreground); raw hex/rgb values are a lint violation
 // (T-012 enforces).
+
 import type { Config } from "tailwindcss";
 
 const config: Config = {
@@ -34,36 +41,36 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
+        background: "hsl(0 0% 100%)",
+        foreground: "hsl(222.2 84% 4.9%)",
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: "hsl(222.2 47.4% 11.2%)",
+          foreground: "hsl(210 40% 98%)",
         },
         secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
+          DEFAULT: "hsl(210 40% 96.1%)",
+          foreground: "hsl(222.2 47.4% 11.2%)",
         },
         muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+          DEFAULT: "hsl(210 40% 96.1%)",
+          foreground: "hsl(215.4 16.3% 46.9%)",
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+          DEFAULT: "hsl(210 40% 96.1%)",
+          foreground: "hsl(222.2 47.4% 11.2%)",
         },
         destructive: {
-          DEFAULT: "hsl(var(--destructive))",
-          foreground: "hsl(var(--destructive-foreground))",
+          DEFAULT: "hsl(0 84.2% 60.2%)",
+          foreground: "hsl(210 40% 98%)",
         },
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
+        border: "hsl(214.3 31.8% 91.4%)",
+        input: "hsl(214.3 31.8% 91.4%)",
+        ring: "hsl(222.2 84% 4.9%)",
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        lg: "0.5rem",
+        md: "calc(0.5rem - 2px)",
+        sm: "calc(0.5rem - 4px)",
       },
     },
   },

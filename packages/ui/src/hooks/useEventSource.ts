@@ -20,7 +20,16 @@ export type SSEStatus = "idle" | "connecting" | "open" | "closed";
 export interface UseEventSourceOptions {
   url: string;
   enabled?: boolean;
-  /** Map of event-name → handler. The "message" handler receives unnamed events. */
+  /**
+   * Map of event-name → handler. The "message" handler receives unnamed events.
+   *
+   * **Caution: event NAMES are bound once at mount.** The handler bodies are
+   * read off a live ref so callers can rotate function identity without
+   * re-binding, but adding a new event NAME mid-life requires re-mounting
+   * (toggle `enabled` off/on, or remount the component). For the
+   * <ApprovalPrompt> feature ticket this means: enumerate every named
+   * event the channel emits up-front; don't add new ones reactively.
+   */
   events?: Record<string, (e: MessageEvent) => void>;
   withCredentials?: boolean;
 }
