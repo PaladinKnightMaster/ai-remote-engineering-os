@@ -95,7 +95,7 @@ ticket; T-010 explicitly deferred the npm precedent here.
 - [ ] `.npmrc` posture (`frozen-lockfile=true`, `engine-strict=true`, `node-linker=isolated`) verified by the install step.
 - [ ] OpenAPI / schemas updated — **N/A** (T-007a does not touch the fragment; T-007b does).
 - [ ] Docs / ADR — **N/A** (ADR-0001..0047 untouched).
-- [ ] Unit tests cover valid + invalid + edge — deferred to T-007c (the wrapper's CSRF/401 logic is exercised by route-level tests there with an injected cookie reader). The CSRF cookie/header constants are exported via `__INTERNAL__` for T-012's lint to assert against.
+- [x] Unit tests cover valid + invalid + edge — 5 black-box tests in `packages/shared-types/src/client.test.ts` (vitest) assert the CSRF cookie/header contract on POST + cookie present, POST + cookie absent, GET (header never attached); 401 chokepoint fires `onUnauthorized` exactly once; non-401 responses (200/403/500) do not fire it. Tests added by the post-consult tightening pass; see the second commit on this ticket.
 - [ ] Verification command runs clean (see below).
 
 ## Out of scope
@@ -145,3 +145,46 @@ docker run --rm --network docker-compose_default \
 All expected to **pass**: install hydrates the workspace from the committed
 lockfile; codegen is a no-op against the committed generated artifact;
 typecheck clean across `@aireos/config`, `@aireos/shared-types`, `@aireos/ui`.
+
+### Verification — run and passed
+
+Two commits land this ticket: the base (`6f2a77f`) and a post-consult
+tightening pass (`4a3965c`). Combined verification in `node:22-alpine` on
+`docker-compose_default`:
+
+- `rm -rf node_modules && pnpm install --frozen-lockfile` — 5.3s, lockfile
+  up to date.
+- `pnpm --filter @aireos/shared-types run codegen` — regenerates cleanly;
+  `git diff --exit-code packages/shared-types/src/generated/openapi.ts` —
+  CLEAN (codegen is idempotent against the committed artifact).
+- `pnpm -r run typecheck` — clean across `@aireos/{config,shared-types,ui}`.
+- `pnpm -r --if-present run test` — **5/5 pass** in 2.7s (the CSRF/401
+  contract under `@aireos/shared-types`).
+
+Adjacent surfaces re-run during the post-tightening review pass to confirm
+no regressions:
+
+- `python infra/scripts/validate_contracts.py` — JSON-Schema fixtures
+  (5 valid + 5 invalid) and the OpenAPI fragment pass.
+- `go build` + `go test` across `packages/go/...` and `services/...`
+  (auth + api + audit-service + session-broker) — clean.
+
+Post-consult tightening pass (commit `4a3965c`) addresses four items
+surfaced in the war-room review of the base commit:
+
+1. Added vitest + 5 unit tests on the CSRF / 401 contract (the line above).
+2. Tightened runtime dep ranges from `^` to `~` (`openapi-fetch`, `react`,
+   `react-dom`) per ADR-0042 supply-chain doctrine. Dev deps stay on `^`.
+3. Removed the speculative `__INTERNAL__` export from `client.ts`; tests
+   are black-box on wire-level behavior and don't need it.
+4. Documented in `packages/config/tailwind.config.ts` that four of the
+   seven design-system-governance §2 token categories (typography,
+   spacing, elevation, motion) ride on Tailwind v4 defaults at T-007a;
+   audit during T-007c when concrete consumers exist.
+
+Surfaced but deliberately not taken (would scope-creep):
+
+- `esbuild@0.21.5` build-script warning on every `pnpm install` (vitest
+  transitive). The deny is correct for offline-install posture; the
+  warning is the visibility signal. If it becomes noise, add
+  `pnpm.onlyBuiltDependencies: []` to root `package.json`.
