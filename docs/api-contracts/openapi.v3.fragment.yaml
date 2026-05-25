@@ -240,8 +240,8 @@ paths:
     post:
       tags: [auth]
       operationId: login
-      summary: Operator login — exchange credentials for a capability token
-      # Public: this endpoint issues the token, so it carries no bearer itself.
+      summary: Operator login — exchange credentials for a session cookie
+      # Public: this endpoint issues the session, so it carries no bearer itself.
       security: []
       requestBody:
         required: true
@@ -251,13 +251,31 @@ paths:
               $ref: '#/components/schemas/LoginRequest'
       responses:
         '200':
-          description: An operator session token.
+          # Cookie-shape is settled by ADR-0047 §Decision item "Auth-token storage":
+          #   - aireos_session=<paseto>; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800
+          #   - aireos_csrf=<32B-hex>;  Secure; SameSite=Strict; Path=/; Max-Age=28800  (not HttpOnly; JS reads to echo X-CSRF-Token)
+          # The PASETO token itself is NOT in the response body — it stays opaque
+          # to JS by construction. The body carries only the session expiry so
+          # the SPA can render time-to-expiry without reading cookies.
+          description: Session established. The session cookie + CSRF cookie are set via Set-Cookie headers; the body carries only the session expiry timestamp.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Clear the operator session and CSRF cookies
+      # Public: any caller can clear stale cookies on their own browser even with
+      # an expired/missing session. SameSite=Strict on the session cookie blocks
+      # cross-site CSRF on logout (an attacker can only trigger a same-site POST).
+      security: []
+      responses:
+        '204':
+          description: Both cookies cleared. No body.
   /v1/auth/me:
     get:
       tags: [auth]
@@ -480,15 +498,18 @@ components:
         password:
           type: string
     LoginResponse:
+      # ADR-0047 §Decision: the PASETO token is set in an HttpOnly cookie, not
+      # returned in this body. The body carries only the session expiry so the
+      # SPA can render time-to-expiry without reading cookies (HttpOnly hides
+      # the session cookie's value, and the csrf cookie isn't the expiry source
+      # of truth).
       type: object
-      required: [token, expiresAt]
+      required: [expiresAt]
       properties:
-        token:
-          type: string
-          description: PASETO v4 operator session token (opaque to clients).
         expiresAt:
           type: string
           format: date-time
+          description: When the session cookie expires (RFC3339 UTC).
     Identity:
       type: object
       required: [subject, edge]

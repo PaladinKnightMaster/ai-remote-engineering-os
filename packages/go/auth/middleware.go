@@ -29,6 +29,11 @@ func (a asMiddleware) Verify(ctx context.Context, bearer string) (mw.Capability,
 			Operations: ct.Scope.Operations,
 			LeaseID:    ct.Scope.LeaseID,
 		},
+		// ExpiresAt + Audience let services/api do sliding-refresh (ADR-0047 §6)
+		// without re-parsing the bearer. Adapters that don't expose these (e.g.
+		// the dev allow-all in services/api/main.go) leave them zero-valued.
+		ExpiresAt: ct.Expiry,
+		Audience:  ct.Audience,
 	}, nil
 }
 

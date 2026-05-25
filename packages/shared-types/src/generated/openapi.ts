@@ -275,8 +275,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Operator login — exchange credentials for a capability token */
+        /** Operator login — exchange credentials for a session cookie */
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clear the operator session and CSRF cookies */
+        post: operations["logout"];
         delete?: never;
         options?: never;
         head?: never;
@@ -379,9 +396,10 @@ export interface components {
             password: string;
         };
         LoginResponse: {
-            /** @description PASETO v4 operator session token (opaque to clients). */
-            token: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description When the session cookie expires (RFC3339 UTC).
+             */
             expiresAt: string;
         };
         Identity: {
@@ -663,7 +681,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description An operator session token. */
+            /** @description Session established. The session cookie + CSRF cookie are set via Set-Cookie headers; the body carries only the session expiry timestamp. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -674,6 +692,24 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Both cookies cleared. No body. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getMe: {

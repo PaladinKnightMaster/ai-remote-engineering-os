@@ -4,10 +4,28 @@
 // internal/resource domain types (the store carries created_at/updated_at not on
 // the wire); the generated body models are not used — same rationale as
 // audit-service (see oapi-codegen.api.yaml).
+//
+// Auth posture for the operator-facing SPA (ADR-0047, T-007b):
+//
+//   - The PASETO session token is set in an HttpOnly cookie by Login and never
+//     returned in the response body.  Service-to-service callers continue to
+//     send `Authorization: Bearer <paseto>` directly (no cookie).
+//   - A non-HttpOnly `aireos_csrf` cookie carries a per-session random value;
+//     the SPA reads it via document.cookie and echoes it as `X-CSRF-Token` on
+//     every non-GET/HEAD request (double-submit defense).
+//   - Sliding refresh: when an operator's verified token has less than half of
+//     its TTL remaining, slidingRefresh rotates both cookies inline with the
+//     response.  ADR-0046's 8h operator TTL ⇒ refresh window is "< 4h
+//     remaining."
+//   - `cookieToAuthHeader` is a thin adapter that copies the session cookie
+//     into the Authorization header for downstream RequireCapability, keeping
+//     `packages/go/middleware/` agnostic of cookie posture (Tech Lead lens).
 package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -19,6 +37,17 @@ import (
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/store"
+)
+
+// Cookie + CSRF contract names (ADR-0047). The SPA in
+// packages/shared-types/src/client.ts reads `aireos_csrf` from document.cookie
+// and sends the value as the X-CSRF-Token header — change either name here
+// and the SPA breaks. The CSRF header name is also the canonical lookup the
+// chi-server stub uses on r.Header.Get below.
+const (
+	sessionCookieName = "aireos_session"
+	csrfCookieName    = "aireos_csrf"
+	csrfHeaderName    = "X-CSRF-Token"
 )
 
 // Store is the narrow slice of *store.Store the handlers need.
@@ -43,22 +72,65 @@ type apiHandlers struct {
 
 // New returns the api router. Routes that declared security in the contract are
 // gated by RequireCapability over the human-agent (operator) and service-service
-// edges; POST /v1/auth/login (security: []) is public — see gateByDeclaredSecurity.
+// edges; POST /v1/auth/login (security: []) and POST /v1/auth/logout
+// (security: []) are public — see gateByDeclaredSecurity.
+//
+// Middleware order (effective flow at request time):
+//
+//	cookieToAuthHeader   — translate aireos_session cookie → Authorization
+//	gateByDeclaredSecurity — RequireCapability + CSRF on gated mutations
+//	slidingRefresh       — rotate cookies if operator token < half TTL
+//
+// The slice below is written innermost-first because the generated
+// ServerInterfaceWrapper composes middlewares with `handler = m(handler)` per
+// iteration — so the LAST entry becomes the outermost wrapper at runtime
+// (see gen.go's per-op middleware loop). Reordering this slice without
+// understanding that loop will silently break the cookie path.
 func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier) http.Handler {
 	h := &apiHandlers{store: s, authn: authn, signer: signer}
 	return HandlerWithOptions(h, ChiServerOptions{
-		BaseRouter:  chi.NewRouter(),
-		Middlewares: []MiddlewareFunc{gateByDeclaredSecurity(v)},
+		BaseRouter: chi.NewRouter(),
+		Middlewares: []MiddlewareFunc{
+			slidingRefresh(signer),    // innermost  (last to run, closest to handler)
+			gateByDeclaredSecurity(v), // middle
+			cookieToAuthHeader,        // outermost  (first to run)
+		},
 	})
 }
 
-// gateByDeclaredSecurity enforces RequireCapability only on operations that
-// declared security (the generated wrapper marks them with BearerAuthScopes in
-// the request context). Operations with `security: []` (login) are public.
+// cookieToAuthHeader copies aireos_session into the Authorization header when
+// Authorization is absent. Service-to-service callers send Authorization
+// directly and have no cookie; the SPA sends the cookie and no header. If
+// both are present, the existing Authorization wins (no override) — that lets
+// admins force a specific bearer for diagnostics.
+func cookieToAuthHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+				r.Header.Set("Authorization", "Bearer "+c.Value)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// gateByDeclaredSecurity enforces RequireCapability on operations that declared
+// security in the contract (the generated wrapper marks them with
+// BearerAuthScopes in the request context). It additionally requires a valid
+// double-submit CSRF token on mutating requests that authenticated via the
+// session cookie. Service-to-service callers (Authorization header, no cookie)
+// are exempt from CSRF — there's no browser to defend.
 func gateByDeclaredSecurity(v mw.Verifier) MiddlewareFunc {
 	require := mw.RequireCapability(v, "human-agent", "service-service")
 	return func(next http.Handler) http.Handler {
-		enforced := require(next)
+		afterAuth := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if needsCSRF(r) && !csrfValid(r) {
+				writeError(w, http.StatusForbidden, "forbidden", "csrf token missing or mismatched")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+		enforced := require(afterAuth)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Context().Value(BearerAuthScopes) != nil {
 				enforced.ServeHTTP(w, r)
@@ -69,8 +141,128 @@ func gateByDeclaredSecurity(v mw.Verifier) MiddlewareFunc {
 	}
 }
 
-// Login (POST /v1/auth/login) verifies operator credentials and mints an
-// operator session token (ADR-0046). Public route.
+func needsCSRF(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	// Browser path = the request carried a session cookie. Service-service
+	// path = Authorization-only, no cookie → no CSRF.
+	_, err := r.Cookie(sessionCookieName)
+	return err == nil
+}
+
+func csrfValid(r *http.Request) bool {
+	header := r.Header.Get(csrfHeaderName)
+	if header == "" {
+		return false
+	}
+	c, err := r.Cookie(csrfCookieName)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	// Constant-time compare to avoid timing oracles on the CSRF value.
+	return subtleEqual(header, c.Value)
+}
+
+// subtleEqual is crypto/subtle.ConstantTimeCompare wrapped to take strings.
+// Inline to avoid an import for a one-line helper.
+func subtleEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := 0; i < len(a); i++ {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
+}
+
+// slidingRefresh rotates the session + CSRF cookies inline with the response
+// when an operator's token has less than half its TTL remaining (ADR-0047 §6,
+// ADR-0046 OperatorTTL = 8h ⇒ refresh window < 4h). Service-service tokens are
+// not refreshed (they self-refresh in-process). A nil signer (dev allow-all)
+// short-circuits.
+func slidingRefresh(signer *auth.Signer) MiddlewareFunc {
+	if signer == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cap, ok := mw.CapabilityFromContext(r.Context())
+			if ok && cap.Edge == "human-agent" && !cap.ExpiresAt.IsZero() {
+				remaining := time.Until(cap.ExpiresAt)
+				if remaining > 0 && remaining < auth.OperatorTTL/2 {
+					if newToken, err := signer.IssueOperator(cap.Subject, cap.Audience); err == nil {
+						setSessionCookies(w, newToken)
+					}
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// setSessionCookies writes the session + CSRF cookies on a successful login
+// or a sliding refresh. Cookie attributes are ADR-0047 §Decision:
+//   - HttpOnly on the session cookie (PASETO opaque to JS by construction).
+//   - SameSite=Strict on both (primary CSRF defense; double-submit is layered).
+//   - Secure on both (HTTPS-only; modern browsers treat localhost as secure).
+//   - Path=/ so both apply to every SPA / API path under the same origin.
+//   - MaxAge = OperatorTTL seconds.
+func setSessionCookies(w http.ResponseWriter, token string) error {
+	csrf, err := newCSRFToken()
+	if err != nil {
+		return err
+	}
+	maxAge := int(auth.OperatorTTL / time.Second)
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    csrf,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: false, // SPA reads this to echo X-CSRF-Token.
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	return nil
+}
+
+func clearSessionCookies(w http.ResponseWriter) {
+	for _, name := range []string{sessionCookieName, csrfCookieName} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1, // delete
+			HttpOnly: name == sessionCookieName,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+		})
+	}
+}
+
+func newCSRFToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// Login (POST /v1/auth/login) verifies operator credentials and establishes
+// the session by setting an HttpOnly session cookie + a non-HttpOnly CSRF
+// cookie (ADR-0046, ADR-0047). The PASETO token is NOT returned in the body —
+// it stays opaque to JS by construction. Public route.
 func (a *apiHandlers) Login(w http.ResponseWriter, r *http.Request) {
 	if a.authn == nil || a.signer == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "operator login is not configured")
@@ -97,10 +289,21 @@ func (a *apiHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "issue token failed")
 		return
 	}
+	if err := setSessionCookies(w, token); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "set cookies failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"token":     token,
 		"expiresAt": time.Now().Add(auth.OperatorTTL).UTC().Format(time.RFC3339),
 	})
+}
+
+// Logout (POST /v1/auth/logout) clears the session + CSRF cookies. Public:
+// callers with stale/expired cookies can recover. SameSite=Strict on the
+// session cookie blocks cross-site CSRF on this endpoint at the browser layer.
+func (a *apiHandlers) Logout(w http.ResponseWriter, _ *http.Request) {
+	clearSessionCookies(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GetMe (GET /v1/auth/me) returns the verified capability of the current token.

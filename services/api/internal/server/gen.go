@@ -58,10 +58,8 @@ type LoginRequest struct {
 
 // LoginResponse defines model for LoginResponse.
 type LoginResponse struct {
+	// ExpiresAt When the session cookie expires (RFC3339 UTC).
 	ExpiresAt time.Time `json:"expiresAt"`
-
-	// Token PASETO v4 operator session token (opaque to clients).
-	Token string `json:"token"`
 }
 
 // PageMeta defines model for PageMeta.
@@ -128,9 +126,12 @@ type UpdateResourceJSONRequestBody = ResourceInput
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// Operator login — exchange credentials for a capability token
+	// Operator login — exchange credentials for a session cookie
 	// (POST /v1/auth/login)
 	Login(w http.ResponseWriter, r *http.Request)
+	// Clear the operator session and CSRF cookies
+	// (POST /v1/auth/logout)
+	Logout(w http.ResponseWriter, r *http.Request)
 	// The verified capability of the current token (capability-edge UI, ADR-0047)
 	// (GET /v1/auth/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
@@ -155,9 +156,15 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
-// Operator login — exchange credentials for a capability token
+// Operator login — exchange credentials for a session cookie
 // (POST /v1/auth/login)
 func (_ Unimplemented) Login(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Clear the operator session and CSRF cookies
+// (POST /v1/auth/logout)
+func (_ Unimplemented) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -211,6 +218,20 @@ func (siw *ServerInterfaceWrapper) Login(w http.ResponseWriter, r *http.Request)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.Login(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// Logout operation middleware
+func (siw *ServerInterfaceWrapper) Logout(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.Logout(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -509,6 +530,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/auth/login", wrapper.Login)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/auth/logout", wrapper.Logout)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/auth/me", wrapper.GetMe)

@@ -3,15 +3,25 @@ package middleware
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // Capability is the verified capability a bearer token encodes (ADR-0046).
 // The seven capability edges from docs/security/agent-permission-model.md plus
 // service-service ride on Edge; Scope carries the typed target + operations.
+//
+// ExpiresAt + Audience are populated by adapters that can extract them from
+// the underlying token (packages/go/auth's PASETO Verifier does). Adapters
+// that cannot (e.g. dev allow-all stubs) leave them zero-valued; downstream
+// features that depend on them (services/api sliding-refresh, ADR-0047 §6)
+// short-circuit on a zero ExpiresAt. Adding fields to this struct is backward-
+// compatible for consumers that only read Subject/Edge/Scope.
 type Capability struct {
-	Subject string
-	Edge    string
-	Scope   Scope
+	Subject   string
+	Edge      string
+	Scope     Scope
+	ExpiresAt time.Time
+	Audience  string
 }
 
 // Scope is the typed scope object from ADR-0046 (resource + operations, plus
