@@ -88,11 +88,3 @@ export function createApiClient(options: CreateApiClientOptions = {}) {
   client.use(csrfAndUnauthorized);
   return client;
 }
-
-// Exported for the T-012 lint rule + tests that assert the cookie/header
-// contract has not silently drifted. Not part of the public surface.
-export const __INTERNAL__ = {
-  CSRF_COOKIE,
-  CSRF_HEADER,
-  MUTATION_METHODS,
-};

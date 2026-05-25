@@ -41,6 +41,9 @@ tasks:
       # Explicit per-module patterns: a bare ./... or ./packages/go/... does not
       # resolve from the workspace root (the modules live one level deeper).
       - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/session-broker/...
+      # JS workspace unit tests (T-007a). `--if-present` skips packages
+      # without a `test` script; packages/ui + packages/config have none yet.
+      - pnpm -r --if-present run test
 
   test-integration:
     desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup."

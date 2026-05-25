@@ -1,10 +1,24 @@
 // Shared Tailwind v4 config — ADR-0047, design-system-governance preflight.
 //
-// Token Map per ../agency-kit/ai/core/design-system-governance.md §2: colors,
-// typography, spacing, radius, elevation, motion, semantic states. Concrete
-// shade values are bound to CSS custom properties (--background, etc.) defined
-// in apps/web/src/styles.css when the SPA shell lands (T-007c). This file is
-// the token surface; apps consume it via tailwind.config.ts that imports here.
+// Token Map per ../agency-kit/ai/core/design-system-governance.md §2. The
+// seven categories the preflight names and where each one lives at T-007a:
+//
+//   colors           — explicit semantic tokens below (CSS custom properties).
+//   radius           — explicit semantic tokens below.
+//   semantic states  — encoded in the color tokens (primary/destructive/etc.)
+//                      and extended once shadcn variants are vendored (T-007c+).
+//   typography       — Tailwind v4 defaults stand in until a concrete consumer
+//   spacing            (apps/web shell, the first shadcn component) needs an
+//   elevation          override. This is an explicit decision in the T-007a
+//   motion             review: speculative tokens for un-built consumers would
+//                      violate "search-before-create" in
+//                      design-system-governance.md §3. When the first SPA
+//                      route ships in T-007c, audit which of these four need
+//                      semantic tokens and add them here in the same diff.
+//
+// Concrete shade values for the color tokens are bound to CSS custom
+// properties (--background, etc.) defined in apps/web/src/styles.css when
+// the SPA shell lands (T-007c). This file is the token *surface*.
 //
 // Style Binding rule: app/UI code references semantic tokens only (e.g.
 // bg-background, text-foreground); raw hex/rgb values are a lint violation

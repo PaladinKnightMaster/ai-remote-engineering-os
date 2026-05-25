@@ -130,3 +130,7 @@ jobs:
         run: git diff --exit-code packages/shared-types/src/generated/openapi.ts
       - name: Typecheck (all workspace members)
         run: pnpm -r run typecheck
+      - name: Unit tests (packages with a `test` script)
+        # --if-present skips packages without a test script (packages/ui +
+        # packages/config at T-007a; they grow tests with T-007c / T-012).
+        run: pnpm -r --if-present run test
