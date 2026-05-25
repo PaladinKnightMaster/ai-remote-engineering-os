@@ -1,0 +1,48 @@
+/* apps/web global stylesheet — ADR-0047 Tailwind v4 + token map.
+ *
+ * Tailwind v4 uses CSS-first config. The semantic color tokens declared
+ * here are the runtime values that packages/config/tailwind.config.ts
+ * binds to via hsl(var(--background)) etc. The two files are intentional
+ * mirrors; promoting tokens into shared CSS that packages/config imports
+ * is a follow-up if apps/admin lands a different palette.
+ *
+ * Concrete shade values are shadcn-baseline neutrals; the design-system
+ * preflight calls these out as "starter values" — replace with brand
+ * tokens at brand-lock. Style Binding rule (design-system-governance §):
+ * app code uses `bg-background` / `text-foreground` / etc., never raw
+ * hex/rgb (T-012 lint enforces).
+ */
+
+@import "tailwindcss";
+
+@theme {
+  --color-background: hsl(0 0% 100%);
+  --color-foreground: hsl(222.2 84% 4.9%);
+  --color-primary: hsl(222.2 47.4% 11.2%);
+  --color-primary-foreground: hsl(210 40% 98%);
+  --color-secondary: hsl(210 40% 96.1%);
+  --color-secondary-foreground: hsl(222.2 47.4% 11.2%);
+  --color-muted: hsl(210 40% 96.1%);
+  --color-muted-foreground: hsl(215.4 16.3% 46.9%);
+  --color-accent: hsl(210 40% 96.1%);
+  --color-accent-foreground: hsl(222.2 47.4% 11.2%);
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(210 40% 98%);
+  --color-border: hsl(214.3 31.8% 91.4%);
+  --color-input: hsl(214.3 31.8% 91.4%);
+  --color-ring: hsl(222.2 84% 4.9%);
+
+  --radius: 0.5rem;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    min-height: 100vh;
+  }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+}

@@ -1,0 +1,107 @@
+// useWebSocketChannel — thin React wrapper around the native WebSocket API
+// for talking to services/session-broker (ADR-0047 §Decision item
+// "Session-broker channel: native WebSocket + EventSource with thin React
+// hooks").
+//
+// Scope at T-007c: skeleton with auto-reconnect + exponential backoff +
+// status surface. Streaming-grade semantics (multiplexed channels,
+// backpressure, binary framing) land with the first session-broker UI
+// ticket — that's when this hook gets its real workout.
+//
+// Auth piggybacks on the same `aireos_session` HttpOnly cookie (the WS
+// upgrade is an HTTP request; the browser sends the cookie automatically).
+// The hook itself doesn't touch tokens.
+
+import { useEffect, useRef, useState } from "react";
+
+export type WSStatus = "idle" | "connecting" | "open" | "closing" | "closed";
+
+export interface UseWebSocketChannelOptions {
+  url: string;
+  /** Don't open the socket while false. Toggling true opens; toggling false closes. */
+  enabled?: boolean;
+  /** Per-message callback. Receives the raw MessageEvent. */
+  onMessage?: (e: MessageEvent) => void;
+  /** Initial reconnect delay (ms). Doubles up to maxBackoffMs on consecutive failures. */
+  initialBackoffMs?: number;
+  maxBackoffMs?: number;
+  /** Optional subprotocols passed to the WebSocket constructor. */
+  protocols?: string | string[];
+}
+
+export interface UseWebSocketChannelResult {
+  status: WSStatus;
+  /** Send a string or binary frame. No-op when the socket isn't open. */
+  send: (data: string | ArrayBufferLike | Blob | ArrayBufferView) => void;
+}
+
+export function useWebSocketChannel(
+  opts: UseWebSocketChannelOptions,
+): UseWebSocketChannelResult {
+  const {
+    url,
+    enabled = true,
+    onMessage,
+    initialBackoffMs = 500,
+    maxBackoffMs = 15_000,
+    protocols,
+  } = opts;
+
+  const [status, setStatus] = useState<WSStatus>("idle");
+  const wsRef = useRef<WebSocket | null>(null);
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    let cancelled = false;
+    let backoff = initialBackoffMs;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const open = () => {
+      if (cancelled) return;
+      setStatus("connecting");
+      const ws = new WebSocket(url, protocols);
+      wsRef.current = ws;
+      ws.onopen = () => {
+        if (cancelled) return;
+        backoff = initialBackoffMs;
+        setStatus("open");
+      };
+      ws.onmessage = (e) => {
+        onMessageRef.current?.(e);
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        setStatus("closed");
+        // Exponential backoff up to the cap.
+        reconnectTimer = setTimeout(open, backoff);
+        backoff = Math.min(backoff * 2, maxBackoffMs);
+      };
+      ws.onerror = () => {
+        // onclose follows; reconnect is driven from there.
+      };
+    };
+
+    open();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (wsRef.current) {
+        setStatus("closing");
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [url, enabled, initialBackoffMs, maxBackoffMs, protocols]);
+
+  const send: UseWebSocketChannelResult["send"] = (data) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+  };
+
+  return { status, send };
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@aireos/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Operator cockpit SPA — Vite 6 + React 18 + react-router-dom v7 (ADR-0047).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aireos/shared-types": "workspace:*",
+    "@aireos/ui": "workspace:*",
+    "react": "~18.3.1",
+    "react-dom": "~18.3.1",
+    "react-router-dom": "~7.1.5"
+  },
+  "devDependencies": {
+    "@aireos/config": "workspace:*",
+    "@tailwindcss/vite": "~4.1.13",
+    "@testing-library/react": "~15.0.7",
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "~4.3.4",
+    "jsdom": "^25.0.1",
+    "tailwindcss": "~4.1.13",
+    "typescript": "^5.6.3",
+    "vite": "~6.0.7",
+    "vitest": "^2.1.9"
+  }
+}

@@ -10,5 +10,10 @@
   "scripts": {
     "typecheck": "pnpm -r run typecheck",
     "codegen": "pnpm --filter @aireos/shared-types run codegen"
+  },
+  "pnpm": {
+    "overrides": {
+      "vite": "~6.0.7"
+    }
   }
 }

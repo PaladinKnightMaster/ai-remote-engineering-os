@@ -1,15 +1,35 @@
 // @aireos/ui — public barrel.
 //
-// T-007a stands up the package boundary only. The component + hook surface
-// listed in ADR-0047 §Verification §4 lands with T-007c:
+// T-007c lands the capability provider/gate + the WS/SSE hooks (ADR-0047
+// §Verification §4). The remaining components named there
+// (<ApprovalPrompt>, <RemoteSessionView>, <TerminalView>) land with the
+// feature tickets that consume them:
 //
-//   - <CapabilityProvider>, <CapabilityGate>          — capability-edge UI
-//   - <ApprovalPrompt>                                — egress / approval UX
-//   - <RemoteSessionView>, <TerminalView>             — Guacamole / xterm wrappers
-//   - useWebSocketChannel, useEventSource             — session-broker hooks
+//   - <ApprovalPrompt>       — first approval-touching action ticket
+//                              (egress / agent-tool, ADR-0047 §Hand-off).
+//   - <RemoteSessionView>    — first session-broker UI ticket
+//                              (Guacamole on a <canvas>).
+//   - <TerminalView>         — first terminal UI ticket (xterm.js).
 //
-// Until then the package is intentionally empty so the workspace shape exists
-// without speculative components. Adding it as an explicit empty export keeps
-// TypeScript's `isolatedModules` happy.
+// Deferring per "search-before-create" in design-system-governance §3 —
+// vendoring components without a concrete consumer would speculate on
+// UX that the relevant UI specs (docs/ui-ux/) haven't pinned down yet.
 
-export {};
+export { CapabilityProvider, useCapability } from "./capability/CapabilityProvider";
+export type { Capability, CapabilityContextValue, CapabilityProviderProps } from "./capability/CapabilityProvider";
+export { CapabilityGate } from "./capability/CapabilityGate";
+export type { CapabilityGateProps } from "./capability/CapabilityGate";
+
+export { useWebSocketChannel } from "./hooks/useWebSocketChannel";
+export type {
+  WSStatus,
+  UseWebSocketChannelOptions,
+  UseWebSocketChannelResult,
+} from "./hooks/useWebSocketChannel";
+
+export { useEventSource } from "./hooks/useEventSource";
+export type {
+  SSEStatus,
+  UseEventSourceOptions,
+  UseEventSourceResult,
+} from "./hooks/useEventSource";
