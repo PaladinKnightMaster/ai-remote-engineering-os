@@ -64,10 +64,12 @@ const config = [
     },
     rules: {
       // === ADR-0047 SEC-7: PASETO must stay opaque to JS ===
-      // Block direct fetch() and new Request() everywhere; the exception
-      // for the createApiClient wrapper lives below as a scoped override.
+      // Block fetch / new Request and their member-expression bypasses.
+      // T-012 review pass surfaced globalThis.fetch / window.fetch as a
+      // real bypass vector — selectors below cover all known forms.
       "no-restricted-syntax": [
         "error",
+        // Bare-call form: fetch(...) / new Request(...).
         {
           selector: "CallExpression[callee.name='fetch']",
           message:
@@ -77,6 +79,19 @@ const config = [
           selector: "NewExpression[callee.name='Request']",
           message:
             "Direct `new Request()` is forbidden. The createApiClient wrapper constructs Requests; bypassing it skips CSRF auto-attach (ADR-0047 SEC-7).",
+        },
+        // Bypass form: globalThis.fetch / window.fetch / self.fetch.
+        {
+          selector:
+            "CallExpression[callee.type='MemberExpression'][callee.property.name='fetch'][callee.object.name=/^(globalThis|window|self)$/]",
+          message:
+            "globalThis.fetch / window.fetch / self.fetch is forbidden — same reason as bare fetch(). Use createApiClient (ADR-0047 SEC-7).",
+        },
+        {
+          selector:
+            "NewExpression[callee.type='MemberExpression'][callee.property.name='Request'][callee.object.name=/^(globalThis|window|self)$/]",
+          message:
+            "globalThis.Request / window.Request / self.Request is forbidden — same reason as bare `new Request()` (ADR-0047 SEC-7).",
         },
       ],
       // === ADR-0047 SEC-7: tokens stay in HttpOnly cookies, never in storage ===
@@ -93,12 +108,45 @@ const config = [
             "sessionStorage is forbidden in apps/* and packages/ui/* — same reasoning as localStorage. PASETO tokens stay in HttpOnly cookies (ADR-0047 SEC-2 / SEC-7).",
         },
       ],
-      // === ADR-0047 §Decision: XSS escape hatches forbidden ===
-      // The cockpit renders operator-controllable content (logs, terminal
-      // output, agent outputs); dangerouslySetInnerHTML is the XSS surface
-      // we explicitly do not permit.
+      // Belt-and-suspenders: catch the window.localStorage / globalThis.localStorage
+      // bypass forms. no-restricted-globals only catches bare references; member-
+      // expression access slips past it.
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "window",
+          property: "localStorage",
+          message: "window.localStorage is forbidden — same reasoning as bare localStorage (ADR-0047 SEC-7).",
+        },
+        {
+          object: "window",
+          property: "sessionStorage",
+          message: "window.sessionStorage is forbidden — same reasoning as bare sessionStorage (ADR-0047 SEC-7).",
+        },
+        {
+          object: "globalThis",
+          property: "localStorage",
+          message: "globalThis.localStorage is forbidden — same reasoning as bare localStorage (ADR-0047 SEC-7).",
+        },
+        {
+          object: "globalThis",
+          property: "sessionStorage",
+          message: "globalThis.sessionStorage is forbidden — same reasoning as bare sessionStorage (ADR-0047 SEC-7).",
+        },
+      ],
+      // === Orthogonal XSS escape hatches ===
+      // dangerouslySetInnerHTML is the React-specific XSS surface.
       "react/no-danger": "error",
       "react/no-danger-with-children": "error",
+      // <a target="_blank"> without rel="noopener noreferrer" is the
+      // tab-nabbing vector. Standard React lint covers it.
+      "react/jsx-no-target-blank": "error",
+      // eval / new Function() are the JS-runtime XSS escape hatches.
+      // Operator-controllable content (terminal output, agent outputs)
+      // must never reach a code-evaluator.
+      "no-eval": "error",
+      "no-new-func": "error",
+      "no-implied-eval": "error",
       // === React hooks correctness ===
       "react-hooks/rules-of-hooks": "error",
       "react-hooks/exhaustive-deps": "warn",

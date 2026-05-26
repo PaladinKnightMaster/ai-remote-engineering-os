@@ -46,11 +46,27 @@ function collectAppPackageJsons(baseDir) {
 }
 
 function checkPackageJson(file) {
-  const pkg = JSON.parse(readFileSync(file, "utf8"));
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    // Surface malformed JSON with a clear file-scoped message instead of
+    // a bare stack trace. Treat as a violation (release-block) — a broken
+    // package.json is its own class of badness.
+    return [{ file, block: "parse", dep: "<malformed JSON>", match: String(err) }];
+  }
+  if (pkg === null || typeof pkg !== "object" || Array.isArray(pkg)) {
+    return [{ file, block: "parse", dep: "<not an object>", match: typeof pkg }];
+  }
   const blocks = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
   const violations = [];
   for (const block of blocks) {
-    const deps = pkg[block] ?? {};
+    const deps = pkg[block];
+    if (deps === undefined || deps === null) continue;
+    if (typeof deps !== "object" || Array.isArray(deps)) {
+      violations.push({ file, block, dep: "<wrong shape>", match: typeof deps });
+      continue;
+    }
     for (const dep of Object.keys(deps)) {
       const match = isForbidden(dep);
       if (match) violations.push({ file, block, dep, match });

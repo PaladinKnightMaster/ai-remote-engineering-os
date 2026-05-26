@@ -73,4 +73,24 @@ describe("@aireos/config/eslint.config.js — SEC-7 enforcement", () => {
     const errors = r.messages.filter((m) => m.severity === 2);
     expect(errors).toEqual([]);
   });
+
+  it("flags member-expression bypass forms — globalThis.fetch / window.fetch / window.Request", async () => {
+    const r = await lintFixture("bad-fetch-bypass.tsx");
+    const syntax = r.messages.filter((m) => m.ruleId === "no-restricted-syntax");
+    // bypassA (globalThis.fetch), bypassB (window.fetch), bypassC (self.fetch),
+    // bypassD (new window.Request) → at least 4 syntax violations.
+    expect(syntax.length).toBeGreaterThanOrEqual(4);
+    // bypassE (window.localStorage.setItem), bypassF (globalThis.sessionStorage.setItem)
+    const props = r.messages.filter((m) => m.ruleId === "no-restricted-properties");
+    expect(props.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("flags eval / new Function() / implied-eval / target=_blank without noopener", async () => {
+    const r = await lintFixture("bad-eval.tsx");
+    const ruleIds = new Set(r.messages.map((m) => m.ruleId));
+    expect(ruleIds.has("no-eval")).toBe(true);
+    expect(ruleIds.has("no-new-func")).toBe(true);
+    expect(ruleIds.has("no-implied-eval")).toBe(true);
+    expect(ruleIds.has("react/jsx-no-target-blank")).toBe(true);
+  });
 });
