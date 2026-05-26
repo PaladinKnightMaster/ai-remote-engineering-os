@@ -14,12 +14,15 @@
   "scripts": {
     "codegen": "openapi-typescript ../../docs/api-contracts/openapi.v3.fragment.yaml -o ./src/generated/openapi.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint ."
   },
   "dependencies": {
     "openapi-fetch": "~0.13.4"
   },
   "devDependencies": {
+    "@aireos/config": "workspace:*",
+    "eslint": "^9.18.0",
     "openapi-typescript": "^7.4.4",
     "typescript": "^5.6.3",
     "vite": "~6.0.7",

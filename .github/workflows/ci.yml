@@ -131,9 +131,13 @@ jobs:
       - name: Typecheck (all workspace members)
         run: pnpm -r run typecheck
       - name: Unit tests (packages with a `test` script)
-        # --if-present skips packages without a test script (packages/config
-        # at T-007c; T-012 may add a lint-rule test pass here).
         run: pnpm -r --if-present run test
+      - name: Lint (workspace ESLint, T-012 / SEC-7)
+        run: pnpm -r --if-present run lint
+      - name: Forbidden meta-framework deps (ADR-0047 §Verification §1)
+        run: node tools/forbidden-deps.mjs
+      - name: Forbidden-deps script self-tests
+        run: node --test tools/forbidden-deps.test.mjs
       - name: Build (apps/web)
         # Static-asset SPA build per ADR-0047 §Decision item "Production
         # serving." Dist/ goes into the offline-install bundle (task

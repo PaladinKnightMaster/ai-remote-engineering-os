@@ -28,9 +28,17 @@ tasks:
     silent: true
 
   lint:
-    desc: Run all linters (extended by T-011 for Go, T-012 for JS).
+    desc: "Run all linters (Go-side T-011 still pending; JS-side T-012 active)."
     cmds:
-      - echo "task lint: not-yet-implemented at T-002. Extended by T-011 (Go-side) and T-012 (JS-side)."
+      # JS-side (T-012): the workspace ESLint flat config + the
+      # ADR-0047 §Verification §1 forbidden-meta-framework-deps script.
+      # SEC-7 + SEC-8 of docs/evaluation/v0.1.0-release-criteria.md
+      # BOTH BLOCK RELEASE; this is the enforcement.
+      - pnpm -r --if-present run lint
+      - node tools/forbidden-deps.mjs
+      # Go-side (T-011) lands separately. Banner kept here so the gap
+      # is visible in `task lint` output until then.
+      - echo "task lint: Go-side (T-011) still pending; SEC-8 will block release until landed."
 
   test:
     desc: Run all tests (extended by per-service tickets).
