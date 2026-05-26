@@ -183,7 +183,11 @@ func slidingRefresh(signer *auth.Signer) MiddlewareFunc {
 				remaining := time.Until(cap.ExpiresAt)
 				if remaining > 0 && remaining < auth.OperatorTTL/2 {
 					if newToken, err := signer.IssueOperator(cap.Subject, cap.Audience); err == nil {
-						setSessionCookies(w, newToken)
+						// Refresh is best-effort: if the cookie write fails
+						// (rand failure, header already flushed), continue
+						// serving the response — the next request will retry
+						// the rotation if still in the refresh window.
+						_ = setSessionCookies(w, newToken)
 					}
 				}
 			}

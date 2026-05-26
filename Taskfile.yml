@@ -28,17 +28,24 @@ tasks:
     silent: true
 
   lint:
-    desc: "Run all linters (Go-side T-011 still pending; JS-side T-012 active)."
+    desc: "Run all linters. JS-side T-012 + Go-side T-011 close v0.1.0 SEC-7 + SEC-8 release-blockers."
+    vars:
+      GOLANGCI_LINT: github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0
     cmds:
-      # JS-side (T-012): the workspace ESLint flat config + the
-      # ADR-0047 §Verification §1 forbidden-meta-framework-deps script.
-      # SEC-7 + SEC-8 of docs/evaluation/v0.1.0-release-criteria.md
-      # BOTH BLOCK RELEASE; this is the enforcement.
+      # === JS side (T-012) ===
       - pnpm -r --if-present run lint
       - node tools/forbidden-deps.mjs
-      # Go-side (T-011) lands separately. Banner kept here so the gap
-      # is visible in `task lint` output until then.
-      - echo "task lint: Go-side (T-011) still pending; SEC-8 will block release until landed."
+      # === Go side (T-011) ===
+      # golangci-lint via go run keeps the binary out of the host
+      # toolchain (offline-install posture; ADR-0042 "smallest viable
+      # tooling kit"). First run downloads + caches; subsequent runs
+      # are fast (gomodcache volume).
+      - |
+        for mod in packages/go/auth packages/go/middleware packages/go/migrate services/api services/audit-service services/session-broker tools/migrate-lint tools/forbidden-features-check; do
+          (cd "$mod" && go run {{.GOLANGCI_LINT}} run ./... --config "$(git rev-parse --show-toplevel)/.golangci.yaml")
+        done
+      - go run ./tools/migrate-lint services/audit-service/migrations
+      - go run ./tools/forbidden-features-check .
 
   test:
     desc: Run all tests (extended by per-service tickets).

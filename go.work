@@ -32,4 +32,6 @@ use (
 	./services/api
 	./services/audit-service
 	./services/session-broker
+	./tools/migrate-lint
+	./tools/forbidden-features-check
 )

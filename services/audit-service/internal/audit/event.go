@@ -61,7 +61,7 @@ func (in Ingest) Validate() error {
 		return fmt.Errorf("timestamp must be RFC3339: %w", err)
 	}
 	if _, ok := Edges[in.Edge]; !ok {
-		return fmt.Errorf("edge %q is not a recognised capability edge", in.Edge)
+		return fmt.Errorf("edge %q is not a recognized capability edge", in.Edge)
 	}
 	return nil
 }

@@ -95,19 +95,30 @@ jobs:
         run: python infra/scripts/validate_contracts.py
 
   lint:
-    name: Lint (stub hook for T-011/T-012)
+    name: Lint (T-011 Go + T-012 JS — SEC-7 + SEC-8)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
       - name: Install Task
         run: go install github.com/go-task/task/v3/cmd/task@v3.39.2
-      - name: task lint
-        # Currently a no-op banner (T-002); the Go-side suite lands with T-011
-        # and the JS-side suite with T-012, both of which extend `task lint`.
+      - name: pnpm install (JS side)
+        run: pnpm install --frozen-lockfile
+      - name: task lint (runs both Go + JS suites)
         run: task lint
+      - name: Custom Go-lint self-tests (migrate-lint + forbidden-features-check)
+        run: |
+          (cd tools/migrate-lint && go test ./...)
+          (cd tools/forbidden-features-check && go test ./...)
 
   js:
     name: JS typecheck + codegen drift (ADR-0047, T-007a)

@@ -1,0 +1,143 @@
+# golangci-lint config — T-011, the Go-side SEC-8 enforcement.
+#
+# The criteria-binding rules (release-blocker per v0.1.0 SEC-8):
+#   - PASETO library (aidanwoods.dev/go-paseto) is importable ONLY from
+#     packages/go/auth/. ADR-0046 forbidden-features.
+#   - http.DefaultServeMux is forbidden everywhere (use an explicit
+#     chi.Router or http.ServeMux per ADR-0043).
+#   - panic() is forbidden in production code (tests + tools exempt).
+#     The criteria phrasing is "no panic in request-path code without
+#     recovery middleware"; we strengthen to "no panic anywhere outside
+#     tests/tools" because static analysis can't reliably identify
+#     request-path code.
+#
+# Standard hygiene linters (gofmt, govet, errcheck, staticcheck, gosimple,
+# unused) are also on. ineffassign + unconvert + misspell catch low-noise
+# correctness issues.
+
+run:
+  timeout: 5m
+  go: "1.23"
+
+linters:
+  disable-all: true
+  enable:
+    # === criteria SEC-8 release-blockers ===
+    - depguard       # PASETO isolation (ADR-0046)
+    - forbidigo      # http.DefaultServeMux + panic bans
+    # === Standard hygiene — release-quality but not criteria-binding ===
+    - errcheck       # don't silently swallow errors
+    - gosimple       # idiomatic Go
+    - govet          # the canonical Go static checker
+    - ineffassign    # ineffective assignments
+    - staticcheck    # broad correctness
+    - unused         # dead code
+    - misspell       # plain-English typos in comments / strings
+    - gofmt          # canonical formatting
+    # `unconvert` is intentionally NOT enabled: it flags `int(*x)` where
+    # `*x` is already int, which the oapi-codegen-adjacent handlers do
+    # legitimately for type narrowing of named-int aliases. Re-enable
+    # with a per-file exclude when the handlers are refactored.
+
+linters-settings:
+  depguard:
+    rules:
+      # Rule scope: every Go file in the workspace.
+      # Allow-list: nothing extra needed beyond stdlib + project modules.
+      # Deny-list: PASETO outside packages/go/auth/.
+      paseto-isolation:
+        files:
+          - "$all"
+          # Allow PASETO inside the auth package and its cmd subtree.
+          - "!**/packages/go/auth/**"
+        deny:
+          - pkg: "aidanwoods.dev/go-paseto"
+            desc: >-
+              PASETO library imports are isolated to packages/go/auth/
+              (ADR-0046 / criteria SEC-8). Consume the Signer / Verifier /
+              CapabilityToken types instead.
+
+  forbidigo:
+    # `analyze-types: true` resolves call-site symbols via the type info
+    # (so `import h "net/http"` aliasing doesn't bypass the rule).
+    analyze-types: true
+    # IMPORTANT: golangci-lint's forbidigo uses `p:` for the regex field
+    # (NOT `pattern:`). The `pattern:` key is silently ignored, which
+    # makes the rule fire on every identifier with the message of the
+    # first entry — a quiet, dangerous misconfiguration discovered
+    # during T-011 verification.
+    forbid:
+      # http.DefaultServeMux is the global package mux — implicit shared
+      # state. Every service must construct its own router (ADR-0043).
+      - p: "^http\\.DefaultServeMux$"
+        msg: >-
+          http.DefaultServeMux is forbidden. Construct an explicit
+          chi.Router / http.ServeMux per service (ADR-0043 / criteria SEC-8).
+      # http.Handle / http.HandleFunc register on DefaultServeMux behind
+      # the scenes — same hazard, same ban.
+      - p: "^http\\.Handle(Func)?$"
+        msg: >-
+          http.Handle / http.HandleFunc registers on the global
+          DefaultServeMux. Use router.Handle / router.HandleFunc on an
+          explicit router instead (ADR-0043 / criteria SEC-8).
+      # panic() in production code. Tests and tools/ are exempt via
+      # issues.exclude-rules below.
+      - p: "^panic$"
+        msg: >-
+          panic() is forbidden in production code. Return an error so
+          the caller / middleware can recover cleanly (criteria SEC-8).
+
+  errcheck:
+    # Best-effort cleanup paths where ignoring the error is canonical.
+    # `defer x.Close()` on connections / migrators / writers — if Close
+    # fails after the request, there's nothing actionable; log-and-ignore
+    # is the standard pattern but adds noise. Ignoring the result via
+    # `defer` is widely accepted Go style.
+    check-blank: false
+    exclude-functions:
+      - (io.Closer).Close
+      - (net.Conn).Close
+      - (*github.com/golang-migrate/migrate/v4.Migrate).Close
+      - (*github.com/coder/websocket.Conn).Close
+      - (*github.com/coder/websocket.Conn).CloseNow
+      # pgx transaction Rollback in `defer tx.Rollback(ctx)` is the
+      # canonical pgx idiom — Rollback is a no-op after a successful
+      # Commit, and a Rollback failure means the connection is already
+      # gone (nothing actionable from the deferred call).
+      - (github.com/jackc/pgx/v5.Tx).Rollback
+      - encoding/json.NewEncoder.Encode
+
+  staticcheck:
+    checks: ["all"]
+
+  misspell:
+    locale: US
+
+issues:
+  # Each issue must surface once; don't elide.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Don't apply the "default" exclude list — it muffles errcheck.
+  exclude-use-default: false
+  exclude-rules:
+    # Tests are exempt from forbidigo. Test helpers use panic for
+    # setup-impossible conditions; test code paths shouldn't be
+    # released to operators.
+    - path: _test\.go$
+      linters:
+        - forbidigo
+        - errcheck
+    # tools/ are operator-side dev/CI helpers — allowed to panic, allowed
+    # to use the global mux for trivial localhost servers.
+    - path: ^tools/
+      linters:
+        - forbidigo
+        - errcheck
+    # Generated code (oapi-codegen output) is reviewed via its own drift
+    # check; lint there is noise.
+    - path: internal/server/gen\.go$
+      linters:
+        - errcheck
+        - staticcheck
+        - unused
+        - gosimple
