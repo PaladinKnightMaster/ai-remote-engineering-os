@@ -34,22 +34,68 @@ var protectedTables = []string{
 	"audit_events",
 }
 
+// Names of DB-level protections (TRIGGER + FUNCTION) that enforce
+// append-only semantics on the protected tables. Dropping or replacing
+// them silently disables the DB-layer defense. Extend alongside
+// protectedTables when new protections are added.
+var protectedTriggers = []string{
+	"audit_events_no_mutate",
+}
+var protectedFunctions = []string{
+	"audit_events_append_only",
+}
+
+// tableMatch returns a regex fragment matching `[schema.]"?<table>"?`
+// so schema-qualified (`public.audit_events`) and quoted
+// (`"audit_events"`) forms don't bypass detection. T-011 review pass
+// surfaced both as real bypass vectors.
+func tableMatch(t string) string {
+	// Optional schema prefix (alnum + underscore + optional quotes),
+	// then optional double-quote, then the table name, then optional
+	// double-quote. The trailing `\b` ensures we don't accidentally
+	// match `audit_events_extra`.
+	return `(?:"?[\w]+"?\s*\.\s*)?"?` + regexp.QuoteMeta(t) + `"?\b`
+}
+
 // Destructive-DDL patterns. The space-handling is intentional: SQL is
 // case-insensitive and whitespace-tolerant; (?i) handles case,
 // `\s+` handles inter-token whitespace and newlines.
 var destructivePatterns = func() []*regexp.Regexp {
 	var ps []*regexp.Regexp
 	for _, t := range protectedTables {
-		// DROP TABLE [IF EXISTS] <table>
-		ps = append(ps, regexp.MustCompile(`(?i)\bDROP\s+TABLE\b(\s+IF\s+EXISTS)?\s+`+regexp.QuoteMeta(t)+`\b`))
-		// TRUNCATE [TABLE] <table>
-		ps = append(ps, regexp.MustCompile(`(?i)\bTRUNCATE\b(\s+TABLE)?\s+`+regexp.QuoteMeta(t)+`\b`))
-		// ALTER TABLE <table> ... DROP COLUMN ...
-		ps = append(ps, regexp.MustCompile(`(?i)\bALTER\s+TABLE\s+`+regexp.QuoteMeta(t)+`\b[\s\S]*?\bDROP\s+(COLUMN|CONSTRAINT|TRIGGER)\b`))
-		// DELETE FROM <table>
-		ps = append(ps, regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+`+regexp.QuoteMeta(t)+`\b`))
-		// UPDATE <table> SET ...
-		ps = append(ps, regexp.MustCompile(`(?i)\bUPDATE\s+`+regexp.QuoteMeta(t)+`\b[\s\S]*?\bSET\b`))
+		tm := tableMatch(t)
+		// DROP TABLE [IF EXISTS] [schema.]<table>
+		ps = append(ps, regexp.MustCompile(`(?i)\bDROP\s+TABLE\b(\s+IF\s+EXISTS)?\s+`+tm))
+		// TRUNCATE [TABLE] [schema.]<table>
+		ps = append(ps, regexp.MustCompile(`(?i)\bTRUNCATE\b(\s+TABLE)?\s+`+tm))
+		// ALTER TABLE [schema.]<table> ... DROP COLUMN/CONSTRAINT/TRIGGER
+		ps = append(ps, regexp.MustCompile(`(?i)\bALTER\s+TABLE\s+`+tm+`[\s\S]*?\bDROP\s+(COLUMN|CONSTRAINT|TRIGGER)\b`))
+		// ALTER TABLE [schema.]<table> ... RENAME TO
+		ps = append(ps, regexp.MustCompile(`(?i)\bALTER\s+TABLE\s+`+tm+`[\s\S]*?\bRENAME\s+TO\b`))
+		// DELETE FROM [schema.]<table>
+		ps = append(ps, regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+`+tm))
+		// UPDATE [schema.]<table> SET ...
+		ps = append(ps, regexp.MustCompile(`(?i)\bUPDATE\s+`+tm+`[\s\S]*?\bSET\b`))
+	}
+	// DROP TRIGGER <name> [ON [schema.]<table>] — removes the
+	// append-only enforcer at the DB layer.
+	for _, tg := range protectedTriggers {
+		ps = append(ps, regexp.MustCompile(`(?i)\bDROP\s+TRIGGER\b(\s+IF\s+EXISTS)?\s+`+regexp.QuoteMeta(tg)+`\b`))
+	}
+	// DROP FUNCTION on the audit-protection function — disables the
+	// trigger's logic without removing the trigger itself.
+	//
+	// Known limit (T-011 review pass): `CREATE OR REPLACE FUNCTION` is
+	// the canonical PostgreSQL idiom for idempotent initial setup
+	// (services/audit-service/migrations/0001_init.up.sql uses it).
+	// Banning it would false-positive on legitimate initial migration
+	// without distinguishing intent. A LATER migration that replaces
+	// the function body to disable enforcement is therefore UNDETECTED
+	// by static analysis — operator review of audit-service migrations
+	// is the documented defense for that vector (every audit migration
+	// PR is a Permission Model Reviewer + Tech Lead consult).
+	for _, fn := range protectedFunctions {
+		ps = append(ps, regexp.MustCompile(`(?i)\bDROP\s+FUNCTION\b(\s+IF\s+EXISTS)?\s+`+regexp.QuoteMeta(fn)+`\b`))
 	}
 	return ps
 }()

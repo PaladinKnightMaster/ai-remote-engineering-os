@@ -36,10 +36,16 @@ import (
 // Character classes: dash must be at the end of the class (or escaped)
 // because Go's regex parses `[_-.]` as a range _–. which is invalid
 // (0x5F > 0x2E). Using `[_.-]` puts the dash last → literal.
+//
+// Each pattern intentionally allows END-OF-STRING after the keyword so
+// directory names (e.g. an `oauth/` directory containing benign filenames)
+// are caught. Without `$` anchoring, `oauth[_-]` requires a char after —
+// matches `oauth_google.go` but misses bare `oauth/`. T-011 review pass
+// surfaced this as a directory-bypass vector.
 var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)password[_-]?reset`),
 	regexp.MustCompile(`(?i)(^|[_-])signup($|[_.-])`),
-	regexp.MustCompile(`(?i)oauth[_-]`),
+	regexp.MustCompile(`(?i)(^|[_-])oauth($|[_-])`),
 	regexp.MustCompile(`(?i)jwks`),
 }
 
@@ -65,16 +71,31 @@ func scan(root string) ([]match, error) {
 		if err != nil {
 			return err
 		}
+		name := d.Name()
 		if d.IsDir() {
-			if _, skip := skipDirs[d.Name()]; skip {
+			if _, skip := skipDirs[name]; skip {
 				return filepath.SkipDir
+			}
+			// Directory-name check — added by the T-011 review pass.
+			// A directory named oauth/ or signup/ signals feature
+			// presence even if no individual filename matches.
+			// Root dir itself ("." or absolute path) is exempt — the
+			// scan root is passed by the operator, not authored.
+			if p != root {
+				for _, re := range patterns {
+					if re.MatchString(name) {
+						out = append(out, match{Path: p, Pattern: re.String() + " (directory)"})
+						break
+					}
+				}
 			}
 			return nil
 		}
-		name := d.Name()
 		// Only inspect Go source + TypeScript / TSX. Other files (docs,
 		// SQL, configs) might legitimately contain the keyword without
-		// shipping the feature.
+		// shipping the feature. Known limit at v0.1.0: .sql / .json
+		// filenames could bypass; accepted trade-off vs. false-positive
+		// surface on docs.
 		if !strings.HasSuffix(name, ".go") &&
 			!strings.HasSuffix(name, ".ts") &&
 			!strings.HasSuffix(name, ".tsx") {

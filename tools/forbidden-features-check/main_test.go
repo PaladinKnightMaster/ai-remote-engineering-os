@@ -33,13 +33,18 @@ func TestForbiddenFeatures_ViolatingFixture(t *testing.T) {
 		t.Fatalf("violating fixture should fail; got success output=%s", out)
 	}
 	s := string(out)
-	// The fixture file is named password_reset_handler.go and oauth_google.go;
-	// both should be diagnosed.
+	// File-name matches: password_reset_handler.go + oauth_google.go.
 	if !strings.Contains(s, "password") {
 		t.Fatalf("expected 'password' in diagnostic; got %s", s)
 	}
-	if !strings.Contains(s, "oauth") {
-		t.Fatalf("expected 'oauth' in diagnostic; got %s", s)
+	if !strings.Contains(s, "oauth_google.go") {
+		t.Fatalf("expected the oauth file in diagnostic; got %s", s)
+	}
+	// Directory-name match (T-011 review pass addition): the `oauth/`
+	// directory inside the fixture must also be diagnosed as a directory
+	// hit even though its contents have neutral filenames.
+	if !strings.Contains(s, "(directory)") {
+		t.Fatalf("expected '(directory)' marker in diagnostic — bypass via directory naming must be caught; got %s", s)
 	}
 }
 

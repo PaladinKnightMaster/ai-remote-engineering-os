@@ -44,6 +44,23 @@ func TestMigrateLint_ViolatingFixture(t *testing.T) {
 	if !strings.Contains(s, "audit_events") {
 		t.Fatalf("expected the protected table name in the diagnostic; got %s", s)
 	}
+	// Bypass forms surfaced by the T-011 review pass — each must be
+	// flagged individually. The fixture exercises all six.
+	mustFlag := []struct {
+		needle string
+		desc   string
+	}{
+		{"public.audit_events", "schema-qualified DROP must be flagged"},
+		{`"audit_events"`, "quoted-identifier DROP must be flagged"},
+		{"RENAME", "RENAME TO must be flagged (moves the table away)"},
+		{"audit_events_no_mutate", "DROP TRIGGER must be flagged"},
+		{"audit_events_append_only", "DROP FUNCTION must be flagged (CREATE OR REPLACE is a documented gap — see main.go)"},
+	}
+	for _, c := range mustFlag {
+		if !strings.Contains(s, c.needle) {
+			t.Errorf("%s: expected %q in stderr; got %s", c.desc, c.needle, s)
+		}
+	}
 }
 
 func TestMigrateLint_RealRepoMigrations(t *testing.T) {
