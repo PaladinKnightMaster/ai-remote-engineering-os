@@ -43,6 +43,18 @@ These are enumerated in `../../.github/ISSUE_TEMPLATE/ticket.md` and tracked the
 - [T-013 — Issue-template ladder drift](T-013-issue-template-drift.md) — P2, *complete*. Replaced the stale inline first-10 list in `.github/ISSUE_TEMPLATE/ticket.md` with a pointer to this file. Surfaced during T-002.
 - [T-014 — Per-service OpenAPI contract slicing for oapi-codegen](T-014-per-service-openapi-codegen-slice.md) — P1, *complete*. `task codegen` now emits only the owning service's chi-server surface (operation tags + `include-tags`); audit-service is re-seated onto the generated `ServerInterface`. Closes ADR-0043 §Verification item 2; surfaced during T-004b. Owner: Tech Lead.
 
+### SSH end-to-end vertical slice (T-016+) — per ADR-0048 §Hand-off
+
+The cockpit SSH slice splits into four sub-slices (a–d), each its own
+consult, analogous to T-007. Slice (a) is itself split (persistence/secrets
+vs. REST surface) along the proven T-005a/5b boundary.
+
+- [T-016a — sessions + resource-secret migrations + pgcrypto provisioning](T-016a-sessions-schema-resource-secret.md) — *complete*. The `sessions` table (ADR-0048 §3; `resource_id` UUID FK fix), the pgcrypto-encrypted `resources.connection_secret` BYTEA column (§7 / §SEC-12), the `api resources genkey|set-secret` provisioning subcommand (`task resources`), and the `AIREOS_RESOURCE_SECRET_KEY` vs `AIREOS_PASETO_KEY` separation guard. Audit-silent (no outbox yet). No HTTP surface.
+- **T-016b** — `/v1/sessions` REST control plane (`createSession`/`listSessions`/`getSession`/`endSession`) on `services/api`, generated per-service via oapi-codegen (`sessions` added to `include-tags`), gated on the existing `human-agent`+`service-service` edges. *Pending; depends on T-016a's table.*
+- **T-017** — session-broker SSH gateway + per-input-line audit emission (builds the first `packages/go/outbox/`). *Pending.*
+- **T-018** — `apps/web` `<TerminalView>` + session lifecycle UI. *Pending.*
+- **T-019** — cast-file persistence layout + audit-chain linkage + cleanup policy. *Pending.*
+
 ## Conventions
 
 - Filename: `T-NNN-short-kebab-slug.md`.

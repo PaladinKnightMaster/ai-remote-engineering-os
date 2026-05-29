@@ -108,6 +108,11 @@ tasks:
     cmds:
       - go run ./packages/go/auth/cmd/authctl {{.CLI_ARGS}}
 
+  resources:
+    desc: "Resource-secret provisioning (ADR-0048 §7): task resources -- genkey | set-secret <id> --key-file <path> [--passphrase <pp>]. genkey prints a fresh AIREOS_RESOURCE_SECRET_KEY; set-secret pgcrypto-encrypts target SSH credentials onto the resource row (needs API_DATABASE_URL + AIREOS_RESOURCE_SECRET_KEY)."
+    cmds:
+      - go run ./services/api resources {{.CLI_ARGS}}
+
   # outbox:    added by the first producer ticket (ADR-0045).
   # Note: `task auth rotate-key` (operator key rotation) lands with the operator
   # login HTTP surface / a devops ticket; `task auth -- genkey` is the P0 helper.

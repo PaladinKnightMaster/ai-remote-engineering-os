@@ -6,6 +6,8 @@
 //
 //	api serve                       # default; run the HTTP server
 //	api migrate up|version|force <v>
+//	api resources genkey                                  # print a fresh AIREOS_RESOURCE_SECRET_KEY
+//	api resources set-secret <id> --key-file <path> [--passphrase <pp>]
 //
 // (The shared migrate subcommand exposes up|version|force; wiring a `down`
 // action for standard up/down services like api is a small follow-up on
@@ -16,6 +18,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,6 +31,7 @@ import (
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
 	"aireos.local/services/api/internal/account"
+	"aireos.local/services/api/internal/secret"
 	"aireos.local/services/api/internal/server"
 	"aireos.local/services/api/internal/store"
 )
@@ -42,29 +46,109 @@ func main() {
 }
 
 func run(args []string) error {
-	dsn := firstNonEmpty(os.Getenv("API_DATABASE_URL"), os.Getenv("DATABASE_URL"))
-	if dsn == "" {
-		return errors.New("API_DATABASE_URL (or DATABASE_URL) must be set")
-	}
 	cmd := "serve"
 	if len(args) > 0 {
 		cmd = args[0]
 	}
-	if cmd == "migrate" {
+	// `resources genkey` is offline (no DB) — mirror `authctl genkey`. Handle it
+	// before resolving the DSN so it works during provisioning, before a DB exists.
+	if cmd == "resources" && len(args) > 1 && args[1] == "genkey" {
+		_, hexKey := auth.GenerateKey()
+		fmt.Println(hexKey)
+		return nil
+	}
+	dsn := firstNonEmpty(os.Getenv("API_DATABASE_URL"), os.Getenv("DATABASE_URL"))
+	if dsn == "" {
+		return errors.New("API_DATABASE_URL (or DATABASE_URL) must be set")
+	}
+	switch cmd {
+	case "migrate":
 		return migrate.RunSubcommand(migrate.Runner{
 			Service: "api",
 			FS:      migrationsFS,
 			Dir:     "migrations",
 			DSN:     dsn,
 		}, args[1:])
+	case "resources":
+		return runResources(dsn, args[1:])
+	case "serve":
+		return serve(dsn)
+	default:
+		return fmt.Errorf("unknown command %q (want serve|migrate|resources)", cmd)
 	}
-	if cmd != "serve" {
-		return fmt.Errorf("unknown command %q (want serve|migrate)", cmd)
+}
+
+// runResources handles the operator-side resource-secret provisioning surface
+// (ADR-0048 §7). `genkey` is handled in run() (no DB); set-secret needs the DB.
+func runResources(dsn string, args []string) error {
+	if len(args) == 0 || args[0] != "set-secret" {
+		return errors.New("usage: api resources set-secret <resource-id> --key-file <path> [--passphrase <pp>]")
 	}
-	return serve(dsn)
+	if len(args) < 2 {
+		return errors.New("set-secret requires a <resource-id>")
+	}
+	id := args[1]
+	fs := flag.NewFlagSet("set-secret", flag.ContinueOnError)
+	keyFile := fs.String("key-file", "", "path to the target SSH private key (PEM) file")
+	passphrase := fs.String("passphrase", "", "optional private-key passphrase")
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	if *keyFile == "" {
+		return errors.New("--key-file is required")
+	}
+	key, err := resourceSecretKey()
+	if err != nil {
+		return err
+	}
+	pem, err := os.ReadFile(*keyFile)
+	if err != nil {
+		return fmt.Errorf("read key file: %w", err)
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+	m := secret.Material{PrivateKey: string(pem), Passphrase: *passphrase}
+	if err := secret.Set(context.Background(), pool, id, key, m); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "api: connection secret set for resource %s\n", id)
+	return nil
+}
+
+// resourceSecretKey resolves AIREOS_RESOURCE_SECRET_KEY and enforces authority
+// separation from the PASETO signing key (ADR-0048 §7 / §SEC-12). Fails loud if
+// the key is unset or collides with AIREOS_PASETO_KEY.
+func resourceSecretKey() (string, error) {
+	key := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
+	if key == "" {
+		return "", errors.New("AIREOS_RESOURCE_SECRET_KEY must be set (generate one with `api resources genkey`)")
+	}
+	if err := checkKeySeparation(); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// checkKeySeparation fails loud when the resource secret key collides with the
+// PASETO signing key (defense-in-depth, ADR-0048 §7 authority separation). It is
+// a no-op when the resource key is unset (decryption is a slice-b concern; the
+// server need not require the key to start at v0.1.0).
+func checkKeySeparation() error {
+	rk := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
+	pk := os.Getenv("AIREOS_PASETO_KEY")
+	if rk != "" && pk != "" && rk == pk {
+		return errors.New("AIREOS_RESOURCE_SECRET_KEY must differ from AIREOS_PASETO_KEY (authority separation, ADR-0048 §7)")
+	}
+	return nil
 }
 
 func serve(dsn string) error {
+	if err := checkKeySeparation(); err != nil {
+		return err
+	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
