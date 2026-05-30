@@ -37,6 +37,7 @@ import (
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/api/internal/resource"
+	"aireos.local/services/api/internal/session"
 	"aireos.local/services/api/internal/store"
 )
 
@@ -58,6 +59,14 @@ type Store interface {
 	List(ctx context.Context, after string, limit int) ([]resource.Resource, string, error)
 	Update(ctx context.Context, id string, in resource.Input) (resource.Resource, error)
 	Delete(ctx context.Context, id string) error
+
+	// Cockpit sessions (T-016b). All session reads/writes are operator-scoped:
+	// the caller's capability subject is the operator_id, so one operator can
+	// never see or end another's sessions (ADR-0048 §5).
+	CreateSession(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error)
+	GetSession(ctx context.Context, operatorID, id string) (session.Session, error)
+	ListSessions(ctx context.Context, operatorID, after string, limit int) ([]session.Session, string, error)
+	EndSession(ctx context.Context, operatorID, id string) (session.Session, error)
 }
 
 // Authenticator verifies operator credentials (services/api/internal/account).
@@ -413,6 +422,131 @@ func (a *apiHandlers) DeleteResource(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// operatorSubject pulls the verified capability subject out of the request
+// context (populated by RequireCapability). It is the session owner key. A
+// missing capability on a gated route should be impossible — the gate runs
+// first — but we fail closed with 401 rather than minting sessions under an
+// empty operator id.
+func operatorSubject(r *http.Request) (string, bool) {
+	c, ok := mw.CapabilityFromContext(r.Context())
+	if !ok || c.Subject == "" {
+		return "", false
+	}
+	return c.Subject, true
+}
+
+// CreateSession (POST /v1/sessions) records the operator's intent to start a
+// session against a resource. The row is created 'pending'; the broker activates
+// it on a successful PTY attach (slice b). A SessionCreate body referencing an
+// unknown resourceId answers 404 (FK → ErrNotFound).
+func (a *apiHandlers) CreateSession(w http.ResponseWriter, r *http.Request) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields() // rejects a client-supplied id/status/operatorId with 400
+	var in session.CreateInput
+	if err := dec.Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
+		return
+	}
+	in.Normalize()
+	if err := in.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	sess, err := a.store.CreateSession(r.Context(), operator, in)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "create session failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, sess)
+}
+
+type sessionPage struct {
+	Items []session.Session `json:"items"`
+	Page  pageMeta          `json:"page"`
+}
+
+// ListSessions (GET /v1/sessions) returns a page of the caller's own sessions
+// (operator-scoped; no cross-operator scope at v0.1.0).
+func (a *apiHandlers) ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	limit := 50
+	if params.Limit != nil {
+		n := int(*params.Limit)
+		if n < 1 || n > 200 {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be an integer in [1,200]")
+			return
+		}
+		limit = n
+	}
+	var after string
+	if params.Cursor != nil {
+		after = string(*params.Cursor)
+	}
+	items, last, err := a.store.ListSessions(r.Context(), operator, after, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "list sessions failed")
+		return
+	}
+	page := sessionPage{Items: items}
+	if len(items) == limit {
+		page.Page.NextCursor = last
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+// GetSession (GET /v1/sessions/{id}) returns session metadata the caller owns.
+func (a *apiHandlers) GetSession(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	sess, err := a.store.GetSession(r.Context(), operator, id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "session not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "get session failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+// EndSession (POST /v1/sessions/{id}/end) records the operator's intent to end a
+// session. The transition is idempotent; the broker performs the real teardown
+// and emits session.close (slice b).
+func (a *apiHandlers) EndSession(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	sess, err := a.store.EndSession(r.Context(), operator, id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "session not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "end session failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -37,6 +37,32 @@ const (
 	ResourceInputTypeWorkspace      ResourceInputType = "workspace"
 )
 
+// Defines values for SessionClosedReason.
+const (
+	BrokerCrash SessionClosedReason = "broker_crash"
+	Idle        SessionClosedReason = "idle"
+	Operator    SessionClosedReason = "operator"
+	Ttl         SessionClosedReason = "ttl"
+)
+
+// Defines values for SessionMode.
+const (
+	SessionModeTerminal SessionMode = "terminal"
+)
+
+// Defines values for SessionStatus.
+const (
+	Active     SessionStatus = "active"
+	Closed     SessionStatus = "closed"
+	Pending    SessionStatus = "pending"
+	Terminated SessionStatus = "terminated"
+)
+
+// Defines values for SessionCreateMode.
+const (
+	SessionCreateModeTerminal SessionCreateMode = "terminal"
+)
+
 // Error defines model for Error.
 type Error struct {
 	Code    string                  `json:"code"`
@@ -91,6 +117,38 @@ type ResourceInput struct {
 // ResourceInputType defines model for ResourceInput.Type.
 type ResourceInputType string
 
+// Session defines model for Session.
+type Session struct {
+	CastPath     *string              `json:"castPath,omitempty"`
+	CastSha256   *string              `json:"castSha256,omitempty"`
+	ClosedReason *SessionClosedReason `json:"closedReason,omitempty"`
+	EndedAt      *time.Time           `json:"endedAt,omitempty"`
+	Id           string               `json:"id"`
+	Mode         SessionMode          `json:"mode"`
+	OperatorId   string               `json:"operatorId"`
+	ResourceId   string               `json:"resourceId"`
+	StartedAt    time.Time            `json:"startedAt"`
+	Status       SessionStatus        `json:"status"`
+}
+
+// SessionClosedReason defines model for Session.ClosedReason.
+type SessionClosedReason string
+
+// SessionMode defines model for Session.Mode.
+type SessionMode string
+
+// SessionStatus defines model for Session.Status.
+type SessionStatus string
+
+// SessionCreate defines model for SessionCreate.
+type SessionCreate struct {
+	Mode       *SessionCreateMode `json:"mode,omitempty"`
+	ResourceId string             `json:"resourceId"`
+}
+
+// SessionCreateMode defines model for SessionCreate.Mode.
+type SessionCreateMode string
+
 // CursorParam defines model for CursorParam.
 type CursorParam = string
 
@@ -115,6 +173,12 @@ type ListResourcesParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListSessionsParams defines parameters for ListSessions.
+type ListSessionsParams struct {
+	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -123,6 +187,9 @@ type CreateResourceJSONRequestBody = ResourceInput
 
 // UpdateResourceJSONRequestBody defines body for UpdateResource for application/json ContentType.
 type UpdateResourceJSONRequestBody = ResourceInput
+
+// CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
+type CreateSessionJSONRequestBody = SessionCreate
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -150,6 +217,18 @@ type ServerInterface interface {
 	// Replace a resource's mutable fields
 	// (PUT /v1/resources/{id})
 	UpdateResource(w http.ResponseWriter, r *http.Request, id string)
+	// List the caller's sessions (operator-scoped; no cross-operator scope at v0.1.0)
+	// (GET /v1/sessions)
+	ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams)
+	// Start a session against a resource (created pending; broker activates it)
+	// (POST /v1/sessions)
+	CreateSession(w http.ResponseWriter, r *http.Request)
+	// Fetch session metadata (caller must own the session)
+	// (GET /v1/sessions/{id})
+	GetSession(w http.ResponseWriter, r *http.Request, id string)
+	// End a session (control-plane intent; the broker tears down and emits session.close)
+	// (POST /v1/sessions/{id}/end)
+	EndSession(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -201,6 +280,30 @@ func (_ Unimplemented) GetResource(w http.ResponseWriter, r *http.Request, id st
 // Replace a resource's mutable fields
 // (PUT /v1/resources/{id})
 func (_ Unimplemented) UpdateResource(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List the caller's sessions (operator-scoped; no cross-operator scope at v0.1.0)
+// (GET /v1/sessions)
+func (_ Unimplemented) ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Start a session against a resource (created pending; broker activates it)
+// (POST /v1/sessions)
+func (_ Unimplemented) CreateSession(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Fetch session metadata (caller must own the session)
+// (GET /v1/sessions/{id})
+func (_ Unimplemented) GetSession(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// End a session (control-plane intent; the broker tears down and emits session.close)
+// (POST /v1/sessions/{id}/end)
+func (_ Unimplemented) EndSession(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -415,6 +518,129 @@ func (siw *ServerInterfaceWrapper) UpdateResource(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListSessions operation middleware
+func (siw *ServerInterfaceWrapper) ListSessions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSessionsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSessions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSession operation middleware
+func (siw *ServerInterfaceWrapper) CreateSession(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSession operation middleware
+func (siw *ServerInterfaceWrapper) GetSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSession(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EndSession operation middleware
+func (siw *ServerInterfaceWrapper) EndSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EndSession(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -551,6 +777,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/v1/resources/{id}", wrapper.UpdateResource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/sessions", wrapper.ListSessions)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/sessions", wrapper.CreateSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/sessions/{id}", wrapper.GetSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/sessions/{id}/end", wrapper.EndSession)
 	})
 
 	return r

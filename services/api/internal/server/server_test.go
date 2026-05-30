@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/api/internal/account"
 	"aireos.local/services/api/internal/resource"
+	"aireos.local/services/api/internal/session"
 	"aireos.local/services/api/internal/store"
 )
 
@@ -21,9 +23,18 @@ type fakeStore struct {
 	byID map[string]resource.Resource
 	ids  []string
 	n    int
+
+	sessByID map[string]session.Session
+	sessIDs  []string
+	sn       int
 }
 
-func newFake() *fakeStore { return &fakeStore{byID: map[string]resource.Resource{}} }
+func newFake() *fakeStore {
+	return &fakeStore{
+		byID:     map[string]resource.Resource{},
+		sessByID: map[string]session.Session{},
+	}
+}
 
 func (f *fakeStore) Create(_ context.Context, in resource.Input) (resource.Resource, error) {
 	f.n++
@@ -72,6 +83,65 @@ func (f *fakeStore) Delete(_ context.Context, id string) error {
 	}
 	delete(f.byID, id)
 	return nil
+}
+
+// --- session fake (mirrors the operator-scoped store semantics) -------------
+
+func (f *fakeStore) CreateSession(_ context.Context, operatorID string, in session.CreateInput) (session.Session, error) {
+	if _, ok := f.byID[in.ResourceID]; !ok { // unknown resource → FK 404
+		return session.Session{}, store.ErrNotFound
+	}
+	f.sn++
+	id := fmt.Sprintf("sess-%05d", f.sn)
+	s := session.Session{
+		ID: id, ResourceID: in.ResourceID, OperatorID: operatorID,
+		Mode: in.Mode, Status: session.StatusPending, StartedAt: time.Now().UTC(),
+	}
+	f.sessByID[id] = s
+	f.sessIDs = append(f.sessIDs, id)
+	return s, nil
+}
+
+func (f *fakeStore) GetSession(_ context.Context, operatorID, id string) (session.Session, error) {
+	if s, ok := f.sessByID[id]; ok && s.OperatorID == operatorID {
+		return s, nil
+	}
+	return session.Session{}, store.ErrNotFound
+}
+
+func (f *fakeStore) ListSessions(_ context.Context, operatorID, after string, limit int) ([]session.Session, string, error) {
+	var out []session.Session
+	var last string
+	for _, id := range f.sessIDs {
+		if id <= after {
+			continue
+		}
+		s := f.sessByID[id]
+		if s.OperatorID != operatorID {
+			continue
+		}
+		out = append(out, s)
+		last = id
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, last, nil
+}
+
+func (f *fakeStore) EndSession(_ context.Context, operatorID, id string) (session.Session, error) {
+	s, ok := f.sessByID[id]
+	if !ok || s.OperatorID != operatorID {
+		return session.Session{}, store.ErrNotFound
+	}
+	if s.Status == session.StatusPending || s.Status == session.StatusActive {
+		now := time.Now().UTC()
+		s.Status = session.StatusClosed
+		s.EndedAt = &now
+		s.ClosedReason = session.ReasonOperator
+		f.sessByID[id] = s
+	}
+	return s, nil
 }
 
 type allowAll struct{}
@@ -446,5 +516,127 @@ func TestOperatorLoginAndMe(t *testing.T) {
 	// /v1/auth/me without a token → 401
 	if rec := req(t, h, http.MethodGet, "/v1/auth/me", "", false); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("me without token: want 401, got %d", rec.Code)
+	}
+}
+
+// seedResource creates a resource through the API and returns its server-assigned
+// id, so the session tests reference a real (FK-satisfying) resourceId.
+func seedResource(t *testing.T, h http.Handler) string {
+	t.Helper()
+	rec := req(t, h, http.MethodPost, "/v1/resources", validBody, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed resource: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+	var r struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil || r.ID == "" {
+		t.Fatalf("seed resource: no id in %s", rec.Body)
+	}
+	return r.ID
+}
+
+// TestSessionCreateGetEnd — happy path across the four routes: create against a
+// real resource (201 pending), fetch it (200), end it (200 closed/operator),
+// re-end is idempotent (still 200, still closed).
+func TestSessionCreateGetEnd(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{})
+	resID := seedResource(t, h)
+
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+	var created session.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create session: bad body %s", rec.Body)
+	}
+	if created.ID == "" || created.Status != session.StatusPending || created.Mode != session.DefaultMode {
+		t.Fatalf("create session: unexpected %+v", created)
+	}
+	if created.OperatorID != "operator" {
+		t.Fatalf("create session: operator scope want 'operator', got %q", created.OperatorID)
+	}
+
+	if rec := req(t, h, http.MethodGet, "/v1/sessions/"+created.ID, "", true); rec.Code != http.StatusOK {
+		t.Fatalf("get session: want 200, got %d", rec.Code)
+	}
+	if rec := req(t, h, http.MethodGet, "/v1/sessions/nope", "", true); rec.Code != http.StatusNotFound {
+		t.Fatalf("get missing session: want 404, got %d", rec.Code)
+	}
+
+	endRec := req(t, h, http.MethodPost, "/v1/sessions/"+created.ID+"/end", "", true)
+	if endRec.Code != http.StatusOK {
+		t.Fatalf("end session: want 200, got %d: %s", endRec.Code, endRec.Body)
+	}
+	var ended session.Session
+	if err := json.Unmarshal(endRec.Body.Bytes(), &ended); err != nil {
+		t.Fatalf("end session: bad body %s", endRec.Body)
+	}
+	if ended.Status != session.StatusClosed || ended.ClosedReason != session.ReasonOperator || ended.EndedAt == nil {
+		t.Fatalf("end session: not closed/operator/stamped: %+v", ended)
+	}
+	// Idempotent re-end.
+	if rec := req(t, h, http.MethodPost, "/v1/sessions/"+created.ID+"/end", "", true); rec.Code != http.StatusOK {
+		t.Fatalf("re-end session: want 200, got %d", rec.Code)
+	}
+	if rec := req(t, h, http.MethodPost, "/v1/sessions/nope/end", "", true); rec.Code != http.StatusNotFound {
+		t.Fatalf("end missing session: want 404, got %d", rec.Code)
+	}
+}
+
+// TestSessionCreateValidation — unknown resourceId is 404; a malformed/over-posted
+// body is 400 (missing resourceId, bad mode, or a client-supplied server field).
+func TestSessionCreateValidation(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{})
+
+	if rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"missing"}`, true); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown resource: want 404, got %d", rec.Code)
+	}
+	for _, body := range []string{
+		`{}`,                                   // missing resourceId
+		`{"resourceId":"x","mode":"rdp"}`,      // mode not in enum
+		`{"resourceId":"x","status":"active"}`, // client-supplied server field rejected
+	} {
+		if rec := req(t, h, http.MethodPost, "/v1/sessions", body, true); rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q: want 400, got %d", body, rec.Code)
+		}
+	}
+}
+
+// TestSessionListReturnsItems — list is operator-scoped and returns the items
+// envelope, same shape as resources.
+func TestSessionListReturnsItems(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{})
+	resID := seedResource(t, h)
+	for i := 0; i < 3; i++ {
+		if rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true); rec.Code != http.StatusCreated {
+			t.Fatalf("seed session %d: got %d", i, rec.Code)
+		}
+	}
+	rec := req(t, h, http.MethodGet, "/v1/sessions", "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list sessions: want 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"items"`) || strings.Count(rec.Body.String(), `"id"`) != 3 {
+		t.Fatalf("list sessions: expected 3 items, got %s", rec.Body)
+	}
+}
+
+// TestSessionsRequireBearer — every session route is gated; no bearer → 401.
+func TestSessionsRequireBearer(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{})
+	cases := []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/v1/sessions"},
+		{http.MethodPost, "/v1/sessions"},
+		{http.MethodGet, "/v1/sessions/x"},
+		{http.MethodPost, "/v1/sessions/x/end"},
+	}
+	for _, c := range cases {
+		if rec := req(t, h, c.method, c.path, "", false); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without bearer: want 401, got %d", c.method, c.path, rec.Code)
+		}
 	}
 }

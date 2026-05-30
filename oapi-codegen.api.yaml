@@ -17,3 +17,4 @@ output-options:
   include-tags:
     - resources
     - auth
+    - sessions

@@ -28,6 +28,8 @@ tags:
     description: Resource registry CRUD on services/api (T-005b).
   - name: auth
     description: Operator login + identity on services/api (T-015b, ADR-0046).
+  - name: sessions
+    description: Cockpit session control plane on services/api (T-016b, ADR-0048).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -289,6 +291,100 @@ paths:
               schema:
                 $ref: '#/components/schemas/Identity'
         '401': { $ref: '#/components/responses/Unauthorized' }
+  # --- cockpit sessions control plane (T-016b, services/api) ------------------
+  # ADR-0048 §2: services/api owns the REST control plane; services/session-broker
+  # owns the WebSocket data plane (/v1/sessions/{id}/stream, not in this contract).
+  # Operator-driven routes gated on the existing human-agent + service-service
+  # edges (the agent-remote-session edge is the data-plane edge, enforced by the
+  # broker on the WS upgrade — see ADR-0048 §item-6 reconciliation in T-016b).
+  /v1/sessions:
+    post:
+      tags: [sessions]
+      operationId: createSession
+      summary: Start a session against a resource (created pending; broker activates it)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreate'
+      responses:
+        '201':
+          description: Session created in 'pending' status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [sessions]
+      operationId: listSessions
+      summary: List the caller's sessions (operator-scoped; no cross-operator scope at v0.1.0)
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of the caller's sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+                  page:
+                    $ref: '#/components/schemas/PageMeta'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [sessions]
+      operationId: getSession
+      summary: Fetch session metadata (caller must own the session)
+      responses:
+        '200':
+          description: The session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/sessions/{id}/end:
+    post:
+      tags: [sessions]
+      operationId: endSession
+      summary: End a session (control-plane intent; the broker tears down and emits session.close)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The session, transitioned toward closed (ended_at + closed_reason set).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -397,20 +493,54 @@ components:
           type: object
           additionalProperties:
             type: string
+    # Cockpit session (ADR-0048). At v0.1.0 the only mode is 'terminal' and the
+    # lifecycle is pending -> active -> closed|terminated (narrowed from the
+    # T-003 superset to what the sessions table CHECK constraints actually allow,
+    # migration 0002). castPath/castSha256 are NULL until the broker closes the
+    # session and anchors the asciinema cast hash in the session.close event.
     Session:
       type: object
-      required: [id, resourceId, mode, status]
+      required: [id, resourceId, operatorId, mode, status, startedAt]
       properties:
         id:
           type: string
         resourceId:
           type: string
+        operatorId:
+          type: string
         mode:
           type: string
-          enum: [observe, control, terminal, demo]
+          enum: [terminal]
         status:
           type: string
-          enum: [pending, active, suspended, ended, failed, terminated]
+          enum: [pending, active, closed, terminated]
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        closedReason:
+          type: string
+          enum: [idle, operator, broker_crash, ttl]
+        castPath:
+          type: string
+        castSha256:
+          type: string
+    # Create body for POST /v1/sessions (T-016b). id/operatorId/status are
+    # server-assigned; mode defaults to the only v0.1.0 value. additionalProperties
+    # false rejects client-supplied server fields with 400.
+    SessionCreate:
+      type: object
+      additionalProperties: false
+      required: [resourceId]
+      properties:
+        resourceId:
+          type: string
+        mode:
+          type: string
+          enum: [terminal]
+          default: terminal
     AuditEvent:
       type: object
       additionalProperties: false
