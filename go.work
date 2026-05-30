@@ -29,9 +29,10 @@ use (
 	./packages/go/auth
 	./packages/go/middleware
 	./packages/go/migrate
+	./packages/go/outbox
 	./services/api
 	./services/audit-service
 	./services/session-broker
-	./tools/migrate-lint
 	./tools/forbidden-features-check
+	./tools/migrate-lint
 )
