@@ -11,12 +11,14 @@
 //	session-broker serve                    # default; serve HTTP + start the in-process outbox relay
 //	session-broker migrate up|version|force <v>
 //	session-broker outbox relay             # run the outbox relay in the foreground (operator control)
+//	session-broker casts gc [--older-than-days N]  # retention sweep of closed-session cast files
 package main
 
 import (
 	"context"
 	"embed"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -63,11 +65,60 @@ func run(args []string) error {
 		}, args[1:])
 	case "outbox":
 		return runOutbox(dsn, args[1:])
+	case "casts":
+		return runCasts(dsn, args[1:])
 	case "serve":
 		return serve(dsn)
 	default:
-		return fmt.Errorf("unknown command %q (want serve|migrate|outbox)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate|outbox|casts)", cmd)
 	}
+}
+
+// runCasts handles `session-broker casts gc [--older-than-days N]` — the
+// operator/cron retention sweep (ADR-0048 §6 cast files; the Negative note's
+// "rotation policy"). It deletes the cast file for each closed session that
+// ended more than N days ago, clears the row's cast_path, and enqueues a
+// cast.pruned audit event (the running broker's relay delivers it). The original
+// cast SHA256 stays on the row as the durable record of what was deleted.
+func runCasts(dsn string, args []string) error {
+	if len(args) == 0 || args[0] != "gc" {
+		return errors.New("usage: session-broker casts gc [--older-than-days N]")
+	}
+	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+	days := fs.Int("older-than-days", 90, "prune casts for sessions closed more than N days ago")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *days < 0 {
+		return errors.New("--older-than-days must be >= 0")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+	st := store.New(pool)
+	cutoff := time.Now().AddDate(0, 0, -*days)
+	prunable, err := st.ListPrunableCasts(ctx, cutoff)
+	if err != nil {
+		return fmt.Errorf("list prunable casts: %w", err)
+	}
+	pruned := 0
+	for _, c := range prunable {
+		if rerr := os.Remove(c.CastPath); rerr != nil && !os.IsNotExist(rerr) {
+			log.Printf("casts gc: remove %s: %v", c.CastPath, rerr)
+			continue
+		}
+		if perr := st.PruneCast(ctx, c.SessionID, c.CastSHA); perr != nil {
+			log.Printf("casts gc: prune %s: %v", c.SessionID, perr)
+			continue
+		}
+		pruned++
+	}
+	fmt.Fprintf(os.Stderr, "session-broker: pruned %d cast file(s) for sessions closed > %d days ago\n", pruned, *days)
+	return nil
 }
 
 // runOutbox handles `session-broker outbox relay` — the operator-run, foreground

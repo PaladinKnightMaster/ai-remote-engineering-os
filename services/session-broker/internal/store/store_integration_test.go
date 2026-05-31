@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -191,5 +192,74 @@ func TestRecordInputLineEmitsHashOnly(t *testing.T) {
 	// The raw line bytes must never appear in the chain payload (only the hash).
 	if strings.Contains(payload, "\"line\"") {
 		t.Fatalf("chain payload must not carry raw line content: %s", payload)
+	}
+}
+
+// TestCastRetentionPruneFlow — a closed session that ended before the cutoff is
+// listed prunable; PruneCast clears cast_path and emits an audited cast.pruned
+// event anchoring the original SHA. An active session is never prunable.
+func TestCastRetentionPruneFlow(t *testing.T) {
+	s, pool := testStore(t)
+	sessID, _, operatorID := seed(t, pool)
+	ctx := context.Background()
+
+	const castSHA = "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+	// Close it with a cast, then backdate ended_at past the cutoff.
+	if err := s.Activate(ctx, sessID, operatorID); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := s.Close(ctx, sessID, operatorID, "operator", "/var/lib/aireos/sessions/"+sessID+".cast", castSHA); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET ended_at = now() - interval '200 days' WHERE id = $1`, sessID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -90)
+	prunable, err := s.ListPrunableCasts(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("list prunable: %v", err)
+	}
+	found := false
+	for _, p := range prunable {
+		if p.SessionID == sessID {
+			found = true
+			if p.CastSHA != castSHA {
+				t.Fatalf("prunable cast sha = %q, want %q", p.CastSHA, castSHA)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("backdated closed session not listed prunable")
+	}
+
+	if err := s.PruneCast(ctx, sessID, castSHA); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	// cast_path cleared; the row (and its cast_sha256 record) remains.
+	var castPath *string
+	if err := pool.QueryRow(ctx, `SELECT cast_path FROM sessions WHERE id = $1`, sessID).Scan(&castPath); err != nil {
+		t.Fatalf("reread: %v", err)
+	}
+	if castPath != nil {
+		t.Fatalf("cast_path should be NULL after prune, got %q", *castPath)
+	}
+	// No longer prunable.
+	again, _ := s.ListPrunableCasts(ctx, cutoff)
+	for _, p := range again {
+		if p.SessionID == sessID {
+			t.Fatalf("pruned session must not be listed prunable again")
+		}
+	}
+	// The deletion is audited: a cast.pruned event anchoring the original SHA.
+	var outcome, evidence, actor string
+	if err := pool.QueryRow(ctx, `
+		SELECT payload->>'outcome', COALESCE(payload->>'evidencePacketId',''), payload->>'actor'
+		  FROM outbox WHERE payload->>'target' = $1 AND payload->>'outcome' = 'cast.pruned'
+		 ORDER BY id DESC LIMIT 1`, "session:"+sessID).Scan(&outcome, &evidence, &actor); err != nil {
+		t.Fatalf("query cast.pruned: %v", err)
+	}
+	if evidence != "sha256:"+castSHA || actor != "system:cast-gc" {
+		t.Fatalf("cast.pruned event wrong: actor=%q evidence=%q", actor, evidence)
 	}
 }

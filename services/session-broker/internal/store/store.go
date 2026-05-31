@@ -43,6 +43,11 @@ var (
 // the audit chain.
 const auditEdge = "agent-remote-session"
 
+// castGCActor is the workload identity attributed to cast-retention deletions.
+// Pruning forensic evidence is itself an audited service action (edge
+// service-service), so a deletion is never silent.
+const castGCActor = "system:cast-gc"
+
 // Session is the broker's view of a sessions row.
 type Session struct {
 	ID         string
@@ -206,6 +211,61 @@ func (s *Store) RecordInputLine(ctx context.Context, sessionID, operatorID, line
 			Timestamp: time.Now(), Actor: operatorID, Edge: auditEdge,
 			Target: "session:" + sessionID, Outcome: "input.line",
 			EvidencePacketID: "sha256:" + lineSHA,
+		})
+	return err
+}
+
+// PrunableCast identifies a closed session whose cast file is eligible for
+// retention deletion.
+type PrunableCast struct {
+	SessionID string
+	CastPath  string
+	CastSHA   string
+}
+
+// ListPrunableCasts returns closed/terminated sessions whose cast file still
+// exists (cast_path set) and that ended before olderThan — the retention
+// candidates for `casts gc`. Active/pending sessions are never returned.
+func (s *Store) ListPrunableCasts(ctx context.Context, olderThan time.Time) ([]PrunableCast, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, cast_path, COALESCE(cast_sha256, '')
+		  FROM sessions
+		 WHERE status IN ('closed', 'terminated')
+		   AND ended_at IS NOT NULL AND ended_at < $1
+		   AND cast_path IS NOT NULL`, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PrunableCast
+	for rows.Next() {
+		var p PrunableCast
+		if err := rows.Scan(&p.SessionID, &p.CastPath, &p.CastSHA); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// PruneCast clears the (now-deleted) cast_path and, in the same transaction,
+// enqueues a cast.pruned audit event anchoring the deleted file's original
+// SHA256 — so retention deletion of forensic evidence is itself recorded in the
+// chain. cast_sha256 is intentionally retained on the row as the durable record
+// of what was deleted.
+func (s *Store) PruneCast(ctx context.Context, sessionID, castSHA string) error {
+	evidence := ""
+	if castSHA != "" {
+		evidence = "sha256:" + castSHA
+	}
+	_, err := s.txEnqueue(ctx,
+		func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE sessions SET cast_path = NULL WHERE id = $1`, sessionID)
+			return err
+		},
+		outbox.Event{
+			Timestamp: time.Now(), Actor: castGCActor, Edge: "service-service",
+			Target: "session:" + sessionID, Outcome: "cast.pruned", EvidencePacketID: evidence,
 		})
 	return err
 }
