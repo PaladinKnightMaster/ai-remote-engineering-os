@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { CapabilityGate, useCapability } from "@aireos/ui";
 
 /**
@@ -33,9 +34,11 @@ export function Dashboard() {
           }
         >
           <p className="mt-2 text-sm">
-            Cockpit surfaces (resource picker, session viewer, audit timeline)
-            land with their feature tickets — this route is the T-007c
-            verification anchor.
+            <Link to="/sessions" className="font-medium text-primary hover:underline">
+              Sessions →
+            </Link>{" "}
+            start and attach to a recorded SSH terminal. Other cockpit surfaces
+            (resource picker, audit timeline) land with their feature tickets.
           </p>
         </CapabilityGate>
       </section>

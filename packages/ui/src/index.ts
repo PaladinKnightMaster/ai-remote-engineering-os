@@ -7,9 +7,10 @@
 //
 //   - <ApprovalPrompt>       — first approval-touching action ticket
 //                              (egress / agent-tool, ADR-0047 §Hand-off).
-//   - <RemoteSessionView>    — first session-broker UI ticket
+//   - <RemoteSessionView>    — first RDP/VNC session ticket
 //                              (Guacamole on a <canvas>).
-//   - <TerminalView>         — first terminal UI ticket (xterm.js).
+//
+// <TerminalView> (xterm.js) landed in T-018b — exported below.
 //
 // Deferring per "search-before-create" in design-system-governance §3 —
 // vendoring components without a concrete consumer would speculate on
@@ -33,3 +34,6 @@ export type {
   UseEventSourceOptions,
   UseEventSourceResult,
 } from "./hooks/useEventSource";
+
+export { TerminalView } from "./components/TerminalView";
+export type { TerminalViewProps } from "./components/TerminalView";

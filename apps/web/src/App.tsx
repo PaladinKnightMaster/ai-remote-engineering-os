@@ -4,6 +4,8 @@ import { CapabilityProvider, useCapability } from "@aireos/ui";
 import { fetchCurrentCapability } from "./api";
 import { Login } from "./routes/Login";
 import { Dashboard } from "./routes/Dashboard";
+import { Sessions } from "./routes/Sessions";
+import { SessionView } from "./routes/SessionView";
 
 /**
  * RequireAuth — route guard. The capability-edge security boundary is
@@ -30,6 +32,22 @@ export function App() {
             element={
               <RequireAuth>
                 <Dashboard />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/sessions"
+            element={
+              <RequireAuth>
+                <Sessions />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/sessions/:id"
+            element={
+              <RequireAuth>
+                <SessionView />
               </RequireAuth>
             }
           />

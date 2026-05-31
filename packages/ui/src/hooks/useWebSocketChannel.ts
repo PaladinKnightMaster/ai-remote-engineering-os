@@ -34,6 +34,12 @@ export interface UseWebSocketChannelOptions {
    * every parent re-render. Use `useMemo` or a module-level constant.
    */
   protocols?: string | string[];
+  /**
+   * Frame decoding for binary messages. Terminal streams set "arraybuffer"
+   * so PTY bytes arrive synchronously and in order in `onMessage` (the default
+   * "blob" forces an async `.arrayBuffer()` read that can reorder frames).
+   */
+  binaryType?: BinaryType;
 }
 
 export interface UseWebSocketChannelResult {
@@ -52,6 +58,7 @@ export function useWebSocketChannel(
     initialBackoffMs = 500,
     maxBackoffMs = 15_000,
     protocols,
+    binaryType,
   } = opts;
 
   const [status, setStatus] = useState<WSStatus>("idle");
@@ -71,6 +78,7 @@ export function useWebSocketChannel(
       if (cancelled) return;
       setStatus("connecting");
       const ws = new WebSocket(url, protocols);
+      if (binaryType) ws.binaryType = binaryType;
       wsRef.current = ws;
       ws.onopen = () => {
         if (cancelled) return;
@@ -103,7 +111,7 @@ export function useWebSocketChannel(
         wsRef.current = null;
       }
     };
-  }, [url, enabled, initialBackoffMs, maxBackoffMs, protocols]);
+  }, [url, enabled, initialBackoffMs, maxBackoffMs, protocols, binaryType]);
 
   const send: UseWebSocketChannelResult["send"] = (data) => {
     const ws = wsRef.current;
