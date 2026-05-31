@@ -77,6 +77,9 @@ export function TerminalView({ url, enabled = true, onStatusChange, className }:
     url,
     enabled,
     binaryType: "arraybuffer",
+    // A broker WS drop ends the session server-side at v0.1.0 (T-020a/ADR-0049);
+    // auto-reconnect would only re-hit a closed session. Deferred to v0.2.0.
+    reconnect: false,
     onMessage,
   });
   sendRef.current = send;

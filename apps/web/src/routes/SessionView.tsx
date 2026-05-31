@@ -57,6 +57,16 @@ export function SessionView() {
           </button>
         </div>
       </header>
+      {status === "closed" && (
+        <div role="alert" className="border-b border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+          Session ended (the connection closed). At v0.1.0 a dropped connection ends
+          the session —{" "}
+          <button type="button" onClick={() => navigate("/sessions")} className="font-medium text-primary hover:underline">
+            start a new one
+          </button>
+          .
+        </div>
+      )}
       <TerminalView
         url={brokerChannelUrl(id)}
         onStatusChange={setStatus}

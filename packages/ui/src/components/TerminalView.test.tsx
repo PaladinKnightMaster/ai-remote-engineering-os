@@ -58,10 +58,12 @@ describe("TerminalView", () => {
   });
   afterEach(cleanup);
 
-  it("connects with arraybuffer binary frames at the given url", () => {
+  it("connects with arraybuffer frames, no auto-reconnect, at the given url", () => {
     render(<TerminalView url="ws://host/v1/sessions/s1/channel" />);
     expect(h.state.hookOpts?.url).toBe("ws://host/v1/sessions/s1/channel");
     expect(h.state.hookOpts?.binaryType).toBe("arraybuffer");
+    // A broker drop ends the session at v0.1.0 — terminal must not auto-reconnect.
+    expect(h.state.hookOpts?.reconnect).toBe(false);
   });
 
   it("writes inbound PTY bytes (ArrayBuffer) to the terminal", () => {

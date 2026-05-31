@@ -195,6 +195,58 @@ func TestRecordInputLineEmitsHashOnly(t *testing.T) {
 	}
 }
 
+// TestCloseFinalizesAfterApiPreClose — the UI-End path: api.end flips status to
+// 'closed' (no audit), THEN the broker's WS teardown calls Close. The broker must
+// still record the cast SHA + emit session.close (T-020a finalize-once guard);
+// otherwise the primary end path produces no close evidence.
+func TestCloseFinalizesAfterApiPreClose(t *testing.T) {
+	s, pool := testStore(t)
+	sessID, _, operatorID := seed(t, pool)
+	ctx := context.Background()
+
+	if err := s.Activate(ctx, sessID, operatorID); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Simulate services/api EndSession: status closed, ended_at/closed_reason
+	// set, but NO audit event and NO cast SHA (api is audit-silent).
+	if _, err := pool.Exec(ctx, `
+		UPDATE sessions SET status='closed', ended_at=now(), closed_reason='operator'
+		 WHERE id=$1`, sessID); err != nil {
+		t.Fatalf("api pre-close: %v", err)
+	}
+
+	const castSHA = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	if err := s.Close(ctx, sessID, operatorID, "operator", "/var/lib/aireos/sessions/"+sessID+".cast", castSHA); err != nil {
+		t.Fatalf("broker Close after api pre-close must still finalize: %v", err)
+	}
+
+	// The cast SHA is now recorded...
+	var gotSHA string
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(cast_sha256,'') FROM sessions WHERE id=$1`, sessID).Scan(&gotSHA); err != nil {
+		t.Fatalf("reread: %v", err)
+	}
+	if gotSHA != castSHA {
+		t.Fatalf("cast_sha256 = %q, want %q (broker must finalize despite api pre-close)", gotSHA, castSHA)
+	}
+	// ...and a session.close event was emitted anchoring it.
+	var n int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM outbox
+		 WHERE payload->>'target' = $1 AND payload->>'outcome' = 'closed:operator'
+		   AND payload->>'evidencePacketId' = $2`,
+		"session:"+sessID, "sha256:"+castSHA).Scan(&n); err != nil {
+		t.Fatalf("count close events: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("want exactly 1 session.close event with the cast SHA, got %d", n)
+	}
+
+	// A second Close is now a no-op (already finalized).
+	if err := s.Close(ctx, sessID, operatorID, "operator", "", ""); err != ErrNotActivatable {
+		t.Fatalf("re-close after finalize: want ErrNotActivatable, got %v", err)
+	}
+}
+
 // TestCastRetentionPruneFlow — a closed session that ended before the cutoff is
 // listed prunable; PruneCast clears cast_path and emits an audited cast.pruned
 // event anchoring the original SHA. An active session is never prunable.

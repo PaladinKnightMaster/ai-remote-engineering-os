@@ -165,10 +165,16 @@ func (s *Store) Activate(ctx context.Context, sessionID, operatorID string) erro
 	return err
 }
 
-// Close transitions an open session to closed, stamps ended_at/closed_reason and
-// the cast path+SHA, and enqueues session.close (with the cast SHA anchored in
-// evidencePacketId) in the same transaction. Idempotent at the handler level:
-// ErrNotActivatable if the session is already closed/terminated.
+// Close is the broker's authoritative session finalization: it stamps the cast
+// path+SHA and enqueues session.close (cast SHA anchored in evidencePacketId) in
+// one transaction. The guard is `cast_sha256 IS NULL` — finalize-once by the
+// broker that held the live connection — NOT a status guard. This is deliberate
+// (T-020a): the operator's REST `api.end` flips status to 'closed' but emits no
+// audit event (services/api has no outbox), so a status-guarded close would
+// then no-op and lose both the cast SHA and the session.close event. Keying on
+// cast_sha256 lets the broker finalize + audit regardless of who set the status.
+// ended_at/closed_reason are COALESCEd so an api-set intent is preserved.
+// ErrNotActivatable if the session was already finalized (cast recorded).
 func (s *Store) Close(ctx context.Context, sessionID, operatorID, reason, castPath, castSHA string) error {
 	evidence := ""
 	if castSHA != "" {
@@ -178,9 +184,11 @@ func (s *Store) Close(ctx context.Context, sessionID, operatorID, reason, castPa
 		func(tx pgx.Tx) error {
 			ct, err := tx.Exec(ctx, `
 				UPDATE sessions
-				   SET status = 'closed', ended_at = now(), closed_reason = $2,
+				   SET status = 'closed',
+				       ended_at = COALESCE(ended_at, now()),
+				       closed_reason = COALESCE(closed_reason, $2),
 				       cast_path = NULLIF($3, ''), cast_sha256 = NULLIF($4, '')
-				 WHERE id = $1 AND status IN ('pending', 'active')`,
+				 WHERE id = $1 AND cast_sha256 IS NULL`,
 				sessionID, reason, castPath, castSHA)
 			if err != nil {
 				return err

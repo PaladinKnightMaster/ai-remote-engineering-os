@@ -40,6 +40,14 @@ export interface UseWebSocketChannelOptions {
    * "blob" forces an async `.arrayBuffer()` read that can reorder frames).
    */
   binaryType?: BinaryType;
+  /**
+   * Auto-reconnect with backoff on close (default true). `<TerminalView>` sets
+   * this false: at v0.1.0 a broker WS drop *ends* the session server-side
+   * (T-020a / ADR-0049), so reconnecting would only hit a closed session —
+   * reconnect-with-fresh-shell is deferred to v0.2.0. SSE / non-terminal
+   * consumers keep the default.
+   */
+  reconnect?: boolean;
 }
 
 export interface UseWebSocketChannelResult {
@@ -59,6 +67,7 @@ export function useWebSocketChannel(
     maxBackoffMs = 15_000,
     protocols,
     binaryType,
+    reconnect = true,
   } = opts;
 
   const [status, setStatus] = useState<WSStatus>("idle");
@@ -91,6 +100,7 @@ export function useWebSocketChannel(
       ws.onclose = () => {
         if (cancelled) return;
         setStatus("closed");
+        if (!reconnect) return; // terminal: a drop ends the session (T-020a)
         // Exponential backoff up to the cap.
         reconnectTimer = setTimeout(open, backoff);
         backoff = Math.min(backoff * 2, maxBackoffMs);
@@ -111,7 +121,7 @@ export function useWebSocketChannel(
         wsRef.current = null;
       }
     };
-  }, [url, enabled, initialBackoffMs, maxBackoffMs, protocols, binaryType]);
+  }, [url, enabled, initialBackoffMs, maxBackoffMs, protocols, binaryType, reconnect]);
 
   const send: UseWebSocketChannelResult["send"] = (data) => {
     const ws = wsRef.current;
