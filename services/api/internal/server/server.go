@@ -17,9 +17,10 @@
 //     its TTL remaining, slidingRefresh rotates both cookies inline with the
 //     response.  ADR-0046's 8h operator TTL ⇒ refresh window is "< 4h
 //     remaining."
-//   - `cookieToAuthHeader` is a thin adapter that copies the session cookie
-//     into the Authorization header for downstream RequireCapability, keeping
-//     `packages/go/middleware/` agnostic of cookie posture (Tech Lead lens).
+//   - `mw.CookieToAuthHeader` (shared, packages/go/middleware) copies the session
+//     cookie into the Authorization header for downstream RequireCapability. It
+//     was promoted out of this file in T-018a so services/session-broker can
+//     reuse it for the browser WebSocket upgrade (which cannot set headers).
 package server
 
 import (
@@ -47,7 +48,10 @@ import (
 // and the SPA breaks. The CSRF header name is also the canonical lookup the
 // chi-server stub uses on r.Header.Get below.
 const (
-	sessionCookieName = "aireos_session"
+	// sessionCookieName binds to the shared cross-service contract so the
+	// cookie→Authorization adapter (now packages/go/middleware) and api's
+	// cookie-writing code (Login/refresh/logout) cannot drift.
+	sessionCookieName = mw.SessionCookieName
 	csrfCookieName    = "aireos_csrf"
 	csrfHeaderName    = "X-CSRF-Token"
 )
@@ -87,7 +91,7 @@ type apiHandlers struct {
 //
 // Middleware order (effective flow at request time):
 //
-//	cookieToAuthHeader   — translate aireos_session cookie → Authorization
+//	mw.CookieToAuthHeader — translate aireos_session cookie → Authorization
 //	gateByDeclaredSecurity — RequireCapability + CSRF on gated mutations
 //	slidingRefresh       — rotate cookies if operator token < half TTL
 //
@@ -101,26 +105,10 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier) http.
 	return HandlerWithOptions(h, ChiServerOptions{
 		BaseRouter: chi.NewRouter(),
 		Middlewares: []MiddlewareFunc{
-			slidingRefresh(signer),    // innermost  (last to run, closest to handler)
-			gateByDeclaredSecurity(v), // middle
-			cookieToAuthHeader,        // outermost  (first to run)
+			slidingRefresh(signer),                                   // innermost  (last to run, closest to handler)
+			gateByDeclaredSecurity(v),                                // middle
+			MiddlewareFunc(mw.CookieToAuthHeader(sessionCookieName)), // outermost  (first to run)
 		},
-	})
-}
-
-// cookieToAuthHeader copies aireos_session into the Authorization header when
-// Authorization is absent. Service-to-service callers send Authorization
-// directly and have no cookie; the SPA sends the cookie and no header. If
-// both are present, the existing Authorization wins (no override) — that lets
-// admins force a specific bearer for diagnostics.
-func cookieToAuthHeader(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
-			if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
-				r.Header.Set("Authorization", "Bearer "+c.Value)
-			}
-		}
-		next.ServeHTTP(w, r)
 	})
 }
 

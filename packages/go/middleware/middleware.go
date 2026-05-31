@@ -60,6 +60,33 @@ func RequireCapability(v Verifier, allowedEdges ...string) func(http.Handler) ht
 	}
 }
 
+// SessionCookieName is the cross-service operator session cookie (ADR-0047). It
+// is set HttpOnly by services/api on login and replayed by the browser on every
+// same-origin request — including requests the browser cannot attach headers to,
+// notably the WebSocket upgrade to services/session-broker. Both services bind to
+// this one name via CookieToAuthHeader so the contract has a single source.
+const SessionCookieName = "aireos_session"
+
+// CookieToAuthHeader copies the named cookie into the Authorization header (as a
+// bearer) when Authorization is absent, so a browser can authenticate a request
+// it cannot set headers on (the WS upgrade carries only the HttpOnly
+// aireos_session cookie, ADR-0047/0048). Service-to-service callers send
+// Authorization directly and carry no cookie; when both are present the existing
+// Authorization wins (no override), so an admin can force a bearer for
+// diagnostics. The token stays opaque to JS — this adapter runs server-side only.
+func CookieToAuthHeader(cookieName string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") == "" {
+				if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
+					r.Header.Set("Authorization", "Bearer "+c.Value)
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func bearerToken(r *http.Request) (string, bool) {
 	h := r.Header.Get("Authorization")
 	const prefix = "Bearer "

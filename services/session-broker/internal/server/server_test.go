@@ -139,6 +139,35 @@ func TestChannelTargetUnavailable(t *testing.T) {
 	}
 }
 
+// TestChannelCookieAuthenticates — the browser WS-upgrade case: only the
+// aireos_session cookie is sent (no Authorization header, which the WebSocket
+// API cannot set). CookieToAuthHeader must translate it so RequireCapability
+// passes; reaching the target-unavailable branch (424) proves auth succeeded.
+func TestChannelCookieAuthenticates(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store: &fakeStore{
+			sess:      store.Session{ID: "abc", OperatorID: "tester", Status: "pending"},
+			targetErr: store.ErrNoSecret,
+		},
+		SecretKey: "k",
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c, resp, err := websocket.Dial(ctx, wsURL(srv.URL, "/v1/sessions/abc/channel"), &websocket.DialOptions{
+		HTTPHeader: http.Header{"Cookie": []string{mw.SessionCookieName + "=tok"}},
+	})
+	if err == nil {
+		_ = c.CloseNow()
+		t.Fatal("expected a non-101 response (target unavailable), got an upgrade")
+	}
+	if resp == nil || resp.StatusCode != http.StatusFailedDependency {
+		t.Fatalf("cookie-only auth: want 424 (authenticated, target unavailable), got %v", resp)
+	}
+}
+
 // /healthz is served over HTTP/2 (cleartext via h2c), per ADR-0043 §Verification.
 func TestHTTP2Healthz(t *testing.T) {
 	h := h2c.NewHandler(newHandler(t, server.Config{Store: &fakeStore{}}), &http2.Server{})

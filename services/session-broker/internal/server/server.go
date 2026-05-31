@@ -64,6 +64,10 @@ func New(cfg Config) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/healthz", b.healthz)
 	r.Group(func(r chi.Router) {
+		// The browser WS upgrade carries only the HttpOnly aireos_session cookie
+		// (it cannot set Authorization); translate it to a bearer before the
+		// capability check (T-018a, shared with services/api).
+		r.Use(mw.CookieToAuthHeader(mw.SessionCookieName))
 		r.Use(mw.RequireCapability(cfg.Verifier, "agent-remote-session", "human-agent"))
 		r.Get("/v1/sessions/{id}/channel", b.channel)
 	})
