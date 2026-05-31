@@ -16,6 +16,7 @@ import (
 
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/session-broker/internal/server"
+	"aireos.local/services/session-broker/internal/store"
 )
 
 type allowAll struct{}
@@ -24,59 +25,123 @@ func (allowAll) Verify(context.Context, string) (mw.Capability, error) {
 	return mw.Capability{Subject: "tester", Edge: "agent-remote-session"}, nil
 }
 
+// fakeStore drives the channel handler's pre-upgrade authz/validation branches
+// without a database or a live SSH target.
+type fakeStore struct {
+	sess      store.Session
+	sessErr   error
+	target    store.Target
+	targetErr error
+}
+
+func (f *fakeStore) LoadSession(_ context.Context, _ string) (store.Session, error) {
+	return f.sess, f.sessErr
+}
+func (f *fakeStore) LoadTarget(_ context.Context, _, _ string) (store.Target, error) {
+	return f.target, f.targetErr
+}
+func (f *fakeStore) Activate(_ context.Context, _, _ string) error       { return nil }
+func (f *fakeStore) Close(_ context.Context, _, _, _, _, _ string) error { return nil }
+
+func newHandler(t *testing.T, cfg server.Config) http.Handler {
+	t.Helper()
+	if cfg.Verifier == nil {
+		cfg.Verifier = allowAll{}
+	}
+	if cfg.CastDir == "" {
+		cfg.CastDir = t.TempDir()
+	}
+	return server.New(cfg)
+}
+
 func wsURL(httpURL, path string) string {
 	return "ws" + strings.TrimPrefix(httpURL, "http") + path
 }
 
-// A capability-bearing client can open the channel and the broker echoes.
-func TestWebSocketEchoGated(t *testing.T) {
-	srv := httptest.NewServer(server.New(allowAll{}))
+// dialStatus dials the channel and returns the HTTP status of a non-101 response
+// (the pre-upgrade gates answer with a plain HTTP status, no WS upgrade).
+func dialStatus(t *testing.T, h http.Handler, bearer bool) int {
+	t.Helper()
+	srv := httptest.NewServer(h)
 	defer srv.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, _, err := websocket.Dial(ctx, wsURL(srv.URL, "/v1/sessions/abc/channel"), &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": []string{"Bearer test"}},
-	})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+	opts := &websocket.DialOptions{}
+	if bearer {
+		opts.HTTPHeader = http.Header{"Authorization": []string{"Bearer test"}}
 	}
-	defer c.CloseNow()
-
-	if err := c.Write(ctx, websocket.MessageText, []byte("ping")); err != nil {
-		t.Fatalf("write: %v", err)
+	c, resp, err := websocket.Dial(ctx, wsURL(srv.URL, "/v1/sessions/abc/channel"), opts)
+	if err == nil {
+		_ = c.CloseNow()
+		t.Fatal("expected a non-101 response from a gated/invalid channel dial")
 	}
-	typ, msg, err := c.Read(ctx)
-	if err != nil {
-		t.Fatalf("read: %v", err)
+	if resp == nil {
+		t.Fatalf("no HTTP response: %v", err)
 	}
-	if typ != websocket.MessageText || string(msg) != "ping" {
-		t.Fatalf("echo mismatch: type=%v msg=%q", typ, msg)
-	}
-	c.Close(websocket.StatusNormalClosure, "")
+	return resp.StatusCode
 }
 
-// The channel upgrade is gated: no bearer → 401, no upgrade.
-func TestWebSocketRequiresCapability(t *testing.T) {
-	srv := httptest.NewServer(server.New(allowAll{}))
-	defer srv.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, resp, err := websocket.Dial(ctx, wsURL(srv.URL, "/v1/sessions/abc/channel"), nil)
-	if err == nil {
-		t.Fatal("expected dial to fail without a capability token")
+func TestChannelRequiresCapability(t *testing.T) {
+	h := newHandler(t, server.Config{Store: &fakeStore{}, SecretKey: "k"})
+	if got := dialStatus(t, h, false); got != http.StatusUnauthorized {
+		t.Fatalf("no bearer: want 401, got %d", got)
 	}
-	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("want 401, got %v", resp)
+}
+
+func TestChannelUnknownSession(t *testing.T) {
+	h := newHandler(t, server.Config{Store: &fakeStore{sessErr: store.ErrSessionNotFound}, SecretKey: "k"})
+	if got := dialStatus(t, h, true); got != http.StatusNotFound {
+		t.Fatalf("unknown session: want 404, got %d", got)
+	}
+}
+
+func TestChannelForeignOperatorIsNotFound(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store:     &fakeStore{sess: store.Session{ID: "abc", OperatorID: "someone-else", Status: "pending"}},
+		SecretKey: "k",
+	})
+	if got := dialStatus(t, h, true); got != http.StatusNotFound {
+		t.Fatalf("foreign operator: want 404 (not disclosed), got %d", got)
+	}
+}
+
+func TestChannelNotOpen(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store:     &fakeStore{sess: store.Session{ID: "abc", OperatorID: "tester", Status: "closed"}},
+		SecretKey: "k",
+	})
+	if got := dialStatus(t, h, true); got != http.StatusConflict {
+		t.Fatalf("closed session: want 409, got %d", got)
+	}
+}
+
+func TestChannelMissingSecretKey(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store:     &fakeStore{sess: store.Session{ID: "abc", OperatorID: "tester", Status: "pending"}},
+		SecretKey: "",
+	})
+	if got := dialStatus(t, h, true); got != http.StatusServiceUnavailable {
+		t.Fatalf("no secret key: want 503, got %d", got)
+	}
+}
+
+func TestChannelTargetUnavailable(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store: &fakeStore{
+			sess:      store.Session{ID: "abc", OperatorID: "tester", Status: "pending"},
+			targetErr: store.ErrNoSecret,
+		},
+		SecretKey: "k",
+	})
+	if got := dialStatus(t, h, true); got != http.StatusFailedDependency {
+		t.Fatalf("target unavailable: want 424, got %d", got)
 	}
 }
 
 // /healthz is served over HTTP/2 (cleartext via h2c), per ADR-0043 §Verification.
 func TestHTTP2Healthz(t *testing.T) {
-	h := h2c.NewHandler(server.New(allowAll{}), &http2.Server{})
+	h := h2c.NewHandler(newHandler(t, server.Config{Store: &fakeStore{}}), &http2.Server{})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 

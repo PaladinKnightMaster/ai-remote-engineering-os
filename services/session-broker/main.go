@@ -32,6 +32,7 @@ import (
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/session-broker/internal/server"
+	"aireos.local/services/session-broker/internal/store"
 )
 
 //go:embed migrations/*.sql
@@ -89,6 +90,9 @@ func runOutbox(dsn string, args []string) error {
 }
 
 func serve(dsn string) error {
+	if err := checkKeySeparation(); err != nil {
+		return err
+	}
 	v, err := capabilityVerifier()
 	if err != nil {
 		return err
@@ -113,9 +117,29 @@ func serve(dsn string) error {
 		}()
 	}
 
+	// The data plane decrypts target credentials with AIREOS_RESOURCE_SECRET_KEY
+	// (authority-separate from the PASETO key). Empty is tolerated at boot — the
+	// channel handler answers 503 until it is provisioned — so the broker can run
+	// (healthz, relay) before any target secret exists.
+	secretKey := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
+	if secretKey == "" {
+		log.Print("AIREOS_RESOURCE_SECRET_KEY not set — session channels will answer 503 until provisioned")
+	}
+	castDir := firstNonEmpty(os.Getenv("AIREOS_CAST_DIR"), "/var/lib/aireos/sessions")
+	if err := os.MkdirAll(castDir, 0o700); err != nil {
+		return fmt.Errorf("create cast dir %s: %w", castDir, err)
+	}
+
+	handler := server.New(server.Config{
+		Verifier:  v,
+		Store:     store.New(pool),
+		SecretKey: secretKey,
+		CastDir:   castDir,
+	})
+
 	// h2c lets the cleartext dev/CI listener speak HTTP/2; under TLS, http.Server
 	// negotiates HTTP/2 on its own and h2c is a transparent pass-through.
-	h := h2c.NewHandler(server.New(v), &http2.Server{})
+	h := h2c.NewHandler(handler, &http2.Server{})
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("BROKER_ADDR"), ":8082"),
 		Handler:           h,
@@ -123,6 +147,18 @@ func serve(dsn string) error {
 	}
 	log.Printf("session-broker listening on %s", srv.Addr)
 	return srv.ListenAndServe()
+}
+
+// checkKeySeparation fails loud when the resource secret key collides with the
+// PASETO signing key (defense-in-depth, ADR-0048 §7 authority separation). No-op
+// when the resource key is unset.
+func checkKeySeparation() error {
+	rk := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
+	pk := os.Getenv("AIREOS_PASETO_KEY")
+	if rk != "" && pk != "" && rk == pk {
+		return errors.New("AIREOS_RESOURCE_SECRET_KEY must differ from AIREOS_PASETO_KEY (authority separation, ADR-0048 §7)")
+	}
+	return nil
 }
 
 // newRelay builds the outbox relay's HTTP client to the audit-service chain
