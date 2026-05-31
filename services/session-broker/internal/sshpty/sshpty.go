@@ -138,11 +138,40 @@ func parseControl(b []byte) (control, bool) {
 	return c, c.Type != ""
 }
 
+// lineBuffer accumulates raw operator input bytes and yields each Enter-delimited
+// line — the operator-attributable atom for the terminal.input.line audit event
+// (ADR-0048 §6). Bytes are NOT normalized: a mid-line backspace stays in the
+// emitted line (intent on the wire, per the spike's backspace clarification). An
+// empty line (Enter on an empty buffer) yields nothing.
+type lineBuffer struct{ buf []byte }
+
+func (lb *lineBuffer) feed(data []byte) [][]byte {
+	var lines [][]byte
+	for _, b := range data {
+		if b == '\r' {
+			if len(lb.buf) > 0 {
+				line := make([]byte, len(lb.buf))
+				copy(line, lb.buf)
+				lines = append(lines, line)
+				lb.buf = lb.buf[:0]
+			}
+			continue
+		}
+		lb.buf = append(lb.buf, b)
+	}
+	return lines
+}
+
 // Pipe shuttles bytes between the WebSocket and the PTY until either side closes,
 // the context is canceled, or idle elapses with no operator input. It records
 // output ("o") and input ("i") to rec and returns the close reason (one of the
 // sessions.closed_reason CHECK values: idle|operator|broker_crash).
-func (c *Conn) Pipe(ctx context.Context, ws *websocket.Conn, rec Recorder, idle time.Duration) string {
+//
+// onInputLine, if non-nil, is invoked with the raw bytes of each Enter-delimited
+// operator line (the terminal.input.line audit atom, ADR-0048 §6) on the input
+// goroutine. Keep it cheap relative to human typing cadence — it fires once per
+// Enter, not per keystroke.
+func (c *Conn) Pipe(ctx context.Context, ws *websocket.Conn, rec Recorder, idle time.Duration, onInputLine func([]byte)) string {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -186,6 +215,7 @@ func (c *Conn) Pipe(ctx context.Context, ws *websocket.Conn, rec Recorder, idle 
 	// WS -> PTY (input + control).
 	go func() {
 		defer wg.Done()
+		var lines lineBuffer
 		for {
 			typ, data, rerr := ws.Read(ctx)
 			if rerr != nil {
@@ -202,6 +232,11 @@ func (c *Conn) Pipe(ctx context.Context, ws *websocket.Conn, rec Recorder, idle 
 				continue
 			}
 			_ = rec.Record(true, data)
+			if onInputLine != nil {
+				for _, line := range lines.feed(data) {
+					onInputLine(line)
+				}
+			}
 			if _, werr := c.stdin.Write(data); werr != nil {
 				set("broker_crash")
 				return

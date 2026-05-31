@@ -164,3 +164,32 @@ func TestLifecycleEmitsOpenAndClose(t *testing.T) {
 		t.Fatalf("close event wrong: %+v", got[1])
 	}
 }
+
+// TestRecordInputLineEmitsHashOnly — a terminal.input.line event carries the
+// line's SHA256 in evidencePacketId and never the raw bytes (T-019a privacy
+// decision: typed secrets must not land in the immutable chain).
+func TestRecordInputLineEmitsHashOnly(t *testing.T) {
+	s, pool := testStore(t)
+	sessID, _, operatorID := seed(t, pool)
+	ctx := context.Background()
+
+	const lineSHA = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+	if err := s.RecordInputLine(ctx, sessID, operatorID, lineSHA); err != nil {
+		t.Fatalf("record input line: %v", err)
+	}
+
+	var outcome, evidence, payload string
+	if err := pool.QueryRow(ctx, `
+		SELECT payload->>'outcome', COALESCE(payload->>'evidencePacketId',''), payload::text
+		  FROM outbox WHERE payload->>'target' = $1 AND payload->>'outcome' = 'input.line'
+		 ORDER BY id DESC LIMIT 1`, "session:"+sessID).Scan(&outcome, &evidence, &payload); err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	if outcome != "input.line" || evidence != "sha256:"+lineSHA {
+		t.Fatalf("input.line event wrong: outcome=%q evidence=%q", outcome, evidence)
+	}
+	// The raw line bytes must never appear in the chain payload (only the hash).
+	if strings.Contains(payload, "\"line\"") {
+		t.Fatalf("chain payload must not carry raw line content: %s", payload)
+	}
+}

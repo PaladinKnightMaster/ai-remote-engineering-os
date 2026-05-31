@@ -13,6 +13,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -33,6 +35,7 @@ type SessionStore interface {
 	LoadTarget(ctx context.Context, resourceID, secretKey string) (store.Target, error)
 	Activate(ctx context.Context, sessionID, operatorID string) error
 	Close(ctx context.Context, sessionID, operatorID, reason, castPath, castSHA string) error
+	RecordInputLine(ctx context.Context, sessionID, operatorID, lineSHA string) error
 }
 
 // Config wires the broker handler's dependencies.
@@ -165,7 +168,16 @@ func (b *broker) channel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- pipe until close, then record session.close --------------------------
-	reason := conn.Pipe(ctx, c, castRecorder{rec}, b.idle)
+	// Per-line audit (ADR-0048 §6): each Enter-delimited line is hashed into the
+	// chain (terminal.input.line); the raw bytes stay in the cast (T-019a). Fires
+	// once per Enter, so the in-line outbox write is off the keystroke path.
+	onInputLine := func(line []byte) {
+		sum := sha256.Sum256(line)
+		if err := b.store.RecordInputLine(context.Background(), id, operator, hex.EncodeToString(sum[:])); err != nil {
+			log.Printf("session %s: input-line audit failed: %v", id, err)
+		}
+	}
+	reason := conn.Pipe(ctx, c, castRecorder{rec}, b.idle, onInputLine)
 	sha, _ := rec.Close()
 	// Use a fresh context: r.Context() is canceled once the handler returns /
 	// the client disconnects, but the close evidence must still be written.

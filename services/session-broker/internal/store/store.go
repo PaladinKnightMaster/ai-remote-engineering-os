@@ -193,6 +193,23 @@ func (s *Store) Close(ctx context.Context, sessionID, operatorID, reason, castPa
 	return err
 }
 
+// RecordInputLine emits a terminal.input.line audit event for one Enter-delimited
+// operator line (ADR-0048 §6). Per the T-019a decision, the chain carries only
+// the line's SHA256 (evidencePacketId) — the raw bytes live in the access-
+// controlled cast file — so per-line tamper-evidence holds without persisting
+// typed secrets into the immutable chain. No session-state change, so the
+// enqueue stands alone (no-op mutate).
+func (s *Store) RecordInputLine(ctx context.Context, sessionID, operatorID, lineSHA string) error {
+	_, err := s.txEnqueue(ctx,
+		func(pgx.Tx) error { return nil },
+		outbox.Event{
+			Timestamp: time.Now(), Actor: operatorID, Edge: auditEdge,
+			Target: "session:" + sessionID, Outcome: "input.line",
+			EvidencePacketID: "sha256:" + lineSHA,
+		})
+	return err
+}
+
 // txEnqueue runs mutate and an outbox Enqueue in one transaction, so the state
 // change and its evidence commit atomically (ADR-0045, no dual-write).
 func (s *Store) txEnqueue(ctx context.Context, mutate func(pgx.Tx) error, e outbox.Event) (string, error) {

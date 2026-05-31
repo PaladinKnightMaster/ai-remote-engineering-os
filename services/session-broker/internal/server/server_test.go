@@ -40,8 +40,9 @@ func (f *fakeStore) LoadSession(_ context.Context, _ string) (store.Session, err
 func (f *fakeStore) LoadTarget(_ context.Context, _, _ string) (store.Target, error) {
 	return f.target, f.targetErr
 }
-func (f *fakeStore) Activate(_ context.Context, _, _ string) error       { return nil }
-func (f *fakeStore) Close(_ context.Context, _, _, _, _, _ string) error { return nil }
+func (f *fakeStore) Activate(_ context.Context, _, _ string) error           { return nil }
+func (f *fakeStore) Close(_ context.Context, _, _, _, _, _ string) error     { return nil }
+func (f *fakeStore) RecordInputLine(_ context.Context, _, _, _ string) error { return nil }
 
 func newHandler(t *testing.T, cfg server.Config) http.Handler {
 	t.Helper()
