@@ -90,6 +90,14 @@ per ADR-0051's hand-off.
 - [T-022 — api outbox + auth audit events](T-022-api-outbox-auth-audit.md) — *complete*. Closes the audit-silent-`api` gap the pre-T-021c review found. `services/api` gains its own transactional outbox (`api_outbox` + relay) and emits `auth.login.success` / `auth.refresh` / `auth.logout` via the ADR-0045 outbox (SEC-9). Required parameterizing `packages/go/outbox`'s table name (default `outbox` unchanged → broker untouched) because api + broker **share** the cockpit DB (ADR-0048); api owns `api_outbox`. Verified live: the T-020b harness now asserts `auth.login.success` by `operator:admin` reaches the chain through **api's own relay**. `auth.service-token.mint` (SEC-9's 4th, circular/noisy) deferred to **T-023**.
 - **T-023** — `auth.service-token.mint` audit via relay service-token caching (mint once per TTL, bounded + non-circular). Lower priority; not required by WD-1. *Pending.*
 
+### Release-prep automation (§11a) — per release-criteria §9 / §11a
+
+The release-prep gate splits into three slices (each its own ticket).
+
+- [T-025 — release-check + doc-check aggregators](T-025-release-check-doc-check.md) — *complete*. `task doc-check` (DOC-1): a Python path walker asserting every in-repo file path in `CANONICAL_SOURCE_OF_TRUTH.md` + the ADRs resolves (verified: **63 refs / 53 files**). `task release-check` (VER-3): the must-pass gate aggregator (doc-check → validate → lint → test → integration → typecheck → web build → codegen-drift), exits 0 only if all pass. Structure verified via Taskfile dry-run; the full green run is CI's job (VER-1).
+- **T-026** — `task licenses` (SC-6: report the full transitive Go + JS license set, exit non-zero on any unlisted license) + `docs/security/license-policy.md` (acceptable-license list + rationale). *Pending.*
+- **T-027** — `docs/releases/v0.1.0/` artifacts (DOC-6): `release_notes_v0_1_0.md`, `release_manifest_v0_1_0.json`, + an archival copy of the criteria. *Pending.*
+
 ## Conventions
 
 - Filename: `T-NNN-short-kebab-slug.md`.

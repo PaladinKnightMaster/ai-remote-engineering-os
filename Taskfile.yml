@@ -128,6 +128,27 @@ tasks:
     cmds:
       - bash infra/offline/wd1/run-wd1.sh
 
+  doc-check:
+    desc: "Assert every in-repo file path referenced in CANONICAL_SOURCE_OF_TRUTH.md + the ADRs resolves on disk (release-criteria DOC-1; §11a-1). Needs python3."
+    cmds:
+      - python3 infra/scripts/doc_check.py
+
+  release-check:
+    desc: "Release gate aggregator (release-criteria VER-3; §11a-1): run every must-pass gate in sequence, exiting 0 only if all pass. Needs the full toolchain (go + node/pnpm + python3); the integration leg needs a Postgres (set AUDIT_TEST_DATABASE_URL / BROKER_TEST_DATABASE_URL, else those tests self-skip). Intended for the CI host / a full dev env; the offline-only dev box runs the per-leg Docker commands."
+    cmds:
+      - task: doc-check
+      - task: validate
+      - task: lint
+      - task: test
+      - task: test-integration
+      - pnpm -r run typecheck
+      - pnpm --filter @aireos/web run build
+      # codegen drift (VER-2): regenerate, then assert the committed output matches.
+      - task: codegen
+      - cmd: git diff --exit-code
+        # A non-empty diff after codegen means the committed generated files are
+        # stale (run `task codegen` and commit). Assumes a clean working tree.
+
   # outbox:    added by the first producer ticket (ADR-0045).
   # Note: `task auth rotate-key` (operator key rotation) lands with the operator
   # login HTTP surface / a devops ticket; `task auth -- genkey` is the P0 helper.
