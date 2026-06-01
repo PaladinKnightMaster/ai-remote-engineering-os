@@ -80,6 +80,24 @@ func run() error {
 	if err := os.WriteFile(filepath.Join(keyDir, "authorized_keys"), []byte(clientAuthLine+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write authorized_keys: %w", err)
 	}
+	// Also emit the host PUBLIC key (→ the resource's ssh_host_key label) and the
+	// client PRIVATE key (→ the encrypted credential) so a separate seeder can
+	// provision the resource — used by the T-021d-b installed-stack WD-1 harness,
+	// where the resource is inserted via psql + `api resources set-secret` inside
+	// the host container (the installed postgres is localhost-only).
+	if err := os.WriteFile(filepath.Join(keyDir, "ssh_host_key_pub"), []byte(hostAuthLine+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write host pubkey: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(keyDir, "client_ed25519"), clientPriv, 0o600); err != nil {
+		return fmt.Errorf("write client key: %w", err)
+	}
+
+	// keys-only mode (T-021d-b): write the key material + skip the DB insert (the
+	// installed postgres is not reachable from this build-host container).
+	if os.Getenv("SEED_KEYS_ONLY") == "1" {
+		log.Printf("seed: keys-only — wrote sshd keys + host pubkey + client key to %s (no DB insert)", keyDir)
+		return nil
+	}
 
 	labels, _ := json.Marshal(map[string]string{
 		"ssh_host":     "sshd",
