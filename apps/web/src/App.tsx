@@ -6,6 +6,7 @@ import { Login } from "./routes/Login";
 import { Dashboard } from "./routes/Dashboard";
 import { Sessions } from "./routes/Sessions";
 import { SessionView } from "./routes/SessionView";
+import { Audit } from "./routes/Audit";
 
 /**
  * RequireAuth — route guard. The capability-edge security boundary is
@@ -48,6 +49,14 @@ export function App() {
             element={
               <RequireAuth>
                 <SessionView />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/audit"
+            element={
+              <RequireAuth>
+                <Audit />
               </RequireAuth>
             }
           />

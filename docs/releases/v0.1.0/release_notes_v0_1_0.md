@@ -33,12 +33,19 @@ through the cockpit and a reviewer can replay a tamper-evident audit trail:
 - **Release-prep automation.** `task release-check` (VER-3 aggregator),
   `task doc-check` (DOC-1), `task licenses` (SC-6) + `docs/security/license-policy.md`.
 
-## Remaining release gate
+## Release gates — all passing
 
-- **T-024 — operator audit-timeline view.** The audit events are produced,
-  chained, and CLI-verifiable, but an operator cannot yet *view* the timeline in
-  the cockpit (no Caddy route to `audit-service` + cookie-audience handling + a SPA
-  page). Release-gating; must land before tagging v0.1.0.
+All v0.1.0 must-pass gates are met; the release is **ready to tag** (the tag
+itself awaits explicit sign-off).
+
+- **T-024 — operator audit-timeline view (closed).** The operator now views the
+  chained evidence log in the cockpit. `services/api` exposes an operator-gated
+  read-proxy `GET /v1/audit/events` → `audit-service` using its own minted
+  service token (T-024-a; one audience boundary, no new Caddy route — `/v1/*`
+  already fronts api), and `apps/web` serves a capability-gated `/audit` timeline
+  page (T-024-b). The WD-1 walkthrough asserts the operator reads their own
+  chained `auth.login.success` back through Caddy → api → `audit-service` on real
+  wires.
 
 ## Known limits / deferred (with triggers)
 
@@ -54,7 +61,8 @@ through the cockpit and a reviewer can replay a tamper-evident audit trail:
 - **No GUI/RDP/VNC** (guacd deferred), **no cross-operator session sharing**,
   **single bootstrap operator**, **token replay accepted during TTL** (revocation =
   key rotation + short TTL, ADR-0046).
-- **Audit timeline view** — see "Remaining release gate."
+- **Audit timeline (read-only):** chronological table + cursor "Load more" +
+  manual "Refresh". Server-side filtering/search and live auto-refresh → v0.2.0.
 
 ## Verify the release
 

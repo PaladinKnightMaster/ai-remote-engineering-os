@@ -71,12 +71,21 @@ func TestWedgeDemoInstalledStack(t *testing.T) {
 	}
 	t.Log("command executed; marker observed in PTY output")
 
-	// 5. end the session, close the WS, then logout (WD-1 step 8; emits auth.logout).
+	// 5. end the session + close the WS.
 	endSession(t, client, base, sessionID, sess, csrf)
 	_ = ws.Close(websocket.StatusNormalClosure, "wd1 done")
+
+	// 6. operator visits the audit timeline through Caddy -> api read-proxy ->
+	//    audit-service (T-024). Proves the in-cockpit read path on real wires:
+	//    the operator reads their own chained events. Closes the "operator
+	//    visits the audit timeline" half of WD-1 step 8 (chain *integrity* is
+	//    asserted host-internally by run-wd1.sh).
+	assertAuditTimelineReadable(t, client, base, sess, csrf)
+
+	// 7. logout (emits auth.logout).
 	logout(t, client, base, sess, csrf)
 
-	t.Log("PASS — WD-1 operator walkthrough complete through Caddy HTTPS (login → resource → session → command → end → logout). Chain integrity is asserted by run-wd1.sh.")
+	t.Log("PASS — WD-1 operator walkthrough complete through Caddy HTTPS (login → resource → session → command → end → audit timeline → logout). Chain integrity is asserted by run-wd1.sh.")
 }
 
 func assertResourceVisible(t *testing.T, client *http.Client, base, sess, csrf string) {
@@ -94,6 +103,39 @@ func assertResourceVisible(t *testing.T, client *http.Client, base, sess, csrf s
 	b, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(b), resourceID) {
 		t.Fatalf("resource picker missing the seeded resource %s: %s", resourceID, string(b))
+	}
+}
+
+// assertAuditTimelineReadable drives the operator audit-timeline read through
+// Caddy -> services/api read-proxy -> audit-service (T-024-a). It polls because
+// api delivers auth.* events to the chain asynchronously through its outbox
+// relay (T-022); the operator's own auth.login.success must appear in the page
+// read back through the proxy.
+func assertAuditTimelineReadable(t *testing.T, client *http.Client, base, sess, csrf string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		req, _ := http.NewRequest(http.MethodGet, base+"/v1/audit/events?limit=100", nil)
+		req.Header.Set("Cookie", cookieHeader(sess, csrf))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("read audit timeline: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("audit timeline (Caddy->api->audit): status %d body=%s", resp.StatusCode, string(body))
+		}
+		s := string(body)
+		// the operator's own login event, chained + read back through the proxy.
+		if strings.Contains(s, "auth.login.success") && strings.Contains(s, "operator:admin") {
+			t.Log("operator read the audit timeline through Caddy -> api proxy -> audit-service; own auth.login.success present")
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("audit timeline never showed the operator's auth.login.success (relay lag?): %s", s)
+		}
+		time.Sleep(2 * time.Second)
 	}
 }
 

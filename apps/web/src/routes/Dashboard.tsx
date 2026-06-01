@@ -37,8 +37,14 @@ export function Dashboard() {
             <Link to="/sessions" className="font-medium text-primary hover:underline">
               Sessions →
             </Link>{" "}
-            start and attach to a recorded SSH terminal. Other cockpit surfaces
-            (resource picker, audit timeline) land with their feature tickets.
+            start and attach to a recorded SSH terminal.
+          </p>
+          <p className="mt-2 text-sm">
+            <Link to="/audit" className="font-medium text-primary hover:underline">
+              Audit timeline →
+            </Link>{" "}
+            review the chained, append-only evidence log. The resource picker
+            lands with its feature ticket.
           </p>
         </CapabilityGate>
       </section>
