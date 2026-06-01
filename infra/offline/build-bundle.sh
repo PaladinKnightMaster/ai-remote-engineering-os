@@ -55,12 +55,15 @@ log "clean stage $STAGE"
 rm -rf "$STAGE" "$TARBALL"
 mkdir -p "$STAGE/bin" "$STAGE/web" "$STAGE/config"
 
-# --- 1. cross-compile the Go services (static linux/amd64) ------------------
+# --- 1. cross-compile the Go services + authctl (static linux/amd64) --------
 log "cross-compile Go services ($GOOS_TARGET/$GOARCH_TARGET, CGO disabled)"
 for svc in $SERVICES; do
   CGO_ENABLED=0 GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" \
     go build -trimpath -ldflags "-s -w" -o "$STAGE/bin/$svc" "./services/$svc"
 done
+# authctl: the offline key + argon2id-hash CLI install.sh needs (§OI-b).
+CGO_ENABLED=0 GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" \
+  go build -trimpath -ldflags "-s -w" -o "$STAGE/bin/authctl" ./packages/go/auth/cmd/authctl
 
 # --- 2. SPA static assets (pre-built by `pnpm build`) -----------------------
 [ -d "apps/web/dist" ] || die "apps/web/dist not found — run 'pnpm --filter @aireos/web build' first (the task offline-bundle target does this)"

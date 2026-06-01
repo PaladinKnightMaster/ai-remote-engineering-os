@@ -69,12 +69,15 @@ vs. REST surface) along the proven T-005a/5b boundary.
 
 ### Offline install (§OI / T-021) — per ADR-0051
 
-The offline-install gate (release-criteria §6, OI-1…5) splits into three slices,
-each its own consult, per ADR-0051's hand-off.
+The offline-install gate (release-criteria §6, OI-1…5) splits into four slices
+(re-baselined: postgres-staging became its own ADR-bearing slice once the
+closure-size reality forced per-OS companion artifacts), each its own consult,
+per ADR-0051's hand-off.
 
-- [T-021a — offline-bundle builder (app tier)](T-021a-offline-bundle-builder.md) — *complete*. `task offline-bundle` cross-compiles the three services as static `linux/amd64` binaries, builds the SPA, fetches + **sha512**-verifies a pinned **Caddy** v2.11.3, stages the Caddyfile (`/channel`→broker matched before `/v1`→api; `tls internal`) + four systemd unit templates, writes `VERSION` + `SHA256_MANIFEST.txt`, and packages `dist/offline/aireos-offline-<v>.tar.gz` with an OI-4 size gate. Verified: **80 MB / 28 MB gz** (under the 500/150 caps), `sha256sum -c` OK (OI-5), `caddy validate` clean. `install.sh` + postgres are forward-compatibly deferred to T-021b.
-- **T-021b** — `install.sh` (genkey, operator prompt/env provisioning, DB-connection validate + api/audit/broker migrations, enable units) + staged offline postgres `.deb`/`.rpm` packages + the offline postgres install guide + the `offline-install-v3.md` rewrite (DOC-5). *Pending.*
-- **T-021c** — WD-1 wedge demo against the installed stack (the live G1 cross-boundary proof, reusing the T-020b harness pattern). Closes OI-3. *Pending.*
+- [T-021a — offline-bundle builder (app tier)](T-021a-offline-bundle-builder.md) — *complete*. `task offline-bundle` cross-compiles the services as static `linux/amd64` binaries, builds the SPA, fetches + **sha512**-verifies a pinned **Caddy** v2.11.3, stages the Caddyfile (`/channel`→broker matched before `/v1`→api; `tls internal`) + four systemd unit templates, writes `VERSION` + `SHA256_MANIFEST.txt`, and packages `dist/offline/aireos-offline-<v>.tar.gz` with an OI-4 size gate. Verified ~80 MB / 28 MB gz, `sha256sum -c` OK (OI-5), `caddy validate` clean.
+- [T-021b — install.sh (deploy + provision + migrate)](T-021b-installer.md) — *complete*. Root installer: creates the `aireos` user + state dirs, deploys binaries/SPA/config, mints the PASETO key + separate resource-secret key offline (bundles **`authctl`** for genkey + argon2id hashing), provisions the bootstrap operator (prompt default + env override, OQ-4), writes the 0600 env file, validates the DB + runs all three services' migrations, and enables the systemd units. Idempotent (OI-2). Verified in Docker vs real postgres (deploy/keys/migrations/idempotency); live systemd enable+start → T-021d.
+- **T-021c** — staged offline postgres **companion** artifacts (`.deb` Ubuntu 24.04 + `.rpm` Rocky/RHEL 9, full dependency closure) + the offline postgres install guide + the `offline-install-v3.md` rewrite (DOC-5) + **ADR-0052** (ratifies per-OS companion artifacts, refining ADR-0051 §3 — postgres closures ~85 MB each can't co-reside in the 150 MB-gz bundle). *Pending.*
+- **T-021d** — WD-1 wedge demo against the installed stack (the live G1 cross-boundary proof + the live systemd enable+start, reusing the T-020b harness pattern). Closes OI-3. *Pending.*
 
 ## Conventions
 
