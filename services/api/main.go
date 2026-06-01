@@ -30,6 +30,7 @@ import (
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
+	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/account"
 	"aireos.local/services/api/internal/secret"
 	"aireos.local/services/api/internal/server"
@@ -71,10 +72,12 @@ func run(args []string) error {
 		}, args[1:])
 	case "resources":
 		return runResources(dsn, args[1:])
+	case "outbox":
+		return runOutbox(dsn, args[1:])
 	case "serve":
 		return serve(dsn)
 	default:
-		return fmt.Errorf("unknown command %q (want serve|migrate|resources)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate|resources|outbox)", cmd)
 	}
 }
 
@@ -160,6 +163,21 @@ func serve(dsn string) error {
 		return err
 	}
 
+	// Start the in-process outbox relay (ADR-0045 / SEC-9): api's auth +
+	// control-plane evidence is drained from api_outbox to audit-service.
+	// Best-effort — if AIREOS_AUDIT_URL is unset the relay is skipped and api
+	// still serves; a degraded chain authority surfaces as growing outbox depth,
+	// not a failed boot.
+	if relay, rerr := newRelay(pool); rerr != nil {
+		log.Printf("outbox relay disabled: %v", rerr)
+	} else {
+		go func() {
+			if err := relay.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("outbox relay stopped: %v", err)
+			}
+		}()
+	}
+
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
 		Handler:           server.New(store.New(pool), authn, signer, v),
@@ -203,6 +221,63 @@ type devAllowAll struct{}
 
 func (devAllowAll) Verify(_ context.Context, _ string) (mw.Capability, error) {
 	return mw.Capability{Subject: "dev", Edge: "human-agent"}, nil
+}
+
+// runOutbox handles `api outbox relay` — the operator-run foreground relay, the
+// same shape as the in-process goroutine serve starts (ADR-0045).
+func runOutbox(dsn string, args []string) error {
+	if len(args) == 0 || args[0] != "relay" {
+		return errors.New("usage: api outbox relay")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+	relay, err := newRelay(pool)
+	if err != nil {
+		return err
+	}
+	log.Print("api: outbox relay (foreground)")
+	return relay.Run(context.Background())
+}
+
+// newRelay builds api's outbox relay → audit-service. AIREOS_AUDIT_URL must be
+// set or the relay is declined (logged, not fatal). The relay drains api's own
+// api_outbox table/channel (ADR-0048 shared DB; the broker owns "outbox").
+func newRelay(pool *pgxpool.Pool) (*outbox.Relay, error) {
+	auditURL := os.Getenv("AIREOS_AUDIT_URL")
+	if auditURL == "" {
+		return nil, errors.New("AIREOS_AUDIT_URL not set")
+	}
+	token, err := auditTokenSource()
+	if err != nil {
+		return nil, err
+	}
+	return &outbox.Relay{
+		Pool:    pool,
+		Client:  &outbox.HTTPClient{BaseURL: auditURL, Token: token},
+		Table:   store.OutboxTable,
+		Channel: store.OutboxChannel,
+	}, nil
+}
+
+// auditTokenSource returns the bearer provider for audit-service ingest: a
+// service-service PASETO token (workload "api", audience "audit-service") when
+// AIREOS_PASETO_KEY is set (ADR-0046), else API_AUDIT_TOKEN (dev), else none.
+func auditTokenSource() (func(context.Context) (string, error), error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
+		}
+		signer := auth.NewSigner(key, os.Getenv("AIREOS_CLUSTER_ID"))
+		return func(context.Context) (string, error) {
+			return signer.IssueService("api", "audit-service")
+		}, nil
+	}
+	staticTok := os.Getenv("API_AUDIT_TOKEN")
+	return func(context.Context) (string, error) { return staticTok, nil }, nil
 }
 
 func firstNonEmpty(vals ...string) string {

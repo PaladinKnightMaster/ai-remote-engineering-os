@@ -24,10 +24,22 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// table is the per-service outbox table name. Every producer shares the same
-// name (each in its own migration), so it is a constant, not configurable —
-// which also keeps it out of any string-built SQL as an injection surface.
-const table = "outbox"
+// defaultTable is the outbox table name for a single-producer service. When two
+// producers share one database (services/api alongside services/session-broker,
+// per ADR-0048's shared Postgres), each sets Writer.Table / Relay.Table to its
+// own name (e.g. "api_outbox") so the tables do not collide; the default keeps
+// the broker and single-producer services unchanged.
+const defaultTable = "outbox"
+
+// tableIdent returns the sanitized, quoted identifier for name (default
+// "outbox"). The name is developer-set, never user input; Sanitize is defense in
+// depth, mirroring the relay's channel handling.
+func tableIdent(name string) string {
+	if name == "" {
+		name = defaultTable
+	}
+	return pgx.Identifier{name}.Sanitize()
+}
 
 // Event is the producer-supplied semantic payload of an audit evidence packet.
 // It maps 1:1 onto audit-service's POST /v1/events Ingest body minus the
@@ -55,14 +67,15 @@ type wireEvent struct {
 	IdempotencyKey   string `json:"idempotencyKey"`
 }
 
-// Writer enqueues evidence rows. It is stateless; a zero Writer is ready to use.
-type Writer struct{}
+// Writer enqueues evidence rows. The zero Writer targets the default "outbox"
+// table; set Table when sharing a database with another producer.
+type Writer struct{ Table string }
 
 // Enqueue writes one pending evidence row inside tx (a pgx.Tx the caller obtained
 // for its own state change). The idempotency key is a UUID v7 minted here and
 // returned so the caller can correlate. The row's payload is the audit-ingest
 // JSON, ready for the Relay to POST verbatim.
-func (Writer) Enqueue(ctx context.Context, tx pgx.Tx, e Event) (string, error) {
+func (w Writer) Enqueue(ctx context.Context, tx pgx.Tx, e Event) (string, error) {
 	key, err := uuid.NewV7()
 	if err != nil {
 		return "", fmt.Errorf("outbox: mint idempotency key: %w", err)
@@ -79,7 +92,7 @@ func (Writer) Enqueue(ctx context.Context, tx pgx.Tx, e Event) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("outbox: marshal payload: %w", err)
 	}
-	const q = `INSERT INTO ` + table + ` (idempotency_key, payload) VALUES ($1, $2::jsonb)`
+	q := `INSERT INTO ` + tableIdent(w.Table) + ` (idempotency_key, payload) VALUES ($1, $2::jsonb)`
 	if _, err := tx.Exec(ctx, q, key.String(), string(payload)); err != nil {
 		return "", fmt.Errorf("outbox: enqueue: %w", err)
 	}

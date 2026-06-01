@@ -150,6 +150,30 @@ func TestSSHCockpitEndToEnd(t *testing.T) {
 		t.Fatalf("cast file SHA mismatch: on-disk %s != chain-anchored %s", got, castSHA)
 	}
 	t.Logf("PASS — live chain has session.open + terminal.input.line + session.close; cast %s SHA matches the anchor", castPath)
+
+	// --- 9. api-side auth audit (T-022 / SEC-9): the login at step 1 must have
+	// emitted auth.login.success through api's OWN outbox relay into the chain.
+	authEv := pollAuthEvent(t, auditURL, auditToken, "auth.login.success", "operator:"+operatorUser, 30*time.Second)
+	t.Logf("PASS — api auth event in live chain: %q by %q (edge %q)", authEv.Outcome, authEv.Actor, authEv.Edge)
+}
+
+// pollAuthEvent waits for an api-emitted auth event (outcome + actor) to appear
+// in the live chain — proof that services/api's outbox relay (T-022) delivers,
+// not just the broker's.
+func pollAuthEvent(t *testing.T, auditURL, token, outcome, actor string, within time.Duration) auditEvent {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		for _, e := range listAllEvents(t, auditURL, token) {
+			if e.Outcome == outcome && e.Actor == actor {
+				return e
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("auth event %q by %q never reached the chain within %s (api outbox relay not delivering?)", outcome, actor, within)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // --- helpers ---------------------------------------------------------------

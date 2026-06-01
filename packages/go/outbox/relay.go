@@ -30,6 +30,9 @@ type Relay struct {
 	Pool   *pgxpool.Pool
 	Client Client
 
+	// Table is the outbox table this relay drains (default "outbox"). A producer
+	// sharing a database with another sets its own (e.g. "api_outbox"), ADR-0048.
+	Table string
 	// Channel is the LISTEN/NOTIFY wakeup channel (default "outbox_new"). It is
 	// only a hint — the transport is HTTP, never NOTIFY (ADR-0045).
 	Channel string
@@ -42,6 +45,9 @@ type Relay struct {
 }
 
 func (r *Relay) applyDefaults() {
+	if r.Table == "" {
+		r.Table = defaultTable
+	}
 	if r.Channel == "" {
 		r.Channel = "outbox_new"
 	}
@@ -116,8 +122,9 @@ func (r *Relay) drainBatch(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
 
+	tbl := tableIdent(r.Table)
 	rows, err := tx.Query(ctx, `
-		SELECT id, payload FROM `+table+`
+		SELECT id, payload FROM `+tbl+`
 		WHERE delivered_at IS NULL
 		ORDER BY id
 		LIMIT $1
@@ -150,7 +157,7 @@ func (r *Relay) drainBatch(ctx context.Context) (int, error) {
 		if err := r.Client.Append(ctx, it.payload); err != nil {
 			return 0, fmt.Errorf("deliver row %d: %w", it.id, err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE `+table+` SET delivered_at = now() WHERE id = $1`, it.id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE `+tbl+` SET delivered_at = now() WHERE id = $1`, it.id); err != nil {
 			return 0, err
 		}
 	}

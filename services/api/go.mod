@@ -6,6 +6,7 @@ require (
 	aireos.local/packages/go/auth v0.0.0
 	aireos.local/packages/go/middleware v0.0.0
 	aireos.local/packages/go/migrate v0.0.0
+	aireos.local/packages/go/outbox v0.0.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.1
@@ -34,4 +35,5 @@ replace (
 	aireos.local/packages/go/auth => ../../packages/go/auth
 	aireos.local/packages/go/middleware => ../../packages/go/middleware
 	aireos.local/packages/go/migrate => ../../packages/go/migrate
+	aireos.local/packages/go/outbox => ../../packages/go/outbox
 )

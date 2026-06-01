@@ -30,13 +30,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
+	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/session"
 	"aireos.local/services/api/internal/store"
@@ -71,6 +74,9 @@ type Store interface {
 	GetSession(ctx context.Context, operatorID, id string) (session.Session, error)
 	ListSessions(ctx context.Context, operatorID, after string, limit int) ([]session.Session, string, error)
 	EndSession(ctx context.Context, operatorID, id string) (session.Session, error)
+
+	// RecordEvent enqueues an audit evidence row into api's outbox (T-022 / SEC-9).
+	RecordEvent(ctx context.Context, e outbox.Event) error
 }
 
 // Authenticator verifies operator credentials (services/api/internal/account).
@@ -79,9 +85,10 @@ type Authenticator interface {
 }
 
 type apiHandlers struct {
-	store  Store
-	authn  Authenticator // nil → operator login disabled (503)
-	signer *auth.Signer  // nil → operator login disabled (503)
+	store    Store
+	authn    Authenticator // nil → operator login disabled (503)
+	signer   *auth.Signer  // nil → operator login disabled (503)
+	verifier mw.Verifier   // used by Logout to attribute the actor from the cookie
 }
 
 // New returns the api router. Routes that declared security in the contract are
@@ -101,11 +108,11 @@ type apiHandlers struct {
 // (see gen.go's per-op middleware loop). Reordering this slice without
 // understanding that loop will silently break the cookie path.
 func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier) http.Handler {
-	h := &apiHandlers{store: s, authn: authn, signer: signer}
+	h := &apiHandlers{store: s, authn: authn, signer: signer, verifier: v}
 	return HandlerWithOptions(h, ChiServerOptions{
 		BaseRouter: chi.NewRouter(),
 		Middlewares: []MiddlewareFunc{
-			slidingRefresh(signer),                                   // innermost  (last to run, closest to handler)
+			slidingRefresh(signer, s),                                // innermost  (last to run, closest to handler)
 			gateByDeclaredSecurity(v),                                // middle
 			MiddlewareFunc(mw.CookieToAuthHeader(sessionCookieName)), // outermost  (first to run)
 		},
@@ -169,7 +176,7 @@ func csrfValid(r *http.Request) bool {
 // ADR-0046 OperatorTTL = 8h ⇒ refresh window < 4h). Service-service tokens are
 // not refreshed (they self-refresh in-process). A nil signer (dev allow-all)
 // short-circuits.
-func slidingRefresh(signer *auth.Signer) MiddlewareFunc {
+func slidingRefresh(signer *auth.Signer, s Store) MiddlewareFunc {
 	if signer == nil {
 		return func(next http.Handler) http.Handler { return next }
 	}
@@ -184,13 +191,41 @@ func slidingRefresh(signer *auth.Signer) MiddlewareFunc {
 						// (rand failure, header already flushed), continue
 						// serving the response — the next request will retry
 						// the rotation if still in the refresh window.
-						_ = setSessionCookies(w, newToken)
+						if setSessionCookies(w, newToken) == nil {
+							recordAuth(r.Context(), s, cap.Subject, "auth.refresh") // SEC-9
+						}
 					}
 				}
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// recordAuth best-effort enqueues an auth audit event (SEC-9) into api's outbox.
+// Failure to enqueue must never fail the auth operation — a degraded audit path
+// surfaces as growing outbox depth (ADR-0045), so we log and continue.
+func recordAuth(ctx context.Context, s Store, subject, outcome string) {
+	if err := s.RecordEvent(ctx, outbox.Event{
+		Timestamp: time.Now(),
+		Actor:     subject,
+		Edge:      "human-agent",
+		Target:    subject,
+		Outcome:   outcome,
+	}); err != nil {
+		log.Printf("audit: enqueue %s for %s failed: %v", outcome, subject, err)
+	}
+}
+
+// bearerFromHeader extracts the bearer token from Authorization (set from the
+// session cookie by mw.CookieToAuthHeader, which runs for every route).
+func bearerFromHeader(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	const p = "Bearer "
+	if len(h) > len(p) && strings.EqualFold(h[:len(p)], p) {
+		return strings.TrimSpace(h[len(p):])
+	}
+	return ""
 }
 
 // setSessionCookies writes the session + CSRF cookies on a successful login
@@ -283,6 +318,7 @@ func (a *apiHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "set cookies failed")
 		return
 	}
+	recordAuth(r.Context(), a.store, subject, "auth.login.success") // SEC-9
 	writeJSON(w, http.StatusOK, map[string]string{
 		"expiresAt": time.Now().Add(auth.OperatorTTL).UTC().Format(time.RFC3339),
 	})
@@ -291,8 +327,20 @@ func (a *apiHandlers) Login(w http.ResponseWriter, r *http.Request) {
 // Logout (POST /v1/auth/logout) clears the session + CSRF cookies. Public:
 // callers with stale/expired cookies can recover. SameSite=Strict on the
 // session cookie blocks cross-site CSRF on this endpoint at the browser layer.
-func (a *apiHandlers) Logout(w http.ResponseWriter, _ *http.Request) {
+func (a *apiHandlers) Logout(w http.ResponseWriter, r *http.Request) {
+	// Best-effort actor attribution for the audit event: mw.CookieToAuthHeader has
+	// copied the session cookie into Authorization (it runs on every route), so
+	// verify it to name the operator. An absent/expired cookie → "operator:unknown".
+	subject := "operator:unknown"
+	if a.verifier != nil {
+		if bearer := bearerFromHeader(r); bearer != "" {
+			if c, err := a.verifier.Verify(r.Context(), bearer); err == nil && c.Subject != "" {
+				subject = c.Subject
+			}
+		}
+	}
 	clearSessionCookies(w)
+	recordAuth(r.Context(), a.store, subject, "auth.logout") // SEC-9
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -60,7 +60,8 @@ func TestEnqueueWritesAuditIngestPayload(t *testing.T) {
 		t.Fatalf("idempotency key not UUID v7: %q (err=%v)", key, err)
 	}
 
-	if !strings.Contains(tx.sql, "INSERT INTO outbox") {
+	// The table identifier is now sanitized/quoted (pgx.Identifier), default "outbox".
+	if !strings.Contains(tx.sql, `INSERT INTO "outbox"`) {
 		t.Fatalf("unexpected SQL: %q", tx.sql)
 	}
 	if len(tx.args) != 2 || tx.args[0] != key {

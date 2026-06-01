@@ -12,17 +12,46 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/resource"
 )
 
 // ErrNotFound is returned when no resource has the given id.
 var ErrNotFound = errors.New("resource not found")
 
+// Outbox table + notify channel for services/api (T-022). Named distinctly from
+// the broker's default "outbox" because both share the cockpit database
+// (ADR-0048); each producer owns its own outbox + channel. main.go points api's
+// relay at these too.
+const (
+	OutboxTable   = "api_outbox"
+	OutboxChannel = "api_outbox_new"
+)
+
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	writer outbox.Writer
 }
 
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func New(pool *pgxpool.Pool) *Store {
+	return &Store{pool: pool, writer: outbox.Writer{Table: OutboxTable}}
+}
+
+// RecordEvent enqueues one audit evidence row into api's outbox (T-022 / SEC-9).
+// api's auth events are env-based / stateless — there is no co-located state
+// change — so the enqueue stands alone in its own transaction; the in-process
+// relay (main.go) drains it to the audit-service chain authority.
+func (s *Store) RecordEvent(ctx context.Context, e outbox.Event) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+	if _, err := s.writer.Enqueue(ctx, tx, e); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
 const selectCols = `SELECT id, type, name, COALESCE(site_id,''), labels FROM resources`
 

@@ -12,6 +12,7 @@ import (
 
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
+	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/account"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/session"
@@ -27,6 +28,14 @@ type fakeStore struct {
 	sessByID map[string]session.Session
 	sessIDs  []string
 	sn       int
+
+	events []outbox.Event // RecordEvent captures auth/control-plane evidence (T-022)
+}
+
+// RecordEvent satisfies the Store interface (T-022); tests can assert f.events.
+func (f *fakeStore) RecordEvent(_ context.Context, e outbox.Event) error {
+	f.events = append(f.events, e)
+	return nil
 }
 
 func newFake() *fakeStore {
