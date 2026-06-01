@@ -177,8 +177,49 @@ func req(t *testing.T, h http.Handler, method, path, body string, authHeader boo
 
 const validBody = `{"type":"ssh","name":"edge-01","siteId":"eu","labels":{"env":"prod"}}`
 
+// TestListAuditEventsProxies — the operator audit-timeline read-proxy (T-024):
+// api forwards GET /v1/audit/events to audit-service's /v1/events with a service
+// token, and passes the page through verbatim.
+func TestListAuditEventsProxies(t *testing.T) {
+	gotAuth := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.URL.Path != "/v1/events" {
+			t.Errorf("upstream path = %q, want /v1/events", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"e1","outcome":"auth.login.success"}],"page":{}}`))
+	}))
+	defer upstream.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	h := New(newFake(), nil, signer, allowAll{}, upstream.URL)
+
+	rec := req(t, h, http.MethodGet, "/v1/audit/events?limit=50", "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "auth.login.success") {
+		t.Fatalf("proxied body missing the upstream event: %s", rec.Body.String())
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") {
+		t.Fatalf("upstream did not receive a service token: %q", gotAuth)
+	}
+}
+
+// TestListAuditEventsUnavailableWithoutAuditURL — no AIREOS_AUDIT_URL => 503,
+// not a crash or a silent empty page.
+func TestListAuditEventsUnavailableWithoutAuditURL(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{}, "")
+	rec := req(t, h, http.MethodGet, "/v1/audit/events", "", true)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
 func TestCreateGetUpdateDelete(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{})
+	h := New(newFake(), nil, nil, allowAll{}, "")
 
 	// create
 	rec := req(t, h, http.MethodPost, "/v1/resources", validBody, true)
@@ -218,7 +259,7 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 
 func TestListReturnsItems(t *testing.T) {
 	f := newFake()
-	h := New(f, nil, nil, allowAll{})
+	h := New(f, nil, nil, allowAll{}, "")
 	for i := 0; i < 3; i++ {
 		req(t, h, http.MethodPost, "/v1/resources", validBody, true)
 	}
@@ -233,7 +274,7 @@ func TestListReturnsItems(t *testing.T) {
 
 // Validation: bad type and client-supplied id are both 400.
 func TestCreateValidation(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{})
+	h := New(newFake(), nil, nil, allowAll{}, "")
 	for _, body := range []string{
 		`{"type":"telnet","name":"x"}`,            // type not in enum
 		`{"name":"x"}`,                            // missing type
@@ -246,7 +287,7 @@ func TestCreateValidation(t *testing.T) {
 }
 
 func TestUnauthorizedWithoutBearer(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{})
+	h := New(newFake(), nil, nil, allowAll{}, "")
 	if rec := req(t, h, http.MethodGet, "/v1/resources", "", false); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401 without bearer, got %d", rec.Code)
 	}
@@ -262,7 +303,7 @@ func loginHandler(t *testing.T) (http.Handler, *auth.Signer, auth.Key) {
 	op := account.New("admin", hash)
 	signer := auth.NewSigner(key, cluster)
 	verifier := auth.AsMiddlewareVerifier(auth.NewVerifier(key, cluster, "api"))
-	return New(newFake(), op, signer, verifier), signer, key
+	return New(newFake(), op, signer, verifier, ""), signer, key
 }
 
 // findCookie returns the Set-Cookie cookie with the given name, or nil.
@@ -549,7 +590,7 @@ func seedResource(t *testing.T, h http.Handler) string {
 // real resource (201 pending), fetch it (200), end it (200 closed/operator),
 // re-end is idempotent (still 200, still closed).
 func TestSessionCreateGetEnd(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{})
+	h := New(newFake(), nil, nil, allowAll{}, "")
 	resID := seedResource(t, h)
 
 	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
@@ -597,7 +638,7 @@ func TestSessionCreateGetEnd(t *testing.T) {
 // TestSessionCreateValidation — unknown resourceId is 404; a malformed/over-posted
 // body is 400 (missing resourceId, bad mode, or a client-supplied server field).
 func TestSessionCreateValidation(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{})
+	h := New(newFake(), nil, nil, allowAll{}, "")
 
 	if rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"missing"}`, true); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown resource: want 404, got %d", rec.Code)
@@ -616,7 +657,7 @@ func TestSessionCreateValidation(t *testing.T) {
 // TestSessionListReturnsItems — list is operator-scoped and returns the items
 // envelope, same shape as resources.
 func TestSessionListReturnsItems(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{})
+	h := New(newFake(), nil, nil, allowAll{}, "")
 	resID := seedResource(t, h)
 	for i := 0; i < 3; i++ {
 		if rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true); rec.Code != http.StatusCreated {
@@ -634,7 +675,7 @@ func TestSessionListReturnsItems(t *testing.T) {
 
 // TestSessionsRequireBearer — every session route is gated; no bearer → 401.
 func TestSessionsRequireBearer(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{})
+	h := New(newFake(), nil, nil, allowAll{}, "")
 	cases := []struct {
 		method, path string
 	}{

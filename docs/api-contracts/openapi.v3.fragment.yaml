@@ -30,6 +30,8 @@ tags:
     description: Operator login + identity on services/api (T-015b, ADR-0046).
   - name: sessions
     description: Cockpit session control plane on services/api (T-016b, ADR-0048).
+  - name: audit-read
+    description: Operator-facing audit-timeline read-proxy on services/api (T-024; api authenticates the operator and reads audit-service with a service token, keeping the chain authority's write gate strict).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -140,6 +142,37 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  # --- operator audit-timeline read-proxy (T-024, services/api) ---------------
+  # services/api authenticates the operator (human-agent) and reads audit-service
+  # with a service token, so the chain authority's write gate stays strict
+  # service-only (it never accepts operator tokens). Same page shape as
+  # /v1/events; tagged audit-read so only the api codegen picks it up.
+  /v1/audit/events:
+    get:
+      tags: [audit-read]
+      operationId: listAuditEvents
+      summary: Operator audit timeline — a page of chained events (via the api read-proxy)
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of audit events in ascending chain order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  page:
+                    $ref: '#/components/schemas/PageMeta'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   # --- resource registry (T-005b, services/api) -------------------------------
   /v1/resources:
     post:

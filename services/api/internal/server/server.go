@@ -30,8 +30,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +92,7 @@ type apiHandlers struct {
 	authn    Authenticator // nil → operator login disabled (503)
 	signer   *auth.Signer  // nil → operator login disabled (503)
 	verifier mw.Verifier   // used by Logout to attribute the actor from the cookie
+	auditURL string        // AIREOS_AUDIT_URL — the audit-timeline read-proxy upstream (T-024); "" disables it
 }
 
 // New returns the api router. Routes that declared security in the contract are
@@ -107,8 +111,8 @@ type apiHandlers struct {
 // iteration — so the LAST entry becomes the outermost wrapper at runtime
 // (see gen.go's per-op middleware loop). Reordering this slice without
 // understanding that loop will silently break the cookie path.
-func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier) http.Handler {
-	h := &apiHandlers{store: s, authn: authn, signer: signer, verifier: v}
+func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, auditURL string) http.Handler {
+	h := &apiHandlers{store: s, authn: authn, signer: signer, verifier: v, auditURL: auditURL}
 	return HandlerWithOptions(h, ChiServerOptions{
 		BaseRouter: chi.NewRouter(),
 		Middlewares: []MiddlewareFunc{
@@ -583,6 +587,54 @@ func (a *apiHandlers) EndSession(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
+}
+
+// ListAuditEvents (GET /v1/audit/events) is the operator audit-timeline read-proxy
+// (T-024). The operator is authenticated by the shared capability gate (human-agent
+// edge); api then reads audit-service with its OWN service token, so the chain
+// authority's write gate stays strict service-only and never accepts operator
+// tokens. The chain-authority page response is passed through verbatim (same
+// {items, page} envelope as audit-service's /v1/events).
+func (a *apiHandlers) ListAuditEvents(w http.ResponseWriter, r *http.Request, params ListAuditEventsParams) {
+	if _, ok := operatorSubject(r); !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.auditURL == "" {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "audit timeline not configured")
+		return
+	}
+	q := url.Values{}
+	if params.Limit != nil {
+		q.Set("limit", strconv.Itoa(int(*params.Limit)))
+	}
+	if params.Cursor != nil && string(*params.Cursor) != "" {
+		q.Set("cursor", string(*params.Cursor))
+	}
+	upstream := strings.TrimRight(a.auditURL, "/") + "/v1/events"
+	if len(q) > 0 {
+		upstream += "?" + q.Encode()
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstream, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "build audit request failed")
+		return
+	}
+	// api reads with its own service token (workload "api", audience "audit-service").
+	if a.signer != nil {
+		if tok, terr := a.signer.IssueService("api", "audit-service"); terr == nil {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "bad_gateway", "audit timeline upstream unreachable")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

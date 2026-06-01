@@ -18,3 +18,4 @@ output-options:
     - resources
     - auth
     - sessions
+    - audit-read

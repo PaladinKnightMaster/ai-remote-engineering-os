@@ -180,7 +180,7 @@ func serve(dsn string) error {
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
-		Handler:           server.New(store.New(pool), authn, signer, v),
+		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL")),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("api listening on %s", srv.Addr)

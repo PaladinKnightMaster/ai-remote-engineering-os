@@ -17,6 +17,18 @@ const (
 	BearerAuthScopes = "bearerAuth.Scopes"
 )
 
+// Defines values for AuditEventEdge.
+const (
+	AgentAgent         AuditEventEdge = "agent-agent"
+	AgentMemory        AuditEventEdge = "agent-memory"
+	AgentRemoteSession AuditEventEdge = "agent-remote-session"
+	AgentRepo          AuditEventEdge = "agent-repo"
+	AgentTool          AuditEventEdge = "agent-tool"
+	AgentWorkspace     AuditEventEdge = "agent-workspace"
+	HumanAgent         AuditEventEdge = "human-agent"
+	ServiceService     AuditEventEdge = "service-service"
+)
+
 // Defines values for ResourceType.
 const (
 	ResourceTypeAgenticDesktop ResourceType = "agentic_desktop"
@@ -62,6 +74,29 @@ const (
 const (
 	SessionCreateModeTerminal SessionCreateMode = "terminal"
 )
+
+// AuditEvent defines model for AuditEvent.
+type AuditEvent struct {
+	Actor string `json:"actor"`
+
+	// ChainHash Assigned by the audit-service chain authority, not producers (ADR-0045).
+	ChainHash        *string        `json:"chainHash,omitempty"`
+	Edge             AuditEventEdge `json:"edge"`
+	EvidencePacketId *string        `json:"evidencePacketId,omitempty"`
+	Id               string         `json:"id"`
+
+	// IdempotencyKey UUID v7; the chain authority dedupes on this (ADR-0045).
+	IdempotencyKey *string `json:"idempotencyKey,omitempty"`
+	Outcome        *string `json:"outcome,omitempty"`
+
+	// PrevHash Assigned by the audit-service chain authority, not producers (ADR-0045).
+	PrevHash  *string   `json:"prevHash,omitempty"`
+	Target    string    `json:"target"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// AuditEventEdge defines model for AuditEvent.Edge.
+type AuditEventEdge string
 
 // Error defines model for Error.
 type Error struct {
@@ -167,6 +202,12 @@ type NotFound = Error
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
+// ListAuditEventsParams defines parameters for ListAuditEvents.
+type ListAuditEventsParams struct {
+	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // ListResourcesParams defines parameters for ListResources.
 type ListResourcesParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -193,6 +234,9 @@ type CreateSessionJSONRequestBody = SessionCreate
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// Operator audit timeline — a page of chained events (via the api read-proxy)
+	// (GET /v1/audit/events)
+	ListAuditEvents(w http.ResponseWriter, r *http.Request, params ListAuditEventsParams)
 	// Operator login — exchange credentials for a session cookie
 	// (POST /v1/auth/login)
 	Login(w http.ResponseWriter, r *http.Request)
@@ -234,6 +278,12 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// Operator audit timeline — a page of chained events (via the api read-proxy)
+// (GET /v1/audit/events)
+func (_ Unimplemented) ListAuditEvents(w http.ResponseWriter, r *http.Request, params ListAuditEventsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // Operator login — exchange credentials for a session cookie
 // (POST /v1/auth/login)
@@ -315,6 +365,47 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListAuditEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListAuditEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListAuditEventsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAuditEvents(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // Login operation middleware
 func (siw *ServerInterfaceWrapper) Login(w http.ResponseWriter, r *http.Request) {
@@ -754,6 +845,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/audit/events", wrapper.ListAuditEvents)
+	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/auth/login", wrapper.Login)
 	})
