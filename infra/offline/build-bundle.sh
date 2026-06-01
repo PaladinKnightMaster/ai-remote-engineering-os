@@ -84,16 +84,13 @@ log "stage runtime config (Caddyfile + systemd units)"
 cp "$SCRIPT_DIR/Caddyfile" "$STAGE/config/Caddyfile"
 cp "$SCRIPT_DIR"/systemd/*.service "$STAGE/config/"
 
-# --- 5. forward-compatible: include install.sh + postgres/ when present (§OI-b)
+# --- 5. include the installer (§OI-b). Postgres ships as SEPARATE per-OS
+#        companion artifacts (aireos-postgres-<os>.tar.gz, ADR-0052) — NOT in
+#        this core bundle (their ~80 MB closures would bust the OI-4 cap).
 if [ -f "$SCRIPT_DIR/install.sh" ]; then
   cp "$SCRIPT_DIR/install.sh" "$STAGE/install.sh"; chmod +x "$STAGE/install.sh"
 else
   log "NOTE: infra/offline/install.sh not present — added by §OI-b"
-fi
-if [ -d "$SCRIPT_DIR/postgres" ]; then
-  cp -a "$SCRIPT_DIR/postgres" "$STAGE/postgres"
-else
-  log "NOTE: infra/offline/postgres/ not present — staged offline packages added by §OI-b"
 fi
 
 # --- 6. VERSION + SHA256 manifest (OI-5) ------------------------------------
