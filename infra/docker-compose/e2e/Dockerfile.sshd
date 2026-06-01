@@ -1,0 +1,20 @@
+# Test SSH target for the T-020b live e2e harness. NOT a product component —
+# it stands in for an operator-provisioned target host (ADR-0048 §7: operators
+# pre-provision a service account on the target). The host key + the authorized
+# client key are generated at runtime by the seed one-shot and delivered on the
+# shared sshd-keys volume, so no keys are baked into this image or committed.
+FROM alpine:3.20
+
+RUN apk add --no-cache openssh-server \
+    && adduser -D -s /bin/sh aireos \
+    && echo "aireos:aireos" | chpasswd
+# chpasswd sets a real hash so the account is NOT locked — OpenSSH refuses even
+# pubkey auth for a password-locked account (adduser -D leaves it locked). The
+# password itself is unusable: sshd_config keeps PasswordAuthentication no, so
+# the target stays pubkey-only.
+
+COPY sshd-entrypoint.sh /usr/local/bin/sshd-entrypoint.sh
+RUN chmod +x /usr/local/bin/sshd-entrypoint.sh
+
+EXPOSE 2222
+ENTRYPOINT ["/usr/local/bin/sshd-entrypoint.sh"]

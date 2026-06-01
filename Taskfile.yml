@@ -113,6 +113,14 @@ tasks:
     cmds:
       - go run ./services/api resources {{.CLI_ARGS}}
 
+  e2e:
+    desc: "Live SSH end-to-end harness (T-020b): compose up postgres+api+broker+audit+a test sshd, seed keys+resource, run the tagged Go walkthrough, assert the LIVE audit chain (session.open + terminal.input.line + session.close w/ cast SHA). Closes ADR-0045 §Verification 3. On a Windows host, prefix the docker invocation with MSYS_NO_PATHCONV=1."
+    dir: infra/docker-compose
+    cmds:
+      - docker compose -f docker-compose.e2e.yml build
+      - defer: docker compose -f docker-compose.e2e.yml down -v
+      - docker compose -f docker-compose.e2e.yml run --rm tester
+
   # outbox:    added by the first producer ticket (ADR-0045).
   # Note: `task auth rotate-key` (operator key rotation) lands with the operator
   # login HTTP surface / a devops ticket; `task auth -- genkey` is the P0 helper.

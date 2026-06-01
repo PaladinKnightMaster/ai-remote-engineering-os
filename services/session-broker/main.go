@@ -250,8 +250,17 @@ func auditTokenSource() (func(context.Context) (string, error), error) {
 	return func(context.Context) (string, error) { return staticTok, nil }, nil
 }
 
-// capabilityVerifier mirrors the other services: real PASETO verifier (audience
-// "session-broker") when AIREOS_PASETO_KEY is set, else dev opt-in, else fail loud.
+// capabilityVerifier mirrors the other services' real-PASETO-or-dev-opt-in
+// shape, but verifies the OPERATOR audience "api", not "session-broker".
+//
+// The cockpit WS upgrade carries the operator's existing aireos_session cookie,
+// which services/api mints with audience "api" (the only operator-token mint in
+// the system). ADR-0048 §4 is explicit that this cookie "flows through … no new
+// auth path"; the cockpit is one operator-facing trust domain on one origin. A
+// "session-broker" audience here was unsatisfiable by any operator token (no
+// code mints one) — it 401'd every real-PASETO WS upgrade, a gap masked by every
+// prior test running with BROKER_DEV_INSECURE_AUTH=1 and surfaced live by T-020b.
+// Ratified in ADR-0050 (cockpit WebSocket data-plane contract).
 func capabilityVerifier() (mw.Verifier, error) {
 	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
 		key, err := auth.NewKeyFromHex(keyHex)
@@ -259,7 +268,7 @@ func capabilityVerifier() (mw.Verifier, error) {
 			return nil, err
 		}
 		issuer := os.Getenv("AIREOS_CLUSTER_ID")
-		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "session-broker")), nil
+		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "api")), nil
 	}
 	if os.Getenv("BROKER_DEV_INSECURE_AUTH") == "1" {
 		log.Print("WARNING: BROKER_DEV_INSECURE_AUTH=1 — using dev allow-all capability verifier; NOT for production")

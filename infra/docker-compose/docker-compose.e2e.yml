@@ -1,0 +1,157 @@
+# AI Remote Engineering OS — live SSH end-to-end harness (T-020b).
+#
+# Brings up the FULL cockpit path on real wires — Postgres + audit-service +
+# services/api + services/session-broker + a real openssh sshd target — plus a
+# seed one-shot and a Go e2e test runner. Closes ADR-0045 §Verification item 3
+# (the live producer→audit-chain proof) and is the G1 e2e proof for the SSH
+# pillar (ai/war-room/activation-matrix.overlay.md).
+#
+#   task e2e                                            # up → seed → test → down
+#   docker compose -f docker-compose.e2e.yml run --rm tester
+#
+# Auth posture: ONE cluster AIREOS_PASETO_KEY across api/broker/audit — REAL
+# PASETO, deliberately NOT dev-insecure auth (an allow-all verifier would be a
+# mock boundary, not a G1 proof) — plus a SEPARATE AIREOS_RESOURCE_SECRET_KEY
+# for pgcrypto target-credential unwrap (authority separation, ADR-0048 §7).
+#
+# Every key/credential below is a throwaway TEST value. No secrets are
+# committed to git: the SSH host + client keypairs are generated at runtime by
+# the seed one-shot (tests/e2e/cmd/seed) and delivered on the sshd-keys volume.
+# The operator password is "e2e-operator-pw"; the hash below is its argon2id
+# digest (authctl hash). The sshd is a stand-in for an operator-provisioned
+# target host, not a product component (ADR-0048 rejects guacd for terminal).
+
+name: aireos-e2e
+
+x-go: &go
+  image: golang:1.23
+  working_dir: /work
+  volumes:
+    - ../../:/work
+    - gomodcache:/go/pkg/mod
+    - gocache:/root/.cache/go-build
+
+x-cluster-env: &cluster-env
+  DATABASE_URL: postgres://cockpit:change-me@postgres:5432/cockpit?sslmode=disable
+  AIREOS_PASETO_KEY: f458ffaa0fde38031a8b201166b9303603a07bd0c3c15b1174df0420bea6ca4f
+  AIREOS_RESOURCE_SECRET_KEY: e2e-resource-secret-not-the-paseto-key
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: cockpit
+      POSTGRES_USER: cockpit
+      POSTGRES_PASSWORD: change-me
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cockpit -d cockpit"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: run every service's migrations (api + audit + broker share one
+  # Postgres DB with per-service migration tables, ADR-0044), generate the SSH
+  # host + client keys onto the shared sshd-keys volume, and seed the ssh
+  # resource (labels + pgp_sym_encrypt'd client key). Exits 0 when ready.
+  seed:
+    <<: *go
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *cluster-env
+      SEED_KEY_DIR: /seed-keys
+    volumes:
+      - ../../:/work
+      - gomodcache:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+      - sshd-keys:/seed-keys
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        go run ./services/api migrate up
+        go run ./services/audit-service migrate up
+        go run ./services/session-broker migrate up
+        go run ./tests/e2e/cmd/seed
+
+  audit:
+    <<: *go
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *cluster-env
+      AUDIT_ADDR: ":8081"
+    command: ["bash", "-c", "go run ./services/audit-service serve"]
+
+  api:
+    <<: *go
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *cluster-env
+      API_ADDR: ":8080"
+      AIREOS_BOOTSTRAP_OPERATOR_USER: admin
+      AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH: "$$argon2id$$v=19$$m=65536,t=3,p=2$$c/1DjrxaiJU6wokhTzZpkQ$$Eb0SglfJ9v7PEDlVTyM48Sqeroyu3OFN5+7rl9wYdgI"
+    command: ["bash", "-c", "go run ./services/api serve"]
+
+  broker:
+    <<: *go
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *cluster-env
+      BROKER_ADDR: ":8082"
+      AIREOS_AUDIT_URL: http://audit:8081
+      AIREOS_CAST_DIR: /var/lib/aireos/sessions
+    volumes:
+      - ../../:/work
+      - gomodcache:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+      - casts:/var/lib/aireos/sessions
+    command: ["bash", "-c", "go run ./services/session-broker serve"]
+
+  sshd:
+    build:
+      context: ./e2e
+      dockerfile: Dockerfile.sshd
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    volumes:
+      - sshd-keys:/seed-keys:ro
+
+  # The G1 proof. Profile-gated so it only runs on `compose run tester`, not on
+  # a plain `up`. Drives the live walkthrough and asserts the audit chain; reads
+  # cast files off the shared volume and mints its audit-read token from the
+  # same cluster PASETO key. Its exit status is the harness's verdict.
+  tester:
+    <<: *go
+    profiles: ["test"]
+    depends_on:
+      - api
+      - broker
+      - audit
+      - sshd
+    environment:
+      <<: *cluster-env
+      AIREOS_CAST_DIR: /var/lib/aireos/sessions
+      E2E_API_URL: http://api:8080
+      E2E_BROKER_WS: ws://broker:8082
+      E2E_AUDIT_URL: http://audit:8081
+    volumes:
+      - ../../:/work
+      - gomodcache:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+      - casts:/var/lib/aireos/sessions
+    command: ["bash", "-c", "go test -tags e2e -count=1 -v -timeout 300s ./tests/e2e/..."]
+
+volumes:
+  gomodcache:
+  gocache:
+  casts:
+  sshd-keys:
