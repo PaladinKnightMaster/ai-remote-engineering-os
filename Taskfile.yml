@@ -139,6 +139,7 @@ tasks:
       - task: doc-check
       - task: validate
       - task: lint
+      - task: licenses
       - task: test
       - task: test-integration
       - pnpm -r run typecheck
@@ -148,6 +149,22 @@ tasks:
       - cmd: git diff --exit-code
         # A non-empty diff after codegen means the committed generated files are
         # stale (run `task codegen` and commit). Assumes a clean working tree.
+
+  licenses:
+    desc: "License posture gate (SC-6; §11a / T-026): every shipped third-party license — Go (the service binaries' full closure) + JS (production deps) — must be in the allowlist (docs/security/license-policy.md); exits non-zero on any unlisted. Needs go + node/pnpm."
+    vars:
+      ALLOWED: "MIT,BSD-2-Clause,BSD-3-Clause,Apache-2.0,ISC,MPL-2.0,LGPL-2.1,LGPL-3.0,Unlicense,0BSD,CC0-1.0,Python-2.0"
+      GO_LICENSES: github.com/google/go-licenses@v1.6.0
+    cmds:
+      # Go: each shipped service's transitive third-party licenses must be allowed.
+      # GOWORK=off (go-licenses rejects workspace mode); --ignore skips first-party.
+      - |
+        for mod in services/api services/audit-service services/session-broker; do
+          (cd "$mod" && GOWORK=off go run {{.GO_LICENSES}} check ./... \
+            --allowed_licenses="{{.ALLOWED}}" --ignore aireos.local)
+        done
+      # JS: production (shipped) dependency licenses only — devDeps are build-time.
+      - node infra/scripts/check-js-licenses.mjs "{{.ALLOWED}}"
 
   # outbox:    added by the first producer ticket (ADR-0045).
   # Note: `task auth rotate-key` (operator key rotation) lands with the operator

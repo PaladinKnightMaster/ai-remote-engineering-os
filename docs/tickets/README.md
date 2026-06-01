@@ -95,7 +95,7 @@ per ADR-0051's hand-off.
 The release-prep gate splits into three slices (each its own ticket).
 
 - [T-025 — release-check + doc-check aggregators](T-025-release-check-doc-check.md) — *complete*. `task doc-check` (DOC-1): a Python path walker asserting every in-repo file path in `CANONICAL_SOURCE_OF_TRUTH.md` + the ADRs resolves (verified: **63 refs / 53 files**). `task release-check` (VER-3): the must-pass gate aggregator (doc-check → validate → lint → test → integration → typecheck → web build → codegen-drift), exits 0 only if all pass. Structure verified via Taskfile dry-run; the full green run is CI's job (VER-1).
-- **T-026** — `task licenses` (SC-6: report the full transitive Go + JS license set, exit non-zero on any unlisted license) + `docs/security/license-policy.md` (acceptable-license list + rationale). *Pending.*
+- [T-026 — task licenses license gate + license-policy.md](T-026-licenses-policy.md) — *complete*. `task licenses` (SC-6): `go-licenses check` over the three shipped services (Go closure) + `check-js-licenses.mjs` over `pnpm licenses list --prod` (JS shipped deps), against the allowlist (permissive + weak-copyleft accept; GPL/AGPL block); exits non-zero on any unlisted. Wired into `task release-check`. `docs/security/license-policy.md` records the allowlist + rationale + scope + bundled-binary licenses (Caddy Apache-2.0, postgres PostgreSQL-License). Verified: Go = MIT/BSD-3/MPL-2.0/Apache-2.0, JS prod = ISC/MIT — all acceptable.
 - **T-027** — `docs/releases/v0.1.0/` artifacts (DOC-6): `release_notes_v0_1_0.md`, `release_manifest_v0_1_0.json`, + an archival copy of the criteria. *Pending.*
 
 ## Conventions
