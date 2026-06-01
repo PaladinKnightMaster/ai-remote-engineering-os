@@ -52,6 +52,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | Skeleton / compose / Makefile | `infra/docker-compose/` (MVP entry: `docker-compose.mvp.yml`; live e2e: `docker-compose.e2e.yml`) |
 | Live e2e harness | `tests/e2e/` (`task e2e`; SSH cockpit cross-service proof, T-020b) |
 | Release pointer + audit + manifest | `docs/releases/v3.0.1/` |
+| v0.1.0 release artifacts (DOC-6) | `docs/releases/v0.1.0/` (release notes + manifest + archival criteria copy) |
 | Reference inventory | `references/references_v3.csv` |
 | Reference tags | `references/reference-tags-v3.md` |
 | Deep-dive / historical docs | `docs/deep-dive/` |

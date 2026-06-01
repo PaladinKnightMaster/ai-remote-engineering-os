@@ -1,0 +1,54 @@
+{
+  "release": "v0.1.0",
+  "status": "in-preparation",
+  "baseline": "v3.0.1",
+  "generated": "2026-05-31",
+  "note": "Machine-readable coverage for v0.1.0. See release_notes_v0_1_0.md (human roll-up) and v0.1.0-release-criteria.md (archival criteria copy). The authoritative ticket index is docs/tickets/README.md; the ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md.",
+  "adrs": {
+    "ADR-0041": "Accepted — Go primary, single static binary",
+    "ADR-0042": "Accepted — go.work + pnpm + Taskfile",
+    "ADR-0043": "Accepted — chi + oapi-codegen + shared middleware",
+    "ADR-0044": "Accepted — golang-migrate, per-service embedded migrations",
+    "ADR-0045": "Accepted — Postgres transactional outbox + sync HTTP audit ingest",
+    "ADR-0046": "Accepted — PASETO v4 capability tokens",
+    "ADR-0047": "Accepted — Vite/React SPA, same-origin cookie posture",
+    "ADR-0048": "Accepted — cockpit session lifecycle (refined by 0049/0050)",
+    "ADR-0049": "Accepted — audit content model + close authority + reconnect scope",
+    "ADR-0050": "Accepted — cockpit WS data-plane contract (/channel + api audience)",
+    "ADR-0051": "Accepted — offline-install architecture",
+    "ADR-0052": "Accepted — postgres per-OS companion artifacts"
+  },
+  "tickets": {
+    "T-020b": "complete — live SSH cockpit e2e proof (ADR-0045 §Verification 3)",
+    "T-021a": "complete — offline-bundle builder",
+    "T-021b": "complete — install.sh offline installer",
+    "T-021c": "complete — postgres companion artifacts + offline guide (DOC-5)",
+    "T-021d-a": "complete — WD-1 systemd bring-up + audit-service verify CLI",
+    "T-021d-b": "complete — WD-1 walkthrough on the installed stack (closes OI-3)",
+    "T-022": "complete — api outbox + auth audit events (SEC-9)",
+    "T-023": "pending (deferred) — auth.service-token.mint audit (not WD-1-required)",
+    "T-024": "pending (release-gating) — operator audit-timeline view",
+    "T-025": "complete — release-check + doc-check aggregators (VER-3 / DOC-1)",
+    "T-026": "complete — task licenses + license-policy.md (SC-6)",
+    "T-027": "complete — this release-artifact set (DOC-6)"
+  },
+  "remaining_release_gates": ["T-024"],
+  "release_gates_status": {
+    "WD-1 / OI-3 (wedge demo, installed stack)": "passing (T-021d-a/b)",
+    "OI-1..5 (offline bundle)": "passing (T-021a/b/c)",
+    "SEC-9 (auth audit events)": "passing (T-022)",
+    "VER-3 (release-check)": "passing (T-025)",
+    "DOC-1 (doc-check)": "passing (T-025)",
+    "SC-6 (license posture)": "passing (T-026)",
+    "DOC-5 (offline-install doc)": "passing (T-021c)",
+    "DOC-6 (release artifacts)": "passing (T-027)",
+    "audit timeline operator view (WD-1 step 8 UI)": "pending (T-024)"
+  },
+  "offline_bundle": {
+    "builder": "task offline-bundle",
+    "postgres_companions": "bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404 rocky9",
+    "integrity_manifest": "dist/offline/aireos-offline-<version>/SHA256_MANIFEST.txt",
+    "verify_bundle": "sha256sum -c SHA256_MANIFEST.txt (on the unpacked bundle; OI-5)",
+    "verify_chain": "audit-service verify"
+  }
+}
