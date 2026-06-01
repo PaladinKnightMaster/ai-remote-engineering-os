@@ -4,6 +4,7 @@
 //
 //	audit-service serve                 # default; run the HTTP server
 //	audit-service migrate up|version|force <v>
+//	audit-service verify                # recompute + verify the chained-hash chain
 package main
 
 import (
@@ -21,6 +22,8 @@ import (
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
+	"aireos.local/services/audit-service/internal/audit"
+	"aireos.local/services/audit-service/internal/chain"
 	"aireos.local/services/audit-service/internal/server"
 	"aireos.local/services/audit-service/internal/store"
 )
@@ -55,10 +58,47 @@ func run(args []string) error {
 			// (ADR-0044 §Verification); the hook is available for T-008+.
 		}, args[1:])
 	}
+	if cmd == "verify" {
+		return runVerify(dsn)
+	}
 	if cmd != "serve" {
-		return fmt.Errorf("unknown command %q (want serve|migrate)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate|verify)", cmd)
 	}
 	return serve(dsn)
+}
+
+// runVerify reads the whole chain in order and checks its integrity with
+// chain.Verify (recomputes every chainHash + checks each prevHash links to its
+// predecessor). The operator-facing chain-integrity CLI, no external script
+// (v0.1.0 release-criteria WD-1 step 9). Exits non-zero on a broken link.
+func runVerify(dsn string) error {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+	st := store.New(pool)
+
+	const page = 200
+	var all []audit.Event
+	var after int64
+	for {
+		batch, last, err := st.List(ctx, after, page)
+		if err != nil {
+			return fmt.Errorf("list events: %w", err)
+		}
+		all = append(all, batch...)
+		if len(batch) < page {
+			break
+		}
+		after = last
+	}
+	if idx := chain.Verify(all); idx >= 0 {
+		return fmt.Errorf("audit chain integrity BROKEN at index %d (seq=%d id=%s)", idx, all[idx].Seq, all[idx].ID)
+	}
+	fmt.Printf("audit chain intact: %d event(s) verified\n", len(all))
+	return nil
 }
 
 func serve(dsn string) error {

@@ -1,0 +1,14 @@
+# T-021d systemd "target host" for the WD-1 installed-stack proof (ADR-0051).
+# A realistic minimal Linux host: ubuntu:24.04 with systemd as PID 1, so the REAL
+# install.sh path (`systemctl enable --now aireos-*`) runs exactly as on a server.
+# The bundle + postgres companion are mounted in and installed by the real
+# scripts — no build toolchain on the host (the binaries are static). systemd-in-
+# Docker is enabled by cgroup v2 (works on Linux + Windows/WSL2; run --privileged
+# --cgroupns=host --tmpfs /run -v /sys/fs/cgroup:rw).
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq \
+    && apt-get install -y -qq systemd systemd-sysv curl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

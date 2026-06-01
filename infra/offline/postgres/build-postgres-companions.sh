@@ -7,6 +7,7 @@
 # Usage: bash infra/offline/postgres/build-postgres-companions.sh [os...]
 #   default OS set: ubuntu2404 rocky9   (ADR-0051 platform scope)
 set -euo pipefail
+export MSYS_NO_PATHCONV=1   # Windows/git-bash: don't mangle the -v mount paths
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"

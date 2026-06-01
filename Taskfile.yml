@@ -123,6 +123,11 @@ tasks:
       - defer: docker compose -f docker-compose.e2e.yml down -v
       - docker compose -f docker-compose.e2e.yml run --rm tester
 
+  wd1:
+    desc: "WD-1 installed-stack proof (T-021d, ADR-0051): bring up the REAL offline install under systemd-in-Docker + assert the stack is active + the chain-verify CLI (T-021d-a). The full WD-1 walkthrough is T-021d-b. Prereq: the core bundle + the ubuntu2404 postgres companion in dist/offline/ (build them first — see the script's error messages)."
+    cmds:
+      - bash infra/offline/wd1/run-wd1.sh
+
   # outbox:    added by the first producer ticket (ADR-0045).
   # Note: `task auth rotate-key` (operator key rotation) lands with the operator
   # login HTTP surface / a devops ticket; `task auth -- genkey` is the P0 helper.

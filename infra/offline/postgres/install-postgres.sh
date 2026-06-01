@@ -31,9 +31,13 @@ die() { printf '\033[1;31m[postgres] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 if [ "$KIND" = "deb" ]; then
   export DEBIAN_FRONTEND=noninteractive
   echo "deb [trusted=yes] file:$DIR/repo ./" > /etc/apt/sources.list.d/aireos-postgres.list
-  apt-get update -qq -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/aireos-postgres.list \
-                     -o Dir::Etc::sourceparts=/dev/null || apt-get update -qq
-  apt-get install -y postgresql-16 postgresql-contrib
+  # APT::Sandbox::User=root: apt's unprivileged _apt sandbox user cannot read a
+  # file:// repo unpacked under a root-only directory (e.g. /root) — "Permission
+  # denied" on the Packages index. Reading as root fixes it wherever the operator
+  # unpacks the companion. Any unreachable online sources fail harmlessly; the
+  # local repo satisfies the install (the closure is complete, ADR-0052).
+  apt-get -o APT::Sandbox::User=root update -qq || true
+  apt-get -o APT::Sandbox::User=root install -y postgresql-16 postgresql-contrib
   rm -f /etc/apt/sources.list.d/aireos-postgres.list
   log "start the postgres cluster"
   service postgresql start 2>/dev/null || pg_ctlcluster 16 main start 2>/dev/null || true
