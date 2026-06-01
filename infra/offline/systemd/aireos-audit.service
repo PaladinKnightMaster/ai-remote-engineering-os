@@ -1,0 +1,23 @@
+# systemd unit template — services/audit-service (§OI-a, ADR-0051).
+# The append-only chained-hash chain authority (ADR-0045).
+[Unit]
+Description=AI ReOS — audit-service (chain authority)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aireos
+Group=aireos
+EnvironmentFile=/etc/aireos/aireos.env
+ExecStart=/opt/aireos/bin/audit-service serve
+Restart=on-failure
+RestartSec=2
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

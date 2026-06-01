@@ -67,6 +67,15 @@ vs. REST surface) along the proven T-005a/5b boundary.
 - **ADR-0050** — *Accepted* (2026-05-31, from T-020b). Cockpit WebSocket data-plane contract: the `/v1/sessions/{id}/channel` path (refines ADR-0048 §1) + operator-`api`-audience cookie auth on the broker WS (refines ADR-0048 §4 / ADR-0046).
 - **Doc-hygiene refresh** — *done*. `docs/architecture/module-map.md` (P0 implementation mapping) + `CANONICAL_SOURCE_OF_TRUTH.md` (ADR ladder through ADR-0050, `tests/e2e` directory) now reflect `packages/go/outbox` + the now-stateful `session-broker`.
 
+### Offline install (§OI / T-021) — per ADR-0051
+
+The offline-install gate (release-criteria §6, OI-1…5) splits into three slices,
+each its own consult, per ADR-0051's hand-off.
+
+- [T-021a — offline-bundle builder (app tier)](T-021a-offline-bundle-builder.md) — *complete*. `task offline-bundle` cross-compiles the three services as static `linux/amd64` binaries, builds the SPA, fetches + **sha512**-verifies a pinned **Caddy** v2.11.3, stages the Caddyfile (`/channel`→broker matched before `/v1`→api; `tls internal`) + four systemd unit templates, writes `VERSION` + `SHA256_MANIFEST.txt`, and packages `dist/offline/aireos-offline-<v>.tar.gz` with an OI-4 size gate. Verified: **80 MB / 28 MB gz** (under the 500/150 caps), `sha256sum -c` OK (OI-5), `caddy validate` clean. `install.sh` + postgres are forward-compatibly deferred to T-021b.
+- **T-021b** — `install.sh` (genkey, operator prompt/env provisioning, DB-connection validate + api/audit/broker migrations, enable units) + staged offline postgres `.deb`/`.rpm` packages + the offline postgres install guide + the `offline-install-v3.md` rewrite (DOC-5). *Pending.*
+- **T-021c** — WD-1 wedge demo against the installed stack (the live G1 cross-boundary proof, reusing the T-020b harness pattern). Closes OI-3. *Pending.*
+
 ## Conventions
 
 - Filename: `T-NNN-short-kebab-slug.md`.

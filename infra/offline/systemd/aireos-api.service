@@ -1,0 +1,25 @@
+# systemd unit template — services/api (§OI-a, ADR-0051).
+# install.sh (§OI-b) installs binaries to /opt/aireos/bin, the env file to
+# /etc/aireos/aireos.env (DATABASE_URL, AIREOS_PASETO_KEY, AIREOS_RESOURCE_SECRET_KEY,
+# AIREOS_BOOTSTRAP_OPERATOR_*), and enables this unit.
+[Unit]
+Description=AI ReOS — API control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aireos
+Group=aireos
+EnvironmentFile=/etc/aireos/aireos.env
+ExecStart=/opt/aireos/bin/api serve
+Restart=on-failure
+RestartSec=2
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

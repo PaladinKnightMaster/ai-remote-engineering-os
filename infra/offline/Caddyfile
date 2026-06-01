@@ -1,0 +1,40 @@
+# Caddyfile — offline cockpit reverse proxy (§OI-a, ADR-0050/0051).
+#
+# Serves the SPA static assets and reverse-proxies the two upstreams on one
+# origin (same-origin posture, ADR-0047): the WebSocket cockpit data plane to
+# services/session-broker, and the REST control plane to services/api.
+#
+# install.sh (§OI-b) deploys this to /etc/aireos/Caddyfile, the SPA to
+# /opt/aireos/web, and sets AIREOS_SITE_ADDRESS. Validate with `caddy validate`.
+{
+	# Appliance posture: no admin API surface; offline local CA for TLS.
+	admin off
+}
+
+# Site address is operator-set at install time; defaults to localhost for a
+# local/dev bring-up. `tls internal` mints a local CA + leaf cert (offline,
+# ADR-0051 OQ-7a). Escape hatch: replace with `tls /path/cert.pem /path/key.pem`.
+{$AIREOS_SITE_ADDRESS:localhost} {
+	tls internal
+	encode gzip
+
+	# Cockpit WebSocket data plane (ADR-0050): MUST be matched before the
+	# general /v1 rule. session-broker listens on :8082. reverse_proxy upgrades
+	# WebSockets transparently (no extra config).
+	@channel path_regexp ^/v1/sessions/[^/]+/channel$
+	handle @channel {
+		reverse_proxy 127.0.0.1:8082
+	}
+
+	# REST control plane -> services/api on :8080.
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# SPA: static assets with client-side-routing fallback to index.html.
+	handle {
+		root * /opt/aireos/web
+		try_files {path} /index.html
+		file_server
+	}
+}

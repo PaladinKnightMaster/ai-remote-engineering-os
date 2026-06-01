@@ -1,0 +1,30 @@
+# systemd unit template — Caddy reverse proxy (§OI-a, ADR-0050/0051).
+# Serves the SPA + proxies /v1 -> api and the WS /channel -> broker. Binds 80/443
+# (CAP_NET_BIND_SERVICE) and persists its local TLS CA under /var/lib/aireos/caddy
+# so `tls internal` survives restarts.
+[Unit]
+Description=AI ReOS — Caddy reverse proxy
+After=network-online.target aireos-api.service aireos-broker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aireos
+Group=aireos
+Environment=XDG_DATA_HOME=/var/lib/aireos/caddy
+EnvironmentFile=/etc/aireos/aireos.env
+ExecStart=/opt/aireos/bin/caddy run --config /etc/aireos/Caddyfile --adapter caddyfile
+ExecReload=/opt/aireos/bin/caddy reload --config /etc/aireos/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=2
+# Hardening + privileged-port bind.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/aireos
+
+[Install]
+WantedBy=multi-user.target

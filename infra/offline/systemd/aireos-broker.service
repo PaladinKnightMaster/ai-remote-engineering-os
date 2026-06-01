@@ -1,0 +1,25 @@
+# systemd unit template — services/session-broker (§OI-a, ADR-0051).
+# The stateful WebSocket->SSH data plane: writes asciinema cast files to
+# AIREOS_CAST_DIR (/var/lib/aireos/sessions) and runs the in-process outbox relay.
+[Unit]
+Description=AI ReOS — session-broker (cockpit data plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aireos
+Group=aireos
+EnvironmentFile=/etc/aireos/aireos.env
+ExecStart=/opt/aireos/bin/session-broker serve
+Restart=on-failure
+RestartSec=2
+# Hardening. ProtectSystem=strict makes the FS read-only except the cast dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/aireos
+
+[Install]
+WantedBy=multi-user.target
