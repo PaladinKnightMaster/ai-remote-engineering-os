@@ -1,6 +1,8 @@
 {
   "release": "v0.1.0",
-  "status": "ready-to-tag",
+  "status": "tagged",
+  "tag": "v0.1.0",
+  "tagged_commit": "437502d",
   "baseline": "v3.0.1",
   "generated": "2026-06-01",
   "note": "Machine-readable coverage for v0.1.0. See release_notes_v0_1_0.md (human roll-up) and v0.1.0-release-criteria.md (archival criteria copy). The authoritative ticket index is docs/tickets/README.md; the ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md.",

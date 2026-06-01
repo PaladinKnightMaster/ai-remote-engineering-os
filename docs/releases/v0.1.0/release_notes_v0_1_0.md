@@ -1,6 +1,7 @@
 # AI Remote Engineering OS — v0.1.0 release notes
 
-**Status: in preparation.** v0.1.0 is the P0 MVP-survival vertical slice (per
+**Status: tagged — `v0.1.0` at commit `437502d`** (annotated git tag; local only,
+no remote). v0.1.0 is the P0 MVP-survival vertical slice (per
 `docs/evaluation/v0.1.0-release-criteria.md`). This file is the human-readable
 roll-up; the machine-readable coverage is `release_manifest_v0_1_0.json`, and an
 archival copy of the criteria sits beside both.
