@@ -2,12 +2,10 @@
 
 ## Status
 
-**Proposed** — 2026-06-01. Recorded as part of the v0.2.0 "Governed Egress
-Foundation" scoping consult (`docs/evaluation/v0.2.0-release-criteria.md`). This
-ADR is **not yet Accepted**: it is ratified in its implementation consult (the
-T-028 ADR-authoring ticket), where the open questions in §Open questions are
-settled. It is published Proposed now so the v0.2.0 criteria have a stable
-decision anchor and the ADR number is reserved.
+**Accepted** — 2026-06-01 (ratified in the T-028 war-room consult, which settled
+OQ-A/OQ-B/OQ-E below). Recorded as part of the v0.2.0 "Governed Egress
+Foundation" release (`docs/evaluation/v0.2.0-release-criteria.md`). Binding spec
+for the v0.2.0 connector-service implementation tickets (T-029/T-030).
 
 **Builds on / conforms to:** ADR-0048 §7 (held `services/connector-service` in
 reserve as the architecturally-correct home for target credentials),
@@ -38,25 +36,54 @@ nice-to-have:
    exists (`.gitkeep` + README) and ADR-0045 already fixes its wire topology.
    v0.2.0 builds it; it does not invent it.
 
-## Decision (direction — ratified in the T-028 consult)
+## Decision
 
 1. **connector-service is the sole custody + decrypt authority for target
    credentials.** The `pgp_sym_decrypt` path is **removed from `services/api`**
-   (and the broker's mirror): after v0.2.0, no service other than
-   connector-service holds `AIREOS_RESOURCE_SECRET_KEY` or can read a target
-   secret. This closes SEC-12.
-2. **api/broker become credential-lease clients.** Per ADR-0045's named topology,
-   the credential lease is a **sync RPC command** (`Authorization: Bearer
-   <service-PASETO>`, `edge: service-service`, ADR-0046). The broker obtains the
-   target credential for an SSH session by leasing it from connector-service at
-   connect time — it never reads the encrypted column directly.
-3. **Egress decisions fan in to `audit-service` as chained-hash events** (ADR-0045
-   `connector-service → audit-service`), via the `packages/go/outbox` transactional
-   outbox (connector-service becomes its own stateful producer, like the broker).
-4. **Credential custody storage** — connector-service owns the encrypted
-   credential material (migrated out of `services/api`). Whether it owns a fresh
-   table in the shared cockpit DB or its own store, and the existing-row migration
-   path, are settled in the T-028/T-029 consult (§Open questions).
+   (`internal/secret`) **and the broker's mirror** (`internal/store.LoadTarget`):
+   after v0.2.0 no service other than connector-service holds
+   `AIREOS_RESOURCE_SECRET_KEY` or can read a target secret. This closes SEC-12
+   and satisfies SEC-13.
+
+2. **Storage (OQ-A → resolved): connector owns its own credential table + its own
+   transactional outbox, in the shared cockpit DB.** connector-service is a
+   stateful outbox producer (conforms ADR-0045) with its own migrations under
+   ADR-0044; it reuses the T-022 parameterized-outbox-table precedent (e.g.
+   `connector_outbox`). The encrypted `{private_key, passphrase}` blob **moves off
+   `resources.connection_secret` into the connector-owned table**; non-secret
+   connection coordinates (host, port, login user, `ssh_host_key`) **remain on
+   `resources.labels`** (the broker still reads them at connect). Result: api and
+   broker can no longer even *see* the ciphertext column, not merely lack the key.
+
+3. **Lease consumer + transport (OQ-B → resolved): the session-broker leases the
+   credential directly from connector-service.** At SSH connect the broker (the
+   SSH dialer) requests the plaintext credential via **sync RPC**
+   (`Authorization: Bearer <service-PASETO>`, `edge: service-service`, ADR-0046);
+   it never reads an encrypted column.
+   **G2 — refines ADR-0045.** ADR-0045's topology table illustratively names
+   `api → connector-service (credential lease)`; that row predates the SSH slice
+   making the **broker** the SSH client. This ADR records the corrected consumer
+   (`broker → connector-service`). ADR-0045's *intent* is preserved — the lease is
+   a **sync command, not an event**; only the consumer identity is corrected.
+   **Honest scope of SEC-13:** the broker still *receives plaintext* to dial SSH
+   (unavoidable while it is the SSH client). The win is custody **centralization**
+   (one key holder) + **audited egress decisions** — not plaintext elimination.
+   connector-as-SSH-dialer (the README's adapter future) is deferred so ADR-0048's
+   broker-owns-the-PTY-data-plane is untouched.
+
+4. **Egress decisions fan in to `audit-service` as chained-hash events** (ADR-0045
+   `connector-service → audit-service`), via connector's transactional outbox
+   (`packages/go/outbox`). Each credential lease emits an audited egress decision.
+
+5. **Existing-credential migration (OQ-E → resolved): data-migrate, not greenfield
+   re-provision.** The key *value* is unchanged, so connector's migration
+   **relocates the existing ciphertext** from `resources.connection_secret` into
+   the connector-owned table (no re-encryption), then drops
+   `resources.connection_secret`. Existing targets survive the v0.1.0 → v0.2.0
+   offline upgrade. The one manual upgrade step: `AIREOS_RESOURCE_SECRET_KEY`
+   moves from `services/api`'s systemd env to connector-service's (handled by
+   `install.sh`). The `api resources set-secret` provisioning path re-points to
+   connector-service.
 
 ## Alternatives considered (sketch — expanded at ratification)
 
@@ -71,16 +98,19 @@ nice-to-have:
   Deferred: v0.2.0 scope is credential custody + egress decision on the existing
   SSH wedge; GUI adapters track the guacd deferral (v0.1.0 §10).
 
-## Open questions (settle in the T-028 ratification consult)
+## Open questions — resolved in the T-028 consult
 
-- **OQ-A.** connector-service store: own DB + migrations (stateful, like the
-  broker) or a table in the shared cockpit DB? (ADR-0045 frames it as a stateful
-  outbox producer.)
-- **OQ-B.** Lease transport: in-process vs sync HTTP RPC; does the broker lease
-  directly from connector-service or via `services/api`?
-- **OQ-E.** Existing-credential migration: data-migrate the current
-  `resources.connection_secret` rows into connector custody, or greenfield
-  re-provision via an updated `resources set-secret` path?
+- **OQ-A → resolved (Decision 2):** connector owns its own credential table + its
+  own outbox in the shared cockpit DB (stateful producer).
+- **OQ-B → resolved (Decision 3):** the broker leases directly from
+  connector-service over sync RPC; recorded as the ADR-0045 consumer refinement.
+- **OQ-E → resolved (Decision 5):** data-migrate the existing ciphertext into
+  connector custody; drop `resources.connection_secret`; key env relocates to
+  connector.
+
+Out of scope for v0.2.0 (future ADR/ticket when triggered): connector-service as
+the SSH/GUI connection *adapter* (owning the dial), and connector running its own
+isolated database rather than the shared cockpit DB.
 
 ## Verification (blocks the v0.2.0 connector-service tickets, not this ADR)
 
