@@ -100,6 +100,27 @@ The release-prep gate splits into three slices (each its own ticket).
 - [T-026 — task licenses license gate + license-policy.md](T-026-licenses-policy.md) — *complete*. `task licenses` (SC-6): `go-licenses check` over the three shipped services (Go closure) + `check-js-licenses.mjs` over `pnpm licenses list --prod` (JS shipped deps), against the allowlist (permissive + weak-copyleft accept; GPL/AGPL block); exits non-zero on any unlisted. Wired into `task release-check`. `docs/security/license-policy.md` records the allowlist + rationale + scope + bundled-binary licenses (Caddy Apache-2.0, postgres PostgreSQL-License). Verified: Go = MIT/BSD-3/MPL-2.0/Apache-2.0, JS prod = ISC/MIT — all acceptable.
 - [T-027 — v0.1.0 release artifacts (DOC-6)](T-027-release-artifacts.md) — *complete*. `docs/releases/v0.1.0/`: `release_notes_v0_1_0.md` (what landed, remaining gate, known limits/deferrals), `release_manifest_v0_1_0.json` (ADR 0041–0052 coverage + ticket roll-up + gate status + bundle SHA256-manifest reference), and a verbatim archival copy of the criteria. Living artifacts (status `in-preparation` until T-024 lands + the tag). CANONICAL points at them; doc-check green. **§11a complete.**
 
+### v0.2.0 — Governed Egress Foundation (planned) — per ADR-0053 / ADR-0054
+
+The P1-spine release (`docs/evaluation/v0.2.0-release-criteria.md`). Each ticket is
+its own war-room consult → propose shape/files/diff-budget → sign-off → Dockerized
+verify → commit on `dev` → ff `main`. **Full ticket files are authored just-in-time
+with the work** (this directory's convention — dependencies expressed by the target
+a ticket creates, so they survive renumbering); the lines below are the *planned*
+arc, not committed detail. Strictly sequential (each consumes the prior's wire
+contract), so they are not parallelizable.
+
+- **T-028** — ratify ADR-0053 + ADR-0054 (settle OQ-A..F). *complete* (`31dba85`, docs-only; no separate ticket file).
+- **T-029** — connector-service: credential custody + egress gateway (ADR-0053). Split a/b along the T-005a/5b + T-016a/b boundary:
+  - **T-029a** — connector-service skeleton + own credential table + outbox + the *copy* leg of the credential relocation off `resources.connection_secret` (persistence spine; no lease RPC, audit-silent until T-029b). *planned (next — consult open)*.
+  - **T-029b** — credential-lease RPC surface (sync, `edge: service-service`) + egress-decision audit emission via the outbox. *planned*.
+- **T-030** — re-point the credential consumers onto connector: remove `pgp_sym_decrypt` from `services/api` (`internal/secret`) + the broker (`internal/store.LoadTarget`); the broker leases at connect; drop `resources.connection_secret` (contract leg). First live cross-boundary verify (SEC-13). *planned*.
+- **T-031** — policy-service decision point + `<ApprovalPrompt>` (ADR-0054). Split a/b:
+  - **T-031a** — policy-service: `allow`/`deny`/`requires_approval` decision RPC + `pending_approvals` + `policy_outbox` + ~120s fail-closed timeout; `services/api` enforces at session-create. *planned*.
+  - **T-031b** — `<ApprovalPrompt>` `packages/ui` component + the `apps/web` pending-session approval round-trip. *planned*.
+- **T-032** — durability riders: WS-drop reconnect (fresh shell, conforms ADR-0049) + session reaper (closes the ADR-0049 orphan-close gap). Ticket-only, no ADR. *planned*.
+- **T-033** — WD-2 live e2e harness (extends `tests/e2e` + `task wd1`, no mocked boundary — the G1 proof) + `docs/releases/v0.2.0/` artifacts (DOC-10). *planned*.
+
 ## Conventions
 
 - Filename: `T-NNN-short-kebab-slug.md`.
