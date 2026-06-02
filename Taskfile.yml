@@ -41,7 +41,7 @@ tasks:
       # tooling kit"). First run downloads + caches; subsequent runs
       # are fast (gomodcache volume).
       - |
-        for mod in packages/go/auth packages/go/middleware packages/go/migrate services/api services/audit-service services/session-broker tools/migrate-lint tools/forbidden-features-check; do
+        for mod in packages/go/auth packages/go/middleware packages/go/migrate services/api services/audit-service services/connector-service services/session-broker tools/migrate-lint tools/forbidden-features-check; do
           (cd "$mod" && go run {{.GOLANGCI_LINT}} run ./... --config "$(git rev-parse --show-toplevel)/.golangci.yaml")
         done
       - go run ./tools/migrate-lint services/audit-service/migrations
@@ -55,15 +55,18 @@ tasks:
       # (see task test-integration).
       # Explicit per-module patterns: a bare ./... or ./packages/go/... does not
       # resolve from the workspace root (the modules live one level deeper).
-      - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/session-broker/...
+      - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/connector-service/... ./services/session-broker/...
       # JS workspace unit tests (T-007a). `--if-present` skips packages
       # without a `test` script; packages/ui + packages/config have none yet.
       - pnpm -r --if-present run test
 
   test-integration:
-    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup."
+    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_TEST_DATABASE_URL / CONNECTOR_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody. Tests self-skip when their env var is unset."
     cmds:
       - go test -tags integration ./services/audit-service/internal/store/...
+      # connector-service credential custody (ADR-0053; needs CONNECTOR_TEST_DATABASE_URL
+      # against a DB with both api + connector migrations applied).
+      - go test -tags integration ./services/connector-service/internal/store/...
 
   validate:
     desc: "Validate the OpenAPI fragment + JSON Schema fixtures (T-010). Needs python3 + jsonschema + pyyaml."
@@ -75,6 +78,7 @@ tasks:
     cmds:
       - go build -o bin/audit-service ./services/audit-service
       - go build -o bin/api ./services/api
+      - go build -o bin/connector-service ./services/connector-service
       - go build -o bin/session-broker ./services/session-broker
 
   offline-bundle:
@@ -111,9 +115,14 @@ tasks:
       - go run ./packages/go/auth/cmd/authctl {{.CLI_ARGS}}
 
   resources:
-    desc: "Resource-secret provisioning (ADR-0048 §7): task resources -- genkey | set-secret <id> --key-file <path> [--passphrase <pp>]. genkey prints a fresh AIREOS_RESOURCE_SECRET_KEY; set-secret pgcrypto-encrypts target SSH credentials onto the resource row (needs API_DATABASE_URL + AIREOS_RESOURCE_SECRET_KEY)."
+    desc: "Resource-secret provisioning (ADR-0048 §7): task resources -- genkey | set-secret <id> --key-file <path> [--passphrase <pp>]. genkey prints a fresh AIREOS_RESOURCE_SECRET_KEY; set-secret pgcrypto-encrypts target SSH credentials onto the resource row (needs API_DATABASE_URL + AIREOS_RESOURCE_SECRET_KEY). NOTE: ADR-0053 relocates custody to connector-service — prefer `task connector` from v0.2.0; this re-points in T-030."
     cmds:
       - go run ./services/api resources {{.CLI_ARGS}}
+
+  connector:
+    desc: "connector-service credential custody (ADR-0053): task connector -- set-secret <id> --key-file <path> [--passphrase <pp>] | migrate-legacy. set-secret pgcrypto-encrypts target SSH credentials into connector custody; migrate-legacy backfills existing ciphertext off resources.connection_secret. Needs CONNECTOR_DATABASE_URL + AIREOS_RESOURCE_SECRET_KEY."
+    cmds:
+      - go run ./services/connector-service credentials {{.CLI_ARGS}}
 
   e2e:
     desc: "Live SSH end-to-end harness (T-020b): compose up postgres+api+broker+audit+a test sshd, seed keys+resource, run the tagged Go walkthrough, assert the LIVE audit chain (session.open + terminal.input.line + session.close w/ cast SHA). Closes ADR-0045 §Verification 3. On a Windows host, prefix the docker invocation with MSYS_NO_PATHCONV=1."

@@ -32,6 +32,7 @@ use (
 	./packages/go/outbox
 	./services/api
 	./services/audit-service
+	./services/connector-service
 	./services/session-broker
 	./tests/e2e
 	./tools/forbidden-features-check
