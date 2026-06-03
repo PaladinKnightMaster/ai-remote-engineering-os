@@ -4,16 +4,18 @@
 // closing the v0.1.0 SEC-12 pgcrypto debt (services/api and the broker lose
 // their decrypt paths in T-030).
 //
-// T-029a lands the persistence spine only — the credential table, the custody
-// store, and the provisioning / relocation CLIs. The credential-lease RPC, the
-// transactional outbox, and egress-decision audit are T-029b; the consumer
-// re-point (removing api/broker decrypt, dropping resources.connection_secret)
-// is T-030. There is deliberately no `serve` subcommand yet — connector exposes
-// no HTTP surface until the lease RPC lands.
+// T-029a landed the persistence spine (credential table + custody store +
+// provisioning/relocation CLIs). T-029b-i (this slice) adds the transactional
+// outbox + the HTTP `serve` surface (ungated /healthz + the in-process audit
+// relay). The gated credential-lease RPC + egress-decision audit are T-029b-ii;
+// the consumer re-point (removing api/broker decrypt, dropping
+// resources.connection_secret) is T-030.
 //
 // Subcommands:
 //
+//	connector-service serve                 # default; HTTP surface + in-process outbox relay
 //	connector-service migrate up|version|force <v>
+//	connector-service outbox relay          # run the outbox relay in the foreground
 //	connector-service credentials set-secret <resource-id> --key-file <path> [--passphrase <pp>]
 //	connector-service credentials migrate-legacy   # backfill ciphertext from resources.connection_secret
 package main
@@ -25,11 +27,16 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"aireos.local/packages/go/auth"
 	"aireos.local/packages/go/migrate"
+	"aireos.local/packages/go/outbox"
+	"aireos.local/services/connector-service/internal/server"
 	"aireos.local/services/connector-service/internal/store"
 )
 
@@ -43,7 +50,7 @@ func main() {
 }
 
 func run(args []string) error {
-	cmd := ""
+	cmd := "serve"
 	if len(args) > 0 {
 		cmd = args[0]
 	}
@@ -52,6 +59,8 @@ func run(args []string) error {
 		return errors.New("CONNECTOR_DATABASE_URL (or DATABASE_URL) must be set")
 	}
 	switch cmd {
+	case "serve":
+		return serve(dsn)
 	case "migrate":
 		return migrate.RunSubcommand(migrate.Runner{
 			Service: "connector-service",
@@ -59,11 +68,100 @@ func run(args []string) error {
 			Dir:     "migrations",
 			DSN:     dsn,
 		}, args[1:])
+	case "outbox":
+		return runOutbox(dsn, args[1:])
 	case "credentials":
 		return runCredentials(dsn, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want migrate|credentials)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate|outbox|credentials)", cmd)
 	}
+}
+
+// serve runs the HTTP surface (ungated /healthz at T-029b-i; the gated lease RPC
+// lands in T-029b-ii) and starts the in-process outbox relay (ADR-0045).
+// Best-effort relay: if AIREOS_AUDIT_URL is unset the relay is skipped and
+// connector still serves — a degraded chain authority surfaces as growing outbox
+// depth, not a failed boot.
+func serve(dsn string) error {
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+
+	if relay, err := newRelay(pool); err != nil {
+		log.Printf("outbox relay disabled: %v", err)
+	} else {
+		go func() {
+			if err := relay.Run(context.Background()); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("outbox relay stopped: %v", err)
+			}
+		}()
+	}
+
+	srv := &http.Server{
+		Addr:              firstNonEmpty(os.Getenv("CONNECTOR_ADDR"), ":8083"),
+		Handler:           server.New(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Printf("connector-service listening on %s", srv.Addr)
+	return srv.ListenAndServe()
+}
+
+// runOutbox handles `connector-service outbox relay` — the operator-run,
+// foreground relay, the same shape as the goroutine serve starts (ADR-0045).
+func runOutbox(dsn string, args []string) error {
+	if len(args) == 0 || args[0] != "relay" {
+		return errors.New("usage: connector-service outbox relay")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+	relay, err := newRelay(pool)
+	if err != nil {
+		return err
+	}
+	log.Print("connector-service: outbox relay (foreground)")
+	return relay.Run(context.Background())
+}
+
+// newRelay builds the outbox relay draining connector_outbox into audit-service.
+// AIREOS_AUDIT_URL must be set or the relay is declined (logged, not fatal). The
+// bearer is a service-service PASETO token when AIREOS_PASETO_KEY is set
+// (ADR-0046); else CONNECTOR_AUDIT_TOKEN (dev), else none.
+func newRelay(pool *pgxpool.Pool) (*outbox.Relay, error) {
+	auditURL := os.Getenv("AIREOS_AUDIT_URL")
+	if auditURL == "" {
+		return nil, errors.New("AIREOS_AUDIT_URL not set")
+	}
+	token, err := auditTokenSource()
+	if err != nil {
+		return nil, err
+	}
+	return &outbox.Relay{
+		Pool:    pool,
+		Client:  &outbox.HTTPClient{BaseURL: auditURL, Token: token},
+		Table:   "connector_outbox",
+		Channel: "connector_outbox_new",
+	}, nil
+}
+
+// auditTokenSource returns the bearer-token provider for audit-service ingest.
+func auditTokenSource() (func(context.Context) (string, error), error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
+		}
+		signer := auth.NewSigner(key, os.Getenv("AIREOS_CLUSTER_ID"))
+		return func(context.Context) (string, error) {
+			return signer.IssueService("connector-service", "audit-service")
+		}, nil
+	}
+	staticTok := os.Getenv("CONNECTOR_AUDIT_TOKEN")
+	return func(context.Context) (string, error) { return staticTok, nil }, nil
 }
 
 // runCredentials handles `connector-service credentials <set-secret|migrate-legacy>`.
