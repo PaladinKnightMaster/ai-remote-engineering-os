@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/packages/go/auth"
+	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/connector-service/internal/server"
@@ -83,6 +84,13 @@ func run(args []string) error {
 // connector still serves — a degraded chain authority surfaces as growing outbox
 // depth, not a failed boot.
 func serve(dsn string) error {
+	if err := checkKeySeparation(); err != nil {
+		return err
+	}
+	v, err := capabilityVerifier()
+	if err != nil {
+		return err
+	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
@@ -99,13 +107,58 @@ func serve(dsn string) error {
 		}()
 	}
 
+	// The lease handler decrypts target credentials with AIREOS_RESOURCE_SECRET_KEY.
+	// Empty is tolerated at boot — the lease answers 503 until provisioned — so
+	// connector can run (healthz, relay) before any target secret exists.
+	secretKey := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
+	if secretKey == "" {
+		log.Print("AIREOS_RESOURCE_SECRET_KEY not set — credential lease will answer 503 until provisioned")
+	}
+
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("CONNECTOR_ADDR"), ":8083"),
-		Handler:           server.New(),
+		Handler:           server.New(server.Config{Pool: pool, Verifier: v, SecretKey: secretKey}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("connector-service listening on %s", srv.Addr)
 	return srv.ListenAndServe()
+}
+
+// capabilityVerifier verifies the broker's service-service token. The broker
+// mints IssueService("session-broker","connector-service"), so the verified
+// audience is "connector-service". Mirrors the other services' real-PASETO-or-
+// dev-opt-in shape.
+func capabilityVerifier() (mw.Verifier, error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, err
+		}
+		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, os.Getenv("AIREOS_CLUSTER_ID"), "connector-service")), nil
+	}
+	if os.Getenv("CONNECTOR_DEV_INSECURE_AUTH") == "1" {
+		log.Print("WARNING: CONNECTOR_DEV_INSECURE_AUTH=1 — dev allow-all capability verifier; NOT for production")
+		return devAllowAll{}, nil
+	}
+	return nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY or CONNECTOR_DEV_INSECURE_AUTH=1 for local dev")
+}
+
+type devAllowAll struct{}
+
+func (devAllowAll) Verify(_ context.Context, _ string) (mw.Capability, error) {
+	return mw.Capability{Subject: "dev", Edge: "service-service"}, nil
+}
+
+// checkKeySeparation fails loud when the resource secret key collides with the
+// PASETO signing key (authority separation, ADR-0048 §7 / ADR-0053). No-op when
+// either is unset.
+func checkKeySeparation() error {
+	rk := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
+	pk := os.Getenv("AIREOS_PASETO_KEY")
+	if rk != "" && pk != "" && rk == pk {
+		return errors.New("AIREOS_RESOURCE_SECRET_KEY must differ from AIREOS_PASETO_KEY (authority separation, ADR-0048 §7)")
+	}
+	return nil
 }
 
 // runOutbox handles `connector-service outbox relay` — the operator-run,

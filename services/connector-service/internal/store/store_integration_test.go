@@ -188,3 +188,59 @@ func TestBackfillVerbatimAndIdempotent(t *testing.T) {
 		t.Fatalf("expected 0 rows on idempotent re-run, got %d", n2)
 	}
 }
+
+// TestLeaseReturnsMaterialAndAuditsEgress proves the lease returns only the
+// secret material and atomically writes an egress-decision audit row carrying no
+// secret bytes (ADR-0053 / ADR-0045).
+func TestLeaseReturnsMaterialAndAuditsEgress(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := mintID(t)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM connector_credentials WHERE resource_id=$1`, id)
+		_, _ = pool.Exec(ctx, `DELETE FROM connector_outbox WHERE payload->>'target' = $1`, "resource:"+id)
+	})
+
+	in := Material{PrivateKey: "LEASED-SECRET-KEY", Passphrase: "pp"}
+	if err := Set(ctx, pool, id, testKey, in); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	out, err := Lease(ctx, pool, id, "sess-123", "operator:admin", testKey)
+	if err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	if out.PrivateKey != in.PrivateKey || out.Passphrase != in.Passphrase {
+		t.Fatalf("lease material mismatch: %+v", out)
+	}
+
+	var actor, edge, target, outcome, evidence string
+	if err := pool.QueryRow(ctx, `
+		SELECT payload->>'actor', payload->>'edge', payload->>'target',
+		       payload->>'outcome', payload->>'evidencePacketId'
+		  FROM connector_outbox
+		 WHERE payload->>'target' = $1
+		 ORDER BY id DESC LIMIT 1`, "resource:"+id).Scan(&actor, &edge, &target, &outcome, &evidence); err != nil {
+		t.Fatalf("read egress event: %v", err)
+	}
+	if actor != "operator:admin" || edge != "agent-remote-session" ||
+		target != "resource:"+id || outcome != "credential.leased" || evidence != "session:sess-123" {
+		t.Fatalf("egress event fields wrong: actor=%q edge=%q target=%q outcome=%q evidence=%q",
+			actor, edge, target, outcome, evidence)
+	}
+
+	var raw string
+	if err := pool.QueryRow(ctx, `SELECT payload::text FROM connector_outbox WHERE payload->>'target' = $1 ORDER BY id DESC LIMIT 1`, "resource:"+id).Scan(&raw); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if strings.Contains(raw, "LEASED-SECRET-KEY") {
+		t.Fatal("secret leaked into the audit payload — the chain must carry no credential bytes")
+	}
+}
+
+func TestLeaseAbsent(t *testing.T) {
+	pool := testPool(t)
+	if _, err := Lease(context.Background(), pool, mintID(t), "s", "operator:admin", testKey); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound for missing credential, got %v", err)
+	}
+}

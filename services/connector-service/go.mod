@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	aireos.local/packages/go/auth v0.0.0
+	aireos.local/packages/go/middleware v0.0.0
 	aireos.local/packages/go/migrate v0.0.0
 	aireos.local/packages/go/outbox v0.0.0
 	github.com/go-chi/chi/v5 v5.1.0
@@ -14,7 +15,6 @@ require (
 require (
 	aidanwoods.dev/go-paseto v1.5.4 // indirect
 	aidanwoods.dev/go-result v0.3.1 // indirect
-	aireos.local/packages/go/middleware v0.0.0 // indirect
 	github.com/golang-migrate/migrate/v4 v4.18.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect

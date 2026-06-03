@@ -15,10 +15,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aireos.local/packages/go/outbox"
 )
+
+// outboxTable is connector's own outbox table (shares the cockpit DB with the
+// broker's "outbox" and api's "api_outbox", so it must not collide; ADR-0048).
+const outboxTable = "connector_outbox"
 
 // ErrNotFound is returned when no credential is stored for the resource id.
 var ErrNotFound = errors.New("connector credential not found")
@@ -95,4 +102,53 @@ func BackfillFromResources(ctx context.Context, pool *pgxpool.Pool) (int64, erro
 		return 0, fmt.Errorf("backfill from resources: %w", err)
 	}
 	return ct.RowsAffected(), nil
+}
+
+// Lease decrypts the resource's credential and, in the SAME transaction, enqueues
+// an egress-decision audit event into connector_outbox — so there is no
+// unaudited egress: if the audit enqueue fails, the lease rolls back and no
+// credential is returned (ADR-0045 transactional outbox, ADR-0053). The event
+// attributes the egress to the operator on whose behalf the broker is dialing
+// (operatorSubject + sessionID are broker-supplied; connector does no
+// cross-service table read). No secret bytes ever enter the chain.
+//
+// ErrNotFound if no credential is stored for resourceID.
+func Lease(ctx context.Context, pool *pgxpool.Pool, resourceID, sessionID, operatorSubject, key string) (Material, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return Material{}, fmt.Errorf("begin lease tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	var blob []byte
+	err = tx.QueryRow(ctx, `
+		SELECT pgp_sym_decrypt(connection_secret, $2)
+		  FROM connector_credentials
+		 WHERE resource_id = $1`, resourceID, key).Scan(&blob)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Material{}, ErrNotFound
+	}
+	if err != nil {
+		return Material{}, fmt.Errorf("decrypt credential: %w", err)
+	}
+	var m Material
+	if err := json.Unmarshal(blob, &m); err != nil {
+		return Material{}, fmt.Errorf("unmarshal material: %w", err)
+	}
+
+	w := outbox.Writer{Table: outboxTable}
+	if _, err := w.Enqueue(ctx, tx, outbox.Event{
+		Timestamp:        time.Now(),
+		Actor:            operatorSubject,
+		Edge:             "agent-remote-session",
+		Target:           "resource:" + resourceID,
+		Outcome:          "credential.leased",
+		EvidencePacketID: "session:" + sessionID,
+	}); err != nil {
+		return Material{}, fmt.Errorf("enqueue egress event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Material{}, fmt.Errorf("commit lease: %w", err)
+	}
+	return m, nil
 }
