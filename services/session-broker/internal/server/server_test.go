@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	mw "aireos.local/packages/go/middleware"
+	"aireos.local/services/session-broker/internal/connector"
 	"aireos.local/services/session-broker/internal/server"
 	"aireos.local/services/session-broker/internal/store"
 )
@@ -37,17 +38,31 @@ type fakeStore struct {
 func (f *fakeStore) LoadSession(_ context.Context, _ string) (store.Session, error) {
 	return f.sess, f.sessErr
 }
-func (f *fakeStore) LoadTarget(_ context.Context, _, _ string) (store.Target, error) {
+func (f *fakeStore) LoadTargetCoords(_ context.Context, _ string) (store.Target, error) {
 	return f.target, f.targetErr
 }
 func (f *fakeStore) Activate(_ context.Context, _, _ string) error           { return nil }
 func (f *fakeStore) Close(_ context.Context, _, _, _, _, _ string) error     { return nil }
 func (f *fakeStore) RecordInputLine(_ context.Context, _, _, _ string) error { return nil }
 
+// fakeLeaser stands in for connector-service. The default returns ErrNoCredential
+// so an unconfigured test stops at 424 rather than attempting a live SSH dial.
+type fakeLeaser struct {
+	mat connector.Material
+	err error
+}
+
+func (f *fakeLeaser) Lease(_ context.Context, _, _, _ string) (connector.Material, error) {
+	return f.mat, f.err
+}
+
 func newHandler(t *testing.T, cfg server.Config) http.Handler {
 	t.Helper()
 	if cfg.Verifier == nil {
 		cfg.Verifier = allowAll{}
+	}
+	if cfg.Leaser == nil {
+		cfg.Leaser = &fakeLeaser{err: connector.ErrNoCredential}
 	}
 	if cfg.CastDir == "" {
 		cfg.CastDir = t.TempDir()
@@ -84,14 +99,14 @@ func dialStatus(t *testing.T, h http.Handler, bearer bool) int {
 }
 
 func TestChannelRequiresCapability(t *testing.T) {
-	h := newHandler(t, server.Config{Store: &fakeStore{}, SecretKey: "k"})
+	h := newHandler(t, server.Config{Store: &fakeStore{}})
 	if got := dialStatus(t, h, false); got != http.StatusUnauthorized {
 		t.Fatalf("no bearer: want 401, got %d", got)
 	}
 }
 
 func TestChannelUnknownSession(t *testing.T) {
-	h := newHandler(t, server.Config{Store: &fakeStore{sessErr: store.ErrSessionNotFound}, SecretKey: "k"})
+	h := newHandler(t, server.Config{Store: &fakeStore{sessErr: store.ErrSessionNotFound}})
 	if got := dialStatus(t, h, true); got != http.StatusNotFound {
 		t.Fatalf("unknown session: want 404, got %d", got)
 	}
@@ -99,8 +114,7 @@ func TestChannelUnknownSession(t *testing.T) {
 
 func TestChannelForeignOperatorIsNotFound(t *testing.T) {
 	h := newHandler(t, server.Config{
-		Store:     &fakeStore{sess: store.Session{ID: "abc", OperatorID: "someone-else", Status: "pending"}},
-		SecretKey: "k",
+		Store: &fakeStore{sess: store.Session{ID: "abc", OperatorID: "someone-else", Status: "pending"}},
 	})
 	if got := dialStatus(t, h, true); got != http.StatusNotFound {
 		t.Fatalf("foreign operator: want 404 (not disclosed), got %d", got)
@@ -109,21 +123,10 @@ func TestChannelForeignOperatorIsNotFound(t *testing.T) {
 
 func TestChannelNotOpen(t *testing.T) {
 	h := newHandler(t, server.Config{
-		Store:     &fakeStore{sess: store.Session{ID: "abc", OperatorID: "tester", Status: "closed"}},
-		SecretKey: "k",
+		Store: &fakeStore{sess: store.Session{ID: "abc", OperatorID: "tester", Status: "closed"}},
 	})
 	if got := dialStatus(t, h, true); got != http.StatusConflict {
 		t.Fatalf("closed session: want 409, got %d", got)
-	}
-}
-
-func TestChannelMissingSecretKey(t *testing.T) {
-	h := newHandler(t, server.Config{
-		Store:     &fakeStore{sess: store.Session{ID: "abc", OperatorID: "tester", Status: "pending"}},
-		SecretKey: "",
-	})
-	if got := dialStatus(t, h, true); got != http.StatusServiceUnavailable {
-		t.Fatalf("no secret key: want 503, got %d", got)
 	}
 }
 
@@ -131,12 +134,27 @@ func TestChannelTargetUnavailable(t *testing.T) {
 	h := newHandler(t, server.Config{
 		Store: &fakeStore{
 			sess:      store.Session{ID: "abc", OperatorID: "tester", Status: "pending"},
-			targetErr: store.ErrNoSecret,
+			targetErr: store.ErrTargetIncomplete,
 		},
-		SecretKey: "k",
 	})
 	if got := dialStatus(t, h, true); got != http.StatusFailedDependency {
-		t.Fatalf("target unavailable: want 424, got %d", got)
+		t.Fatalf("target coords unavailable: want 424, got %d", got)
+	}
+}
+
+// TestChannelCredentialUnavailable — coords load fine, but connector-service has
+// no credential for the resource (lease 404 → ErrNoCredential). The session
+// cannot be brokered: 424 (the 503-when-key-unset now lives on connector, T-030).
+func TestChannelCredentialUnavailable(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store: &fakeStore{
+			sess:   store.Session{ID: "abc", OperatorID: "tester", Status: "pending"},
+			target: store.Target{Host: "h", User: "u", HostKey: "ssh-ed25519 AAAA"},
+		},
+		Leaser: &fakeLeaser{err: connector.ErrNoCredential},
+	})
+	if got := dialStatus(t, h, true); got != http.StatusFailedDependency {
+		t.Fatalf("credential unavailable: want 424, got %d", got)
 	}
 }
 
@@ -148,9 +166,8 @@ func TestChannelCookieAuthenticates(t *testing.T) {
 	h := newHandler(t, server.Config{
 		Store: &fakeStore{
 			sess:      store.Session{ID: "abc", OperatorID: "tester", Status: "pending"},
-			targetErr: store.ErrNoSecret,
+			targetErr: store.ErrTargetIncomplete,
 		},
-		SecretKey: "k",
 	})
 	srv := httptest.NewServer(h)
 	defer srv.Close()

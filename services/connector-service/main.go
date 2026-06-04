@@ -16,6 +16,7 @@
 //	connector-service serve                 # default; HTTP surface + in-process outbox relay
 //	connector-service migrate up|version|force <v>
 //	connector-service outbox relay          # run the outbox relay in the foreground
+//	connector-service credentials genkey    # print a fresh AIREOS_RESOURCE_SECRET_KEY (no DB)
 //	connector-service credentials set-secret <resource-id> --key-file <path> [--passphrase <pp>]
 //	connector-service credentials migrate-legacy   # backfill ciphertext from resources.connection_secret
 package main
@@ -54,6 +55,15 @@ func run(args []string) error {
 	cmd := "serve"
 	if len(args) > 0 {
 		cmd = args[0]
+	}
+	// `credentials genkey` is offline (no DB) — it generates the resource secret
+	// key (relocated here from `api resources genkey`, T-030: connector-service is
+	// the sole key holder). Handle it before resolving the DSN so it works during
+	// provisioning, before a DB exists.
+	if cmd == "credentials" && len(args) > 1 && args[1] == "genkey" {
+		_, hexKey := auth.GenerateKey()
+		fmt.Println(hexKey)
+		return nil
 	}
 	dsn := firstNonEmpty(os.Getenv("CONNECTOR_DATABASE_URL"), os.Getenv("DATABASE_URL"))
 	if dsn == "" {
@@ -220,7 +230,7 @@ func auditTokenSource() (func(context.Context) (string, error), error) {
 // runCredentials handles `connector-service credentials <set-secret|migrate-legacy>`.
 func runCredentials(dsn string, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: connector-service credentials set-secret <resource-id> --key-file <path> [--passphrase <pp>] | migrate-legacy")
+		return errors.New("usage: connector-service credentials genkey | set-secret <resource-id> --key-file <path> [--passphrase <pp>] | migrate-legacy")
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
@@ -282,7 +292,7 @@ func setSecret(ctx context.Context, pool *pgxpool.Pool, args []string) error {
 func resourceSecretKey() (string, error) {
 	key := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
 	if key == "" {
-		return "", errors.New("AIREOS_RESOURCE_SECRET_KEY must be set (generate one with `api resources genkey`)")
+		return "", errors.New("AIREOS_RESOURCE_SECRET_KEY must be set (generate one with `connector-service credentials genkey`)")
 	}
 	if pk := os.Getenv("AIREOS_PASETO_KEY"); pk != "" && pk == key {
 		return "", errors.New("AIREOS_RESOURCE_SECRET_KEY must differ from AIREOS_PASETO_KEY (authority separation, ADR-0048 §7)")

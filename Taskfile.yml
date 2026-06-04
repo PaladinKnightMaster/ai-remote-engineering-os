@@ -114,13 +114,8 @@ tasks:
     cmds:
       - go run ./packages/go/auth/cmd/authctl {{.CLI_ARGS}}
 
-  resources:
-    desc: "Resource-secret provisioning (ADR-0048 §7): task resources -- genkey | set-secret <id> --key-file <path> [--passphrase <pp>]. genkey prints a fresh AIREOS_RESOURCE_SECRET_KEY; set-secret pgcrypto-encrypts target SSH credentials onto the resource row (needs API_DATABASE_URL + AIREOS_RESOURCE_SECRET_KEY). NOTE: ADR-0053 relocates custody to connector-service — prefer `task connector` from v0.2.0; this re-points in T-030."
-    cmds:
-      - go run ./services/api resources {{.CLI_ARGS}}
-
   connector:
-    desc: "connector-service credential custody (ADR-0053): task connector -- set-secret <id> --key-file <path> [--passphrase <pp>] | migrate-legacy. set-secret pgcrypto-encrypts target SSH credentials into connector custody; migrate-legacy backfills existing ciphertext off resources.connection_secret. Needs CONNECTOR_DATABASE_URL + AIREOS_RESOURCE_SECRET_KEY."
+    desc: "connector-service credential custody (ADR-0053; sole holder of AIREOS_RESOURCE_SECRET_KEY since T-030). task connector -- genkey | set-secret <id> --key-file <path> [--passphrase <pp>] | migrate-legacy. genkey prints a fresh AIREOS_RESOURCE_SECRET_KEY (no DB; relocated from `api resources genkey`); set-secret pgcrypto-encrypts target SSH credentials into connector custody; migrate-legacy backfills existing ciphertext off resources.connection_secret. Needs CONNECTOR_DATABASE_URL + AIREOS_RESOURCE_SECRET_KEY (genkey excepted)."
     cmds:
       - go run ./services/connector-service credentials {{.CLI_ARGS}}
 

@@ -33,6 +33,7 @@ import (
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/session-broker/internal/connector"
 	"aireos.local/services/session-broker/internal/server"
 	"aireos.local/services/session-broker/internal/store"
 )
@@ -141,9 +142,6 @@ func runOutbox(dsn string, args []string) error {
 }
 
 func serve(dsn string) error {
-	if err := checkKeySeparation(); err != nil {
-		return err
-	}
 	v, err := capabilityVerifier()
 	if err != nil {
 		return err
@@ -168,24 +166,30 @@ func serve(dsn string) error {
 		}()
 	}
 
-	// The data plane decrypts target credentials with AIREOS_RESOURCE_SECRET_KEY
-	// (authority-separate from the PASETO key). Empty is tolerated at boot — the
-	// channel handler answers 503 until it is provisioned — so the broker can run
-	// (healthz, relay) before any target secret exists.
-	secretKey := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
-	if secretKey == "" {
-		log.Print("AIREOS_RESOURCE_SECRET_KEY not set — session channels will answer 503 until provisioned")
+	// The data plane no longer holds AIREOS_RESOURCE_SECRET_KEY (T-030/SEC-13): the
+	// decrypted credential is leased from connector-service at connect time. Empty
+	// CONNECTOR_URL is tolerated at boot — the channel handler answers 424 until it
+	// is configured — so the broker can run (healthz, relay) before connector is up.
+	connURL := os.Getenv("CONNECTOR_URL")
+	if connURL == "" {
+		log.Print("CONNECTOR_URL not set — session channels will answer 424 until configured")
 	}
+	connTok, err := connectorTokenSource()
+	if err != nil {
+		return err
+	}
+	leaser := &connector.Client{BaseURL: connURL, Token: connTok}
+
 	castDir := firstNonEmpty(os.Getenv("AIREOS_CAST_DIR"), "/var/lib/aireos/sessions")
 	if err := os.MkdirAll(castDir, 0o700); err != nil {
 		return fmt.Errorf("create cast dir %s: %w", castDir, err)
 	}
 
 	handler := server.New(server.Config{
-		Verifier:  v,
-		Store:     store.New(pool),
-		SecretKey: secretKey,
-		CastDir:   castDir,
+		Verifier: v,
+		Store:    store.New(pool),
+		Leaser:   leaser,
+		CastDir:  castDir,
 	})
 
 	// h2c lets the cleartext dev/CI listener speak HTTP/2; under TLS, http.Server
@@ -200,16 +204,24 @@ func serve(dsn string) error {
 	return srv.ListenAndServe()
 }
 
-// checkKeySeparation fails loud when the resource secret key collides with the
-// PASETO signing key (defense-in-depth, ADR-0048 §7 authority separation). No-op
-// when the resource key is unset.
-func checkKeySeparation() error {
-	rk := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
-	pk := os.Getenv("AIREOS_PASETO_KEY")
-	if rk != "" && pk != "" && rk == pk {
-		return errors.New("AIREOS_RESOURCE_SECRET_KEY must differ from AIREOS_PASETO_KEY (authority separation, ADR-0048 §7)")
+// connectorTokenSource returns the bearer provider for connector-service's
+// credential-lease RPC: a service-service PASETO token (workload "session-broker",
+// audience "connector-service") when AIREOS_PASETO_KEY is set (ADR-0046/0053),
+// else BROKER_CONNECTOR_TOKEN (dev), else none (a dev connector with insecure
+// auth).
+func connectorTokenSource() (func(context.Context) (string, error), error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
+		}
+		signer := auth.NewSigner(key, os.Getenv("AIREOS_CLUSTER_ID"))
+		return func(context.Context) (string, error) {
+			return signer.IssueService("session-broker", "connector-service")
+		}, nil
 	}
-	return nil
+	staticTok := os.Getenv("BROKER_CONNECTOR_TOKEN")
+	return func(context.Context) (string, error) { return staticTok, nil }, nil
 }
 
 // newRelay builds the outbox relay's HTTP client to the audit-service chain

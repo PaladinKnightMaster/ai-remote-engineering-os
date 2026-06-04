@@ -4,11 +4,12 @@
 // SSH PTY on the target (ADR-0048 data plane). Session-lifecycle REST lives on
 // services/api (T-016b); WebSocket does not model cleanly in OpenAPI.
 //
-// Channel flow (T-017b): authorize the caller's capability against the session's
-// operator (operator-scope on the data plane, ADR-0048 §5), load + decrypt the
-// target, accept the WS upgrade, dial SSH with a pinned host key, mark the
-// session active and emit session.open, pipe + record to an asciinema cast, then
-// on teardown mark it closed and emit session.close anchoring the cast SHA256.
+// Channel flow (T-017b, T-030): authorize the caller's capability against the
+// session's operator (operator-scope on the data plane, ADR-0048 §5), load the
+// target coordinates + lease the decrypted credential from connector-service,
+// accept the WS upgrade, dial SSH with a pinned host key, mark the session active
+// and emit session.open, pipe + record to an asciinema cast, then on teardown
+// mark it closed and emit session.close anchoring the cast SHA256.
 package server
 
 import (
@@ -25,6 +26,7 @@ import (
 
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/session-broker/internal/cast"
+	"aireos.local/services/session-broker/internal/connector"
 	"aireos.local/services/session-broker/internal/sshpty"
 	"aireos.local/services/session-broker/internal/store"
 )
@@ -32,26 +34,32 @@ import (
 // SessionStore is the narrow slice of *store.Store the channel handler needs.
 type SessionStore interface {
 	LoadSession(ctx context.Context, id string) (store.Session, error)
-	LoadTarget(ctx context.Context, resourceID, secretKey string) (store.Target, error)
+	LoadTargetCoords(ctx context.Context, resourceID string) (store.Target, error)
 	Activate(ctx context.Context, sessionID, operatorID string) error
 	Close(ctx context.Context, sessionID, operatorID, reason, castPath, castSHA string) error
 	RecordInputLine(ctx context.Context, sessionID, operatorID, lineSHA string) error
+}
+
+// CredentialLeaser leases the decrypted SSH credential from connector-service
+// (T-030). The broker no longer holds AIREOS_RESOURCE_SECRET_KEY.
+type CredentialLeaser interface {
+	Lease(ctx context.Context, resourceID, sessionID, operatorSubject string) (connector.Material, error)
 }
 
 // Config wires the broker handler's dependencies.
 type Config struct {
 	Verifier    mw.Verifier
 	Store       SessionStore
-	SecretKey   string        // AIREOS_RESOURCE_SECRET_KEY (decrypts target creds)
-	CastDir     string        // directory for <sessionID>.cast files
-	IdleTimeout time.Duration // input-inactivity close (ADR-0048 §8; default 30m)
+	Leaser      CredentialLeaser // connector-service credential lease (T-030)
+	CastDir     string           // directory for <sessionID>.cast files
+	IdleTimeout time.Duration    // input-inactivity close (ADR-0048 §8; default 30m)
 }
 
 type broker struct {
-	store     SessionStore
-	secretKey string
-	castDir   string
-	idle      time.Duration
+	store   SessionStore
+	leaser  CredentialLeaser
+	castDir string
+	idle    time.Duration
 }
 
 // New returns the session-broker router. The WebSocket channel is gated by
@@ -63,7 +71,7 @@ func New(cfg Config) http.Handler {
 	if idle <= 0 {
 		idle = 30 * time.Minute
 	}
-	b := &broker{store: cfg.Store, secretKey: cfg.SecretKey, castDir: cfg.CastDir, idle: idle}
+	b := &broker{store: cfg.Store, leaser: cfg.Leaser, castDir: cfg.CastDir, idle: idle}
 	r := chi.NewRouter()
 	r.Get("/healthz", b.healthz)
 	r.Group(func(r chi.Router) {
@@ -109,17 +117,23 @@ func (b *broker) channel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session is not open", http.StatusConflict)
 		return
 	}
-	if b.secretKey == "" {
-		http.Error(w, "broker secret key not configured", http.StatusServiceUnavailable)
-		return
-	}
-	target, err := b.store.LoadTarget(ctx, sess.ResourceID, b.secretKey)
+	target, err := b.store.LoadTargetCoords(ctx, sess.ResourceID)
 	if err != nil {
-		// Missing/incomplete target or decrypt failure — the session cannot be
-		// brokered. 424 Failed Dependency.
+		// Missing/incomplete target coordinates — the session cannot be brokered.
+		// 424 Failed Dependency.
 		http.Error(w, "target unavailable: "+err.Error(), http.StatusFailedDependency)
 		return
 	}
+	// Lease the decrypted credential from connector-service (T-030). The broker
+	// holds no key; a missing credential or an unreachable connector is also a
+	// 424 — the session cannot be brokered.
+	mat, err := b.leaser.Lease(ctx, sess.ResourceID, id, operator)
+	if err != nil {
+		http.Error(w, "credential unavailable: "+err.Error(), http.StatusFailedDependency)
+		return
+	}
+	target.PrivateKey = mat.PrivateKey
+	target.Passphrase = mat.Passphrase
 
 	// --- WS upgrade + cast recording -----------------------------------------
 	c, err := websocket.Accept(w, r, nil)

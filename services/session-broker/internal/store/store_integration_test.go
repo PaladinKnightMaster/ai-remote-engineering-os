@@ -22,8 +22,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const secretKey = "broker-test-secret-key"
-
 func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
 	dsn := os.Getenv("BROKER_TEST_DATABASE_URL")
@@ -38,8 +36,9 @@ func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	return New(pool), pool
 }
 
-// seed inserts an ssh resource (with ssh_* labels + an encrypted private key) and
-// a pending session, returning their ids.
+// seed inserts an ssh resource (with ssh_* coordinate labels — no secret; the
+// credential is leased from connector-service post-T-030) and a pending session,
+// returning their ids.
 func seed(t *testing.T, pool *pgxpool.Pool) (sessionID, resourceID, operatorID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -53,11 +52,10 @@ func seed(t *testing.T, pool *pgxpool.Pool) (sessionID, resourceID, operatorID s
 		"ssh_user":     "spike",
 		"ssh_host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY",
 	})
-	mat, _ := json.Marshal(material{PrivateKey: "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"})
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO resources (id, type, name, labels, connection_secret)
-		VALUES ($1, 'ssh', 'broker-test', $2::jsonb, pgp_sym_encrypt($3::text, $4))`,
-		resID, string(labels), string(mat), secretKey); err != nil {
+		INSERT INTO resources (id, type, name, labels)
+		VALUES ($1, 'ssh', 'broker-test', $2::jsonb)`,
+		resID, string(labels)); err != nil {
 		t.Fatalf("seed resource: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -77,14 +75,18 @@ func mustUUID(t *testing.T) string {
 	return u.String()
 }
 
-func TestLoadTargetDecryptsAndPins(t *testing.T) {
+// TestLoadTargetCoordsReadsLabelsNoDecrypt — the broker reads only the non-secret
+// connection coordinates from resources.labels and pins the host key; it runs no
+// pgp_sym_decrypt (T-030/SEC-13). PrivateKey/Passphrase are left empty for the
+// connector-service lease to fill.
+func TestLoadTargetCoordsReadsLabelsNoDecrypt(t *testing.T) {
 	s, pool := testStore(t)
 	_, resID, _ := seed(t, pool)
 	ctx := context.Background()
 
-	tgt, err := s.LoadTarget(ctx, resID, secretKey)
+	tgt, err := s.LoadTargetCoords(ctx, resID)
 	if err != nil {
-		t.Fatalf("load target: %v", err)
+		t.Fatalf("load target coords: %v", err)
 	}
 	if tgt.Host != "ssh-target" || tgt.Port != "2222" || tgt.User != "spike" {
 		t.Fatalf("coordinates: %+v", tgt)
@@ -92,13 +94,13 @@ func TestLoadTargetDecryptsAndPins(t *testing.T) {
 	if !strings.HasPrefix(tgt.HostKey, "ssh-ed25519 ") {
 		t.Fatalf("host key not pinned: %q", tgt.HostKey)
 	}
-	if !strings.Contains(tgt.PrivateKey, "BEGIN KEY") {
-		t.Fatalf("private key not decrypted: %q", tgt.PrivateKey)
+	if tgt.PrivateKey != "" || tgt.Passphrase != "" {
+		t.Fatalf("coords must not carry secret material: %+v", tgt)
 	}
 
-	// Wrong key must surface as a decrypt error, never silent garbage.
-	if _, err := s.LoadTarget(ctx, resID, "wrong-key"); err == nil {
-		t.Fatal("load target with wrong key: want error, got nil")
+	// An unknown resource is target-incomplete, not a panic.
+	if _, err := s.LoadTargetCoords(ctx, mustUUID(t)); err != ErrTargetIncomplete {
+		t.Fatalf("unknown resource: want ErrTargetIncomplete, got %v", err)
 	}
 }
 

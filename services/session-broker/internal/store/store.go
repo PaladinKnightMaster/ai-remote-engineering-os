@@ -10,11 +10,11 @@
 // asciinema cast file, made tamper-evident by the cast SHA256 anchored in the
 // session.close event (ADR-0048 §SEC-11).
 //
-// NOTE (debt): the target-secret decrypt mirrors services/api/internal/secret
-// (the Material JSON shape + the pgp_sym_decrypt query). That package is api's
-// internal/, so it cannot be imported across the module boundary. The shared
-// contract is small and stable; extracting a packages/go/secret is the follow-up
-// when a third consumer appears.
+// Target CREDENTIALS no longer live here. As of T-030 (SEC-13) the broker reads
+// only the non-secret connection coordinates from resources.labels
+// (LoadTargetCoords) and leases the decrypted SSH key from connector-service at
+// connect time (internal/connector). connector-service is the sole holder of
+// AIREOS_RESOURCE_SECRET_KEY; the broker no longer runs pgp_sym_decrypt.
 package store
 
 import (
@@ -34,7 +34,6 @@ import (
 var (
 	ErrSessionNotFound  = errors.New("session not found")
 	ErrNotActivatable   = errors.New("session is not in an activatable/closable state")
-	ErrNoSecret         = errors.New("resource has no stored connection secret")
 	ErrTargetIncomplete = errors.New("resource is missing required ssh_* labels")
 )
 
@@ -57,21 +56,16 @@ type Session struct {
 	Mode       string
 }
 
-// Target is everything needed to dial the SSH target: non-secret coordinates from
-// resources.labels plus the decrypted private key.
+// Target is everything needed to dial the SSH target. LoadTargetCoords fills the
+// non-secret coordinates from resources.labels; the channel handler fills
+// PrivateKey/Passphrase from the connector-service lease (T-030).
 type Target struct {
 	Host       string
 	Port       string
 	User       string
 	HostKey    string // authorized_keys line, pinned via ssh.FixedHostKey (labels ssh_host_key)
-	PrivateKey string // decrypted PEM
-	Passphrase string
-}
-
-// material mirrors services/api/internal/secret.Material (the encrypted blob).
-type material struct {
-	PrivateKey string `json:"private_key"`
-	Passphrase string `json:"passphrase,omitempty"`
+	PrivateKey string // leased from connector-service at connect time (not stored here)
+	Passphrase string // leased from connector-service at connect time
 }
 
 // Store wraps the broker's pgx pool and the shared outbox Writer.
@@ -97,22 +91,21 @@ func (s *Store) LoadSession(ctx context.Context, id string) (Session, error) {
 	return sess, nil
 }
 
-// LoadTarget reads the SSH connection coordinates from resources.labels and
-// decrypts the stored private key with secretKey (AIREOS_RESOURCE_SECRET_KEY).
-// ErrNoSecret if no secret is provisioned; ErrTargetIncomplete if a required
-// label is missing. Host-key pinning is mandatory: ssh_host_key must be present.
-func (s *Store) LoadTarget(ctx context.Context, resourceID, secretKey string) (Target, error) {
-	var labelsRaw, secretBlob []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT labels, pgp_sym_decrypt(connection_secret, $2)
-		  FROM resources
-		 WHERE id = $1 AND connection_secret IS NOT NULL`, resourceID, secretKey).
-		Scan(&labelsRaw, &secretBlob)
+// LoadTargetCoords reads the non-secret SSH connection coordinates from
+// resources.labels (T-030: the broker no longer decrypts — the credential is
+// leased from connector-service). ErrTargetIncomplete if the resource is missing
+// or a required label is absent. Host-key pinning is mandatory: ssh_host_key must
+// be present. PrivateKey/Passphrase are left empty for the caller to fill from the
+// lease.
+func (s *Store) LoadTargetCoords(ctx context.Context, resourceID string) (Target, error) {
+	var labelsRaw []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT labels FROM resources WHERE id = $1`, resourceID).Scan(&labelsRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Target{}, ErrNoSecret
+		return Target{}, ErrTargetIncomplete
 	}
 	if err != nil {
-		return Target{}, fmt.Errorf("load+decrypt target: %w", err)
+		return Target{}, fmt.Errorf("load target coords: %w", err)
 	}
 
 	labels := map[string]string{}
@@ -121,20 +114,14 @@ func (s *Store) LoadTarget(ctx context.Context, resourceID, secretKey string) (T
 			return Target{}, fmt.Errorf("unmarshal labels: %w", err)
 		}
 	}
-	var m material
-	if err := json.Unmarshal(secretBlob, &m); err != nil {
-		return Target{}, fmt.Errorf("unmarshal material: %w", err)
-	}
 
 	t := Target{
-		Host:       labels["ssh_host"],
-		Port:       orDefault(labels["ssh_port"], "22"),
-		User:       labels["ssh_user"],
-		HostKey:    labels["ssh_host_key"],
-		PrivateKey: m.PrivateKey,
-		Passphrase: m.Passphrase,
+		Host:    labels["ssh_host"],
+		Port:    orDefault(labels["ssh_port"], "22"),
+		User:    labels["ssh_user"],
+		HostKey: labels["ssh_host_key"],
 	}
-	if t.Host == "" || t.User == "" || t.HostKey == "" || t.PrivateKey == "" {
+	if t.Host == "" || t.User == "" || t.HostKey == "" {
 		return Target{}, ErrTargetIncomplete
 	}
 	return t, nil
