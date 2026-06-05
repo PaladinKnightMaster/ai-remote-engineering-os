@@ -118,3 +118,26 @@ scope** (still reference the key until their own tickets):
 Code re-pointed; api decrypt path deleted; genkey relocated; Taskfile updated;
 all listed verification green; G1 (mocked-here / T-030b-live) + G2 (deferred
 column drop) recorded. Commit on `dev`, fast-forward `main` when verified. No push.
+
+## Follow-up — T-030a fixup (broker channel-handler hardening)
+
+A pre-T-030b self-review found two handler nits the coords/lease split introduced;
+fixed in a standalone follow-up commit (broker `internal/server` only, no harness):
+
+- **Lost non-empty-key contract.** The old `LoadTarget` rejected an empty private
+  key pre-upgrade (`ErrTargetIncomplete` → 424); the coords-only split dropped
+  that check and a leased-but-empty key would have failed late at `sshpty.Dial`
+  (post-WS-accept `broker_crash`). Restored: after the lease, `mat.PrivateKey == ""`
+  → **424** pre-upgrade.
+- **Lossy failure mapping.** Connector-unreachable and resource-unprovisioned both
+  collapsed to 424, hiding a connector outage from a genuinely missing credential.
+  Now: `connector.ErrNoCredential` → **424**; any other lease error (connector
+  down / transport) → **502 Bad Gateway** (same convention as the api audit
+  read-proxy). Tests: `TestChannelConnectorUnavailable` (502) +
+  `TestChannelLeasedKeyEmpty` (424); existing `TestChannelCredentialUnavailable`
+  (424) unchanged.
+
+Residuals #3/#4 from the same review (connector SPOF on the session-open critical
+path; connector→broker plaintext hop, no TLS at P0/P1) are consequences of
+ADR-0053 (not new decisions) — recorded as named deferrals in
+`docs/evaluation/v0.2.0-release-criteria.md` (no new ADR).

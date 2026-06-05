@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -125,11 +126,25 @@ func (b *broker) channel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Lease the decrypted credential from connector-service (T-030). The broker
-	// holds no key; a missing credential or an unreachable connector is also a
-	// 424 — the session cannot be brokered.
+	// holds no key. Distinguish the failure modes so an operator can tell an
+	// unprovisioned resource from a connector outage (T-030a fixup):
+	//   - no credential stored      → 424 Failed Dependency (genuinely unprovisioned)
+	//   - connector down / transport → 502 Bad Gateway (upstream unavailable; same
+	//     convention as the api audit read-proxy)
 	mat, err := b.leaser.Lease(ctx, sess.ResourceID, id, operator)
+	if errors.Is(err, connector.ErrNoCredential) {
+		http.Error(w, "no credential provisioned for resource", http.StatusFailedDependency)
+		return
+	}
 	if err != nil {
-		http.Error(w, "credential unavailable: "+err.Error(), http.StatusFailedDependency)
+		http.Error(w, "credential service unavailable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	// A leased-but-empty private key cannot dial — reject pre-upgrade rather than
+	// fail late at the SSH dial (restores the non-empty-key contract LoadTarget
+	// enforced before the coords/lease split, T-030a fixup).
+	if mat.PrivateKey == "" {
+		http.Error(w, "leased credential incomplete", http.StatusFailedDependency)
 		return
 	}
 	target.PrivateKey = mat.PrivateKey

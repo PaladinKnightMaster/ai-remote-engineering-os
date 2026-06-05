@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -155,6 +156,39 @@ func TestChannelCredentialUnavailable(t *testing.T) {
 	})
 	if got := dialStatus(t, h, true); got != http.StatusFailedDependency {
 		t.Fatalf("credential unavailable: want 424, got %d", got)
+	}
+}
+
+// TestChannelConnectorUnavailable — coords load fine, but the lease RPC fails for
+// a non-404 reason (connector down / transport error). That is an upstream
+// outage, distinct from an unprovisioned resource: 502 Bad Gateway (T-030a fixup;
+// same convention as the api audit read-proxy).
+func TestChannelConnectorUnavailable(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store: &fakeStore{
+			sess:   store.Session{ID: "abc", OperatorID: "tester", Status: "pending"},
+			target: store.Target{Host: "h", User: "u", HostKey: "ssh-ed25519 AAAA"},
+		},
+		Leaser: &fakeLeaser{err: errors.New("dial tcp connector:8083: connection refused")},
+	})
+	if got := dialStatus(t, h, true); got != http.StatusBadGateway {
+		t.Fatalf("connector down: want 502, got %d", got)
+	}
+}
+
+// TestChannelLeasedKeyEmpty — connector returns a credential with an empty private
+// key. It cannot dial, so reject pre-upgrade (424) rather than fail late at the
+// SSH dial (T-030a fixup restores the non-empty-key contract).
+func TestChannelLeasedKeyEmpty(t *testing.T) {
+	h := newHandler(t, server.Config{
+		Store: &fakeStore{
+			sess:   store.Session{ID: "abc", OperatorID: "tester", Status: "pending"},
+			target: store.Target{Host: "h", User: "u", HostKey: "ssh-ed25519 AAAA"},
+		},
+		Leaser: &fakeLeaser{mat: connector.Material{PrivateKey: ""}},
+	})
+	if got := dialStatus(t, h, true); got != http.StatusFailedDependency {
+		t.Fatalf("empty leased key: want 424, got %d", got)
 	}
 }
 
