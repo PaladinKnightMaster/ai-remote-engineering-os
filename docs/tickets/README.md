@@ -114,12 +114,14 @@ contract), so they are not parallelizable.
 - **T-029** — connector-service: credential custody + egress gateway (ADR-0053). Split a/b along the T-005a/5b + T-016a/b boundary:
   - **T-029a** — connector-service skeleton + own credential table + outbox + the *copy* leg of the credential relocation off `resources.connection_secret` (persistence spine; no lease RPC, audit-silent until T-029b). *planned (next — consult open)*.
   - **T-029b** — credential-lease RPC surface (sync, `edge: service-service`) + egress-decision audit emission via the outbox. *planned*.
-- **T-030** — re-point the credential consumers onto connector: remove `pgp_sym_decrypt` from `services/api` (`internal/secret`) + the broker (`internal/store.LoadTarget`); the broker leases at connect; drop `resources.connection_secret` (contract leg). First live cross-boundary verify (SEC-13). *planned*.
+- **T-030** — re-point the credential consumers onto connector (SEC-13). Split a/b:
+  - **T-030a** — code re-point: broker `internal/connector` lease client; `LoadTarget`→`LoadTargetCoords` (no decrypt); deleted `services/api/internal/secret`; genkey → `connector credentials genkey`. Connector mocked on the broker side. Column drop DEFERRED → v0.3.0 (G2 sequencing refinement). *done (`a1c81a9`, incl. handler fixup)*.
+  - **T-030b** — live e2e proof: connector in `docker-compose.e2e.yml`, provision via `connector credentials set-secret`, broker `CONNECTOR_URL` + empty `AIREOS_RESOURCE_SECRET_KEY`; assert `credential.leased` in the live chain (first live cross-boundary verify — G1). *next*.
 - **T-031** — policy-service decision point + `<ApprovalPrompt>` (ADR-0054). Split a/b:
   - **T-031a** — policy-service: `allow`/`deny`/`requires_approval` decision RPC + `pending_approvals` + `policy_outbox` + ~120s fail-closed timeout; `services/api` enforces at session-create. *planned*.
   - **T-031b** — `<ApprovalPrompt>` `packages/ui` component + the `apps/web` pending-session approval round-trip. *planned*.
 - **T-032** — durability riders: WS-drop reconnect (fresh shell, conforms ADR-0049) + session reaper (closes the ADR-0049 orphan-close gap). Ticket-only, no ADR. *planned*.
-- **T-033** — WD-2 live e2e harness (extends `tests/e2e` + `task wd1`, no mocked boundary — the G1 proof) + `docs/releases/v0.2.0/` artifacts (DOC-10). *planned*.
+- **T-033** — WD-2 live e2e harness (extends `tests/e2e` + `task wd1`, no mocked boundary — the G1 proof) + `docs/releases/v0.2.0/` artifacts (DOC-10). **Also owns the offline/WD-1 provisioning re-point (OI-6):** `infra/offline` install.sh + systemd units + `run-wd1.sh` must swap `api resources set-secret` → `connector credentials set-secret`, wire `CONNECTOR_URL` into the units, relocate `AIREOS_RESOURCE_SECRET_KEY` from api's env to connector's, **and remove the temporary T-030a guard at the top of `run-wd1.sh`** (which currently hard-aborts WD-1 until this lands). *planned*.
 
 ## Conventions
 

@@ -16,6 +16,20 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1   # Windows/git-bash: don't mangle -v / cgroup paths
 
+# --- TEMPORARY GUARD (T-030a → T-033) -----------------------------------------
+# T-030a moved target-credential custody to connector-service and DELETED
+# `api resources set-secret`, which this harness uses to provision the SSH
+# credential on the installed host. WD-1 is therefore non-runnable until T-033 /
+# OI-6 re-points offline provisioning to `connector credentials set-secret` (and
+# wires CONNECTOR_URL + relocates AIREOS_RESOURCE_SECRET_KEY into the units).
+# Fail loud now rather than 5 minutes into a systemd-in-Docker bring-up.
+# T-033 REMOVES this guard as part of re-enabling WD-1.
+echo "[wd1] ABORT: WD-1 is temporarily non-runnable. Credential provisioning is" >&2
+echo "[wd1] migrating from 'api resources set-secret' to 'connector credentials" >&2
+echo "[wd1] set-secret' (T-030a done; re-pointed in T-033/OI-6). See docs/tickets/README.md." >&2
+exit 1
+# --- END TEMPORARY GUARD ------------------------------------------------------
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 OUT="$REPO_ROOT/dist/offline"
 HOST=aireos-wd1-host
