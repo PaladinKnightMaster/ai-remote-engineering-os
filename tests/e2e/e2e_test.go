@@ -107,4 +107,22 @@ func TestSSHCockpitEndToEnd(t *testing.T) {
 	// --- 9. api-side auth audit (T-022 / SEC-9) ---------------------------------
 	authEv := pollAuthEvent(t, auditURL, auditToken, "auth.login.success", "operator:"+operatorUser, 30*time.Second)
 	t.Logf("PASS — api auth event in live chain: %q by %q (edge %q)", authEv.Outcome, authEv.Actor, authEv.Edge)
+
+	// --- 10. connector egress audit (T-030b / SEC-13) ---------------------------
+	// The broker ran with an EMPTY AIREOS_RESOURCE_SECRET_KEY (see the e2e compose):
+	// the SSH session above only succeeded because the broker LEASED the decrypted
+	// credential from connector-service. Assert the matching credential.leased
+	// egress event is in the live chain, attributed to the operator and anchored to
+	// this session — proving custody centralization + audited egress end to end.
+	leasedEv := pollLeased(t, auditURL, auditToken, "resource:"+resourceID, 30*time.Second)
+	if leasedEv.Actor != "operator:"+operatorUser {
+		t.Fatalf("credential.leased actor = %q, want operator:%s", leasedEv.Actor, operatorUser)
+	}
+	if leasedEv.Edge != "agent-remote-session" {
+		t.Fatalf("credential.leased edge = %q, want agent-remote-session", leasedEv.Edge)
+	}
+	if leasedEv.EvidencePacketID != "session:"+sessionID {
+		t.Fatalf("credential.leased evidencePacketId = %q, want session:%s", leasedEv.EvidencePacketID, sessionID)
+	}
+	t.Logf("PASS — connector egress audited: credential.leased for resource by %q, anchored to session %s", leasedEv.Actor, sessionID)
 }

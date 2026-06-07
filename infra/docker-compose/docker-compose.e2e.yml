@@ -74,7 +74,13 @@ services:
         go run ./services/api migrate up
         go run ./services/audit-service migrate up
         go run ./services/session-broker migrate up
+        go run ./services/connector-service migrate up
         go run ./tests/e2e/cmd/seed
+        # Provision the credential into connector custody via the real CLI (T-030b):
+        # the broker leases it from connector at connect; nothing is stored in
+        # resources.connection_secret. RID matches tests/e2e/cmd/seed + harness_test.go.
+        go run ./services/connector-service credentials set-secret \
+          01900000-0000-7000-8000-0000000000e2 --key-file /seed-keys/client_ed25519
 
   audit:
     <<: *go
@@ -93,12 +99,30 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *cluster-env
+      # api no longer decrypts target credentials (T-030a) — empty the key to make
+      # "only connector custodies the secret" explicit in the stack.
+      AIREOS_RESOURCE_SECRET_KEY: ""
       API_ADDR: ":8080"
       # api's outbox relay delivers auth/control-plane events (T-022 / SEC-9).
       AIREOS_AUDIT_URL: http://audit:8081
       AIREOS_BOOTSTRAP_OPERATOR_USER: admin
       AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH: "$$argon2id$$v=19$$m=65536,t=3,p=2$$c/1DjrxaiJU6wokhTzZpkQ$$Eb0SglfJ9v7PEDlVTyM48Sqeroyu3OFN5+7rl9wYdgI"
     command: ["bash", "-c", "go run ./services/api serve"]
+
+  # connector-service: sole credential custodian + egress chokepoint (ADR-0053).
+  # Holds AIREOS_RESOURCE_SECRET_KEY and decrypts on the lease; its egress relay
+  # delivers credential.leased to audit (AIREOS_AUDIT_URL). The broker leases the
+  # SSH key from here at connect — the broker itself runs with NO resource key.
+  connector:
+    <<: *go
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *cluster-env
+      CONNECTOR_ADDR: ":8083"
+      AIREOS_AUDIT_URL: http://audit:8081
+    command: ["bash", "-c", "go run ./services/connector-service serve"]
 
   broker:
     <<: *go
@@ -107,6 +131,11 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *cluster-env
+      # SEC-13 runtime proof (T-030b): the broker holds NO resource secret key — it
+      # leases the decrypted credential from connector-service. Override the shared
+      # anchor's key to empty; the session must still work.
+      AIREOS_RESOURCE_SECRET_KEY: ""
+      CONNECTOR_URL: http://connector:8083
       BROKER_ADDR: ":8082"
       AIREOS_AUDIT_URL: http://audit:8081
       AIREOS_CAST_DIR: /var/lib/aireos/sessions
@@ -137,6 +166,7 @@ services:
     depends_on:
       - api
       - broker
+      - connector
       - audit
       - sshd
     environment:

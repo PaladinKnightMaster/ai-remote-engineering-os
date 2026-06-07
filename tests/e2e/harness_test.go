@@ -295,6 +295,25 @@ func pollAuthEvent(t *testing.T, auditURL, token, outcome, actor string, within 
 	}
 }
 
+// pollLeased waits for connector-service's credential.leased egress event for the
+// given resource target (T-030b) — the live proof that the broker obtained the SSH
+// key from connector (not from a local decrypt) and that the egress was audited.
+func pollLeased(t *testing.T, auditURL, token, resourceTarget string, within time.Duration) auditEvent {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		for _, e := range listAllEvents(t, auditURL, token) {
+			if e.Target == resourceTarget && e.Outcome == "credential.leased" {
+				return e
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("credential.leased for %s never reached the chain within %s", resourceTarget, within)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 func mintAuditToken(t *testing.T) string {
 	t.Helper()
 	keyHex := os.Getenv("AIREOS_PASETO_KEY")

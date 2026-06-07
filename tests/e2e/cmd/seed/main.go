@@ -1,12 +1,15 @@
-// Command seed provisions the T-020b live e2e cluster. It generates the SSH
-// host + client keypairs at runtime (so no private keys are committed to git),
-// writes the host private key and the authorized client key to the shared
+// Command seed provisions the T-020b/T-030b live e2e cluster. It generates the
+// SSH host + client keypairs at runtime (so no private keys are committed to
+// git), writes the host private key and the authorized client key to the shared
 // sshd-keys volume for the test sshd, and inserts the ssh resource the
-// walkthrough drives a session against: non-secret coordinates in labels +
-// the pgp_sym_encrypt'd client private key in connection_secret (ADR-0048 §7).
+// walkthrough drives a session against with its non-secret coordinates in labels.
 //
-// Service migrations are run by the compose command before this binary (see
-// docker-compose.e2e.yml); here we only do keys + the resource row.
+// As of T-030b the credential itself is NOT seeded here: connector-service is the
+// sole custodian, so the compose command provisions it via the real CLI
+// (`connector-service credentials set-secret … --key-file /seed-keys/client_ed25519`)
+// after this binary writes the client key. This binary only writes keys + the
+// resource row (labels-only); service migrations are run by the compose command
+// before it (see docker-compose.e2e.yml).
 package main
 
 import (
@@ -38,10 +41,6 @@ func main() {
 
 func run() error {
 	keyDir := envOr("SEED_KEY_DIR", "/seed-keys")
-	secretKey := os.Getenv("AIREOS_RESOURCE_SECRET_KEY")
-	if secretKey == "" {
-		return fmt.Errorf("AIREOS_RESOURCE_SECRET_KEY must be set")
-	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL must be set")
@@ -105,22 +104,24 @@ func run() error {
 		"ssh_user":     "aireos",
 		"ssh_host_key": hostAuthLine,
 	})
-	material, _ := json.Marshal(map[string]string{"private_key": string(clientPriv)})
 
+	// Insert the resource row with coordinates ONLY (T-030b): the credential lives
+	// in connector custody, provisioned by `connector credentials set-secret` in
+	// the compose command after this binary. connection_secret is left NULL — the
+	// broker reads coords from labels and leases the key from connector at connect.
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
 	defer pool.Close()
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO resources (id, type, name, labels, connection_secret)
-		VALUES ($1, 'ssh', 'e2e-target', $2::jsonb, pgp_sym_encrypt($3::text, $4))
-		ON CONFLICT (id) DO UPDATE
-		   SET labels = EXCLUDED.labels, connection_secret = EXCLUDED.connection_secret`,
-		resourceID, string(labels), string(material), secretKey); err != nil {
+		INSERT INTO resources (id, type, name, labels)
+		VALUES ($1, 'ssh', 'e2e-target', $2::jsonb)
+		ON CONFLICT (id) DO UPDATE SET labels = EXCLUDED.labels`,
+		resourceID, string(labels)); err != nil {
 		return fmt.Errorf("seed resource: %w", err)
 	}
-	log.Printf("seed: provisioned ssh resource %s + sshd keys in %s", resourceID, keyDir)
+	log.Printf("seed: provisioned ssh resource %s (labels only) + sshd keys in %s", resourceID, keyDir)
 	return nil
 }
 
