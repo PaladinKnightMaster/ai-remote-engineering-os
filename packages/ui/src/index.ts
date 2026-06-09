@@ -5,12 +5,11 @@
 // (<ApprovalPrompt>, <RemoteSessionView>, <TerminalView>) land with the
 // feature tickets that consume them:
 //
-//   - <ApprovalPrompt>       — first approval-touching action ticket
-//                              (egress / agent-tool, ADR-0047 §Hand-off).
 //   - <RemoteSessionView>    — first RDP/VNC session ticket
-//                              (Guacamole on a <canvas>).
+//                              (Guacamole on a <canvas>); still deferred.
 //
-// <TerminalView> (xterm.js) landed in T-018b — exported below.
+// <TerminalView> (xterm.js) landed in T-018b; <ApprovalPrompt> (ADR-0054
+// human-in-the-loop) in T-031c — both exported below.
 //
 // Deferring per "search-before-create" in design-system-governance §3 —
 // vendoring components without a concrete consumer would speculate on
@@ -37,3 +36,6 @@ export type {
 
 export { TerminalView } from "./components/TerminalView";
 export type { TerminalViewProps } from "./components/TerminalView";
+
+export { ApprovalPrompt } from "./components/ApprovalPrompt";
+export type { ApprovalPromptProps } from "./components/ApprovalPrompt";
