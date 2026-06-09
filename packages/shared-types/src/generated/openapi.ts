@@ -429,13 +429,13 @@ export interface components {
             /** @enum {string} */
             mode: "terminal";
             /** @enum {string} */
-            status: "pending" | "active" | "closed" | "terminated";
+            status: "pending" | "pending_approval" | "active" | "closed" | "terminated";
             /** Format: date-time */
             startedAt: string;
             /** Format: date-time */
             endedAt?: string;
             /** @enum {string} */
-            closedReason?: "idle" | "operator" | "broker_crash" | "ttl";
+            closedReason?: "idle" | "operator" | "broker_crash" | "ttl" | "policy_unavailable";
             castPath?: string;
             castSha256?: string;
         };

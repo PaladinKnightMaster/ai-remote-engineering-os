@@ -20,20 +20,30 @@ var Modes = map[string]struct{}{
 // DefaultMode is applied when SessionCreate omits mode.
 const DefaultMode = "terminal"
 
-// Status values (sessions_status_chk, migration 0002). A session is created
-// 'pending' by services/api; the broker flips it 'active' on a successful PTY
-// attach and 'closed' on teardown. 'terminated' is the forced/abnormal end.
+// Status values (sessions_status_chk, migration 0002 + 0005). A session is
+// created 'pending' by services/api; the broker flips it 'active' on a successful
+// PTY attach and 'closed' on teardown. 'terminated' is the forced/abnormal end.
+// 'pending_approval' (migration 0005, ADR-0054) is a session-start to a
+// requires_approval resource that is parked awaiting the operator's approval; the
+// broker's status guard rejects it until services/api flips it to 'pending' on
+// approval (T-031b).
 const (
-	StatusPending    = "pending"
-	StatusActive     = "active"
-	StatusClosed     = "closed"
-	StatusTerminated = "terminated"
+	StatusPending         = "pending"
+	StatusPendingApproval = "pending_approval"
+	StatusActive          = "active"
+	StatusClosed          = "closed"
+	StatusTerminated      = "terminated"
 )
 
-// ReasonOperator is the closed_reason set when an operator ends a session via
-// the REST control plane (POST /v1/sessions/{id}/end). The broker may set
-// idle|broker_crash|ttl on its own teardown paths (slice b).
-const ReasonOperator = "operator"
+// closed_reason values. ReasonOperator is set when an operator ends a session via
+// the REST control plane (POST /v1/sessions/{id}/end); the broker may set
+// idle|broker_crash|ttl on its own teardown paths. ReasonPolicyUnavailable closes
+// a parked session when the policy decision point is unreachable/unconfigured at
+// session-create — fail-closed (ADR-0054, T-031b).
+const (
+	ReasonOperator          = "operator"
+	ReasonPolicyUnavailable = "policy_unavailable"
+)
 
 // Session is the stored, server-completed cockpit session. endedAt/closedReason/
 // castPath/castSha256 stay zero until the session is ended; omitempty keeps them

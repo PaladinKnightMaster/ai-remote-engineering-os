@@ -120,9 +120,11 @@ contract), so they are not parallelizable.
 - **T-031** — policy-service decision point + `<ApprovalPrompt>` (ADR-0054). 3 deliverable-cohesive rungs (backend / api-seam / UI); the backend self-split a-i/a-ii at consult (connector b-i/b-ii precedent — audited store ships with its consumer):
   - **T-031a-i** — policy-service spine: new module; `0001_policy` (`pending_approvals` + `policy_outbox` + NOTIFY); `serve` (ungated `/healthz` + in-process audit relay) / `migrate` / `outbox relay`; `POLICY_ADDR` default `:8084`. *done*.
   - **T-031a-ii** — gated **internal** decide/resolve RPCs (`edge: service-service`) + audited store (tx-with-enqueue: `policy.decision`/`approval.granted`/`approval.denied`) + ~120s **fail-closed** timeout sweeper. *done*.
-  - **T-031b** — `services/api` enforcement seam: consult policy at session-create (only for `requires_approval`-flagged resources); `pending_approval` session status (api migration 0004); operator approve/deny route → policy resolve; contract + TS regen. *planned*.
+  - **T-031b** — `services/api` enforcement seam (ADR-0054 §5: api enforces, broker stays pure data plane). Split b-i/b-ii:
+    - **T-031b-i** — consult policy at session-create for `requires_approval`-flagged resources; park `pending_approval` (api migration 0005) + fail-closed; api→policy `Decide` client; contract status/reason enums + regen. *done*.
+    - **T-031b-ii** — operator approve/deny route (`POST /v1/sessions/{id}/resolve`) → policy resolve → flip `pending`/`closed`; 409-reconcile; contract route + regen. *next*.
   - **T-031c** — `<ApprovalPrompt>` `packages/ui` component + the `apps/web` pending-session round-trip (closes §FE-5). *planned*.
-- **T-032** — durability riders: WS-drop reconnect (fresh shell, conforms ADR-0049) + session reaper (closes the ADR-0049 orphan-close gap). Ticket-only, no ADR. *planned*.
+- **T-032** — durability riders: WS-drop reconnect (fresh shell, conforms ADR-0049) + session reaper (closes the ADR-0049 orphan-close gap; **also reaps stale `pending_approval` sessions** whose approval timed out in policy — T-031b carry-forward). Ticket-only, no ADR. *planned*.
 - **T-033** — WD-2 live e2e harness (extends `tests/e2e` + `task wd1`, no mocked boundary — the G1 proof) + `docs/releases/v0.2.0/` artifacts (DOC-10). **Also owns the offline/WD-1 provisioning re-point (OI-6):** `infra/offline` install.sh + systemd units + `run-wd1.sh` must swap `api resources set-secret` → `connector credentials set-secret`, wire `CONNECTOR_URL` into the units, relocate `AIREOS_RESOURCE_SECRET_KEY` from api's env to connector's, **and remove the temporary T-030a guard at the top of `run-wd1.sh`** (which currently hard-aborts WD-1 until this lands). *planned*.
 
 ## Conventions

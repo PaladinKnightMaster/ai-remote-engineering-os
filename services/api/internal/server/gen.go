@@ -51,10 +51,11 @@ const (
 
 // Defines values for SessionClosedReason.
 const (
-	BrokerCrash SessionClosedReason = "broker_crash"
-	Idle        SessionClosedReason = "idle"
-	Operator    SessionClosedReason = "operator"
-	Ttl         SessionClosedReason = "ttl"
+	BrokerCrash       SessionClosedReason = "broker_crash"
+	Idle              SessionClosedReason = "idle"
+	Operator          SessionClosedReason = "operator"
+	PolicyUnavailable SessionClosedReason = "policy_unavailable"
+	Ttl               SessionClosedReason = "ttl"
 )
 
 // Defines values for SessionMode.
@@ -64,10 +65,11 @@ const (
 
 // Defines values for SessionStatus.
 const (
-	Active     SessionStatus = "active"
-	Closed     SessionStatus = "closed"
-	Pending    SessionStatus = "pending"
-	Terminated SessionStatus = "terminated"
+	Active          SessionStatus = "active"
+	Closed          SessionStatus = "closed"
+	Pending         SessionStatus = "pending"
+	PendingApproval SessionStatus = "pending_approval"
+	Terminated      SessionStatus = "terminated"
 )
 
 // Defines values for SessionCreateMode.

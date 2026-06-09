@@ -26,15 +26,29 @@ const sessionSelect = `SELECT ` + sessionColList + ` FROM sessions`
 // operatorID. A foreign-key violation means the resourceId is unknown — surfaced
 // as ErrNotFound so the handler answers 404 rather than 500.
 func (s *Store) CreateSession(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error) {
+	return s.insertSession(ctx, operatorID, in, session.StatusPending)
+}
+
+// ParkForApproval inserts a session in 'pending_approval' (ADR-0054, T-031b): a
+// session-start to a requires_approval resource, awaiting the operator's decision.
+// The broker's status guard rejects it until it is flipped to 'pending' on
+// approval (T-031b-ii). Same FK-violation → ErrNotFound mapping as CreateSession.
+func (s *Store) ParkForApproval(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error) {
+	return s.insertSession(ctx, operatorID, in, session.StatusPendingApproval)
+}
+
+// insertSession is the shared insert path for CreateSession / ParkForApproval; the
+// only difference is the initial status (decided by the caller).
+func (s *Store) insertSession(ctx context.Context, operatorID string, in session.CreateInput, status string) (session.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return session.Session{}, fmt.Errorf("mint id: %w", err)
 	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO sessions (id, resource_id, operator_id, mode, status)
-		VALUES ($1,$2,$3,$4,'pending')
+		VALUES ($1,$2,$3,$4,$5)
 		RETURNING `+sessionColList,
-		id.String(), in.ResourceID, operatorID, in.Mode)
+		id.String(), in.ResourceID, operatorID, in.Mode, status)
 	sess, err := scanSession(row)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -44,6 +58,25 @@ func (s *Store) CreateSession(ctx context.Context, operatorID string, in session
 		return session.Session{}, fmt.Errorf("insert session: %w", err)
 	}
 	return sess, nil
+}
+
+// MarkClosed force-closes a session owned by operatorID with an EXPLICIT reason
+// (unlike EndSession, which COALESCEs to 'operator'). T-031b uses it to fail-close
+// a parked session when the policy decision point is unreachable at create.
+// ErrNotFound if the session is absent or owned by another operator.
+func (s *Store) MarkClosed(ctx context.Context, operatorID, id, reason string) (session.Session, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE sessions
+		   SET status        = 'closed',
+		       ended_at      = COALESCE(ended_at, now()),
+		       closed_reason = $3
+		WHERE id=$1 AND operator_id=$2
+		RETURNING `+sessionColList, id, operatorID, reason)
+	sess, err := scanSession(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return session.Session{}, ErrNotFound
+	}
+	return sess, err
 }
 
 // GetSession returns one session owned by operatorID, or ErrNotFound. The

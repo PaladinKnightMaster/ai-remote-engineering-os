@@ -546,7 +546,7 @@ components:
           enum: [terminal]
         status:
           type: string
-          enum: [pending, active, closed, terminated]
+          enum: [pending, pending_approval, active, closed, terminated]
         startedAt:
           type: string
           format: date-time
@@ -555,7 +555,7 @@ components:
           format: date-time
         closedReason:
           type: string
-          enum: [idle, operator, broker_crash, ttl]
+          enum: [idle, operator, broker_crash, ttl, policy_unavailable]
         castPath:
           type: string
         castSha256:

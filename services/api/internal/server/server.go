@@ -43,6 +43,7 @@ import (
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/api/internal/policy"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/session"
 	"aireos.local/services/api/internal/store"
@@ -78,8 +79,21 @@ type Store interface {
 	ListSessions(ctx context.Context, operatorID, after string, limit int) ([]session.Session, string, error)
 	EndSession(ctx context.Context, operatorID, id string) (session.Session, error)
 
+	// ParkForApproval inserts a session in 'pending_approval' and MarkClosed
+	// fail-closes a parked session (ADR-0054 / T-031b).
+	ParkForApproval(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error)
+	MarkClosed(ctx context.Context, operatorID, id, reason string) (session.Session, error)
+
 	// RecordEvent enqueues an audit evidence row into api's outbox (T-022 / SEC-9).
 	RecordEvent(ctx context.Context, e outbox.Event) error
+}
+
+// policyDecider is the slice of *policy.Client the create handler needs: at
+// session-create against a requires_approval resource, api consults policy-service
+// (ADR-0054 §5). A nil decider means no decision point is configured — a
+// requires_approval resource then fails closed.
+type policyDecider interface {
+	Decide(ctx context.Context, in policy.DecideInput) (policy.Decision, error)
 }
 
 // Authenticator verifies operator credentials (services/api/internal/account).
@@ -93,6 +107,7 @@ type apiHandlers struct {
 	signer   *auth.Signer  // nil → operator login disabled (503)
 	verifier mw.Verifier   // used by Logout to attribute the actor from the cookie
 	auditURL string        // AIREOS_AUDIT_URL — the audit-timeline read-proxy upstream (T-024); "" disables it
+	policy   policyDecider // POLICY_URL decision point (ADR-0054 / T-031b); nil → requires_approval resources fail closed
 }
 
 // New returns the api router. Routes that declared security in the contract are
@@ -111,8 +126,13 @@ type apiHandlers struct {
 // iteration — so the LAST entry becomes the outermost wrapper at runtime
 // (see gen.go's per-op middleware loop). Reordering this slice without
 // understanding that loop will silently break the cookie path.
-func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, auditURL string) http.Handler {
+func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, auditURL, policyURL string) http.Handler {
 	h := &apiHandlers{store: s, authn: authn, signer: signer, verifier: v, auditURL: auditURL}
+	if policyURL != "" {
+		// The decision point is consulted at session-create for requires_approval
+		// resources (ADR-0054). api mints a service-service token from its signer.
+		h.policy = policy.NewClient(policyURL, signer)
+	}
 	return HandlerWithOptions(h, ChiServerOptions{
 		BaseRouter: chi.NewRouter(),
 		Middlewares: []MiddlewareFunc{
@@ -478,9 +498,11 @@ func operatorSubject(r *http.Request) (string, bool) {
 }
 
 // CreateSession (POST /v1/sessions) records the operator's intent to start a
-// session against a resource. The row is created 'pending'; the broker activates
-// it on a successful PTY attach (slice b). A SessionCreate body referencing an
-// unknown resourceId answers 404 (FK → ErrNotFound).
+// session against a resource. For a normal resource the row is created 'pending'
+// and the broker activates it on a successful PTY attach. For a resource labeled
+// requires_approval=true (ADR-0054) the session is instead parked
+// 'pending_approval' and the policy decision point is consulted; the operator
+// approves/denies via T-031b-ii. An unknown resourceId answers 404.
 func (a *apiHandlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	operator, ok := operatorSubject(r)
 	if !ok {
@@ -499,7 +521,11 @@ func (a *apiHandlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	sess, err := a.store.CreateSession(r.Context(), operator, in)
+
+	// Read the resource to decide whether this start needs approval (ADR-0054:
+	// trigger = a resource labeled requires_approval=true). This also resolves an
+	// unknown resourceId to 404 before any session insert.
+	res, err := a.store.Get(r.Context(), in.ResourceID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 		return
@@ -508,7 +534,71 @@ func (a *apiHandlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "create session failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, sess)
+
+	if res.Labels["requires_approval"] != "true" {
+		sess, err := a.store.CreateSession(r.Context(), operator, in)
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "resource not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "create session failed")
+			return
+		}
+		writeJSON(w, http.StatusCreated, sess)
+		return
+	}
+
+	a.createWithApproval(w, r, operator, in)
+}
+
+// createWithApproval parks a session-start to a requires_approval resource and
+// consults the policy decision point (ADR-0054). The session is created
+// 'pending_approval' FIRST (so the broker's status guard blocks any WS attach),
+// then policy is consulted; any failure to obtain a requires_approval decision
+// fail-closes the session ('closed'/policy_unavailable) — a flagged session never
+// proceeds without an explicit operator approval (driven in T-031b-ii).
+func (a *apiHandlers) createWithApproval(w http.ResponseWriter, r *http.Request, operator string, in session.CreateInput) {
+	sess, err := a.store.ParkForApproval(r.Context(), operator, in)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "create session failed")
+		return
+	}
+
+	if a.policy == nil {
+		a.failClosed(r.Context(), operator, sess.ID)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "approval required but the policy decision point is not configured")
+		return
+	}
+	decision, derr := a.policy.Decide(r.Context(), policy.DecideInput{
+		SessionID: sess.ID, Subject: operator, Edge: "agent-remote-session",
+		Target: "resource:" + in.ResourceID, Action: "session.start", RequiresApproval: true,
+	})
+	if derr != nil {
+		a.failClosed(r.Context(), operator, sess.ID)
+		writeError(w, http.StatusBadGateway, "bad_gateway", "policy decision point unavailable")
+		return
+	}
+	if decision.Decision != policy.DecisionRequiresApproval {
+		// v0.2.0: a flagged resource always requires approval; any other decision is
+		// an unexpected policy contract state — fail closed rather than proceed.
+		a.failClosed(r.Context(), operator, sess.ID)
+		writeError(w, http.StatusBadGateway, "bad_gateway", "unexpected policy decision")
+		return
+	}
+	writeJSON(w, http.StatusCreated, sess) // parked pending_approval; operator resolves in T-031b-ii
+}
+
+// failClosed best-effort closes a parked session whose approval could not be
+// obtained, so a policy outage does not leave it orphaned in 'pending_approval'.
+func (a *apiHandlers) failClosed(ctx context.Context, operator, id string) {
+	if _, err := a.store.MarkClosed(ctx, operator, id, session.ReasonPolicyUnavailable); err != nil {
+		log.Printf("fail-closed MarkClosed(%s): %v", id, err)
+	}
 }
 
 type sessionPage struct {

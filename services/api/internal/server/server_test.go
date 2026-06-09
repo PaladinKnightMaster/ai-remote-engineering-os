@@ -153,6 +153,34 @@ func (f *fakeStore) EndSession(_ context.Context, operatorID, id string) (sessio
 	return s, nil
 }
 
+func (f *fakeStore) ParkForApproval(_ context.Context, operatorID string, in session.CreateInput) (session.Session, error) {
+	if _, ok := f.byID[in.ResourceID]; !ok {
+		return session.Session{}, store.ErrNotFound
+	}
+	f.sn++
+	id := fmt.Sprintf("sess-%05d", f.sn)
+	s := session.Session{
+		ID: id, ResourceID: in.ResourceID, OperatorID: operatorID,
+		Mode: in.Mode, Status: session.StatusPendingApproval, StartedAt: time.Now().UTC(),
+	}
+	f.sessByID[id] = s
+	f.sessIDs = append(f.sessIDs, id)
+	return s, nil
+}
+
+func (f *fakeStore) MarkClosed(_ context.Context, operatorID, id, reason string) (session.Session, error) {
+	s, ok := f.sessByID[id]
+	if !ok || s.OperatorID != operatorID {
+		return session.Session{}, store.ErrNotFound
+	}
+	now := time.Now().UTC()
+	s.Status = session.StatusClosed
+	s.EndedAt = &now
+	s.ClosedReason = reason
+	f.sessByID[id] = s
+	return s, nil
+}
+
 type allowAll struct{}
 
 func (allowAll) Verify(context.Context, string) (mw.Capability, error) {
@@ -194,7 +222,7 @@ func TestListAuditEventsProxies(t *testing.T) {
 
 	key, _ := auth.GenerateKey()
 	signer := auth.NewSigner(key, "")
-	h := New(newFake(), nil, signer, allowAll{}, upstream.URL)
+	h := New(newFake(), nil, signer, allowAll{}, upstream.URL, "")
 
 	rec := req(t, h, http.MethodGet, "/v1/audit/events?limit=50", "", true)
 	if rec.Code != http.StatusOK {
@@ -211,7 +239,7 @@ func TestListAuditEventsProxies(t *testing.T) {
 // TestListAuditEventsUnavailableWithoutAuditURL — no AIREOS_AUDIT_URL => 503,
 // not a crash or a silent empty page.
 func TestListAuditEventsUnavailableWithoutAuditURL(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 	rec := req(t, h, http.MethodGet, "/v1/audit/events", "", true)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
@@ -219,7 +247,7 @@ func TestListAuditEventsUnavailableWithoutAuditURL(t *testing.T) {
 }
 
 func TestCreateGetUpdateDelete(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 
 	// create
 	rec := req(t, h, http.MethodPost, "/v1/resources", validBody, true)
@@ -259,7 +287,7 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 
 func TestListReturnsItems(t *testing.T) {
 	f := newFake()
-	h := New(f, nil, nil, allowAll{}, "")
+	h := New(f, nil, nil, allowAll{}, "", "")
 	for i := 0; i < 3; i++ {
 		req(t, h, http.MethodPost, "/v1/resources", validBody, true)
 	}
@@ -274,7 +302,7 @@ func TestListReturnsItems(t *testing.T) {
 
 // Validation: bad type and client-supplied id are both 400.
 func TestCreateValidation(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 	for _, body := range []string{
 		`{"type":"telnet","name":"x"}`,            // type not in enum
 		`{"name":"x"}`,                            // missing type
@@ -287,7 +315,7 @@ func TestCreateValidation(t *testing.T) {
 }
 
 func TestUnauthorizedWithoutBearer(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 	if rec := req(t, h, http.MethodGet, "/v1/resources", "", false); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401 without bearer, got %d", rec.Code)
 	}
@@ -303,7 +331,7 @@ func loginHandler(t *testing.T) (http.Handler, *auth.Signer, auth.Key) {
 	op := account.New("admin", hash)
 	signer := auth.NewSigner(key, cluster)
 	verifier := auth.AsMiddlewareVerifier(auth.NewVerifier(key, cluster, "api"))
-	return New(newFake(), op, signer, verifier, ""), signer, key
+	return New(newFake(), op, signer, verifier, "", ""), signer, key
 }
 
 // findCookie returns the Set-Cookie cookie with the given name, or nil.
@@ -590,7 +618,7 @@ func seedResource(t *testing.T, h http.Handler) string {
 // real resource (201 pending), fetch it (200), end it (200 closed/operator),
 // re-end is idempotent (still 200, still closed).
 func TestSessionCreateGetEnd(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 	resID := seedResource(t, h)
 
 	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
@@ -638,7 +666,7 @@ func TestSessionCreateGetEnd(t *testing.T) {
 // TestSessionCreateValidation — unknown resourceId is 404; a malformed/over-posted
 // body is 400 (missing resourceId, bad mode, or a client-supplied server field).
 func TestSessionCreateValidation(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 
 	if rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"missing"}`, true); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown resource: want 404, got %d", rec.Code)
@@ -657,7 +685,7 @@ func TestSessionCreateValidation(t *testing.T) {
 // TestSessionListReturnsItems — list is operator-scoped and returns the items
 // envelope, same shape as resources.
 func TestSessionListReturnsItems(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 	resID := seedResource(t, h)
 	for i := 0; i < 3; i++ {
 		if rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true); rec.Code != http.StatusCreated {
@@ -675,7 +703,7 @@ func TestSessionListReturnsItems(t *testing.T) {
 
 // TestSessionsRequireBearer — every session route is gated; no bearer → 401.
 func TestSessionsRequireBearer(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "")
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
 	cases := []struct {
 		method, path string
 	}{
@@ -689,4 +717,118 @@ func TestSessionsRequireBearer(t *testing.T) {
 			t.Fatalf("%s %s without bearer: want 401, got %d", c.method, c.path, rec.Code)
 		}
 	}
+}
+
+// seedFlaggedResource creates a requires_approval=true resource and returns its id.
+func seedFlaggedResource(t *testing.T, h http.Handler) string {
+	t.Helper()
+	body := `{"type":"ssh","name":"gated-01","labels":{"requires_approval":"true"}}`
+	rec := req(t, h, http.MethodPost, "/v1/resources", body, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed flagged resource: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+	var r struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil || r.ID == "" {
+		t.Fatalf("seed flagged resource: no id in %s", rec.Body)
+	}
+	return r.ID
+}
+
+// assertOneClosedPolicyUnavailable asserts the operator owns exactly one session,
+// closed with reason policy_unavailable (the fail-closed parked session).
+func assertOneClosedPolicyUnavailable(t *testing.T, h http.Handler) {
+	t.Helper()
+	rec := req(t, h, http.MethodGet, "/v1/sessions", "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list sessions: %d", rec.Code)
+	}
+	var page struct {
+		Items []session.Session `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("want 1 fail-closed session, got %d", len(page.Items))
+	}
+	if page.Items[0].Status != session.StatusClosed || page.Items[0].ClosedReason != session.ReasonPolicyUnavailable {
+		t.Fatalf("parked session not fail-closed: %+v", page.Items[0])
+	}
+}
+
+// TestSessionCreateRequiresApprovalParks — a session-start against a
+// requires_approval resource is parked 'pending_approval' and the policy decision
+// point is consulted with the session id + the gated-action tuple (ADR-0054).
+func TestSessionCreateRequiresApprovalParks(t *testing.T) {
+	var gotPath, gotAuth string
+	var gotBody map[string]any
+	pol := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.Method + " " + r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"requires_approval"}`))
+	}))
+	defer pol.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	h := New(newFake(), nil, signer, allowAll{}, "", pol.URL)
+
+	resID := seedFlaggedResource(t, h)
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create flagged session: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+	var created session.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("bad body %s", rec.Body)
+	}
+	if created.Status != session.StatusPendingApproval {
+		t.Fatalf("status = %q, want pending_approval", created.Status)
+	}
+	if gotPath != "POST /v1/decisions" {
+		t.Fatalf("policy request line = %q", gotPath)
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") {
+		t.Fatalf("policy did not receive a service token: %q", gotAuth)
+	}
+	if gotBody["session_id"] != created.ID || gotBody["target"] != "resource:"+resID ||
+		gotBody["requires_approval"] != true || gotBody["edge"] != "agent-remote-session" {
+		t.Fatalf("decide body = %+v", gotBody)
+	}
+}
+
+// TestSessionCreateApprovalFailsClosedOnPolicyError — a decision-point error closes
+// the parked session (policy_unavailable) and returns 502.
+func TestSessionCreateApprovalFailsClosedOnPolicyError(t *testing.T) {
+	pol := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer pol.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	h := New(newFake(), nil, signer, allowAll{}, "", pol.URL)
+
+	resID := seedFlaggedResource(t, h)
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("policy error: want 502, got %d: %s", rec.Code, rec.Body)
+	}
+	assertOneClosedPolicyUnavailable(t, h)
+}
+
+// TestSessionCreateRequiresApprovalNoPolicyConfigured — a flagged resource with no
+// decision point configured fails closed (503) + closes the parked session.
+func TestSessionCreateRequiresApprovalNoPolicyConfigured(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{}, "", "") // policyURL ""
+	resID := seedFlaggedResource(t, h)
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no policy configured: want 503, got %d: %s", rec.Code, rec.Body)
+	}
+	assertOneClosedPolicyUnavailable(t, h)
 }
