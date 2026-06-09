@@ -26,14 +26,24 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/packages/go/auth"
+	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/policy-service/internal/server"
+	"aireos.local/services/policy-service/internal/store"
+)
+
+// Approval-timeout defaults (ADR-0054 §6: "~120s, fail-closed"). The TTL is
+// written onto each pending row at decide time; the sweeper auto-denies past it.
+const (
+	defaultApprovalTTL = 120 * time.Second
+	sweeperTick        = 10 * time.Second
 )
 
 //go:embed migrations/*.sql
@@ -77,6 +87,10 @@ func run(args []string) error {
 // and policy-service still serves — a degraded chain authority surfaces as growing
 // outbox depth, not a failed boot.
 func serve(dsn string) error {
+	v, err := capabilityVerifier()
+	if err != nil {
+		return err
+	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
@@ -93,13 +107,73 @@ func serve(dsn string) error {
 		}()
 	}
 
+	// The fail-closed timeout sweeper (ADR-0054 §6): every tick it auto-denies any
+	// pending approval past its expiry, emitting approval.denied:timeout. Runs for
+	// the life of the process alongside the relay.
+	ttl := approvalTTL()
+	go runSweeper(context.Background(), store.New(pool), sweeperTick)
+
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("POLICY_ADDR"), ":8084"),
-		Handler:           server.New(),
+		Handler:           server.New(server.Config{Pool: pool, Verifier: v, TTL: ttl}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("policy-service listening on %s", srv.Addr)
+	log.Printf("policy-service listening on %s (approval TTL %s)", srv.Addr, ttl)
 	return srv.ListenAndServe()
+}
+
+// capabilityVerifier verifies api's service-service token (api mints
+// IssueService("api","policy-service"), so the verified audience is
+// "policy-service"). Mirrors the other services' real-PASETO-or-dev-opt-in shape.
+func capabilityVerifier() (mw.Verifier, error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, err
+		}
+		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, os.Getenv("AIREOS_CLUSTER_ID"), "policy-service")), nil
+	}
+	if os.Getenv("POLICY_DEV_INSECURE_AUTH") == "1" {
+		log.Print("WARNING: POLICY_DEV_INSECURE_AUTH=1 — dev allow-all capability verifier; NOT for production")
+		return devAllowAll{}, nil
+	}
+	return nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY or POLICY_DEV_INSECURE_AUTH=1 for local dev")
+}
+
+type devAllowAll struct{}
+
+func (devAllowAll) Verify(_ context.Context, _ string) (mw.Capability, error) {
+	return mw.Capability{Subject: "dev", Edge: "service-service"}, nil
+}
+
+// approvalTTL resolves the pending-approval timeout: POLICY_APPROVAL_TTL_SECONDS
+// (positive int) overrides the ~120s default (ADR-0054 §6).
+func approvalTTL() time.Duration {
+	if s := os.Getenv("POLICY_APPROVAL_TTL_SECONDS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		log.Printf("ignoring invalid POLICY_APPROVAL_TTL_SECONDS=%q", s)
+	}
+	return defaultApprovalTTL
+}
+
+// runSweeper ticks until ctx is canceled, fail-closing timed-out approvals.
+func runSweeper(ctx context.Context, st *store.Store, tick time.Duration) {
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := st.ExpireTimedOut(ctx, time.Now()); err != nil {
+				log.Printf("policy sweeper: %v", err)
+			} else if n > 0 {
+				log.Printf("policy sweeper: auto-denied %d timed-out approval(s)", n)
+			}
+		}
+	}
 }
 
 // runOutbox handles `policy-service outbox relay` — the operator-run, foreground
