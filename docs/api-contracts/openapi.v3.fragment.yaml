@@ -418,6 +418,40 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/sessions/{id}/resolve:
+    post:
+      tags: [sessions]
+      operationId: resolveSession
+      summary: Approve or deny a session parked pending approval (ADR-0054; same-operator self-approval at v0.2.0)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionResolve'
+      responses:
+        '200':
+          description: Approved → session 'pending' (broker may attach); denied → 'closed'.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The session is not awaiting approval (already resolved or the approval expired).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -555,7 +589,7 @@ components:
           format: date-time
         closedReason:
           type: string
-          enum: [idle, operator, broker_crash, ttl, policy_unavailable]
+          enum: [idle, operator, broker_crash, ttl, policy_unavailable, approval_denied, approval_timeout]
         castPath:
           type: string
         castSha256:
@@ -574,6 +608,17 @@ components:
           type: string
           enum: [terminal]
           default: terminal
+    # Approve/deny body for POST /v1/sessions/{id}/resolve (ADR-0054, T-031b-ii).
+    # The operator's intent in operator verbs (approve|deny); services/api maps it
+    # to the policy decision (granted|denied).
+    SessionResolve:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, deny]
     AuditEvent:
       type: object
       additionalProperties: false

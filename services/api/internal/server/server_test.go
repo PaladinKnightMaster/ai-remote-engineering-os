@@ -168,6 +168,16 @@ func (f *fakeStore) ParkForApproval(_ context.Context, operatorID string, in ses
 	return s, nil
 }
 
+func (f *fakeStore) ApproveSession(_ context.Context, operatorID, id string) (session.Session, error) {
+	s, ok := f.sessByID[id]
+	if !ok || s.OperatorID != operatorID || s.Status != session.StatusPendingApproval {
+		return session.Session{}, store.ErrNotFound
+	}
+	s.Status = session.StatusPending
+	f.sessByID[id] = s
+	return s, nil
+}
+
 func (f *fakeStore) MarkClosed(_ context.Context, operatorID, id, reason string) (session.Session, error) {
 	s, ok := f.sessByID[id]
 	if !ok || s.OperatorID != operatorID {
@@ -831,4 +841,198 @@ func TestSessionCreateRequiresApprovalNoPolicyConfigured(t *testing.T) {
 		t.Fatalf("no policy configured: want 503, got %d: %s", rec.Code, rec.Body)
 	}
 	assertOneClosedPolicyUnavailable(t, h)
+}
+
+// --- T-031b-ii: operator approve/deny resolution ----------------------------
+
+// policyStub captures + scripts the httptest policy server's resolve response.
+type policyStub struct {
+	resolveCode    int    // status for /v1/approvals/.../resolve (0 => 200)
+	resolveBody    string // body for that response
+	gotResolvePath string
+	gotResolveAuth string
+	gotResolveBody map[string]any
+}
+
+// parkedHarness stands up an api handler wired to an httptest policy (decisions
+// always requires_approval; resolve scripted by stub), seeds a flagged resource,
+// and creates a parked 'pending_approval' session — returning the handler + id.
+func parkedHarness(t *testing.T, stub *policyStub) (http.Handler, string) {
+	t.Helper()
+	pol := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/decisions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"decision":"requires_approval"}`))
+		case strings.HasSuffix(r.URL.Path, "/resolve"):
+			stub.gotResolvePath = r.URL.Path
+			stub.gotResolveAuth = r.Header.Get("Authorization")
+			_ = json.NewDecoder(r.Body).Decode(&stub.gotResolveBody)
+			code := stub.resolveCode
+			if code == 0 {
+				code = http.StatusOK
+			}
+			w.WriteHeader(code)
+			if stub.resolveBody != "" {
+				_, _ = w.Write([]byte(stub.resolveBody))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(pol.Close)
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	h := New(newFake(), nil, signer, allowAll{}, "", pol.URL)
+	resID := seedFlaggedResource(t, h)
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("park: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+	var created session.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("park: bad body %s", rec.Body)
+	}
+	if created.Status != session.StatusPendingApproval {
+		t.Fatalf("park: status %q, want pending_approval", created.Status)
+	}
+	return h, created.ID
+}
+
+func getSession(t *testing.T, h http.Handler, id string) session.Session {
+	t.Helper()
+	rec := req(t, h, http.MethodGet, "/v1/sessions/"+id, "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get session %s: %d", id, rec.Code)
+	}
+	var s session.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatalf("get session: bad body %s", rec.Body)
+	}
+	return s
+}
+
+// TestResolveApproveFlipsToPending — approve resolves the policy approval (granted,
+// attributed to the operator) and flips the session pending_approval → pending.
+func TestResolveApproveFlipsToPending(t *testing.T) {
+	stub := &policyStub{resolveBody: `{"status":"granted","reason":"operator"}`}
+	h, id := parkedHarness(t, stub)
+
+	rec := req(t, h, http.MethodPost, "/v1/sessions/"+id+"/resolve", `{"decision":"approve"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	var s session.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatalf("approve: bad body %s", rec.Body)
+	}
+	if s.Status != session.StatusPending {
+		t.Fatalf("approve: status %q, want pending", s.Status)
+	}
+	if stub.gotResolvePath != "/v1/approvals/"+id+"/resolve" {
+		t.Fatalf("resolve path = %q", stub.gotResolvePath)
+	}
+	if stub.gotResolveBody["decision"] != "granted" || stub.gotResolveBody["resolved_by"] != "operator" {
+		t.Fatalf("resolve body = %+v", stub.gotResolveBody)
+	}
+	if !strings.HasPrefix(stub.gotResolveAuth, "Bearer ") {
+		t.Fatalf("policy resolve did not get a service token: %q", stub.gotResolveAuth)
+	}
+}
+
+// TestResolveDenyClosesSession — deny resolves (denied) and closes the session
+// with reason approval_denied.
+func TestResolveDenyClosesSession(t *testing.T) {
+	stub := &policyStub{resolveBody: `{"status":"denied","reason":"operator"}`}
+	h, id := parkedHarness(t, stub)
+
+	rec := req(t, h, http.MethodPost, "/v1/sessions/"+id+"/resolve", `{"decision":"deny"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deny: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	var s session.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatalf("deny: bad body %s", rec.Body)
+	}
+	if s.Status != session.StatusClosed || s.ClosedReason != session.ReasonApprovalDenied {
+		t.Fatalf("deny: %+v, want closed/approval_denied", s)
+	}
+	if stub.gotResolveBody["decision"] != "denied" {
+		t.Fatalf("resolve body = %+v", stub.gotResolveBody)
+	}
+}
+
+// TestResolveExpiredReconciles — policy reports no pending approval (409, the
+// approval timed out); api reconciles the parked session to closed/approval_timeout
+// and answers 409.
+func TestResolveExpiredReconciles(t *testing.T) {
+	stub := &policyStub{resolveCode: http.StatusConflict}
+	h, id := parkedHarness(t, stub)
+
+	rec := req(t, h, http.MethodPost, "/v1/sessions/"+id+"/resolve", `{"decision":"approve"}`, true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expired: want 409, got %d: %s", rec.Code, rec.Body)
+	}
+	if s := getSession(t, h, id); s.Status != session.StatusClosed || s.ClosedReason != session.ReasonApprovalTimeout {
+		t.Fatalf("expired: session %+v, want closed/approval_timeout", s)
+	}
+}
+
+// TestResolveDoubleApproveConflicts — a second approve sees the session no longer
+// pending_approval and answers 409 (idempotency / not-awaiting-approval).
+func TestResolveDoubleApproveConflicts(t *testing.T) {
+	stub := &policyStub{resolveBody: `{"status":"granted","reason":"operator"}`}
+	h, id := parkedHarness(t, stub)
+
+	if rec := req(t, h, http.MethodPost, "/v1/sessions/"+id+"/resolve", `{"decision":"approve"}`, true); rec.Code != http.StatusOK {
+		t.Fatalf("first approve: want 200, got %d", rec.Code)
+	}
+	if rec := req(t, h, http.MethodPost, "/v1/sessions/"+id+"/resolve", `{"decision":"approve"}`, true); rec.Code != http.StatusConflict {
+		t.Fatalf("second approve: want 409, got %d", rec.Code)
+	}
+}
+
+// TestResolveUnknownSession — resolving an absent/not-owned session is 404.
+func TestResolveUnknownSession(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
+	rec := req(t, h, http.MethodPost, "/v1/sessions/nope/resolve", `{"decision":"approve"}`, true)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown session: want 404, got %d", rec.Code)
+	}
+}
+
+// TestResolveNoPolicyConfigured — a parked session with no decision point
+// configured cannot be resolved: 503, the session stays parked.
+func TestResolveNoPolicyConfigured(t *testing.T) {
+	f := newFake()
+	res, _ := f.Create(context.Background(), resource.Input{Type: "ssh", Name: "x", Labels: map[string]string{"requires_approval": "true"}})
+	parked, _ := f.ParkForApproval(context.Background(), "operator", session.CreateInput{ResourceID: res.ID, Mode: session.DefaultMode})
+	h := New(f, nil, nil, allowAll{}, "", "") // policyURL ""
+
+	rec := req(t, h, http.MethodPost, "/v1/sessions/"+parked.ID+"/resolve", `{"decision":"approve"}`, true)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no policy: want 503, got %d: %s", rec.Code, rec.Body)
+	}
+	if got := f.sessByID[parked.ID]; got.Status != session.StatusPendingApproval {
+		t.Fatalf("no policy: session must stay parked, got %q", got.Status)
+	}
+}
+
+// TestResolveCSRFRequired — the resolve route is a cookie-path mutation, so it
+// requires a matching X-CSRF-Token (rejected in the gate before the handler).
+func TestResolveCSRFRequired(t *testing.T) {
+	h, _, _ := loginHandler(t)
+	loginRec := req(t, h, http.MethodPost, "/v1/auth/login", `{"username":"admin","password":"hunter2"}`, false)
+	sessionCk := findCookie(t, loginRec, sessionCookieName)
+	if sessionCk == nil {
+		t.Fatal("setup: no session cookie")
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/sessions/x/resolve", strings.NewReader(`{"decision":"approve"}`))
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionCk.Value})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("resolve without csrf: want 403, got %d", rec.Code)
+	}
 }

@@ -79,21 +79,24 @@ type Store interface {
 	ListSessions(ctx context.Context, operatorID, after string, limit int) ([]session.Session, string, error)
 	EndSession(ctx context.Context, operatorID, id string) (session.Session, error)
 
-	// ParkForApproval inserts a session in 'pending_approval' and MarkClosed
-	// fail-closes a parked session (ADR-0054 / T-031b).
+	// ParkForApproval inserts a session in 'pending_approval'; ApproveSession flips
+	// it to 'pending' on approval; MarkClosed fail-closes / denies a parked session
+	// (ADR-0054 / T-031b).
 	ParkForApproval(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error)
+	ApproveSession(ctx context.Context, operatorID, id string) (session.Session, error)
 	MarkClosed(ctx context.Context, operatorID, id, reason string) (session.Session, error)
 
 	// RecordEvent enqueues an audit evidence row into api's outbox (T-022 / SEC-9).
 	RecordEvent(ctx context.Context, e outbox.Event) error
 }
 
-// policyDecider is the slice of *policy.Client the create handler needs: at
-// session-create against a requires_approval resource, api consults policy-service
-// (ADR-0054 §5). A nil decider means no decision point is configured — a
-// requires_approval resource then fails closed.
+// policyDecider is the slice of *policy.Client the session handlers need: api
+// consults policy-service at session-create (Decide) and on the operator's
+// approve/deny (Resolve) (ADR-0054 §5). A nil decider means no decision point is
+// configured — a requires_approval resource then fails closed.
 type policyDecider interface {
 	Decide(ctx context.Context, in policy.DecideInput) (policy.Decision, error)
+	Resolve(ctx context.Context, sessionID, decision, resolvedBy string) (policy.ResolveResult, error)
 }
 
 // Authenticator verifies operator credentials (services/api/internal/account).
@@ -677,6 +680,93 @@ func (a *apiHandlers) EndSession(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
+}
+
+// ResolveSession (POST /v1/sessions/{id}/resolve) records the operator's approve/
+// deny on a session parked 'pending_approval' (ADR-0054; same-operator self-
+// approval at v0.2.0). api consults policy-service (the decision authority) and
+// then transitions its own session: approve → 'pending' (the broker may attach);
+// deny → 'closed'/approval_denied. If policy reports no still-pending approval
+// (already resolved or expired) api reconciles to 'closed'/approval_timeout (409);
+// a policy outage leaves the session parked (502/503) so it never proceeds without
+// an explicit approval. The approval itself is audit-chained by policy-service.
+func (a *apiHandlers) ResolveSession(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var body struct {
+		Decision string `json:"decision"`
+	}
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
+		return
+	}
+	if body.Decision != "approve" && body.Decision != "deny" {
+		writeError(w, http.StatusBadRequest, "bad_request", "decision must be approve or deny")
+		return
+	}
+
+	sess, err := a.store.GetSession(r.Context(), operator, id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "session not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "resolve session failed")
+		return
+	}
+	if sess.Status != session.StatusPendingApproval {
+		writeError(w, http.StatusConflict, "conflict", "session is not awaiting approval")
+		return
+	}
+	if a.policy == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the policy decision point is not configured")
+		return
+	}
+
+	// Map the operator verb to the policy decision and resolve via the authority.
+	polDecision := "granted"
+	if body.Decision == "deny" {
+		polDecision = "denied"
+	}
+	if _, rerr := a.policy.Resolve(r.Context(), id, polDecision, operator); rerr != nil {
+		if errors.Is(rerr, policy.ErrNotPending) {
+			// The approval expired (policy auto-denied) before the operator acted —
+			// reconcile the parked session to closed and report the conflict.
+			if closed, cerr := a.store.MarkClosed(r.Context(), operator, id, session.ReasonApprovalTimeout); cerr == nil {
+				_ = closed
+			}
+			writeError(w, http.StatusConflict, "conflict", "approval expired")
+			return
+		}
+		// Policy outage — leave the session parked so the operator can retry.
+		writeError(w, http.StatusBadGateway, "bad_gateway", "policy decision point unavailable")
+		return
+	}
+
+	if body.Decision == "approve" {
+		approved, err := a.store.ApproveSession(r.Context(), operator, id)
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusConflict, "conflict", "session is not awaiting approval")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "resolve session failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, approved)
+		return
+	}
+	denied, err := a.store.MarkClosed(r.Context(), operator, id, session.ReasonApprovalDenied)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "resolve session failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, denied)
 }
 
 // ListAuditEvents (GET /v1/audit/events) is the operator audit-timeline read-proxy

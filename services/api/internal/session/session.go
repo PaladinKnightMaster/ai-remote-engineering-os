@@ -43,6 +43,11 @@ const (
 const (
 	ReasonOperator          = "operator"
 	ReasonPolicyUnavailable = "policy_unavailable"
+	// ReasonApprovalDenied / ReasonApprovalTimeout close a parked session when the
+	// operator denies it, or when the policy approval expired before resolution
+	// (T-031b-ii reconcile).
+	ReasonApprovalDenied  = "approval_denied"
+	ReasonApprovalTimeout = "approval_timeout"
 )
 
 // Session is the stored, server-completed cockpit session. endedAt/closedReason/

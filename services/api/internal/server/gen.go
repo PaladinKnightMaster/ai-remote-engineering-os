@@ -51,6 +51,8 @@ const (
 
 // Defines values for SessionClosedReason.
 const (
+	ApprovalDenied    SessionClosedReason = "approval_denied"
+	ApprovalTimeout   SessionClosedReason = "approval_timeout"
 	BrokerCrash       SessionClosedReason = "broker_crash"
 	Idle              SessionClosedReason = "idle"
 	Operator          SessionClosedReason = "operator"
@@ -75,6 +77,12 @@ const (
 // Defines values for SessionCreateMode.
 const (
 	SessionCreateModeTerminal SessionCreateMode = "terminal"
+)
+
+// Defines values for SessionResolveDecision.
+const (
+	Approve SessionResolveDecision = "approve"
+	Deny    SessionResolveDecision = "deny"
 )
 
 // AuditEvent defines model for AuditEvent.
@@ -186,6 +194,14 @@ type SessionCreate struct {
 // SessionCreateMode defines model for SessionCreate.Mode.
 type SessionCreateMode string
 
+// SessionResolve defines model for SessionResolve.
+type SessionResolve struct {
+	Decision SessionResolveDecision `json:"decision"`
+}
+
+// SessionResolveDecision defines model for SessionResolve.Decision.
+type SessionResolveDecision string
+
 // CursorParam defines model for CursorParam.
 type CursorParam = string
 
@@ -234,6 +250,9 @@ type UpdateResourceJSONRequestBody = ResourceInput
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = SessionCreate
 
+// ResolveSessionJSONRequestBody defines body for ResolveSession for application/json ContentType.
+type ResolveSessionJSONRequestBody = SessionResolve
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// Operator audit timeline — a page of chained events (via the api read-proxy)
@@ -275,6 +294,9 @@ type ServerInterface interface {
 	// End a session (control-plane intent; the broker tears down and emits session.close)
 	// (POST /v1/sessions/{id}/end)
 	EndSession(w http.ResponseWriter, r *http.Request, id string)
+	// Approve or deny a session parked pending approval (ADR-0054; same-operator self-approval at v0.2.0)
+	// (POST /v1/sessions/{id}/resolve)
+	ResolveSession(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -356,6 +378,12 @@ func (_ Unimplemented) GetSession(w http.ResponseWriter, r *http.Request, id str
 // End a session (control-plane intent; the broker tears down and emits session.close)
 // (POST /v1/sessions/{id}/end)
 func (_ Unimplemented) EndSession(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Approve or deny a session parked pending approval (ADR-0054; same-operator self-approval at v0.2.0)
+// (POST /v1/sessions/{id}/resolve)
+func (_ Unimplemented) ResolveSession(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -734,6 +762,37 @@ func (siw *ServerInterfaceWrapper) EndSession(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ResolveSession operation middleware
+func (siw *ServerInterfaceWrapper) ResolveSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveSession(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -885,6 +944,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/sessions/{id}/end", wrapper.EndSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/sessions/{id}/resolve", wrapper.ResolveSession)
 	})
 
 	return r

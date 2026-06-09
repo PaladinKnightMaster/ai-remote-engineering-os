@@ -60,6 +60,23 @@ func (s *Store) insertSession(ctx context.Context, operatorID string, in session
 	return sess, nil
 }
 
+// ApproveSession flips a parked session (owned by operatorID) from
+// 'pending_approval' to 'pending' so the broker may attach (ADR-0054 / T-031b-ii).
+// The `status='pending_approval'` guard makes it a no-op on an already-resolved
+// session — ErrNotFound then, which the handler maps to 409.
+func (s *Store) ApproveSession(ctx context.Context, operatorID, id string) (session.Session, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE sessions
+		   SET status = 'pending'
+		 WHERE id=$1 AND operator_id=$2 AND status='pending_approval'
+		RETURNING `+sessionColList, id, operatorID)
+	sess, err := scanSession(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return session.Session{}, ErrNotFound
+	}
+	return sess, err
+}
+
 // MarkClosed force-closes a session owned by operatorID with an EXPLICIT reason
 // (unlike EndSession, which COALESCEs to 'operator'). T-031b uses it to fail-close
 // a parked session when the policy decision point is unreachable at create.

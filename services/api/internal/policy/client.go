@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,11 @@ const (
 	DecisionAllow            = "allow"
 	DecisionRequiresApproval = "requires_approval"
 )
+
+// ErrNotPending maps policy-service's 409 on resolve — the session has no
+// still-pending approval (already resolved, or the approval expired/timed out).
+// The api enforcement handler reconciles this to a closed session.
+var ErrNotPending = errors.New("policy: no pending approval for session")
 
 // DecideInput is the decide request the enforcing service supplies.
 type DecideInput struct {
@@ -114,6 +120,63 @@ func (c *Client) Decide(ctx context.Context, in DecideInput) (Decision, error) {
 		return Decision{}, fmt.Errorf("decode decision: %w", err)
 	}
 	return d, nil
+}
+
+// ResolveResult is policy-service's resolve response.
+type ResolveResult struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+type resolveRequest struct {
+	Decision   string `json:"decision"` // granted | denied
+	ResolvedBy string `json:"resolved_by"`
+}
+
+// Resolve records the operator's approve/deny on a parked session via
+// policy-service's POST /v1/approvals/{sessionID}/resolve. decision is the policy
+// vocabulary (granted|denied). A 409 (no still-pending approval — already resolved
+// or timed out) surfaces as ErrNotPending; any other non-200 is an error.
+func (c *Client) Resolve(ctx context.Context, sessionID, decision, resolvedBy string) (ResolveResult, error) {
+	if c.BaseURL == "" {
+		return ResolveResult{}, fmt.Errorf("policy URL not configured")
+	}
+	body, err := json.Marshal(resolveRequest{Decision: decision, ResolvedBy: resolvedBy})
+	if err != nil {
+		return ResolveResult{}, fmt.Errorf("marshal resolve request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.BaseURL+"/v1/approvals/"+sessionID+"/resolve", bytes.NewReader(body))
+	if err != nil {
+		return ResolveResult{}, fmt.Errorf("build resolve request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.Token != nil {
+		tok, err := c.Token(ctx)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("mint policy token: %w", err)
+		}
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return ResolveResult{}, fmt.Errorf("resolve request: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var rr ResolveResult
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rr); err != nil {
+			return ResolveResult{}, fmt.Errorf("decode resolve result: %w", err)
+		}
+		return rr, nil
+	case http.StatusConflict:
+		return ResolveResult{}, ErrNotPending
+	default:
+		return ResolveResult{}, fmt.Errorf("policy resolve: unexpected status %d", resp.StatusCode)
+	}
 }
 
 func (c *Client) httpClient() *http.Client {
