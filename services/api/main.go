@@ -24,6 +24,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -99,6 +100,12 @@ func serve(dsn string) error {
 		}()
 	}
 
+	// Start the stuck-session reaper (T-032): the same in-process goroutine shape
+	// as the relay. It closes sessions stranded pre-open — a 'pending' that no
+	// broker attached to, or a 'pending_approval' whose approval was never resolved
+	// (policy auto-denies but cannot write the api session row).
+	go runReaper(context.Background(), store.New(pool))
+
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
 		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL"), os.Getenv("POLICY_URL")),
@@ -142,6 +149,50 @@ type devAllowAll struct{}
 
 func (devAllowAll) Verify(_ context.Context, _ string) (mw.Capability, error) {
 	return mw.Capability{Subject: "dev", Edge: "human-agent"}, nil
+}
+
+// Stuck-session reaper defaults (T-032). A 'pending' session is reaped after it
+// has sat unattached for pendingTTL; a 'pending_approval' after approvalTTL, which
+// MUST exceed the ~120s policy approval timeout so the operator/policy resolves
+// first. Active sessions are never reaped (left to the broker's idle timer).
+const (
+	defaultReapPendingTTL  = 30 * time.Minute
+	defaultReapApprovalTTL = 5 * time.Minute
+	reaperTick             = 2 * time.Minute
+)
+
+// runReaper periodically closes stuck pre-open sessions (T-032). Best-effort: an
+// error logs and the loop continues — a stalled reaper surfaces as lingering
+// pending rows, not a failed serve. Runs for the life of the process.
+func runReaper(ctx context.Context, st *store.Store) {
+	pendingTTL := reapDuration("API_REAP_PENDING_MINUTES", defaultReapPendingTTL)
+	approvalTTL := reapDuration("API_REAP_APPROVAL_MINUTES", defaultReapApprovalTTL)
+	t := time.NewTicker(reaperTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			now := time.Now()
+			if n, err := st.ReapStale(ctx, now.Add(-pendingTTL), now.Add(-approvalTTL)); err != nil {
+				log.Printf("session reaper: %v", err)
+			} else if n > 0 {
+				log.Printf("session reaper: closed %d stuck session(s)", n)
+			}
+		}
+	}
+}
+
+// reapDuration reads a positive-integer minutes override from env, else the default.
+func reapDuration(env string, def time.Duration) time.Duration {
+	if s := os.Getenv(env); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Minute
+		}
+		log.Printf("ignoring invalid %s=%q", env, s)
+	}
+	return def
 }
 
 // runOutbox handles `api outbox relay` — the operator-run foreground relay, the

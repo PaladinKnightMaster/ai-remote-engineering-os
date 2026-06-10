@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -94,6 +95,32 @@ func (s *Store) MarkClosed(ctx context.Context, operatorID, id, reason string) (
 		return session.Session{}, ErrNotFound
 	}
 	return sess, err
+}
+
+// ReapStale closes sessions stranded in a PRE-OPEN state past their cutoff
+// (T-032, the reaper ADR-0049 anticipated): a 'pending' session no broker ever
+// attached to, or a 'pending_approval' session whose approval was never resolved
+// (policy-service auto-denies the approval but cannot write this api session row).
+// It is a status-only janitor — these sessions never opened, so NO session.close
+// is emitted (the broker owns that for connected sessions; the denial is already
+// audit-chained by policy-service). Reuses the existing closed_reason values
+// (pending → ttl, pending_approval → approval_timeout). Idempotent: a reaped row
+// is 'closed', so it falls out of the next sweep. ACTIVE sessions are never
+// touched — a live one is indistinguishable from a broker-crashed one without a
+// heartbeat (that audit-close is deferred to v0.3.0). Returns the number reaped.
+func (s *Store) ReapStale(ctx context.Context, pendingCutoff, approvalCutoff time.Time) (int64, error) {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE sessions
+		   SET status        = 'closed',
+		       ended_at      = now(),
+		       closed_reason = CASE WHEN status = 'pending_approval' THEN 'approval_timeout' ELSE 'ttl' END
+		 WHERE (status = 'pending'          AND started_at < $1)
+		    OR (status = 'pending_approval' AND started_at < $2)`,
+		pendingCutoff, approvalCutoff)
+	if err != nil {
+		return 0, fmt.Errorf("reap stale sessions: %w", err)
+	}
+	return ct.RowsAffected(), nil
 }
 
 // GetSession returns one session owned by operatorID, or ErrNotFound. The

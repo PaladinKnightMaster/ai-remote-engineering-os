@@ -12,6 +12,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -157,5 +158,80 @@ func TestSessionCRUDRoundTrip(t *testing.T) {
 	// Cross-operator end is a no-op → ErrNotFound.
 	if _, err := s.EndSession(ctx, opB, created.ID); err != ErrNotFound {
 		t.Fatalf("cross-operator end: want ErrNotFound, got %v", err)
+	}
+}
+
+// TestReapStale — the stuck-session reaper (T-032). A stale 'pending' and a stale
+// 'pending_approval' session (past their cutoffs) are closed with ttl /
+// approval_timeout; a fresh pending session and an OLD active session are left
+// untouched (active is never reaped); a second sweep is a no-op.
+func TestReapStale(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "reap-target"})
+	if err != nil {
+		t.Fatalf("seed resource: %v", err)
+	}
+	const op = "operator:reap"
+	in := session.CreateInput{ResourceID: res.ID, Mode: "terminal"}
+
+	backdate := func(id string, age time.Duration) {
+		t.Helper()
+		if _, err := s.pool.Exec(ctx, `UPDATE sessions SET started_at = $2 WHERE id = $1`, id, time.Now().Add(-age)); err != nil {
+			t.Fatalf("backdate %s: %v", id, err)
+		}
+	}
+
+	stalePending, err := s.CreateSession(ctx, op, in)
+	if err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+	backdate(stalePending.ID, time.Hour)
+
+	staleApproval, err := s.ParkForApproval(ctx, op, in)
+	if err != nil {
+		t.Fatalf("seed pending_approval: %v", err)
+	}
+	backdate(staleApproval.ID, 10*time.Minute)
+
+	freshPending, err := s.CreateSession(ctx, op, in)
+	if err != nil {
+		t.Fatalf("seed fresh: %v", err)
+	}
+
+	activeSess, err := s.CreateSession(ctx, op, in)
+	if err != nil {
+		t.Fatalf("seed active: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE sessions SET status='active', started_at=$2 WHERE id=$1`, activeSess.ID, time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	n, err := s.ReapStale(ctx, time.Now().Add(-30*time.Minute), time.Now().Add(-5*time.Minute))
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("reaped %d, want 2", n)
+	}
+
+	assertSession := func(id, wantStatus, wantReason string) {
+		t.Helper()
+		got, err := s.GetSession(ctx, op, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if got.Status != wantStatus || got.ClosedReason != wantReason {
+			t.Fatalf("session %s: status=%q reason=%q, want %q/%q", id, got.Status, got.ClosedReason, wantStatus, wantReason)
+		}
+	}
+	assertSession(stalePending.ID, session.StatusClosed, "ttl")
+	assertSession(staleApproval.ID, session.StatusClosed, session.ReasonApprovalTimeout)
+	assertSession(freshPending.ID, session.StatusPending, "")
+	assertSession(activeSess.ID, session.StatusActive, "")
+
+	if again, _ := s.ReapStale(ctx, time.Now().Add(-30*time.Minute), time.Now().Add(-5*time.Minute)); again != 0 {
+		t.Fatalf("second sweep reaped %d, want 0", again)
 	}
 }
