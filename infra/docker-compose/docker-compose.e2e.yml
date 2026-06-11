@@ -75,12 +75,16 @@ services:
         go run ./services/audit-service migrate up
         go run ./services/session-broker migrate up
         go run ./services/connector-service migrate up
+        go run ./services/policy-service migrate up
         go run ./tests/e2e/cmd/seed
-        # Provision the credential into connector custody via the real CLI (T-030b):
-        # the broker leases it from connector at connect; nothing is stored in
-        # resources.connection_secret. RID matches tests/e2e/cmd/seed + harness_test.go.
+        # Provision the credentials into connector custody via the real CLI (T-030b):
+        # the broker leases them from connector at connect; nothing is stored in
+        # resources.connection_secret. RIDs match tests/e2e/cmd/seed + harness_test.go;
+        # the second resource is the requires_approval-flagged WD-2 target (T-033a).
         go run ./services/connector-service credentials set-secret \
           01900000-0000-7000-8000-0000000000e2 --key-file /seed-keys/client_ed25519
+        go run ./services/connector-service credentials set-secret \
+          01900000-0000-7000-8000-0000000000a2 --key-file /seed-keys/client_ed25519
 
   audit:
     <<: *go
@@ -105,6 +109,9 @@ services:
       API_ADDR: ":8080"
       # api's outbox relay delivers auth/control-plane events (T-022 / SEC-9).
       AIREOS_AUDIT_URL: http://audit:8081
+      # api consults policy-service at session-create for requires_approval
+      # resources and resolves operator approve/deny through it (ADR-0054, T-033a).
+      POLICY_URL: http://policy:8084
       AIREOS_BOOTSTRAP_OPERATOR_USER: admin
       AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH: "$$argon2id$$v=19$$m=65536,t=3,p=2$$c/1DjrxaiJU6wokhTzZpkQ$$Eb0SglfJ9v7PEDlVTyM48Sqeroyu3OFN5+7rl9wYdgI"
     command: ["bash", "-c", "go run ./services/api serve"]
@@ -146,6 +153,22 @@ services:
       - casts:/var/lib/aireos/sessions
     command: ["bash", "-c", "go run ./services/session-broker serve"]
 
+  # policy-service: the approval/policy decision point (ADR-0054, T-033a). api
+  # Decides at session-create for requires_approval resources and Resolves the
+  # operator's approve/deny through it (both INTERNAL service-service RPCs, real
+  # PASETO audience policy-service); its in-process outbox relay delivers
+  # policy.decision / approval.* to audit — the WD-2 chain events.
+  policy:
+    <<: *go
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *cluster-env
+      POLICY_ADDR: ":8084"
+      AIREOS_AUDIT_URL: http://audit:8081
+    command: ["bash", "-c", "go run ./services/policy-service serve"]
+
   sshd:
     build:
       context: ./e2e
@@ -167,6 +190,7 @@ services:
       - api
       - broker
       - connector
+      - policy
       - audit
       - sshd
     environment:

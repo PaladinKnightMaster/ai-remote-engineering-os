@@ -30,10 +30,12 @@ import (
 	"aireos.local/packages/go/auth"
 )
 
-// Must match tests/e2e/cmd/seed/main.go (resourceID) and the harness env
-// (operator credentials). sessionCookieName mirrors packages/go/middleware.SessionCookieName.
+// Must match tests/e2e/cmd/seed/main.go (resourceID / flaggedResourceID) and the
+// harness env (operator credentials). sessionCookieName mirrors
+// packages/go/middleware.SessionCookieName.
 const (
 	resourceID        = "01900000-0000-7000-8000-0000000000e2"
+	flaggedResourceID = "01900000-0000-7000-8000-0000000000a2" // requires_approval=true (T-033a / WD-2)
 	operatorUser      = "admin"
 	operatorPass      = "e2e-operator-pw"
 	sessionCookieName = "aireos_session"
@@ -88,7 +90,16 @@ func cookieHeader(session, csrf string) string {
 
 func createSession(t *testing.T, client *http.Client, apiURL, session, csrf string) string {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"resourceId": resourceID})
+	return createSessionFor(t, client, apiURL, session, csrf, resourceID, "pending")
+}
+
+// createSessionFor creates a session against an arbitrary resource and asserts
+// the create-time status: "pending" for a normal resource, "pending_approval"
+// for a requires_approval-flagged one (ADR-0054 — api parks the session and
+// consults policy before any broker attach is possible).
+func createSessionFor(t *testing.T, client *http.Client, apiURL, session, csrf, resID, wantStatus string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"resourceId": resID})
 	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", cookieHeader(session, csrf))
@@ -108,10 +119,58 @@ func createSession(t *testing.T, client *http.Client, apiURL, session, csrf stri
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
 		t.Fatalf("decode session: %v", err)
 	}
-	if s.ID == "" || s.Status != "pending" {
-		t.Fatalf("unexpected session: %+v", s)
+	if s.ID == "" || s.Status != wantStatus {
+		t.Fatalf("unexpected session (want status %q): %+v", wantStatus, s)
 	}
 	return s.ID
+}
+
+// resolveSession drives the operator approve/deny on a parked session
+// (POST /v1/sessions/{id}/resolve, T-031b-ii — human-agent + CSRF gated) and
+// returns the session status api answered with: approve → "pending" (the broker
+// may now attach), deny → "closed" (reason approval_denied, status-only — the
+// audit event comes from policy-service's outbox, not api).
+func resolveSession(t *testing.T, client *http.Client, apiURL, id, session, csrf, decision string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"decision": decision})
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/sessions/"+id+"/resolve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("resolve session (%s): %v", decision, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resolve session (%s): status %d", decision, resp.StatusCode)
+	}
+	var s struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		t.Fatalf("decode resolved session: %v", err)
+	}
+	return s.Status
+}
+
+// pollEvidenceOutcome waits for an event anchored to the given evidencePacketId
+// with the given outcome — how the policy decision + approval events are found
+// (they target resource:<id> but anchor evidence to session:<id>, ADR-0054 §3).
+func pollEvidenceOutcome(t *testing.T, auditURL, token, evidence, outcome string, within time.Duration) auditEvent {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		for _, e := range listAllEvents(t, auditURL, token) {
+			if e.EvidencePacketID == evidence && e.Outcome == outcome {
+				return e
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("event %q with evidence %q never reached the chain within %s", outcome, evidence, within)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func endSession(t *testing.T, client *http.Client, apiURL, id, session, csrf string) {

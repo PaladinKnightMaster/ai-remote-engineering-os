@@ -28,10 +28,16 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// resourceID MUST match the constant in tests/e2e/e2e_test.go — the walkthrough
-// creates a session against this resource. Kept in sync by comment (not a shared
-// symbol) to keep the harness within its file budget.
-const resourceID = "01900000-0000-7000-8000-0000000000e2"
+// resourceID / flaggedResourceID MUST match the constants in
+// tests/e2e/harness_test.go — the walkthroughs create sessions against these
+// resources. Kept in sync by comment (not a shared symbol) to keep the harness
+// within its file budget. The flagged resource (requires_approval=true,
+// T-033a / WD-2) points at the SAME sshd target with the same credential: only
+// the approval gate differs, so the approval round-trip is the only variable.
+const (
+	resourceID        = "01900000-0000-7000-8000-0000000000e2"
+	flaggedResourceID = "01900000-0000-7000-8000-0000000000a2"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -98,14 +104,17 @@ func run() error {
 		return nil
 	}
 
-	labels, _ := json.Marshal(map[string]string{
+	coords := map[string]string{
 		"ssh_host":     "sshd",
 		"ssh_port":     "2222",
 		"ssh_user":     "aireos",
 		"ssh_host_key": hostAuthLine,
-	})
+	}
+	labels, _ := json.Marshal(coords)
+	coords["requires_approval"] = "true" // the WD-2 approval trigger (ADR-0054)
+	flaggedLabels, _ := json.Marshal(coords)
 
-	// Insert the resource row with coordinates ONLY (T-030b): the credential lives
+	// Insert the resource rows with coordinates ONLY (T-030b): the credentials live
 	// in connector custody, provisioned by `connector credentials set-secret` in
 	// the compose command after this binary. connection_secret is left NULL — the
 	// broker reads coords from labels and leases the key from connector at connect.
@@ -114,14 +123,20 @@ func run() error {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO resources (id, type, name, labels)
-		VALUES ($1, 'ssh', 'e2e-target', $2::jsonb)
-		ON CONFLICT (id) DO UPDATE SET labels = EXCLUDED.labels`,
-		resourceID, string(labels)); err != nil {
-		return fmt.Errorf("seed resource: %w", err)
+	for _, r := range []struct{ id, name, labels string }{
+		{resourceID, "e2e-target", string(labels)},
+		{flaggedResourceID, "e2e-target-gated", string(flaggedLabels)},
+	} {
+		if _, err := pool.Exec(context.Background(), `
+			INSERT INTO resources (id, type, name, labels)
+			VALUES ($1, 'ssh', $2, $3::jsonb)
+			ON CONFLICT (id) DO UPDATE SET labels = EXCLUDED.labels`,
+			r.id, r.name, r.labels); err != nil {
+			return fmt.Errorf("seed resource %s: %w", r.name, err)
+		}
 	}
-	log.Printf("seed: provisioned ssh resource %s (labels only) + sshd keys in %s", resourceID, keyDir)
+	log.Printf("seed: provisioned ssh resources %s + %s (labels only; gated=requires_approval) + sshd keys in %s",
+		resourceID, flaggedResourceID, keyDir)
 	return nil
 }
 
