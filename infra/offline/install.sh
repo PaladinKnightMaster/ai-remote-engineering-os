@@ -54,13 +54,21 @@ install -m 644 "$BUNDLE_DIR/config/Caddyfile" "$ETC/Caddyfile"
 install -m 644 "$BUNDLE_DIR"/config/*.service /etc/systemd/system/
 
 # --- 3. cluster keys (idempotent: reuse existing) ---------------------------
+# The resource key lives in connector.env since v0.2.0 (OI-6/ADR-0053: only
+# connector-service may read it). A v0.1.0 aireos.env still carrying the key is
+# the documented upgrade source — read it as the fallback, then relocate.
+CONNECTOR_ENV="$ETC/connector.env"
 if [ -f "$ENV_FILE" ]; then
   log "existing $ENV_FILE found — preserving cluster keys (idempotent re-run)"
-  # Only source the two key lines (no shell metachars); never the hash/url lines.
+  # Only source the key lines (no shell metachars); never the hash/url lines.
   eval "$(grep -E '^(AIREOS_PASETO_KEY|AIREOS_RESOURCE_SECRET_KEY)=' "$ENV_FILE" | sed 's/^/export /')"
 fi
+if [ -f "$CONNECTOR_ENV" ]; then
+  # v0.2.0 layout — the connector-owned key wins over any legacy aireos.env line.
+  eval "$(grep -E '^AIREOS_RESOURCE_SECRET_KEY=' "$CONNECTOR_ENV" | sed 's/^/export /')"
+fi
 PASETO_KEY="${AIREOS_PASETO_KEY:-$("$PREFIX/bin/authctl" genkey)}"
-RESOURCE_KEY="${AIREOS_RESOURCE_SECRET_KEY:-$("$PREFIX/bin/api" resources genkey)}"
+RESOURCE_KEY="${AIREOS_RESOURCE_SECRET_KEY:-$("$PREFIX/bin/connector-service" credentials genkey)}"
 [ -n "$PASETO_KEY" ] && [ -n "$RESOURCE_KEY" ] || die "key generation failed"
 [ "$PASETO_KEY" != "$RESOURCE_KEY" ] || die "key separation failed (PASETO == resource; ADR-0048 §7)"
 
@@ -80,12 +88,14 @@ DB_URL="${AIREOS_DB_URL:-}"
 [ -n "$DB_URL" ] || read -r -p "Postgres URL (postgres://user:pass@host:5432/cockpit?sslmode=disable): " DB_URL
 [ -n "$DB_URL" ] || die "postgres connection URL required — install postgres 16 + pgcrypto first (see the offline postgres guide)"
 
-# --- 6. write the env file (0600, owned by the service user) ----------------
+# --- 6. write the env files (0600, owned by the service user) ---------------
+# aireos.env = shared config for every unit. The resource key is NOT here: it
+# lives in connector.env, referenced only by aireos-connector.service (SEC-13 —
+# a v0.1.0 aireos.env carrying the key is rewritten without it on upgrade).
 log "write $ENV_FILE"
 ( umask 077; cat > "$ENV_FILE" <<EOF
 DATABASE_URL=$DB_URL
 AIREOS_PASETO_KEY=$PASETO_KEY
-AIREOS_RESOURCE_SECRET_KEY=$RESOURCE_KEY
 AIREOS_CAST_DIR=$STATE/sessions
 AIREOS_AUDIT_URL=http://127.0.0.1:8081
 AIREOS_SITE_ADDRESS=${AIREOS_SITE_ADDRESS:-localhost}
@@ -94,14 +104,24 @@ AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH=$OP_HASH
 API_ADDR=127.0.0.1:8080
 AUDIT_ADDR=127.0.0.1:8081
 BROKER_ADDR=127.0.0.1:8082
+CONNECTOR_ADDR=127.0.0.1:8083
+POLICY_ADDR=127.0.0.1:8084
+CONNECTOR_URL=http://127.0.0.1:8083
+POLICY_URL=http://127.0.0.1:8084
 EOF
 )
 chown "$SVC_USER:$SVC_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+log "write $CONNECTOR_ENV (sole holder of AIREOS_RESOURCE_SECRET_KEY)"
+( umask 077; cat > "$CONNECTOR_ENV" <<EOF
+AIREOS_RESOURCE_SECRET_KEY=$RESOURCE_KEY
+EOF
+)
+chown "$SVC_USER:$SVC_USER" "$CONNECTOR_ENV"; chmod 600 "$CONNECTOR_ENV"
 
-# --- 7. validate DB + run migrations (api/audit/broker share one DB) --------
+# --- 7. validate DB + run migrations (all five services share one DB) -------
 log "validate DB connection + run migrations"
 export DATABASE_URL="$DB_URL"
-for svc in api audit-service session-broker; do
+for svc in api audit-service session-broker connector-service policy-service; do
   "$PREFIX/bin/$svc" migrate up \
     || die "migration failed for $svc — is postgres 16 reachable with pgcrypto available? (see the offline postgres guide)"
 done
@@ -112,6 +132,7 @@ if [ "${AIREOS_SKIP_SYSTEMCTL:-0}" = "1" ] || ! command -v systemctl >/dev/null 
 else
   log "enable + start systemd units"
   systemctl daemon-reload
-  systemctl enable --now aireos-api.service aireos-audit.service aireos-broker.service aireos-caddy.service
+  systemctl enable --now aireos-api.service aireos-audit.service aireos-broker.service \
+    aireos-connector.service aireos-policy.service aireos-caddy.service
 fi
 log "DONE — cockpit installed. Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."

@@ -1,13 +1,17 @@
 //go:build wd1
 
-// TestWedgeDemoInstalledStack — the WD-1 wedge demo against the INSTALLED stack
-// through Caddy HTTPS (T-021d-b). Proves the operator walkthrough on the real
-// production wire: login → resource picker (GET /v1/resources) → create session →
-// broker WS over wss → run a command + read its output → end → logout.
+// TestWedgeDemoInstalledStack — the WD-2 wedge demo against the INSTALLED stack
+// through Caddy HTTPS (T-021d-b walkthrough, extended to the governed-egress
+// wedge by T-033b). The seeded resource is requires_approval-flagged, so the
+// walkthrough proves the approval primitive on the production wire: login →
+// resource picker → create (parked pending_approval) → operator APPROVE via
+// POST /v1/sessions/{id}/resolve → broker WS over wss → run a command + read
+// its output → end → DENY a second session (blocked + chained) → logout.
 //
-// The audit chain (integrity + the expected events) is asserted host-internally
-// by run-wd1.sh, because audit-service binds to localhost in the install and is
-// not Caddy-routed. The operator audit-timeline VIEW is a separate gap (T-024).
+// The audit chain (integrity + the expected events, incl. policy.decision /
+// approval.* / credential.leased) is asserted host-internally by run-wd1.sh,
+// because audit-service binds to localhost in the install and is not
+// Caddy-routed. The operator audit-timeline VIEW is asserted here (T-024).
 //
 // Shared harness helpers live in harness_test.go (build tag e2e || wd1).
 package e2e
@@ -54,8 +58,15 @@ func TestWedgeDemoInstalledStack(t *testing.T) {
 	// 2. resource picker: GET /v1/resources shows the seeded ssh resource (WD-1 step 3).
 	assertResourceVisible(t, client, base, sess, csrf)
 
-	// 3. create session + open the broker WS over wss through Caddy.
-	sessionID := createSession(t, client, base, sess, csrf)
+	// 3. create against the flagged resource → parked pending_approval (the
+	//    ADR-0054 gate on the production wire) → operator approves → 'pending',
+	//    then open the broker WS over wss through Caddy.
+	sessionID := createSessionFor(t, client, base, sess, csrf, resourceID, "pending_approval")
+	t.Log("session parked pending_approval (requires_approval resource)")
+	if got := resolveSession(t, client, base, sessionID, sess, csrf, "approve"); got != "pending" {
+		t.Fatalf("approve: session status = %q, want pending", got)
+	}
+	t.Log("approved — session released to the broker")
 	wsURL := wsBase + "/v1/sessions/" + sessionID + "/channel"
 	ws := dialWS(t, wsURL, http.Header{"Cookie": []string{sessionCookieName + "=" + sess}})
 	defer ws.CloseNow()
@@ -75,6 +86,16 @@ func TestWedgeDemoInstalledStack(t *testing.T) {
 	endSession(t, client, base, sessionID, sess, csrf)
 	_ = ws.Close(websocket.StatusNormalClosure, "wd1 done")
 
+	// 5b. deny leg (WD-2.3's other half): a second parked session is DENIED —
+	//     api answers closed (approval_denied); approval.denied:operator is
+	//     asserted host-internally by run-wd1.sh. The blocked-attach runtime
+	//     proof ran live in the compose e2e (T-033a).
+	deniedID := createSessionFor(t, client, base, sess, csrf, resourceID, "pending_approval")
+	if got := resolveSession(t, client, base, deniedID, sess, csrf, "deny"); got != "closed" {
+		t.Fatalf("deny: session status = %q, want closed", got)
+	}
+	t.Logf("denied session %s closed (approval_denied)", deniedID)
+
 	// 6. operator visits the audit timeline through Caddy -> api read-proxy ->
 	//    audit-service (T-024). Proves the in-cockpit read path on real wires:
 	//    the operator reads their own chained events. Closes the "operator
@@ -85,7 +106,7 @@ func TestWedgeDemoInstalledStack(t *testing.T) {
 	// 7. logout (emits auth.logout).
 	logout(t, client, base, sess, csrf)
 
-	t.Log("PASS — WD-1 operator walkthrough complete through Caddy HTTPS (login → resource → session → command → end → audit timeline → logout). Chain integrity is asserted by run-wd1.sh.")
+	t.Log("PASS — WD-2 operator walkthrough complete through Caddy HTTPS (login → resource → parked create → approve → session → command → end → deny leg → audit timeline → logout). Chain integrity is asserted by run-wd1.sh.")
 }
 
 func assertResourceVisible(t *testing.T, client *http.Client, base, sess, csrf string) {

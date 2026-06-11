@@ -26,7 +26,8 @@ CADDY_SHA512="ee886eceda0ff9f30610d3be9b5b594026591e19add6b3961a341c72abe468e5ea
 
 GOOS_TARGET="linux"
 GOARCH_TARGET="amd64"
-SERVICES="api audit-service session-broker"
+# connector-service + policy-service joined the bundle at v0.2.0 (OI-6, T-033b).
+SERVICES="api audit-service session-broker connector-service policy-service"
 
 # OI-4 caps.
 MAX_UNCOMPRESSED_MB=500
@@ -37,7 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
-BUNDLE_VERSION="${BUNDLE_VERSION:-0.1.0}"
+BUNDLE_VERSION="${BUNDLE_VERSION:-0.2.0}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist/offline}"
 STAGE="$OUT_DIR/aireos-offline-$BUNDLE_VERSION"
 TARBALL="$OUT_DIR/aireos-offline-$BUNDLE_VERSION.tar.gz"

@@ -1,0 +1,26 @@
+# systemd unit template — services/connector-service (§OI-a, ADR-0051; OI-6/T-033b).
+# The sole credential custodian + egress chokepoint (ADR-0053). This is the ONLY
+# unit that reads /etc/aireos/connector.env (AIREOS_RESOURCE_SECRET_KEY) — every
+# other service runs keyless; SEC-13's custody boundary is this EnvironmentFile.
+[Unit]
+Description=AI ReOS — connector-service (credential custody + egress gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aireos
+Group=aireos
+EnvironmentFile=/etc/aireos/aireos.env
+EnvironmentFile=/etc/aireos/connector.env
+ExecStart=/opt/aireos/bin/connector-service serve
+Restart=on-failure
+RestartSec=2
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

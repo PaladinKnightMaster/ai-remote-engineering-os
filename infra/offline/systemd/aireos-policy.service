@@ -1,0 +1,25 @@
+# systemd unit template — services/policy-service (§OI-a, ADR-0051; OI-6/T-033b).
+# The approval/policy decision point (ADR-0054): api consults it at session-create
+# for requires_approval resources and resolves operator approve/deny through it;
+# its outbox relay delivers policy.decision / approval.* to the audit chain.
+[Unit]
+Description=AI ReOS — policy-service (approval/policy decision point)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aireos
+Group=aireos
+EnvironmentFile=/etc/aireos/aireos.env
+ExecStart=/opt/aireos/bin/policy-service serve
+Restart=on-failure
+RestartSec=2
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
