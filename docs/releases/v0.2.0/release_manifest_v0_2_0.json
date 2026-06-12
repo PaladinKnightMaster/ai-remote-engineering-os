@@ -1,0 +1,71 @@
+{
+  "release": "v0.2.0",
+  "theme": "Governed Egress Foundation (P1 spine)",
+  "status": "release-candidate — pending the pre-release audit + human WD-2 + tag (release-criteria §12)",
+  "baseline": "v0.1.0 (tag 437502d) on v3.0.1",
+  "generated": "2026-06-11",
+  "note": "Machine-readable coverage for v0.2.0. See release_notes_v0_2_0.md (human roll-up) and v0.2.0-release-criteria.md (archival copy; WD-2.5/FE-9 amended by ADR-0055). The authoritative ticket index is docs/tickets/README.md; the ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md.",
+  "adrs": {
+    "ADR-0041..ADR-0052": "Accepted at v0.1.0 — unchanged (see docs/releases/v0.1.0/)",
+    "ADR-0053": "Accepted — connector-service credential custody + egress gateway (SEC-12 closed)",
+    "ADR-0054": "Accepted — policy-service approval/policy decision point + <ApprovalPrompt>",
+    "ADR-0055": "Accepted — v0.2.0 criteria amendment: WD-2.5/FE-9 durability riders re-scoped (reconnect + active-orphan audit-close deferred to v0.3.0)"
+  },
+  "tickets": {
+    "T-028": "complete — ADR-0053 + ADR-0054 ratified (OQ-A..F settled)",
+    "T-029a/b-i/b-ii": "complete — connector-service: custody store, lease RPC, egress audit",
+    "T-030a": "complete — broker/api re-point; api decrypt path DELETED; SEC-13 code half",
+    "T-030b": "complete — live connector lease proof (broker keyless; credential.leased chained)",
+    "T-031a-i/a-ii": "complete — policy-service spine + decide/resolve + fail-closed sweeper",
+    "T-031b-i/b-ii": "complete — api enforcement at create + operator resolve route",
+    "T-031c": "complete — <ApprovalPrompt> + SessionView approval round-trip (FE-5/FE-8)",
+    "T-032": "complete — api-owned stuck-session reaper (status-only; ADR-0055 records the rider re-scope)",
+    "T-033a": "complete — WD-2 live approval e2e, compose harness (G1 capstone)",
+    "T-033b": "complete — OI-6 offline re-point + installed-stack WD-2 green",
+    "T-033c": "complete — VER-5 legs, sec13-gate, DOC-8/9/10, ADR-0055, this artifact set",
+    "T-023": "pending (deferred) — auth.service-token.mint audit (carried from v0.1.0; not WD-2-required)"
+  },
+  "release_gates_status": {
+    "WD-2.1 (no api decrypt path; SEC-12 closed)": "passing (T-030a/b; task sec13-gate + e2e runtime proof)",
+    "WD-2.2 (credential via connector-service)": "passing (T-030b; credential.leased in the live chain)",
+    "WD-2.3 (approval round-trip, both outcomes)": "passing (T-033a compose + T-033b installed: approve proceeds, deny blocks + chains)",
+    "WD-2.4 (replayable chain, canonical order)": "passing (audit-service verify on both harnesses)",
+    "WD-2.5 (durability riders)": "amended by ADR-0055 — reaper-as-shipped passing (T-032); reconnect + active-orphan close deferred to v0.3.0",
+    "SEC-13 (sole decrypt authority) — BLOCKS RELEASE": "passing (grep gate task sec13-gate + runtime: api/broker boot with empty keys)",
+    "SEC-14 (decisions audit-chained)": "passing (T-031a; policy.decision:* / approval.* in live chains)",
+    "SEC-15 (S2S RequireCapability on lease + decide)": "passing (T-029b/T-031a; audience-checked PASETO)",
+    "AUD-7/AUD-8 (egress+approval in chain; verify CLI)": "passing (T-033a/b; audit-service verify OK)",
+    "FE-8 (<ApprovalPrompt>, §FE-5 closure)": "passing (T-031c)",
+    "FE-9 (reconnect operator-visible)": "deferred per ADR-0055",
+    "FE-10 (bundle SLO)": "passing (138 KB gz first-load vs 600 KB budget)",
+    "OI-6 (bundle + provisioning for connector/policy)": "passing (T-033b)",
+    "OI-7 (size caps re-measured)": "passing (104 MB unpacked / 37 MB gz vs 500/150)",
+    "OI-8 (WD-2 on installer-produced stack)": "passing (T-033b; task wd1 exit 0)",
+    "OI-9 (SHA256 manifest covers new binaries)": "passing (build-bundle self-check)",
+    "SC-7 (new deps pinned + licensed)": "passing (no new deps; task licenses covers all five services)",
+    "VER-5/VER-6 (release-check legs + headless WD-2)": "passing (T-033c Taskfile legs; task e2e)",
+    "DOC-7 (ADR ladder through 0055)": "passing (CANONICAL_SOURCE_OF_TRUTH.md)",
+    "DOC-8 (module-map shows built services)": "passing (T-033c)",
+    "DOC-9 (security docs list enforced edges + handlers)": "passing (T-033c)",
+    "DOC-10 (this artifact set)": "passing (T-033c)"
+  },
+  "remaining_release_gates": [
+    "human-run WD-2 against the installer-produced stack (release-criteria §12 — non-negotiable until the first Playwright suite)",
+    "pre-release audit: cumulative diff review 2fab088..HEAD + install.sh idempotency/upgrade re-run",
+    "CEO tag decision (local annotated tag v0.2.0; no remote)"
+  ],
+  "accepted_residuals_10a": {
+    "resources.connection_secret column retained (inert)": "drop = v0.3.0 contract migration",
+    "connector->broker lease hop plaintext on-host": "TLS = P2 / first multi-host deploy",
+    "connector-service single instance on the session-open path": "HA = P1+"
+  },
+  "offline_bundle": {
+    "builder": "task offline-bundle",
+    "contents": "bin/{api,audit-service,session-broker,connector-service,policy-service,authctl,caddy} + web/ + config (6 units) + install.sh",
+    "size": "104 MB unpacked / 37 MB gzipped (caps 500/150)",
+    "postgres_companions": "bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404 rocky9 (unchanged from v0.1.0)",
+    "integrity_manifest": "dist/offline/aireos-offline-<version>/SHA256_MANIFEST.txt",
+    "verify_bundle": "sha256sum -c SHA256_MANIFEST.txt (on the unpacked bundle; OI-9)",
+    "verify_chain": "audit-service verify"
+  }
+}
