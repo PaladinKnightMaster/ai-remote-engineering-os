@@ -14,6 +14,11 @@
 import { useCallback, useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+// xterm's stylesheet is REQUIRED for its render layers to position and paint
+// (rows/cursor/theme). Without it the terminal renders as overlapping rows on a
+// transparent background — found by the v0.2.0 §12 human WD-2 run (latent since
+// T-018b; jsdom tests can't see pixels).
+import "@xterm/xterm/css/xterm.css";
 import { useWebSocketChannel, type WSStatus } from "../hooks/useWebSocketChannel";
 
 export interface TerminalViewProps {

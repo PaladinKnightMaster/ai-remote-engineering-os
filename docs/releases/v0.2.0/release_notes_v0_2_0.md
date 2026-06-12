@@ -86,6 +86,13 @@ Remaining before the tag (release-criteria §12): `task release-check` green
 installer-produced stack, and the pre-release audit (cumulative diff review +
 install.sh idempotency re-run).
 
+Found + fixed during that audit: two review findings (a stale unit-file comment
+contradicting the SEC-13 key boundary; a sec13-gate scan-root guard) and a
+**latent v0.1.0 terminal-rendering defect** — `<TerminalView>` never imported
+xterm.js's required stylesheet, so the browser terminal rendered as overlapping
+rows on a white background (caught by the §12 human walkthrough; the wire
+protocol was always correct).
+
 ## Known limits / deferred (with triggers)
 
 - **WS-drop reconnect + active-orphan audit-close** → v0.3.0 (ADR-0055; the
