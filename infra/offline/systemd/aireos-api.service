@@ -1,7 +1,9 @@
 # systemd unit template — services/api (§OI-a, ADR-0051).
-# install.sh (§OI-b) installs binaries to /opt/aireos/bin, the env file to
-# /etc/aireos/aireos.env (DATABASE_URL, AIREOS_PASETO_KEY, AIREOS_RESOURCE_SECRET_KEY,
-# AIREOS_BOOTSTRAP_OPERATOR_*), and enables this unit.
+# install.sh (§OI-b) installs binaries to /opt/aireos/bin, the shared env file to
+# /etc/aireos/aireos.env (DATABASE_URL, AIREOS_PASETO_KEY, AIREOS_BOOTSTRAP_OPERATOR_*,
+# service addrs/URLs), and enables this unit. AIREOS_RESOURCE_SECRET_KEY is NOT in
+# aireos.env — it lives solely in /etc/aireos/connector.env, read only by
+# aireos-connector.service (SEC-13/OI-6: api holds no credential key since v0.2.0).
 [Unit]
 Description=AI ReOS — API control plane
 After=network-online.target
