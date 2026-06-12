@@ -103,6 +103,10 @@ protocol was always correct).
   mechanism with same-operator self-approve, ADR-0054).
 - **Server-side audit filtering, guacd/GUI adapters, mobile approval,
   cast-replay UI** → unchanged deferrals (§10).
+- **Cockpit UX polish (found by the §12 human walkthrough, non-blocking):** no
+  resource picker yet (the Sessions page takes a resource UUID directly — the
+  dashboard says so) and the audit-timeline table has a fixed layout that
+  truncates the evidence column. → first v0.3.0 cockpit UX ticket.
 - **Platform:** Linux server (Ubuntu/Debian + RHEL-family, amd64); Windows =
   browser client.
 
