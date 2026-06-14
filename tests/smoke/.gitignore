@@ -1,0 +1,5 @@
+# Standalone npm island (T-034) — none of this is committed.
+node_modules/
+package-lock.json
+test-results/
+playwright-report/

@@ -1,0 +1,12 @@
+{
+  "name": "@aireos/smoke",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser smoke suite (T-034) — the headless §12 governed-egress walkthrough. Deliberately OUTSIDE the pnpm workspace: a standalone npm island so Playwright (a heavyweight devDep) can never enter apps/web's build graph, the shipped service closure, or the offline bundle. Dev/CI-only; runs in the pinned Playwright Docker image (infra/docker-compose/docker-compose.smoke.yml).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}

@@ -1,0 +1,39 @@
+# Caddyfile — browser-smoke reverse proxy (T-034).
+#
+# Same shape as the shipped offline gateway (infra/offline/Caddyfile): serve the
+# BUILT SPA static assets and reverse-proxy both upstreams on ONE origin
+# (same-origin posture, ADR-0047). The only differences from the offline file:
+# upstreams are the compose service names (api / broker) on the smoke network
+# instead of 127.0.0.1, and the SPA root is the build-output volume.
+#
+# HTTPS is REQUIRED, not cosmetic: services/api sets its session + CSRF cookies
+# Secure (ADR-0047 §10), so the browser would silently drop them over plain HTTP.
+# `tls internal` mints a local-CA cert for `web`; the Playwright runner trusts it
+# via ignoreHTTPSErrors (playwright.config.ts).
+{
+	admin off
+}
+
+web {
+	tls internal
+	encode gzip
+
+	# Cockpit WebSocket data plane (ADR-0050) — matched before the general /v1
+	# rule. session-broker listens on :8082; reverse_proxy upgrades WS transparently.
+	@channel path_regexp ^/v1/sessions/[^/]+/channel$
+	handle @channel {
+		reverse_proxy broker:8082
+	}
+
+	# REST control plane → services/api on :8080.
+	handle /v1/* {
+		reverse_proxy api:8080
+	}
+
+	# SPA: static assets with client-side-routing fallback to index.html.
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

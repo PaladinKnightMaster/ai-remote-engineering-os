@@ -130,6 +130,16 @@ contract), so they are not parallelizable.
   - [**T-033b** — OI-6 offline re-point + installed-stack WD-2](T-033b-oi6-offline-repoint-installed-wd2.md) — bundle + units gained connector/policy (six units); `install.sh` re-pointed to `connector-service credentials genkey`/`set-secret` (fixed the HEAD breakage); `AIREOS_RESOURCE_SECRET_KEY` relocated to connector-only `/etc/aireos/connector.env` (legacy `aireos.env` line = the v0.1.0→v0.2.0 upgrade source); `CONNECTOR_URL`/`POLICY_URL` wired; T-030a guard REMOVED; the installed walkthrough drives the flagged resource: parked create → approve → SSH → end + deny leg, chain asserts incl. policy/approval/lease outcomes. *done*.
   - [**T-033c** — v0.2.0 release closure](T-033c-release-closure.md) — VER-5 Taskfile legs (policy-service into lint/test/build/test-integration; licenses gains connector+policy; release-check gains the `task e2e` leg + `task sec13-gate`, the SEC-13a grep gate); DOC-8 (module-map: connector+policy BUILT) + DOC-9 (security docs: enforced edges w/ handler refs); ADR-0055 (WD-2.5/FE-9 durability-rider re-scope, Accepted) + CANONICAL row; `docs/releases/v0.2.0/` notes + manifest + archival criteria copy (DOC-10). Release = candidate pending the pre-release audit + §12 human WD-2 + CEO tag. *done*.
 
+### v0.3.0 — Typed MCP Gateway (planned) — the first agent surface
+
+Builds on the released v0.2.0 governed-egress spine. Theme to be ratified in the
+opening scoping consult (`docs/evaluation/v0.3.0-release-criteria.md` + the MCP
+Gateway ADRs, ADR-0056+); scoped as a thin vertical wedge (WD-3: one agent → one
+typed tool → policy/approval gate → connector egress → audit). T-034 is the bridge
+ticket: it hardens the cockpit's rendering before the gateway work begins.
+
+- [**T-034** — browser smoke suite + browser-evidence DoD addendum](T-034-browser-smoke-dod-addendum.md) — the headless §12 governed-egress walkthrough in a real Chromium against the BUILT `apps/web` bundle served same-origin behind Caddy, on the live e2e backend (login → flagged create → `<ApprovalPrompt>` → deny/approve → **rendered xterm output** + an xterm.css regression guard → audit timeline). `tests/smoke` is a standalone npm island OUTSIDE the pnpm workspace so Playwright never ships; `task smoke` joins `release-check` as a CI/full-env-only leg after `e2e`. DoD addendum: `packages/ui`/`apps/web` rendering changes need browser-rendered evidence. Verification infra — no new ADR. *planned (authored; pending Dockerized verify + commit)*.
+
 ## Conventions
 
 - Filename: `T-NNN-short-kebab-slug.md`.

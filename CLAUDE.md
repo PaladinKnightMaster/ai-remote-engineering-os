@@ -65,6 +65,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 
 ## Definition of done
 Relevant specs/docs updated; tests/evals run or gaps stated; UI/accessibility reviewed when applicable; risks and next actions stated.
+- Changes to `packages/ui` or `apps/web` rendering output require browser-rendered evidence (a screenshot or a passing Playwright assertion against the rendered DOM) before "done" — jsdom unit tests do not satisfy this.
 
 ## v4 Kit modules (live in sibling agency-kit/)
 Use these modules when relevant:

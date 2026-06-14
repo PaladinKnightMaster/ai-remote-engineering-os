@@ -1,0 +1,98 @@
+# AI Remote Engineering OS — browser smoke stack (T-034).
+#
+# The headless, machine version of the §12 human WD-2 walkthrough. It REUSES the
+# full live backend from docker-compose.e2e.yml verbatim (api + policy +
+# connector + broker + audit + postgres + a real sshd, seeded with the
+# requires_approval-flagged resource) via `include`, and layers on:
+#
+#   webbuild — one-shot: build the apps/web SPA from source (no stale dist).
+#   web      — Caddy serving that BUILT bundle same-origin over HTTPS, proxying
+#              /v1 → api and the WS channel → broker (smoke/Caddyfile).
+#   smoke    — the pinned Playwright runner driving a real Chromium against `web`.
+#
+# Run it:   task smoke         (build → run → down -v; Windows host: MSYS_NO_PATHCONV=1)
+# Manually: docker compose -f docker-compose.smoke.yml build
+#           docker compose -f docker-compose.smoke.yml run --rm smoke
+#
+# Dev/CI only — it pulls the Playwright browser image, so it does NOT run on the
+# air-gapped box (same posture as the e2e + release-check Docker legs). Playwright
+# never enters the shipped bundle: tests/smoke is a standalone npm island outside
+# the pnpm workspace, and the bundle is only apps/web's build output.
+
+name: aireos-smoke
+
+include:
+  - docker-compose.e2e.yml
+
+services:
+  # Build the SPA from source into the web-dist volume. Mirrors `task
+  # offline-bundle`'s build step; --filter keeps the install to apps/web's
+  # closure (Playwright is never in it). CI=true is required for pnpm in a no-TTY
+  # container (ops-conventions).
+  webbuild:
+    image: node:22-alpine
+    working_dir: /work
+    environment:
+      CI: "true"
+    volumes:
+      - ../../:/work
+      - web-dist:/out
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        corepack enable
+        pnpm install --frozen-lockfile --filter @aireos/web...
+        pnpm --filter @aireos/web build
+        rm -rf /out/* && cp -r apps/web/dist/. /out/
+
+  # Same-origin HTTPS gateway over the BUILT bundle (see smoke/Caddyfile).
+  web:
+    image: caddy:2-alpine
+    depends_on:
+      webbuild:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+      broker:
+        condition: service_started
+    volumes:
+      - ./smoke/Caddyfile:/etc/caddy/Caddyfile:ro
+      - web-dist:/srv/web:ro
+
+  # The Playwright runner — the smoke verdict. Profile-gated so it only runs on
+  # `compose run smoke`, not a plain `up`. depends_on lists the whole governed
+  # backend so `run --rm smoke` brings every leg of the wedge up. The @playwright/
+  # test pin in tests/smoke/package.json MUST match this image tag.
+  smoke:
+    image: mcr.microsoft.com/playwright:v1.49.1-noble
+    profiles: ["smoke"]
+    depends_on:
+      - web
+      - api
+      - broker
+      - connector
+      - policy
+      - sshd
+      # audit-service must be up for the audit-timeline READ leg: api's
+      # /v1/audit/events read-proxy returns 502 if its upstream is down (the
+      # relays from api/broker/policy/connector are best-effort, but the read is
+      # not). Nothing else in this closure pulls audit in — web only needs
+      # api+broker — so depend on it explicitly (the e2e `tester` does the same).
+      - audit
+    environment:
+      SMOKE_BASE_URL: https://web
+    working_dir: /smoke
+    volumes:
+      - ../../tests/smoke:/smoke
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        npm install --no-audit --no-fund
+        npx playwright test
+
+volumes:
+  web-dist:
