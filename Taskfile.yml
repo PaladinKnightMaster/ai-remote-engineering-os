@@ -41,7 +41,7 @@ tasks:
       # tooling kit"). First run downloads + caches; subsequent runs
       # are fast (gomodcache volume).
       - |
-        for mod in packages/go/auth packages/go/middleware packages/go/migrate services/api services/audit-service services/connector-service services/policy-service services/session-broker tools/migrate-lint tools/forbidden-features-check; do
+        for mod in packages/go/auth packages/go/middleware packages/go/migrate services/api services/audit-service services/connector-service services/mcp-gateway services/policy-service services/session-broker tools/migrate-lint tools/forbidden-features-check; do
           (cd "$mod" && go run {{.GOLANGCI_LINT}} run ./... --config "$(git rev-parse --show-toplevel)/.golangci.yaml")
         done
       - go run ./tools/migrate-lint services/audit-service/migrations
@@ -55,7 +55,7 @@ tasks:
       # (see task test-integration).
       # Explicit per-module patterns: a bare ./... or ./packages/go/... does not
       # resolve from the workspace root (the modules live one level deeper).
-      - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/connector-service/... ./services/policy-service/... ./services/session-broker/...
+      - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/connector-service/... ./services/mcp-gateway/... ./services/policy-service/... ./services/session-broker/...
       # JS workspace unit tests (T-007a). `--if-present` skips packages
       # without a `test` script; packages/ui + packages/config have none yet.
       - pnpm -r --if-present run test
@@ -82,6 +82,7 @@ tasks:
       - go build -o bin/audit-service ./services/audit-service
       - go build -o bin/api ./services/api
       - go build -o bin/connector-service ./services/connector-service
+      - go build -o bin/mcp-gateway ./services/mcp-gateway
       - go build -o bin/policy-service ./services/policy-service
       - go build -o bin/session-broker ./services/session-broker
 
@@ -199,7 +200,7 @@ tasks:
       # Go: each shipped service's transitive third-party licenses must be allowed.
       # GOWORK=off (go-licenses rejects workspace mode); --ignore skips first-party.
       - |
-        for mod in services/api services/audit-service services/connector-service services/policy-service services/session-broker; do
+        for mod in services/api services/audit-service services/connector-service services/mcp-gateway services/policy-service services/session-broker; do
           (cd "$mod" && GOWORK=off go run {{.GO_LICENSES}} check ./... \
             --allowed_licenses="{{.ALLOWED}}" --ignore aireos.local)
         done
