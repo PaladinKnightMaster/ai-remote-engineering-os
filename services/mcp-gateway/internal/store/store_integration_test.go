@@ -131,6 +131,71 @@ func TestConcurrencyCountAndFinish(t *testing.T) {
 	}
 }
 
+// Get returns the persisted command (ADR-0059); ClaimForExec atomically moves a
+// granted parked invocation to running exactly once (the PERF-2 single-winner gate).
+func TestGetAndClaimForExec(t *testing.T) {
+	st, _ := testStore(t)
+	ctx := context.Background()
+	inv, _, err := st.Create(ctx, CreateInput{
+		AgentSubject: "agent:" + randSuffix(t), ResourceID: "r-claim", Tool: "remote.exec", Command: "uname -a",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := st.Get(ctx, inv.ID)
+	if err != nil || got.Command != "uname -a" || got.Status != "pending_approval" {
+		t.Fatalf("Get = %+v err=%v, want command persisted + pending_approval", got, err)
+	}
+
+	// Not yet granted → the claim must not win.
+	if _, won, _ := st.ClaimForExec(ctx, inv.ID); won {
+		t.Fatal("claim won before grant")
+	}
+	// Operator grant (decision → allow); the resolve route does this in T-040a2.
+	if err := st.SetStatus(ctx, inv.ID, "pending_approval", "allow"); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	claimed, won, err := st.ClaimForExec(ctx, inv.ID)
+	if err != nil || !won || claimed.Command != "uname -a" || claimed.Status != "running" {
+		t.Fatalf("claim = %+v won=%v err=%v, want win → running with the persisted command", claimed, won, err)
+	}
+	// Single-winner: a second claim must not win (no double-exec, PERF-2).
+	if _, won, _ := st.ClaimForExec(ctx, inv.ID); won {
+		t.Fatal("second claim won — the double-exec gate failed")
+	}
+}
+
+// ReapStale finalizes a never-resolved parked invocation → failed, emits
+// tool.result:error, and frees the concurrency slot (ADR-0059).
+func TestReapStaleFinalizesParked(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	agent := "agent:" + randSuffix(t)
+	inv, _, err := st.Create(ctx, CreateInput{AgentSubject: agent, ResourceID: "r-reap", Tool: "remote.exec", Command: "sleep 1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// olderThan=0 → the just-created parked row qualifies as stale.
+	n, err := st.ReapStale(ctx, 0)
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("reaped %d, want >= 1", n)
+	}
+	if got, _ := st.Get(ctx, inv.ID); got.Status != "failed" {
+		t.Fatalf("status after reap = %q, want failed", got.Status)
+	}
+	if c, _ := st.CountInFlight(ctx, agent); c != 0 {
+		t.Fatalf("in-flight after reap = %d, want 0", c)
+	}
+	if countOutcome(t, pool, "invocation:"+inv.ID, "tool.result:error") != 1 {
+		t.Fatal("reap must emit exactly one tool.result:error")
+	}
+}
+
 func TestSetStatusAndNotFound(t *testing.T) {
 	st, _ := testStore(t)
 	ctx := context.Background()

@@ -1,0 +1,13 @@
+-- mcp-gateway migration 0002 (ADR-0059): persist the command on the invocation so
+-- the operator approves the EXACT payload (informed consent — the F1 audit gap) and
+-- any waiter, including an idempotent retry, execs what was approved rather than what
+-- a later call re-passed.
+--
+-- This supersedes the 0001 comment ("the command text is NOT stored here"): that was
+-- a T-039a implementation note, not an ADR decision. The broker's retained
+-- <invocationId>.exec artifact (ADR-0058 §5) remains the POST-exec forensic anchor;
+-- this column is the PRE-exec approval payload. It is operator-only read (the api
+-- human-agent gate, never the agent plane), never logged, and treated as
+-- secret-bearing (ADR-0049/0059); the reaper bounds its retention to the approval
+-- window.
+ALTER TABLE invocations ADD COLUMN command TEXT NOT NULL DEFAULT '';

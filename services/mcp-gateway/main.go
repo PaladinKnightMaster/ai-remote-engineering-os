@@ -97,12 +97,21 @@ func serve() error {
 	}
 
 	signer := serviceSigner()
-	cat := catalog.New(
-		store.New(pool),
-		policy.New(os.Getenv("POLICY_URL"), signer),
-		brokerexec.New(os.Getenv("BROKER_URL"), signer),
-		maxInFlight(),
-	)
+	gw := store.New(pool)
+	cat := catalog.New(catalog.Config{
+		Store:       gw,
+		Policy:      policy.New(os.Getenv("POLICY_URL"), signer),
+		Broker:      brokerexec.New(os.Getenv("BROKER_URL"), signer),
+		MaxInFlight: maxInFlight(),
+		WaitTimeout: durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
+	})
+
+	// Invocation reaper (ADR-0059): a parked invocation whose agent disconnected
+	// mid-wait would otherwise leak its concurrency slot and retain its command
+	// forever. Finalize stale pending_approval rows → failed (the second-line
+	// backstop; a connected agent's own block-and-wait deadline finalizes first).
+	go reapLoop(context.Background(), gw, durationEnvSeconds("MCP_APPROVAL_REAP_TTL_SECONDS", 300*time.Second))
+
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("MCP_ADDR"), ":8085"),
 		Handler:           server.New(server.Config{Verifier: v, Catalog: cat}),
@@ -161,6 +170,40 @@ func auditTokenSource() (func(context.Context) (string, error), error) {
 	}
 	staticTok := os.Getenv("MCP_AUDIT_TOKEN")
 	return func(context.Context) (string, error) { return staticTok, nil }, nil
+}
+
+// reapLoop runs the invocation reaper on a fixed tick (ADR-0059). ttl is the parked
+// age past which a never-resolved invocation is finalized — set well beyond the
+// block-and-wait deadline + policy TTL so it only catches orphans, not live waits.
+func reapLoop(ctx context.Context, st *store.Store, ttl time.Duration) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n, err := st.ReapStale(ctx, ttl)
+			if err != nil {
+				log.Printf("invocation reaper: %v", err)
+				continue
+			}
+			if n > 0 {
+				log.Printf("invocation reaper: finalized %d stale parked invocation(s)", n)
+			}
+		}
+	}
+}
+
+// durationEnvSeconds reads a positive-integer-seconds env var, falling back to def.
+func durationEnvSeconds(name string, def time.Duration) time.Duration {
+	if s := os.Getenv(name); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		log.Printf("ignoring invalid %s=%q", name, s)
+	}
+	return def
 }
 
 // maxInFlight resolves the per-agent concurrency cap (PERF-3) from

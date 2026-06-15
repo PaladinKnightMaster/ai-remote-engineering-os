@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"aireos.local/packages/go/auth"
 	"aireos.local/services/mcp-gateway/internal/catalog"
@@ -157,12 +158,26 @@ type fakeStore struct {
 	requiresApproval bool
 	requiresErr      error
 	idempotentHit    bool
+	createStatus     string // status of the (existing or new) invocation; "" → pending_approval
+	getStatus        string // status Get returns during the block-and-wait
+	getDecision      string // decision Get returns during the block-and-wait
+	claimOK          bool   // ClaimForExec wins (a granted invocation)
+	gotCommand       string // the command persisted at Create (ADR-0059)
 	setStatus        []string
 	finished         []string
 }
 
+func (f *fakeStore) status() string {
+	if f.createStatus != "" {
+		return f.createStatus
+	}
+	return "pending_approval"
+}
+
 func (f *fakeStore) Create(_ context.Context, in store.CreateInput) (store.Invocation, bool, error) {
-	return store.Invocation{ID: "inv-1", Status: "pending_approval", AgentSubject: in.AgentSubject, ResourceID: in.ResourceID, Tool: in.Tool}, !f.idempotentHit, nil
+	f.gotCommand = in.Command
+	return store.Invocation{ID: "inv-1", Status: f.status(), AgentSubject: in.AgentSubject,
+		ResourceID: in.ResourceID, Tool: in.Tool, Command: in.Command}, !f.idempotentHit, nil
 }
 func (f *fakeStore) CountInFlight(context.Context, string) (int, error) { return f.inFlight, nil }
 func (f *fakeStore) SetStatus(_ context.Context, _, status, _ string) error {
@@ -175,6 +190,16 @@ func (f *fakeStore) Finish(_ context.Context, _, status, outcome string) error {
 }
 func (f *fakeStore) RequiresApproval(context.Context, string) (bool, error) {
 	return f.requiresApproval, f.requiresErr
+}
+func (f *fakeStore) Get(_ context.Context, id string) (store.Invocation, error) {
+	return store.Invocation{ID: id, Status: f.getStatus, Decision: f.getDecision,
+		ResourceID: "r1", Command: f.gotCommand}, nil
+}
+func (f *fakeStore) ClaimForExec(_ context.Context, id string) (store.Invocation, bool, error) {
+	if !f.claimOK {
+		return store.Invocation{}, false, nil
+	}
+	return store.Invocation{ID: id, Status: "running", ResourceID: "r1", Command: f.gotCommand}, true, nil
 }
 
 type fakePolicy struct {
@@ -206,7 +231,12 @@ func governedHandler(t *testing.T, st catalog.Store, pol catalog.PolicyDecider, 
 	t.Helper()
 	key, _ := auth.GenerateKey()
 	v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "", "mcp-gateway"))
-	return New(Config{Verifier: v, Catalog: catalog.New(st, pol, brk, 4)}), auth.NewSigner(key, "")
+	// Fast block-and-wait clocks so the approval tests stay sub-second.
+	cat := catalog.New(catalog.Config{
+		Store: st, Policy: pol, Broker: brk, MaxInFlight: 4,
+		WaitTimeout: 200 * time.Millisecond, PollInterval: 5 * time.Millisecond,
+	})
+	return New(Config{Verifier: v, Catalog: cat}), auth.NewSigner(key, "")
 }
 
 func scopedToken(t *testing.T, s *auth.Signer, resource string) string {
@@ -258,6 +288,9 @@ func TestInvokeAllowPath(t *testing.T) {
 	if !brk.called || brk.gotResource != "r1" || brk.gotCommand != "echo hi" {
 		t.Fatalf("broker exec not called correctly: %+v", brk)
 	}
+	if st.gotCommand != "echo hi" {
+		t.Fatalf("command not persisted on the invocation (ADR-0059): %q", st.gotCommand)
+	}
 	if len(st.finished) != 1 || st.finished[0] != "completed:tool.result" {
 		t.Fatalf("finish = %v, want [completed:tool.result]", st.finished)
 	}
@@ -289,20 +322,92 @@ func TestInvokeConcurrencyCap(t *testing.T) {
 	}
 }
 
-func TestInvokeRequiresApprovalParks(t *testing.T) {
-	st := &fakeStore{requiresApproval: true}
+// requires_approval now BLOCKS (block-and-wait, T-040). A grant (the row's decision
+// flips to allow) is atomically claimed and executed — the approved command runs.
+func TestInvokeApprovalGrantedExecs(t *testing.T) {
+	st := &fakeStore{requiresApproval: true, getStatus: "pending_approval", getDecision: "allow", claimOK: true}
+	brk := &fakeBroker{stdout: "ok\n", exit: 0}
+	h, s := governedHandler(t, st, &fakePolicy{decision: "requires_approval"}, brk)
+	resp := callRemoteExec(t, h, scopedToken(t, s, "r1"), "r1", "echo hi")
+	isErr, text := toolResult(t, resp)
+	if isErr || text != "ok\n" {
+		t.Fatalf("granted path: isError=%v text=%q", isErr, text)
+	}
+	if !brk.called || brk.gotCommand != "echo hi" {
+		t.Fatalf("broker must run the approved command, got %+v", brk)
+	}
+	if len(st.setStatus) == 0 || st.setStatus[len(st.setStatus)-1] != "pending_approval" {
+		t.Fatalf("setStatus = %v, want it to park pending_approval first", st.setStatus)
+	}
+	if len(st.finished) != 1 || st.finished[0] != "completed:tool.result" {
+		t.Fatalf("finish = %v, want [completed:tool.result]", st.finished)
+	}
+}
+
+// A deny (the row's status flips to denied) blocks the call with a typed error; no egress.
+func TestInvokeApprovalDeniedBlocks(t *testing.T) {
+	st := &fakeStore{requiresApproval: true, getStatus: "denied"}
 	brk := &fakeBroker{}
 	h, s := governedHandler(t, st, &fakePolicy{decision: "requires_approval"}, brk)
 	resp := callRemoteExec(t, h, scopedToken(t, s, "r1"), "r1", "echo hi")
 	isErr, text := toolResult(t, resp)
-	if !isErr || !strings.Contains(text, "approval required") {
-		t.Fatalf("requires approval: isError=%v text=%q", isErr, text)
+	if !isErr || !strings.Contains(text, "denied") {
+		t.Fatalf("denied path: isError=%v text=%q", isErr, text)
 	}
 	if brk.called {
-		t.Fatal("broker must not run before approval")
+		t.Fatal("broker must not run for a denied invocation")
 	}
-	if len(st.setStatus) == 0 || st.setStatus[len(st.setStatus)-1] != "pending_approval" {
-		t.Fatalf("setStatus = %v, want it to park pending_approval", st.setStatus)
+}
+
+// No operator response → the gateway's block-and-wait deadline finalizes the
+// invocation failed and returns a typed timeout (its leg of the fail-closed timeout).
+func TestInvokeApprovalTimesOut(t *testing.T) {
+	st := &fakeStore{requiresApproval: true, getStatus: "pending_approval", getDecision: "requires_approval"}
+	brk := &fakeBroker{}
+	h, s := governedHandler(t, st, &fakePolicy{decision: "requires_approval"}, brk)
+	resp := callRemoteExec(t, h, scopedToken(t, s, "r1"), "r1", "echo hi")
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "timed out") {
+		t.Fatalf("timeout path: isError=%v text=%q", isErr, text)
+	}
+	if brk.called {
+		t.Fatal("broker must not run on an approval timeout")
+	}
+	if len(st.finished) != 1 || st.finished[0] != "failed:tool.result:error" {
+		t.Fatalf("finish = %v, want [failed:tool.result:error]", st.finished)
+	}
+}
+
+// An idempotent retry of a STILL-LIVE invocation re-attaches to the wait rather than
+// erroring — a dropped long-poll the agent retries resumes (PERF-2 + ADR-0059).
+func TestInvokeIdempotentReattachGrant(t *testing.T) {
+	st := &fakeStore{idempotentHit: true, requiresApproval: true,
+		getStatus: "pending_approval", getDecision: "allow", claimOK: true}
+	brk := &fakeBroker{stdout: "again\n"}
+	h, s := governedHandler(t, st, &fakePolicy{decision: "requires_approval"}, brk)
+	resp := callRemoteExec(t, h, scopedToken(t, s, "r1"), "r1", "echo hi")
+	isErr, text := toolResult(t, resp)
+	if isErr || text != "again\n" {
+		t.Fatalf("re-attach grant: isError=%v text=%q", isErr, text)
+	}
+	if !brk.called {
+		t.Fatal("a re-attach must wait then exec, not error")
+	}
+}
+
+// An idempotent retry of a TERMINAL invocation cannot replay (stdout not stored,
+// ADR-0058) — it returns a typed marker without re-executing.
+func TestInvokeIdempotentTerminalNoReplay(t *testing.T) {
+	st := &fakeStore{idempotentHit: true, createStatus: "completed"}
+	brk := &fakeBroker{}
+	h, s := governedHandler(t, st, &fakePolicy{decision: "allow"}, brk)
+	resp := callRemoteExec(t, h, scopedToken(t, s, "r1"), "r1", "echo hi")
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "duplicate") {
+		t.Fatalf("terminal re-attach: isError=%v text=%q", isErr, text)
+	}
+	if brk.called {
+		t.Fatal("a terminal idempotent hit must not re-execute")
 	}
 }
 

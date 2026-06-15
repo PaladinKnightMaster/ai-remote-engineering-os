@@ -34,13 +34,15 @@ const (
 // ErrNotFound is returned when an invocation id / idempotency key is absent.
 var ErrNotFound = errors.New("invocation not found")
 
-// Invocation is the gateway's view of an invocations row.
+// Invocation is the gateway's view of an invocations row. Command is the persisted
+// approval payload (ADR-0059) — operator-only, never returned on the agent plane.
 type Invocation struct {
 	ID             string
 	IdempotencyKey string
 	AgentSubject   string
 	ResourceID     string
 	Tool           string
+	Command        string
 	Status         string
 	Decision       string
 }
@@ -50,6 +52,7 @@ type CreateInput struct {
 	AgentSubject   string
 	ResourceID     string
 	Tool           string
+	Command        string
 	IdempotencyKey string
 }
 
@@ -83,10 +86,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (inv Invocation, cre
 		keyArg = in.IdempotencyKey
 	}
 	ct, err := tx.Exec(ctx, `
-		INSERT INTO invocations (id, idempotency_key, agent_subject, resource_id, tool, status)
-		VALUES ($1, $2, $3, $4, $5, 'pending_approval')
+		INSERT INTO invocations (id, idempotency_key, agent_subject, resource_id, tool, command, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending_approval')
 		ON CONFLICT (agent_subject, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool)
+		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool, in.Command)
 	if err != nil {
 		return Invocation{}, false, fmt.Errorf("insert invocation: %w", err)
 	}
@@ -115,17 +118,17 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (inv Invocation, cre
 	}
 	return Invocation{
 		ID: id.String(), IdempotencyKey: in.IdempotencyKey, AgentSubject: in.AgentSubject,
-		ResourceID: in.ResourceID, Tool: in.Tool, Status: "pending_approval",
+		ResourceID: in.ResourceID, Tool: in.Tool, Command: in.Command, Status: "pending_approval",
 	}, true, nil
 }
 
 func getByKey(ctx context.Context, tx pgx.Tx, agentSubject, key string) (Invocation, error) {
 	var inv Invocation
 	err := tx.QueryRow(ctx, `
-		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, status, decision
+		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision
 		  FROM invocations WHERE agent_subject = $1 AND idempotency_key = $2`,
 		agentSubject, key).Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject,
-		&inv.ResourceID, &inv.Tool, &inv.Status, &inv.Decision)
+		&inv.ResourceID, &inv.Tool, &inv.Command, &inv.Status, &inv.Decision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Invocation{}, ErrNotFound
 	}
@@ -133,6 +136,120 @@ func getByKey(ctx context.Context, tx pgx.Tx, agentSubject, key string) (Invocat
 		return Invocation{}, fmt.Errorf("load invocation by key: %w", err)
 	}
 	return inv, nil
+}
+
+// Get loads an invocation by id — the block-and-wait poll (the orchestrator) and the
+// operator pending-list read (T-040b) both use it. ErrNotFound for an unknown id.
+func (s *Store) Get(ctx context.Context, id string) (Invocation, error) {
+	var inv Invocation
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision
+		  FROM invocations WHERE id = $1`, id).Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject,
+		&inv.ResourceID, &inv.Tool, &inv.Command, &inv.Status, &inv.Decision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Invocation{}, ErrNotFound
+	}
+	if err != nil {
+		return Invocation{}, fmt.Errorf("get invocation: %w", err)
+	}
+	return inv, nil
+}
+
+// ClaimForExec atomically moves a GRANTED (decision=allow) parked invocation to
+// running and returns it — the single-winner gate that prevents a double-exec when
+// more than one waiter races a re-attach (PERF-2). claimed=false means the row was
+// not (yet) grantable, or another caller already claimed it; the caller keeps
+// polling. The returned Command is the persisted approval payload (ADR-0059) — the
+// exec runs what the operator approved.
+func (s *Store) ClaimForExec(ctx context.Context, id string) (Invocation, bool, error) {
+	var inv Invocation
+	err := s.pool.QueryRow(ctx, `
+		UPDATE invocations SET status = 'running', updated_at = now()
+		 WHERE id = $1 AND status = 'pending_approval' AND decision = 'allow'
+		 RETURNING id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision`,
+		id).Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject, &inv.ResourceID,
+		&inv.Tool, &inv.Command, &inv.Status, &inv.Decision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Invocation{}, false, nil
+	}
+	if err != nil {
+		return Invocation{}, false, fmt.Errorf("claim for exec: %w", err)
+	}
+	return inv, true, nil
+}
+
+// ReapStale finalizes parked invocations whose approval window has elapsed (ADR-0059):
+// a never-resolved pending_approval row older than olderThan is moved to failed —
+// freeing the PERF-3 concurrency slot and bounding command retention — and emits
+// tool.result:error in the same transaction. It is the backstop for an agent that
+// disconnected mid-wait; a connected agent's own block-and-wait deadline finalizes
+// first. Returns the number reaped.
+func (s *Store) ReapStale(ctx context.Context, olderThan time.Duration) (int, error) {
+	cutoff := time.Now().Add(-olderThan)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id FROM invocations WHERE status = 'pending_approval' AND updated_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("scan stale invocations: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	n := 0
+	for _, id := range ids {
+		reaped, err := s.reapOne(ctx, id, cutoff)
+		if err != nil {
+			return n, err
+		}
+		if reaped {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// reapOne finalizes one stale parked invocation. The status+cutoff guard means a row
+// resolved or claimed between the scan and here is skipped (returns false), so the
+// reaper never clobbers an in-flight grant.
+func (s *Store) reapOne(ctx context.Context, id string, cutoff time.Time) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var agent, resource string
+	err = tx.QueryRow(ctx, `
+		UPDATE invocations SET status = 'failed', updated_at = now()
+		 WHERE id = $1 AND status = 'pending_approval' AND updated_at < $2
+		 RETURNING agent_subject, resource_id`, id, cutoff).Scan(&agent, &resource)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reap invocation: %w", err)
+	}
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: agent, Edge: auditEdge,
+		Target: "resource:" + resource, Outcome: "tool.result:error",
+		EvidencePacketID: "invocation:" + id,
+	}); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit reap: %w", err)
+	}
+	return true, nil
 }
 
 // RequiresApproval reads the resource's requires_approval label (ADR-0057) — the

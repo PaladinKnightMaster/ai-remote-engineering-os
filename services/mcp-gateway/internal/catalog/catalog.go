@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/mcp-gateway/internal/mcp"
@@ -124,13 +125,15 @@ func remoteExecTarget(raw json.RawMessage) (string, error) {
 // ErrUnknownTool is returned for a tools/call against an unregistered tool.
 var ErrUnknownTool = errors.New("unknown tool")
 
-// Store is the slice of the invocations store the orchestrator needs (ADR-0057).
+// Store is the slice of the invocations store the orchestrator needs (ADR-0057/0059).
 type Store interface {
 	Create(ctx context.Context, in store.CreateInput) (store.Invocation, bool, error)
 	CountInFlight(ctx context.Context, agentSubject string) (int, error)
 	SetStatus(ctx context.Context, id, status, decision string) error
 	Finish(ctx context.Context, id, status, outcome string) error
 	RequiresApproval(ctx context.Context, resourceID string) (bool, error)
+	Get(ctx context.Context, id string) (store.Invocation, error)
+	ClaimForExec(ctx context.Context, id string) (store.Invocation, bool, error)
 }
 
 // PolicyDecider consults policy-service per invocation (ADR-0054/0057).
@@ -148,31 +151,53 @@ type BrokerExecer interface {
 // drives the broker exec (ADR-0057). List delegates to the pure Registry; Invoke
 // is the spine.
 type Service struct {
-	registry    *Registry
-	store       Store
-	policy      PolicyDecider
-	broker      BrokerExecer
-	maxInFlight int
+	registry     *Registry
+	store        Store
+	policy       PolicyDecider
+	broker       BrokerExecer
+	maxInFlight  int
+	waitTimeout  time.Duration // block-and-wait deadline for a parked invocation (ADR-0059)
+	pollInterval time.Duration // how often the wait re-reads the invocation row
 }
 
-// New builds the governed tool service. maxInFlight ≤ 0 defaults to 4 (PERF-3).
-func New(st Store, pol PolicyDecider, brk BrokerExecer, maxInFlight int) *Service {
-	if maxInFlight <= 0 {
-		maxInFlight = 4
+// Config wires the governed tool service. Zero values get safe defaults.
+type Config struct {
+	Store        Store
+	Policy       PolicyDecider
+	Broker       BrokerExecer
+	MaxInFlight  int           // per-agent concurrency cap (PERF-3); ≤ 0 → 4
+	WaitTimeout  time.Duration // block-and-wait deadline; ≤ 0 → 125s (just over policy's 120s TTL)
+	PollInterval time.Duration // approval poll cadence; ≤ 0 → 1s
+}
+
+// New builds the governed tool service.
+func New(cfg Config) *Service {
+	if cfg.MaxInFlight <= 0 {
+		cfg.MaxInFlight = 4
 	}
-	return &Service{registry: NewRegistry(), store: st, policy: pol, broker: brk, maxInFlight: maxInFlight}
+	if cfg.WaitTimeout <= 0 {
+		cfg.WaitTimeout = 125 * time.Second
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = time.Second
+	}
+	return &Service{
+		registry: NewRegistry(), store: cfg.Store, policy: cfg.Policy, broker: cfg.Broker,
+		maxInFlight: cfg.MaxInFlight, waitTimeout: cfg.WaitTimeout, pollInterval: cfg.PollInterval,
+	}
 }
 
 // List implements mcp.Catalog.
 func (s *Service) List() []mcp.Tool { return s.registry.List() }
 
-// Invoke runs the governed pipeline (ADR-0057): scope check (SEC-16) → per-agent
-// concurrency cap (PERF-3) → create invocation (idempotency, PERF-2) → policy
-// decide → allow: broker exec → tool.result; requires_approval: park (the
-// block-and-wait + operator resolve is T-040). Fail-closed (SEC-19): any
-// downstream failure marks the invocation failed and refuses egress.
+// Invoke runs the governed pipeline (ADR-0057/0059): scope check (SEC-16) →
+// per-agent concurrency cap (PERF-3) → create invocation with the persisted command
+// (idempotency, PERF-2) → policy decide → allow: broker exec → tool.result;
+// requires_approval: park and BLOCK until the operator resolves it (block-and-wait)
+// → grant: exec; deny/timeout: typed error. Fail-closed (SEC-19): any downstream
+// failure marks the invocation failed and refuses egress.
 //
-// Governance refusals the agent should handle (scope/concurrency/approval/dup)
+// Governance refusals the agent should handle (scope/concurrency/denied/timeout/dup)
 // return an MCP tool-error result (isError); protocol/infra failures return a Go
 // error (a JSON-RPC error).
 func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage) (mcp.ToolResult, error) {
@@ -213,15 +238,29 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		return toolError("unknown or unavailable resource"), nil
 	}
 
-	// Create the invocation (idempotency: PERF-2 — a retry never re-executes).
+	// The command is persisted on the invocation (ADR-0059) so the operator approves
+	// the exact payload and any waiter execs what was approved, not what a retry
+	// re-passed. def.Target already validated it is present.
+	var execArgs remoteExecArgs
+	_ = json.Unmarshal(args, &execArgs)
+
+	// Create the invocation (idempotency: PERF-2).
 	inv, created, err := s.store.Create(ctx, store.CreateInput{
-		AgentSubject: agent, ResourceID: resourceID, Tool: def.Name, IdempotencyKey: mcp.IdempotencyKey(ctx),
+		AgentSubject: agent, ResourceID: resourceID, Tool: def.Name,
+		Command: execArgs.Command, IdempotencyKey: mcp.IdempotencyKey(ctx),
 	})
 	if err != nil {
 		return mcp.ToolResult{}, fmt.Errorf("create invocation: %w", err)
 	}
+
 	if !created {
-		return toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
+		// Idempotent hit (PERF-2). A terminal original cannot be replayed (the stdout
+		// is not stored, ADR-0058); a still-live one RE-ATTACHES to the wait so a
+		// dropped long-poll that the agent retries resumes rather than erroring.
+		if isTerminal(inv.Status) {
+			return toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
+		}
+		return s.waitForApproval(ctx, inv.ID, agent)
 	}
 
 	// Policy decision (fail-closed: an error → mark failed, refuse egress, SEC-19).
@@ -230,21 +269,72 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		_ = s.store.Finish(ctx, inv.ID, "failed", "tool.result:error")
 		return mcp.ToolResult{}, fmt.Errorf("policy decision unavailable: %w", err)
 	}
-	if decision != PolicyAllow {
-		// Parked pending approval; the operator resolve + block-and-wait is T-040.
-		_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
-		return toolError("approval required — resolve via the operator console (interactive approval lands in T-040)"), nil
+	if decision == PolicyAllow {
+		_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
+		return s.execAndFinish(ctx, inv.ID, resourceID, execArgs.Command, agent)
 	}
 
-	// Allow → governed egress via the broker (the sole SSH egress, ADR-0058).
-	_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
-	var execArgs struct {
-		Command string `json:"command"`
+	// requires_approval → park, then block until the operator resolves it (T-040).
+	_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
+	return s.waitForApproval(ctx, inv.ID, agent)
+}
+
+// waitForApproval blocks the agent's tools/call on a parked invocation until the
+// operator resolves it (ADR-0057/0059 block-and-wait): grant (decision=allow) →
+// atomically claim + exec; deny/failed → typed error; the gateway's own deadline →
+// finalize failed (policy's TTL timeout runs in parallel). An agent disconnect (ctx)
+// leaves the row parked for the reaper or an idempotent re-attach. It polls the row —
+// a short query per tick, never a held transaction.
+func (s *Service) waitForApproval(ctx context.Context, id, agent string) (mcp.ToolResult, error) {
+	deadline := time.NewTimer(s.waitTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(s.pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return mcp.ToolResult{}, ctx.Err()
+		case <-deadline.C:
+			// Finalize on a detached context so the agent's cancellation can't strand
+			// the row; the reaper is the second-line backstop (ADR-0059).
+			fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = s.store.Finish(fctx, id, "failed", "tool.result:error")
+			cancel()
+			return toolError("approval timed out before an operator responded"), nil
+		case <-ticker.C:
+			inv, err := s.store.Get(ctx, id)
+			if err != nil {
+				return mcp.ToolResult{}, fmt.Errorf("poll invocation: %w", err)
+			}
+			switch inv.Status {
+			case "denied":
+				return toolError("the operator denied this invocation"), nil
+			case "failed":
+				return toolError("invocation failed before it could run"), nil
+			case "completed":
+				return toolError("invocation already completed by a concurrent call"), nil
+			case "pending_approval":
+				if inv.Decision == PolicyAllow {
+					claimed, won, cerr := s.store.ClaimForExec(ctx, id)
+					if cerr != nil {
+						return mcp.ToolResult{}, fmt.Errorf("claim invocation: %w", cerr)
+					}
+					if won {
+						return s.execAndFinish(ctx, id, claimed.ResourceID, claimed.Command, agent)
+					}
+				}
+			}
+		}
 	}
-	_ = json.Unmarshal(args, &execArgs) // command is non-empty: def.Target already validated it
-	stdout, exitCode, truncated, err := s.broker.Exec(ctx, inv.ID, resourceID, execArgs.Command, agent)
+}
+
+// execAndFinish runs the governed command on the broker (the sole SSH egress,
+// ADR-0058) and records the terminal outcome. The caller has already moved the
+// invocation to running (allow-now via SetStatus, post-approval via ClaimForExec).
+func (s *Service) execAndFinish(ctx context.Context, id, resourceID, command, agent string) (mcp.ToolResult, error) {
+	stdout, exitCode, truncated, err := s.broker.Exec(ctx, id, resourceID, command, agent)
 	if err != nil {
-		_ = s.store.Finish(ctx, inv.ID, "failed", "tool.result:error")
+		_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
 		return mcp.ToolResult{}, fmt.Errorf("exec failed: %w", err)
 	}
 	isErr := exitCode != 0
@@ -252,12 +342,21 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	if isErr {
 		outcome = "tool.result:error"
 	}
-	_ = s.store.Finish(ctx, inv.ID, "completed", outcome) // it ran; non-zero exit is a tool error, not a transport failure
+	_ = s.store.Finish(ctx, id, "completed", outcome) // it ran; non-zero exit is a tool error, not a transport failure
 	text := stdout
 	if truncated {
 		text += "\n[output truncated]"
 	}
 	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: text}}, IsError: isErr}, nil
+}
+
+// isTerminal reports whether an invocation has reached a final status.
+func isTerminal(status string) bool {
+	switch status {
+	case "completed", "denied", "failed":
+		return true
+	}
+	return false
 }
 
 // PolicyAllow is the decision string for an unflagged (or pre-approved) action.
