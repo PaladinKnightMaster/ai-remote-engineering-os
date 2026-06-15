@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"fmt"
 	"log"
@@ -22,9 +23,13 @@ import (
 
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
+	"aireos.local/packages/go/migrate"
 	"aireos.local/services/mcp-gateway/internal/catalog"
 	"aireos.local/services/mcp-gateway/internal/server"
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -40,8 +45,19 @@ func run(args []string) error {
 	switch cmd {
 	case "serve":
 		return serve()
+	case "migrate":
+		dsn := firstNonEmpty(os.Getenv("MCP_DATABASE_URL"), os.Getenv("DATABASE_URL"))
+		if dsn == "" {
+			return errors.New("MCP_DATABASE_URL (or DATABASE_URL) must be set")
+		}
+		return migrate.RunSubcommand(migrate.Runner{
+			Service: "mcp-gateway",
+			FS:      migrationsFS,
+			Dir:     "migrations",
+			DSN:     dsn,
+		}, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want serve)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate)", cmd)
 	}
 }
 

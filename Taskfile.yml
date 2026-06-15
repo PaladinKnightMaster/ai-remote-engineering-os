@@ -61,7 +61,7 @@ tasks:
       - pnpm -r --if-present run test
 
   test-integration:
-    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_TEST_DATABASE_URL / CONNECTOR_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody. Tests self-skip when their env var is unset."
+    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_/CONNECTOR_/POLICY_/MCP_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody; ADR-0057 gateway invocations. Tests self-skip when their env var is unset."
     cmds:
       - go test -tags integration ./services/audit-service/internal/store/...
       # connector-service credential custody (ADR-0053; needs CONNECTOR_TEST_DATABASE_URL
@@ -70,6 +70,9 @@ tasks:
       # policy-service pending-approvals store (ADR-0054; needs POLICY_TEST_DATABASE_URL
       # against a DB with the policy migration applied).
       - go test -tags integration ./services/policy-service/internal/store/...
+      # mcp-gateway invocations store (ADR-0057; needs MCP_TEST_DATABASE_URL against a
+      # DB with the gateway migration applied).
+      - go test -tags integration ./services/mcp-gateway/internal/store/...
 
   validate:
     desc: "Validate the OpenAPI fragment + JSON Schema fixtures (T-010). Needs python3 + jsonschema + pyyaml."
