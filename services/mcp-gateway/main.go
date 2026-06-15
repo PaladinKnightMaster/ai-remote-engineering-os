@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -23,7 +22,7 @@ import (
 
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
-	"aireos.local/services/mcp-gateway/internal/mcp"
+	"aireos.local/services/mcp-gateway/internal/catalog"
 	"aireos.local/services/mcp-gateway/internal/server"
 )
 
@@ -53,10 +52,12 @@ func serve() error {
 	}
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("MCP_ADDR"), ":8085"),
-		Handler:           server.New(server.Config{Verifier: v, Catalog: emptyCatalog{}}),
+		Handler:           server.New(server.Config{Verifier: v, Catalog: catalog.New()}),
 		ReadHeaderTimeout: 10 * time.Second,
+		// No WriteTimeout: a governed tools/call may block on synchronous human
+		// approval (ADR-0054/0057 block-and-wait, ~120s) once T-039 wires it.
 	}
-	log.Printf("mcp-gateway listening on %s (catalog: 0 tools — T-035 skeleton)", srv.Addr)
+	log.Printf("mcp-gateway listening on %s (catalog: remote.exec)", srv.Addr)
 	return srv.ListenAndServe()
 }
 
@@ -82,16 +83,6 @@ type devAllowAll struct{}
 
 func (devAllowAll) Verify(_ context.Context, _ string) (mw.Capability, error) {
 	return mw.Capability{Subject: "dev", Edge: "agent-tool"}, nil
-}
-
-// emptyCatalog is the T-035 placeholder: zero tools, Invoke unimplemented. T-037
-// registers remote.exec; T-039 implements the governed Invoke (policy → approval →
-// connector lease → broker exec → audit).
-type emptyCatalog struct{}
-
-func (emptyCatalog) List() []mcp.Tool { return nil }
-func (emptyCatalog) Invoke(context.Context, string, json.RawMessage) (mcp.ToolResult, error) {
-	return mcp.ToolResult{}, errors.New("no tools available yet (T-035 skeleton)")
 }
 
 func firstNonEmpty(vals ...string) string {
