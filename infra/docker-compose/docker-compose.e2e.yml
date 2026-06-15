@@ -76,6 +76,7 @@ services:
         go run ./services/session-broker migrate up
         go run ./services/connector-service migrate up
         go run ./services/policy-service migrate up
+        go run ./services/mcp-gateway migrate up
         go run ./tests/e2e/cmd/seed
         # Provision the credentials into connector custody via the real CLI (T-030b):
         # the broker leases them from connector at connect; nothing is stored in
@@ -169,6 +170,25 @@ services:
       AIREOS_AUDIT_URL: http://audit:8081
     command: ["bash", "-c", "go run ./services/policy-service serve"]
 
+  # mcp-gateway: the Typed MCP Gateway (ADR-0056/0057), the first agent surface +
+  # the v0.3.0 spine's orchestrator (T-039). It verifies agent-tool tokens
+  # (audience mcp-gateway), reads requires_approval from resources.labels, consults
+  # policy, leases-via-broker the governed exec, and audits tool.invoked/tool.result.
+  # The gateway holds NO resource secret key (SEC-13/17). The invocations schema is
+  # migrated by the seed one-shot above (mcp-gateway migrate up).
+  mcp-gateway:
+    <<: *go
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *cluster-env
+      MCP_ADDR: ":8085"
+      AIREOS_AUDIT_URL: http://audit:8081
+      POLICY_URL: http://policy:8084
+      BROKER_URL: http://broker:8082
+    command: ["bash", "-c", "go run ./services/mcp-gateway serve"]
+
   sshd:
     build:
       context: ./e2e
@@ -192,6 +212,7 @@ services:
       - connector
       - policy
       - audit
+      - mcp-gateway
       - sshd
     environment:
       <<: *cluster-env
@@ -199,6 +220,7 @@ services:
       E2E_API_URL: http://api:8080
       E2E_BROKER_WS: ws://broker:8082
       E2E_AUDIT_URL: http://audit:8081
+      E2E_MCP_URL: http://mcp-gateway:8085
     volumes:
       - ../../:/work
       - gomodcache:/go/pkg/mod
