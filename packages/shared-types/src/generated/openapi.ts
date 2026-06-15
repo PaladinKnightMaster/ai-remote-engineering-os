@@ -334,6 +334,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agent-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mint a scoped agent-tool capability token for an autonomous agent (AG-1..3; ADR-0056/0057) */
+        post: operations["issueAgentToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions": {
         parameters: {
             query?: never;
@@ -419,6 +436,20 @@ export interface components {
         PageMeta: {
             nextCursor?: string;
             total?: number;
+        };
+        AgentTokenRequest: {
+            /** @description Logical agent id; the token subject is agent:<agentId>. */
+            agentId: string;
+            /** @description The resource the agent may target (the token scope; SEC-16). */
+            resourceId: string;
+            /** @description Allowed operations on the scoped resource (e.g. ["exec"]). */
+            operations?: string[];
+        };
+        AgentTokenResponse: {
+            /** @description The agent-tool capability token (Bearer; audience mcp-gateway, 5-min TTL). */
+            token: string;
+            /** Format: date-time */
+            expiresAt: string;
         };
         Resource: {
             id: string;
@@ -868,6 +899,33 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    issueAgentToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description The minted agent-tool token + its expiry. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTokenResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     listSessions: {

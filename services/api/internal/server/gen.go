@@ -85,6 +85,26 @@ const (
 	Deny    SessionResolveDecision = "deny"
 )
 
+// AgentTokenRequest defines model for AgentTokenRequest.
+type AgentTokenRequest struct {
+	// AgentId Logical agent id; the token subject is agent:<agentId>.
+	AgentId string `json:"agentId"`
+
+	// Operations Allowed operations on the scoped resource (e.g. ["exec"]).
+	Operations *[]string `json:"operations,omitempty"`
+
+	// ResourceId The resource the agent may target (the token scope; SEC-16).
+	ResourceId string `json:"resourceId"`
+}
+
+// AgentTokenResponse defines model for AgentTokenResponse.
+type AgentTokenResponse struct {
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Token The agent-tool capability token (Bearer; audience mcp-gateway, 5-min TTL).
+	Token string `json:"token"`
+}
+
 // AuditEvent defines model for AuditEvent.
 type AuditEvent struct {
 	Actor string `json:"actor"`
@@ -238,6 +258,9 @@ type ListSessionsParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// IssueAgentTokenJSONRequestBody defines body for IssueAgentToken for application/json ContentType.
+type IssueAgentTokenJSONRequestBody = AgentTokenRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -255,6 +278,9 @@ type ResolveSessionJSONRequestBody = SessionResolve
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// Mint a scoped agent-tool capability token for an autonomous agent (AG-1..3; ADR-0056/0057)
+	// (POST /v1/agent-tokens)
+	IssueAgentToken(w http.ResponseWriter, r *http.Request)
 	// Operator audit timeline — a page of chained events (via the api read-proxy)
 	// (GET /v1/audit/events)
 	ListAuditEvents(w http.ResponseWriter, r *http.Request, params ListAuditEventsParams)
@@ -302,6 +328,12 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// Mint a scoped agent-tool capability token for an autonomous agent (AG-1..3; ADR-0056/0057)
+// (POST /v1/agent-tokens)
+func (_ Unimplemented) IssueAgentToken(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // Operator audit timeline — a page of chained events (via the api read-proxy)
 // (GET /v1/audit/events)
@@ -395,6 +427,26 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// IssueAgentToken operation middleware
+func (siw *ServerInterfaceWrapper) IssueAgentToken(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.IssueAgentToken(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListAuditEvents operation middleware
 func (siw *ServerInterfaceWrapper) ListAuditEvents(w http.ResponseWriter, r *http.Request) {
@@ -906,6 +958,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/agent-tokens", wrapper.IssueAgentToken)
+	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/audit/events", wrapper.ListAuditEvents)
 	})

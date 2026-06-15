@@ -769,6 +769,64 @@ func (a *apiHandlers) ResolveSession(w http.ResponseWriter, r *http.Request, id 
 	writeJSON(w, http.StatusOK, denied)
 }
 
+// IssueAgentToken (POST /v1/agent-tokens) mints a scoped agent-tool capability
+// token for an autonomous agent (AG-1..3; ADR-0056/0057). Operator-gated
+// (human-agent edge via the shared capability gate) + double-submit CSRF: an
+// operator provisions the agent's short-lived (5-min) token, scoped to the
+// resource(s) it may use (SEC-16). The token's audience is the MCP gateway, so the
+// agent presents it as Bearer to services/mcp-gateway. The mint is audit-chained
+// (auth.agent-token.mint, actor=operator, target=agent:<id>).
+//
+// A CLI sibling (task auth -- issue-agent) for offline/break-glass bootstrap is
+// deferred (trigger: installed-stack offline agent provisioning); it would reuse
+// the same auth.Signer.IssueAgent primitive — no second minting path is built now.
+func (a *apiHandlers) IssueAgentToken(w http.ResponseWriter, r *http.Request) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.signer == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "token issuance not configured")
+		return
+	}
+	var req struct {
+		AgentID    string   `json:"agentId"`
+		ResourceID string   `json:"resourceId"`
+		Operations []string `json:"operations"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if req.AgentID == "" || req.ResourceID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "agentId and resourceId are required")
+		return
+	}
+	subject := "agent:" + req.AgentID
+	token, err := a.signer.IssueAgent(subject, "mcp-gateway", auth.Scope{Resource: req.ResourceID, Operations: req.Operations})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not mint agent token")
+		return
+	}
+	expiresAt := time.Now().Add(auth.AgentTTL)
+	// Audit the mint (SEC-9 / AG-3): the operator is the actor, the agent the
+	// target. Best-effort, like the other auth events.
+	if err := a.store.RecordEvent(r.Context(), outbox.Event{
+		Timestamp: time.Now(),
+		Actor:     operator,
+		Edge:      "human-agent",
+		Target:    subject,
+		Outcome:   "auth.agent-token.mint",
+	}); err != nil {
+		log.Printf("audit: enqueue auth.agent-token.mint for %s failed: %v", subject, err)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":     token,
+		"expiresAt": expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
 // ListAuditEvents (GET /v1/audit/events) is the operator audit-timeline read-proxy
 // (T-024). The operator is authenticated by the shared capability gate (human-agent
 // edge); api then reads audit-service with its OWN service token, so the chain

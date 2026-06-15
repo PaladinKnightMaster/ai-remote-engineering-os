@@ -51,6 +51,35 @@ func TestScopePreserved(t *testing.T) {
 	}
 }
 
+func TestIssueAgent(t *testing.T) {
+	key, _ := GenerateKey()
+	sc := Scope{Resource: "res-9", Operations: []string{"exec"}}
+	tok, err := NewSigner(key, iss).IssueAgent("agent:wedge", "mcp-gateway", sc)
+	if err != nil {
+		t.Fatalf("issue agent: %v", err)
+	}
+	// Verifies under the gateway's verifier config (audience mcp-gateway).
+	ct, err := NewVerifier(key, iss, "mcp-gateway").Verify(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if ct.Subject != "agent:wedge" || ct.Edge != "agent-tool" {
+		t.Fatalf("unexpected claims: %+v", ct)
+	}
+	if ct.Scope.Resource != "res-9" || len(ct.Scope.Operations) != 1 {
+		t.Fatalf("scope not preserved: %+v", ct.Scope)
+	}
+	// Cross-service guard: an agent token for the gateway must NOT verify for
+	// audience "api" (the audience-alignment class behind ADR-0050).
+	if _, err := NewVerifier(key, iss, "api").Verify(context.Background(), tok); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("agent token must not verify for audience api, got %v", err)
+	}
+	// The TTL is the 5-minute agent tier.
+	if d := time.Until(ct.Expiry); d <= 0 || d > AgentTTL+time.Second {
+		t.Fatalf("agent TTL = %s, want ~%s", d, AgentTTL)
+	}
+}
+
 func TestExpiredRejected(t *testing.T) {
 	key, _ := GenerateKey()
 	tok, err := NewSigner(key, iss).Issue(IssueParams{

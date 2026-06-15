@@ -197,6 +197,78 @@ func (allowAll) Verify(context.Context, string) (mw.Capability, error) {
 	return mw.Capability{Subject: "operator", Edge: "human-agent"}, nil
 }
 
+// TestIssueAgentToken — POST /v1/agent-tokens mints a scoped agent-tool token,
+// audit-chains the mint, and the token verifies at the gateway (T-036, AG-1..3).
+func TestIssueAgentToken(t *testing.T) {
+	f := newFake()
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "cluster-test")
+	h := New(f, nil, signer, allowAll{}, "", "")
+
+	const resID = "01900000-0000-7000-8000-0000000000a2"
+	body := `{"agentId":"wedge","resourceId":"` + resID + `","operations":["exec"]}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/agent-tokens", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer x") // allowAll → operator/human-agent; no cookie → no CSRF
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Token == "" || resp.ExpiresAt == "" {
+		t.Fatalf("missing token/expiresAt: %+v", resp)
+	}
+
+	// G1 cross-check: the api-minted token verifies under the GATEWAY's verifier
+	// config (audience mcp-gateway, agent-tool edge) — the cross-service contract
+	// (the audience-alignment class behind ADR-0050).
+	ct, err := auth.NewVerifier(key, "cluster-test", "mcp-gateway").Verify(context.Background(), resp.Token)
+	if err != nil {
+		t.Fatalf("minted token must verify at the gateway: %v", err)
+	}
+	if ct.Edge != "agent-tool" || ct.Subject != "agent:wedge" {
+		t.Fatalf("unexpected minted claims: %+v", ct)
+	}
+	if ct.Scope.Resource != resID {
+		t.Fatalf("scope resource not bound: %+v", ct.Scope)
+	}
+
+	// AG-3: the mint is audit-chained (actor=operator, target=agent:<id>).
+	var minted *outbox.Event
+	for i := range f.events {
+		if f.events[i].Outcome == "auth.agent-token.mint" {
+			minted = &f.events[i]
+		}
+	}
+	if minted == nil {
+		t.Fatal("no auth.agent-token.mint audit event recorded")
+	}
+	if minted.Actor != "operator" || minted.Target != "agent:wedge" || minted.Edge != "human-agent" {
+		t.Fatalf("mint audit fields wrong: %+v", *minted)
+	}
+}
+
+// TestIssueAgentTokenValidation — agentId + resourceId are required.
+func TestIssueAgentTokenValidation(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "")
+	r := httptest.NewRequest(http.MethodPost, "/v1/agent-tokens", strings.NewReader(`{"agentId":"x"}`))
+	r.Header.Set("Authorization", "Bearer x")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing resourceId: status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
 func req(t *testing.T, h http.Handler, method, path, body string, authHeader bool) *httptest.ResponseRecorder {
 	t.Helper()
 	var r *http.Request

@@ -130,6 +130,14 @@ func (s *Signer) IssueOperator(subject, audience string) (string, error) {
 	return s.Issue(IssueParams{Subject: subject, Edge: "human-agent", Audience: audience, TTL: OperatorTTL})
 }
 
+// IssueAgent mints a scoped agent capability token (edge agent-tool, 5min TTL) for
+// an autonomous agent calling `audience` (the MCP gateway). The scope bounds the
+// resource(s) + operations the agent may invoke (SEC-16); the short TTL is the
+// revocation mechanism at v0.3.0 — there is no agent registry (ADR-0046/0056/0057).
+func (s *Signer) IssueAgent(subject, audience string, scope Scope) (string, error) {
+	return s.Issue(IssueParams{Subject: subject, Edge: "agent-tool", Audience: audience, Scope: scope, TTL: AgentTTL})
+}
+
 // Verifier verifies tokens under the cluster key, enforcing expiry and
 // (optionally) the expected issuer and audience.
 type Verifier struct {
