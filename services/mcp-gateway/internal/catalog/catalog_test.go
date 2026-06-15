@@ -1,9 +1,7 @@
 package catalog
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"aireos.local/services/mcp-gateway/internal/mcp"
@@ -13,7 +11,7 @@ import (
 var _ mcp.Catalog = (*Service)(nil)
 
 func TestRegistryListsRemoteExec(t *testing.T) {
-	tools := New().List()
+	tools := NewRegistry().List()
 	if len(tools) != 1 || tools[0].Name != "remote.exec" {
 		t.Fatalf("List() = %+v, want exactly [remote.exec]", tools)
 	}
@@ -76,18 +74,7 @@ func TestTargetResolution(t *testing.T) {
 	}
 }
 
-func TestServiceInvokeStub(t *testing.T) {
-	s := New()
-	// Known tool, valid args → not-implemented (governed path is T-039).
-	if _, err := s.Invoke(context.Background(), "remote.exec", json.RawMessage(`{"resourceId":"r-9","command":"x"}`)); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Invoke(remote.exec) err = %v, want ErrNotImplemented", err)
-	}
-	// Known tool, invalid args → the target validation error (not not-implemented).
-	if _, err := s.Invoke(context.Background(), "remote.exec", json.RawMessage(`{"resourceId":""}`)); err == nil || errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Invoke(remote.exec, bad args) err = %v, want a validation error", err)
-	}
-	// Unknown tool → unknown-tool error.
-	if _, err := s.Invoke(context.Background(), "nope", json.RawMessage(`{}`)); !errors.Is(err, ErrUnknownTool) {
-		t.Fatalf("Invoke(nope) err = %v, want ErrUnknownTool", err)
-	}
-}
+// The governed Service.Invoke (policy → broker exec, scope/concurrency/idempotency/
+// fail-closed) is exercised through the wired server with real agent-tool tokens +
+// fakes in server_test (it needs the capability the gate stashes); the Registry
+// tests above cover the pure data layer.

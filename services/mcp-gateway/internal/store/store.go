@@ -9,6 +9,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -132,6 +133,27 @@ func getByKey(ctx context.Context, tx pgx.Tx, agentSubject, key string) (Invocat
 		return Invocation{}, fmt.Errorf("load invocation by key: %w", err)
 	}
 	return inv, nil
+}
+
+// RequiresApproval reads the resource's requires_approval label (ADR-0057) — the
+// same resources.labels read the broker does for SSH coords (no cross-service
+// call; resources live in the shared cockpit DB). ErrNotFound for an unknown id.
+func (s *Store) RequiresApproval(ctx context.Context, resourceID string) (bool, error) {
+	var labelsRaw []byte
+	err := s.pool.QueryRow(ctx, `SELECT labels FROM resources WHERE id = $1`, resourceID).Scan(&labelsRaw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("read resource labels: %w", err)
+	}
+	labels := map[string]string{}
+	if len(labelsRaw) > 0 {
+		if err := json.Unmarshal(labelsRaw, &labels); err != nil {
+			return false, fmt.Errorf("unmarshal labels: %w", err)
+		}
+	}
+	return labels["requires_approval"] == "true", nil
 }
 
 // CountInFlight returns the number of not-yet-terminal invocations for an agent —

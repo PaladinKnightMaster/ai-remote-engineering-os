@@ -47,6 +47,24 @@ type Catalog interface {
 	Invoke(ctx context.Context, name string, args json.RawMessage) (ToolResult, error)
 }
 
+// ctxKey is the private type for this package's context values.
+type ctxKey int
+
+const idempotencyKeyCtx ctxKey = iota
+
+// WithIdempotencyKey stashes the client's Idempotency-Key (the server reads the
+// HTTP header) so the governed Invoke can dedup retries (PERF-2) without widening
+// the Catalog interface.
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyKeyCtx, key)
+}
+
+// IdempotencyKey returns the stashed key, or "" if none.
+func IdempotencyKey(ctx context.Context) string {
+	k, _ := ctx.Value(idempotencyKeyCtx).(string)
+	return k
+}
+
 // InitializeResult is the MCP `initialize` response: the pinned protocol version,
 // the tools capability, and server identity.
 func InitializeResult() map[string]any {

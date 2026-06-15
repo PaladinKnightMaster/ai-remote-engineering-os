@@ -15,8 +15,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
+	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/mcp-gateway/internal/mcp"
+	"aireos.local/services/mcp-gateway/internal/store"
 )
 
 // ToolDef is the full tool definition (ADR-0057): the MCP wire surface
@@ -118,38 +121,150 @@ func remoteExecTarget(raw json.RawMessage) (string, error) {
 	return "resource:" + a.ResourceID, nil
 }
 
-// ErrNotImplemented is returned by the T-037 stub Invoke for a known tool whose
-// governed execution is not yet wired (lands in T-039).
-var ErrNotImplemented = errors.New("tool is not yet executable (governed execution wired in T-039)")
-
 // ErrUnknownTool is returned for a tools/call against an unregistered tool.
 var ErrUnknownTool = errors.New("unknown tool")
 
-// Service satisfies mcp.Catalog for the wire handler. At v0.3.0 (T-037) List is
-// real and Invoke is a stub: it confirms the tool exists and its arguments resolve,
-// then returns ErrNotImplemented. T-039 replaces this with the governed orchestrator
-// (policy → approval → connector lease → broker exec → audit), which holds the
-// Registry but keeps it pure.
-type Service struct {
-	registry *Registry
+// Store is the slice of the invocations store the orchestrator needs (ADR-0057).
+type Store interface {
+	Create(ctx context.Context, in store.CreateInput) (store.Invocation, bool, error)
+	CountInFlight(ctx context.Context, agentSubject string) (int, error)
+	SetStatus(ctx context.Context, id, status, decision string) error
+	Finish(ctx context.Context, id, status, outcome string) error
+	RequiresApproval(ctx context.Context, resourceID string) (bool, error)
 }
 
-// New builds the gateway tool service over the v0.3.0 registry.
-func New() *Service { return &Service{registry: NewRegistry()} }
+// PolicyDecider consults policy-service per invocation (ADR-0054/0057).
+type PolicyDecider interface {
+	Decide(ctx context.Context, invocationID, subject, edge, target, action string, requiresApproval bool) (decision string, err error)
+}
+
+// BrokerExecer runs the governed non-interactive exec on the broker (ADR-0058).
+type BrokerExecer interface {
+	Exec(ctx context.Context, invocationID, resourceID, command, subject string) (stdout string, exitCode int, truncated bool, err error)
+}
+
+// Service is the governed orchestrator: it satisfies mcp.Catalog, turning an
+// agent's tools/call into a persisted, policy-decided, audited invocation that
+// drives the broker exec (ADR-0057). List delegates to the pure Registry; Invoke
+// is the spine.
+type Service struct {
+	registry    *Registry
+	store       Store
+	policy      PolicyDecider
+	broker      BrokerExecer
+	maxInFlight int
+}
+
+// New builds the governed tool service. maxInFlight ≤ 0 defaults to 4 (PERF-3).
+func New(st Store, pol PolicyDecider, brk BrokerExecer, maxInFlight int) *Service {
+	if maxInFlight <= 0 {
+		maxInFlight = 4
+	}
+	return &Service{registry: NewRegistry(), store: st, policy: pol, broker: brk, maxInFlight: maxInFlight}
+}
 
 // List implements mcp.Catalog.
 func (s *Service) List() []mcp.Tool { return s.registry.List() }
 
-// Invoke implements mcp.Catalog. The ctx (which carries the agent capability) is
-// unused until T-039's governed path; arguments are validated now so a malformed
-// call fails clearly even before execution exists.
-func (s *Service) Invoke(_ context.Context, name string, args json.RawMessage) (mcp.ToolResult, error) {
+// Invoke runs the governed pipeline (ADR-0057): scope check (SEC-16) → per-agent
+// concurrency cap (PERF-3) → create invocation (idempotency, PERF-2) → policy
+// decide → allow: broker exec → tool.result; requires_approval: park (the
+// block-and-wait + operator resolve is T-040). Fail-closed (SEC-19): any
+// downstream failure marks the invocation failed and refuses egress.
+//
+// Governance refusals the agent should handle (scope/concurrency/approval/dup)
+// return an MCP tool-error result (isError); protocol/infra failures return a Go
+// error (a JSON-RPC error).
+func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage) (mcp.ToolResult, error) {
 	def, ok := s.registry.Lookup(name)
 	if !ok {
 		return mcp.ToolResult{}, fmt.Errorf("%w: %q", ErrUnknownTool, name)
 	}
-	if _, err := def.Target(args); err != nil {
+	capb, ok := mw.CapabilityFromContext(ctx)
+	if !ok || capb.Subject == "" {
+		return mcp.ToolResult{}, errors.New("no agent capability on the invocation")
+	}
+	agent := capb.Subject
+
+	// Validate + resolve the governance target (resource:<id>) from the args.
+	target, err := def.Target(args)
+	if err != nil {
 		return mcp.ToolResult{}, err
 	}
-	return mcp.ToolResult{}, ErrNotImplemented
+	resourceID := strings.TrimPrefix(target, "resource:")
+
+	// SEC-16: the invocation must stay within the agent token's scope.
+	if capb.Scope.Resource != "" && capb.Scope.Resource != resourceID {
+		return toolError("resource is outside the agent token's scope"), nil
+	}
+
+	// PERF-3: per-agent concurrency cap.
+	inFlight, err := s.store.CountInFlight(ctx, agent)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("concurrency check: %w", err)
+	}
+	if inFlight >= s.maxInFlight {
+		return toolError("too many concurrent invocations for this agent; retry shortly"), nil
+	}
+
+	// requires_approval from the resource label (ADR-0057).
+	requiresApproval, err := s.store.RequiresApproval(ctx, resourceID)
+	if err != nil {
+		return toolError("unknown or unavailable resource"), nil
+	}
+
+	// Create the invocation (idempotency: PERF-2 — a retry never re-executes).
+	inv, created, err := s.store.Create(ctx, store.CreateInput{
+		AgentSubject: agent, ResourceID: resourceID, Tool: def.Name, IdempotencyKey: mcp.IdempotencyKey(ctx),
+	})
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("create invocation: %w", err)
+	}
+	if !created {
+		return toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
+	}
+
+	// Policy decision (fail-closed: an error → mark failed, refuse egress, SEC-19).
+	decision, err := s.policy.Decide(ctx, inv.ID, agent, def.Edge, target, def.Action, requiresApproval)
+	if err != nil {
+		_ = s.store.Finish(ctx, inv.ID, "failed", "tool.result:error")
+		return mcp.ToolResult{}, fmt.Errorf("policy decision unavailable: %w", err)
+	}
+	if decision != PolicyAllow {
+		// Parked pending approval; the operator resolve + block-and-wait is T-040.
+		_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
+		return toolError("approval required — resolve via the operator console (interactive approval lands in T-040)"), nil
+	}
+
+	// Allow → governed egress via the broker (the sole SSH egress, ADR-0058).
+	_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
+	var execArgs struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(args, &execArgs) // command is non-empty: def.Target already validated it
+	stdout, exitCode, truncated, err := s.broker.Exec(ctx, inv.ID, resourceID, execArgs.Command, agent)
+	if err != nil {
+		_ = s.store.Finish(ctx, inv.ID, "failed", "tool.result:error")
+		return mcp.ToolResult{}, fmt.Errorf("exec failed: %w", err)
+	}
+	isErr := exitCode != 0
+	outcome := "tool.result"
+	if isErr {
+		outcome = "tool.result:error"
+	}
+	_ = s.store.Finish(ctx, inv.ID, "completed", outcome) // it ran; non-zero exit is a tool error, not a transport failure
+	text := stdout
+	if truncated {
+		text += "\n[output truncated]"
+	}
+	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: text}}, IsError: isErr}, nil
+}
+
+// PolicyAllow is the decision string for an unflagged (or pre-approved) action.
+const PolicyAllow = "allow"
+
+// toolError is an MCP tool-level error result (a 200 JSON-RPC result with isError)
+// for governance refusals the agent should handle.
+func toolError(msg string) mcp.ToolResult {
+	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: msg}}, IsError: true}
 }

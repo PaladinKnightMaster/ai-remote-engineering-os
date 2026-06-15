@@ -49,6 +49,11 @@ type handler struct{ catalog mcp.Catalog }
 // carry an id and get a JSON-RPC response (HTTP 200, error-in-body per spec);
 // notifications (no id) get 202 Accepted with no body.
 func (h *handler) serveMCP(w http.ResponseWriter, r *http.Request) {
+	// Carry the client's Idempotency-Key (if any) so the governed Invoke can dedup
+	// retries (PERF-2) without widening the Catalog interface.
+	if key := r.Header.Get("Idempotency-Key"); key != "" {
+		r = r.WithContext(mcp.WithIdempotencyKey(r.Context(), key))
+	}
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeRPCError(w, nil, codeParseError, "parse error")
