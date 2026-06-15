@@ -2,11 +2,16 @@ package server_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +23,7 @@ import (
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/session-broker/internal/connector"
 	"aireos.local/services/session-broker/internal/server"
+	"aireos.local/services/session-broker/internal/sshpty"
 	"aireos.local/services/session-broker/internal/store"
 )
 
@@ -27,13 +33,27 @@ func (allowAll) Verify(context.Context, string) (mw.Capability, error) {
 	return mw.Capability{Subject: "tester", Edge: "agent-remote-session"}, nil
 }
 
-// fakeStore drives the channel handler's pre-upgrade authz/validation branches
-// without a database or a live SSH target.
+// allowAllService stands in for the gateway's service-service token (audience
+// session-broker) on the exec plane.
+type allowAllService struct{}
+
+func (allowAllService) Verify(context.Context, string) (mw.Capability, error) {
+	return mw.Capability{Subject: "svc:gateway", Edge: "service-service"}, nil
+}
+
+// fakeStore drives the handlers' authz/validation branches without a database or
+// a live SSH target. It captures the last RecordExec for the exec tests.
 type fakeStore struct {
 	sess      store.Session
 	sessErr   error
 	target    store.Target
 	targetErr error
+
+	execCalled     bool
+	execInvocation string
+	execActor      string
+	execOutcome    string
+	execSHA        string
 }
 
 func (f *fakeStore) LoadSession(_ context.Context, _ string) (store.Session, error) {
@@ -45,6 +65,11 @@ func (f *fakeStore) LoadTargetCoords(_ context.Context, _ string) (store.Target,
 func (f *fakeStore) Activate(_ context.Context, _, _ string) error           { return nil }
 func (f *fakeStore) Close(_ context.Context, _, _, _, _, _ string) error     { return nil }
 func (f *fakeStore) RecordInputLine(_ context.Context, _, _, _ string) error { return nil }
+func (f *fakeStore) RecordExec(_ context.Context, inv, actor, outcome, sha string) error {
+	f.execCalled = true
+	f.execInvocation, f.execActor, f.execOutcome, f.execSHA = inv, actor, outcome, sha
+	return nil
+}
 
 // fakeLeaser stands in for connector-service. The default returns ErrNoCredential
 // so an unconfigured test stops at 424 rather than attempting a live SSH dial.
@@ -242,5 +267,123 @@ func TestHTTP2Healthz(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+}
+
+// --- exec plane (T-038 / ADR-0058) ------------------------------------------
+
+func execHandler(t *testing.T, st *fakeStore, leaser server.CredentialLeaser, fn server.ExecFunc, dir string) http.Handler {
+	t.Helper()
+	if leaser == nil {
+		leaser = &fakeLeaser{mat: connector.Material{PrivateKey: "k"}}
+	}
+	return server.New(server.Config{
+		Verifier:     allowAll{},
+		ExecVerifier: allowAllService{},
+		Store:        st,
+		Leaser:       leaser,
+		CastDir:      dir,
+		ExecFn:       fn,
+	})
+}
+
+func postExec(t *testing.T, h http.Handler, body string) *http.Response {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/exec", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer svc")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post exec: %v", err)
+	}
+	return resp
+}
+
+func TestExecHappyPathAuditsAndRetains(t *testing.T) {
+	dir := t.TempDir()
+	st := &fakeStore{target: store.Target{Host: "h", User: "u", HostKey: "ssh-ed25519 AAAA"}}
+	fn := func(_ sshpty.Config, _ string, _ int, _ time.Duration) (sshpty.ExecResult, error) {
+		return sshpty.ExecResult{Stdout: []byte("hello\n"), ExitCode: 0}, nil
+	}
+	resp := postExec(t, execHandler(t, st, nil, fn, dir),
+		`{"resourceId":"r","command":"echo hello","invocationId":"inv-1","subject":"agent:wedge"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var out struct {
+		Stdout    string `json:"stdout"`
+		ExitCode  int    `json:"exitCode"`
+		Truncated bool   `json:"truncated"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if out.Stdout != "hello\n" || out.ExitCode != 0 || out.Truncated {
+		t.Fatalf("response = %+v", out)
+	}
+	if !st.execCalled || st.execInvocation != "inv-1" || st.execActor != "agent:wedge" || st.execOutcome != "remote.exec" {
+		t.Fatalf("audit fields wrong: %+v", st)
+	}
+	sum := sha256.Sum256([]byte("hello\n"))
+	if st.execSHA != hex.EncodeToString(sum[:]) {
+		t.Fatalf("audit SHA = %q, want stdout sha", st.execSHA)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "inv-1.exec"))
+	if err != nil || string(b) != "hello\n" {
+		t.Fatalf("artifact = %q err=%v", b, err)
+	}
+}
+
+func TestExecNonZeroExitOutcome(t *testing.T) {
+	st := &fakeStore{target: store.Target{Host: "h", User: "u", HostKey: "ssh-ed25519 AAAA"}}
+	fn := func(_ sshpty.Config, _ string, _ int, _ time.Duration) (sshpty.ExecResult, error) {
+		return sshpty.ExecResult{Stdout: []byte("nope"), ExitCode: 2}, nil
+	}
+	resp := postExec(t, execHandler(t, st, nil, fn, t.TempDir()),
+		`{"resourceId":"r","command":"false","invocationId":"inv-2","subject":"agent:x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if st.execOutcome != "remote.exec:error" {
+		t.Fatalf("outcome = %q, want remote.exec:error", st.execOutcome)
+	}
+}
+
+func TestExecValidation(t *testing.T) {
+	st := &fakeStore{target: store.Target{Host: "h", User: "u", HostKey: "k"}}
+	fn := func(_ sshpty.Config, _ string, _ int, _ time.Duration) (sshpty.ExecResult, error) {
+		return sshpty.ExecResult{}, nil
+	}
+	resp := postExec(t, execHandler(t, st, nil, fn, t.TempDir()), `{"resourceId":"r","command":"x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("validation: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestExecUnprovisionedIs424(t *testing.T) {
+	st := &fakeStore{target: store.Target{Host: "h", User: "u", HostKey: "k"}}
+	fn := func(_ sshpty.Config, _ string, _ int, _ time.Duration) (sshpty.ExecResult, error) {
+		return sshpty.ExecResult{}, nil
+	}
+	resp := postExec(t, execHandler(t, st, &fakeLeaser{err: connector.ErrNoCredential}, fn, t.TempDir()),
+		`{"resourceId":"r","command":"x","invocationId":"i","subject":"a"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFailedDependency {
+		t.Fatalf("unprovisioned: status = %d, want 424", resp.StatusCode)
+	}
+	if st.execCalled {
+		t.Fatal("no exec event should be recorded when the lease fails")
+	}
+}
+
+func TestExecRouteAbsentWithoutVerifier(t *testing.T) {
+	h := server.New(server.Config{Verifier: allowAll{}, Store: &fakeStore{}, CastDir: t.TempDir()})
+	resp := postExec(t, h, `{"resourceId":"r","command":"x","invocationId":"i","subject":"a"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("no exec verifier: status = %d, want 404", resp.StatusCode)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -146,6 +147,10 @@ func serve(dsn string) error {
 	if err != nil {
 		return err
 	}
+	sv, err := serviceVerifier()
+	if err != nil {
+		return err
+	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
@@ -186,10 +191,13 @@ func serve(dsn string) error {
 	}
 
 	handler := server.New(server.Config{
-		Verifier: v,
-		Store:    store.New(pool),
-		Leaser:   leaser,
-		CastDir:  castDir,
+		Verifier:     v,
+		ExecVerifier: sv,
+		Store:        store.New(pool),
+		Leaser:       leaser,
+		CastDir:      castDir,
+		ExecMaxBytes: execMaxBytes(),
+		ExecTimeout:  execTimeout(),
 	})
 
 	// h2c lets the cleartext dev/CI listener speak HTTP/2; under TLS, http.Server
@@ -293,6 +301,52 @@ type devAllowAll struct{}
 
 func (devAllowAll) Verify(_ context.Context, _ string) (mw.Capability, error) {
 	return mw.Capability{Subject: "dev", Edge: "agent-remote-session"}, nil
+}
+
+// serviceVerifier verifies the gateway's service-service token on the exec plane
+// (audience "session-broker", ADR-0058) — distinct from the operator WS plane's
+// audience "api" (capabilityVerifier / ADR-0050). The gateway mints
+// IssueService("mcp-gateway","session-broker") (T-039).
+func serviceVerifier() (mw.Verifier, error) {
+	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
+		key, err := auth.NewKeyFromHex(keyHex)
+		if err != nil {
+			return nil, err
+		}
+		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, os.Getenv("AIREOS_CLUSTER_ID"), "session-broker")), nil
+	}
+	if os.Getenv("BROKER_DEV_INSECURE_AUTH") == "1" {
+		return devAllowAllService{}, nil
+	}
+	return nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY or BROKER_DEV_INSECURE_AUTH=1 for local dev")
+}
+
+type devAllowAllService struct{}
+
+func (devAllowAllService) Verify(_ context.Context, _ string) (mw.Capability, error) {
+	return mw.Capability{Subject: "dev-svc", Edge: "service-service"}, nil
+}
+
+// execMaxBytes / execTimeout resolve the exec output cap + command timeout (PERF-1;
+// ADR-0058) from env, falling back to the ADR defaults (1 MiB / 60s).
+func execMaxBytes() int {
+	if s := os.Getenv("BROKER_EXEC_MAX_BYTES"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("ignoring invalid BROKER_EXEC_MAX_BYTES=%q", s)
+	}
+	return 1 << 20
+}
+
+func execTimeout() time.Duration {
+	if s := os.Getenv("BROKER_EXEC_TIMEOUT_SECONDS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		log.Printf("ignoring invalid BROKER_EXEC_TIMEOUT_SECONDS=%q", s)
+	}
+	return 60 * time.Second
 }
 
 func firstNonEmpty(vals ...string) string {

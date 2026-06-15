@@ -210,6 +210,27 @@ func (s *Store) RecordInputLine(ctx context.Context, sessionID, operatorID, line
 	return err
 }
 
+// RecordExec emits the broker non-interactive exec egress event (ADR-0058). Exec
+// is STATELESS — no sessions row — so the enqueue stands alone (no-op mutate), like
+// RecordInputLine. Target is invocation:<id> (the v0.2.0 session:<id> correlation
+// role); stdoutSHA anchors the retained <invocationId>.exec artifact
+// (evidencePacketId). actor is the agent identity supplied by the gateway; outcome
+// encodes the disposition (remote.exec / remote.exec:error).
+func (s *Store) RecordExec(ctx context.Context, invocationID, actor, outcome, stdoutSHA string) error {
+	evidence := ""
+	if stdoutSHA != "" {
+		evidence = "sha256:" + stdoutSHA
+	}
+	_, err := s.txEnqueue(ctx,
+		func(pgx.Tx) error { return nil },
+		outbox.Event{
+			Timestamp: time.Now(), Actor: actor, Edge: auditEdge,
+			Target: "invocation:" + invocationID, Outcome: outcome,
+			EvidencePacketID: evidence,
+		})
+	return err
+}
+
 // PrunableCast identifies a closed session whose cast file is eligible for
 // retention deletion.
 type PrunableCast struct {
