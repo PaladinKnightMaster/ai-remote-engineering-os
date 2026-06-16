@@ -230,7 +230,10 @@ services:
       - gomodcache:/go/pkg/mod
       - gocache:/root/.cache/go-build
       - casts:/var/lib/aireos/sessions
-    command: ["bash", "-c", "go test -tags e2e -count=1 -v -timeout 300s ./tests/e2e/..."]
+    # After the e2e tests pass, verify the WHOLE accumulated audit chain's hash
+    # integrity (AUD-11) — recomputes every chainHash + prevHash link, exits non-zero
+    # on a broken link. The capstone's hash-intact proof, over the full chain.
+    command: ["bash", "-c", "go test -tags e2e -count=1 -v -timeout 600s ./tests/e2e/... && go run ./services/audit-service verify"]
 
 volumes:
   gomodcache:

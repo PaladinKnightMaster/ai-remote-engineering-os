@@ -173,6 +173,101 @@ func pollEvidenceOutcome(t *testing.T, auditURL, token, evidence, outcome string
 	}
 }
 
+// mintAgentTokenViaAPI provisions a scoped agent-tool token through the operator's
+// session (POST /v1/agent-tokens — human-agent + CSRF, ADR-0056/0057; T-036/AG-3),
+// the real operator-provisions-agent path used by the WD-3 capstone (not the
+// cluster-key shortcut). The token subject is agent:<agentID>, scoped to resID.
+func mintAgentTokenViaAPI(t *testing.T, client *http.Client, apiURL, session, csrf, agentID, resID string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"agentId": agentID, "resourceId": resID, "operations": []string{"exec"}})
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/agent-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("mint agent token via api: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mint agent token via api: status %d", resp.StatusCode)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode agent token: %v", err)
+	}
+	if out.Token == "" {
+		t.Fatal("api returned an empty agent token")
+	}
+	return out.Token
+}
+
+// pendingInvocation mirrors the operator pending-list row (services/api proxies the
+// gateway's internal list; ADR-0057 §4 / ADR-0059 — it carries the command so the
+// operator approves the exact payload). id is the bare invocation UUID.
+type pendingInvocation struct {
+	ID         string `json:"id"`
+	Agent      string `json:"agent"`
+	ResourceID string `json:"resourceId"`
+	Tool       string `json:"tool"`
+	Command    string `json:"command"`
+	Status     string `json:"status"`
+}
+
+// pollPendingInvocation waits for a parked invocation against resID to surface in the
+// operator list (GET /v1/invocations) — how the operator discovers what to approve.
+// Exactly one is pending per resource per leg: cold-compile retries finalize to
+// 'failed' (not 'pending'), so they never collide here.
+func pollPendingInvocation(t *testing.T, client *http.Client, apiURL, session, csrf, resID string, within time.Duration) pendingInvocation {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		req, _ := http.NewRequest(http.MethodGet, apiURL+"/v1/invocations", nil)
+		req.Header.Set("Cookie", cookieHeader(session, csrf))
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var body struct {
+				Invocations []pendingInvocation `json:"invocations"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&body)
+			_ = resp.Body.Close()
+			for _, inv := range body.Invocations {
+				if inv.ResourceID == resID && inv.Status == "pending_approval" {
+					return inv
+				}
+			}
+		} else if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no parked invocation for %s appeared within %s", resID, within)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// resolveInvocation drives the operator approve/deny on a parked invocation
+// (POST /v1/invocations/{id}/resolve — human-agent + CSRF, proxied to the gateway
+// which owns the reconcile; ADR-0057 §4). Asserts api answered 200.
+func resolveInvocation(t *testing.T, client *http.Client, apiURL, id, session, csrf, decision string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"decision": decision})
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/invocations/"+id+"/resolve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("resolve invocation (%s): %v", decision, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resolve invocation (%s): status %d", decision, resp.StatusCode)
+	}
+}
+
 func endSession(t *testing.T, client *http.Client, apiURL, id, session, csrf string) {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/sessions/"+id+"/end", nil)
