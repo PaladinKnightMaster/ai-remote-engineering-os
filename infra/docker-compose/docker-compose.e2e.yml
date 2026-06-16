@@ -113,6 +113,10 @@ services:
       # api consults policy-service at session-create for requires_approval
       # resources and resolves operator approve/deny through it (ADR-0054, T-033a).
       POLICY_URL: http://policy:8084
+      # api proxies the operator's pending-invocation list + approve/deny to the
+      # gateway's internal plane (ADR-0057 §4, T-040b). Without this the operator
+      # invocation routes answer 503.
+      GATEWAY_URL: http://mcp-gateway:8085
       AIREOS_BOOTSTRAP_OPERATOR_USER: admin
       AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH: "$$argon2id$$v=19$$m=65536,t=3,p=2$$c/1DjrxaiJU6wokhTzZpkQ$$Eb0SglfJ9v7PEDlVTyM48Sqeroyu3OFN5+7rl9wYdgI"
     command: ["bash", "-c", "go run ./services/api serve"]

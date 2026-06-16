@@ -6,6 +6,7 @@ import { Login } from "./routes/Login";
 import { Dashboard } from "./routes/Dashboard";
 import { Sessions } from "./routes/Sessions";
 import { SessionView } from "./routes/SessionView";
+import { Invocations } from "./routes/Invocations";
 import { Audit } from "./routes/Audit";
 
 /**
@@ -49,6 +50,14 @@ export function App() {
             element={
               <RequireAuth>
                 <SessionView />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/invocations"
+            element={
+              <RequireAuth>
+                <Invocations />
               </RequireAuth>
             }
           />

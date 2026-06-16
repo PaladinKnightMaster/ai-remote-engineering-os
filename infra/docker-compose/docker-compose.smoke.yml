@@ -74,6 +74,7 @@ services:
       - broker
       - connector
       - policy
+      - mcp-gateway
       - sshd
       # audit-service must be up for the audit-timeline READ leg: api's
       # /v1/audit/events read-proxy returns 502 if its upstream is down (the
@@ -83,6 +84,9 @@ services:
       - audit
     environment:
       SMOKE_BASE_URL: https://web
+      # The agent (MCP) plane is a direct Bearer call to the gateway, not through
+      # Caddy — the invocation-approval smoke parks a real invocation via it (T-040c).
+      SMOKE_GATEWAY_URL: http://mcp-gateway:8085
     working_dir: /smoke
     volumes:
       - ../../tests/smoke:/smoke

@@ -37,4 +37,29 @@ describe("ApprovalPrompt", () => {
     render(<ApprovalPrompt onApprove={() => {}} onDeny={() => {}} error="approval expired" />);
     expect(screen.getByRole("alert").textContent).toMatch(/approval expired/i);
   });
+
+  // T-040c: the invocation consumer passes agent + command + overrides; the command
+  // must render verbatim for informed consent (ADR-0059).
+  it("renders the agent and the verbatim command for an invocation", () => {
+    render(
+      <ApprovalPrompt
+        onApprove={() => {}}
+        onDeny={() => {}}
+        title="Tool invocation approval"
+        description="An AI agent is requesting to run a command."
+        agent="agent:smoke"
+        resourceId="res-1"
+        command="echo INVOKE-SMOKE-OK"
+      />,
+    );
+    expect(screen.getByRole("heading", { name: /tool invocation approval/i })).toBeTruthy();
+    expect(screen.getByText(/agent:smoke/)).toBeTruthy();
+    expect(screen.getByLabelText("command").textContent).toBe("echo INVOKE-SMOKE-OK");
+  });
+
+  it("defaults to the session copy when no overrides are given (backward-compatible)", () => {
+    render(<ApprovalPrompt onApprove={() => {}} onDeny={() => {}} resourceId="res-1" />);
+    expect(screen.getByText(/requires approval before it can start/i)).toBeTruthy();
+    expect(screen.queryByLabelText("command")).toBeNull();
+  });
 });

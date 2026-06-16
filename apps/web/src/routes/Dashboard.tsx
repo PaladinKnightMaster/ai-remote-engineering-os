@@ -40,6 +40,12 @@ export function Dashboard() {
             start and attach to a recorded SSH terminal.
           </p>
           <p className="mt-2 text-sm">
+            <Link to="/invocations" className="font-medium text-primary hover:underline">
+              Pending tool invocations →
+            </Link>{" "}
+            approve or deny the commands AI agents request on governed resources.
+          </p>
+          <p className="mt-2 text-sm">
             <Link to="/audit" className="font-medium text-primary hover:underline">
               Audit timeline →
             </Link>{" "}
