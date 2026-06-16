@@ -31,11 +31,20 @@ function renderSessions() {
 describe("Sessions route", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // The route now fetches BOTH /v1/sessions and /v1/resources (the picker); mock per path.
+  function mockGET(opts: { sessions?: unknown; sessionsErr?: unknown; resources?: unknown[] }) {
+    vi.mocked(apiClient.GET).mockImplementation(((path: string) => {
+      if (path === "/v1/resources") {
+        return Promise.resolve({ data: { items: opts.resources ?? [], page: {} }, error: undefined });
+      }
+      return Promise.resolve({ data: opts.sessions, error: opts.sessionsErr });
+    }) as never);
+  }
+
   it("lists the operator's sessions from GET /v1/sessions", async () => {
-    vi.mocked(apiClient.GET).mockResolvedValue({
-      data: { items: [{ id: "sess-1", resourceId: "r", operatorId: "o", mode: "terminal", status: "active", startedAt: "2026-05-30T00:00:00Z" }], page: {} },
-      error: undefined,
-    } as never);
+    mockGET({
+      sessions: { items: [{ id: "sess-1", resourceId: "r", operatorId: "o", mode: "terminal", status: "active", startedAt: "2026-05-30T00:00:00Z" }], page: {} },
+    });
 
     renderSessions();
 
@@ -46,8 +55,8 @@ describe("Sessions route", () => {
     expect(apiClient.GET).toHaveBeenCalledWith("/v1/sessions", {});
   });
 
-  it("starts a session via POST and navigates to its terminal", async () => {
-    vi.mocked(apiClient.GET).mockResolvedValue({ data: { items: [], page: {} }, error: undefined } as never);
+  it("starts a session by picking a resource and navigates to its terminal", async () => {
+    mockGET({ sessions: { items: [], page: {} }, resources: [{ id: "res-1", type: "ssh", name: "edge-01" }] });
     vi.mocked(apiClient.POST).mockResolvedValue({
       data: { id: "sess-new", resourceId: "res-1", operatorId: "o", mode: "terminal", status: "pending", startedAt: "2026-05-30T00:00:00Z" },
       error: undefined,
@@ -55,8 +64,10 @@ describe("Sessions route", () => {
 
     renderSessions();
     await waitFor(() => expect(screen.getByText(/no sessions yet/i)).toBeTruthy());
+    // The picker is populated from /v1/resources.
+    await waitFor(() => expect(screen.getByRole("option", { name: /edge-01/ })).toBeTruthy());
 
-    fireEvent.change(screen.getByPlaceholderText(/resource id/i), { target: { value: "res-1" } });
+    fireEvent.change(screen.getByLabelText("resource"), { target: { value: "res-1" } });
     fireEvent.click(screen.getByRole("button", { name: /start session/i }));
 
     await waitFor(() => {
@@ -68,10 +79,7 @@ describe("Sessions route", () => {
   });
 
   it("shows an error when listing fails", async () => {
-    vi.mocked(apiClient.GET).mockResolvedValue({
-      data: undefined,
-      error: { code: "internal", message: "boom" },
-    } as never);
+    mockGET({ sessions: undefined, sessionsErr: { code: "internal", message: "boom" } });
 
     renderSessions();
 

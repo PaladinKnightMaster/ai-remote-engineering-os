@@ -72,14 +72,14 @@ export function Audit() {
         {events.length === 0 && !loading ? (
           <p className="p-4 text-sm text-muted-foreground">No audit events yet.</p>
         ) : (
-          <table className="w-full text-left text-sm">
+          <table className="w-full table-fixed text-left text-sm">
             <thead className="border-b border-border bg-muted/40 text-xs uppercase text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 font-medium">Time</th>
-                <th className="px-3 py-2 font-medium">Actor</th>
-                <th className="px-3 py-2 font-medium">Edge</th>
+                <th className="w-44 px-3 py-2 font-medium">Time</th>
+                <th className="w-40 px-3 py-2 font-medium">Actor</th>
+                <th className="w-28 px-3 py-2 font-medium">Edge</th>
                 <th className="px-3 py-2 font-medium">Target</th>
-                <th className="px-3 py-2 font-medium">Outcome</th>
+                <th className="w-44 px-3 py-2 font-medium">Outcome</th>
                 <th className="px-3 py-2 font-medium">Evidence</th>
               </tr>
             </thead>

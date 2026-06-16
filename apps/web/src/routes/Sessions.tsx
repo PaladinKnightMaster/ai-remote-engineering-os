@@ -9,9 +9,11 @@ import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
 type Session = components["schemas"]["Session"];
+type Resource = components["schemas"]["Resource"];
 
 export function Sessions() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [resources, setResources] = useState<Resource[]>([]);
   const [resourceId, setResourceId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -34,6 +36,15 @@ export function Sessions() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Resource picker (FE-12): list resources once so the operator selects one by name
+  // instead of pasting a raw UUID. Read-only; failure leaves an empty picker.
+  useEffect(() => {
+    void (async () => {
+      const { data } = await apiClient.GET("/v1/resources", {});
+      setResources(data?.items ?? []);
+    })();
+  }, []);
 
   async function onStart(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -70,17 +81,25 @@ export function Sessions() {
       </header>
 
       <form onSubmit={onStart} aria-label="start session" className="flex gap-2">
-        <input
-          type="text"
+        <select
           name="resourceId"
-          placeholder="resource id (UUID)"
+          aria-label="resource"
           value={resourceId}
           onChange={(e) => setResourceId(e.target.value)}
-          className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-        />
+          className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+        >
+          <option value="">
+            {resources.length === 0 ? "No resources available" : "Select a resource…"}
+          </option>
+          {resources.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name} ({r.type})
+            </option>
+          ))}
+        </select>
         <button
           type="submit"
-          disabled={starting || !resourceId.trim()}
+          disabled={starting || !resourceId}
           className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
         >
           {starting ? "Starting…" : "Start session"}

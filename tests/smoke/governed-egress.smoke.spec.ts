@@ -42,7 +42,10 @@ async function login(page: Page) {
 // has parked it pending_approval (ADR-0054) and the SPA renders <ApprovalPrompt>.
 async function startFlaggedSession(page: Page) {
   await page.goto("/sessions");
-  await page.getByPlaceholder("resource id (UUID)").fill(FLAGGED_RESOURCE_ID);
+  // FE-12: pick the flagged resource from the resource picker (was a raw-UUID input).
+  const picker = page.getByLabel("resource");
+  await expect(picker.locator(`option[value="${FLAGGED_RESOURCE_ID}"]`)).toBeAttached({ timeout: 15_000 });
+  await picker.selectOption(FLAGGED_RESOURCE_ID);
   await page.getByRole("button", { name: "Start session" }).click();
   await expect(page).toHaveURL(/\/sessions\/[^/]+$/);
   await expect(page.getByRole("region", { name: "approval required" })).toBeVisible();
