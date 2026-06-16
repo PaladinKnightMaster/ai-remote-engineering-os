@@ -8,6 +8,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 // Protocol identity advertised in the MCP `initialize` response. ProtocolVersion
@@ -46,6 +47,44 @@ type Catalog interface {
 	List() []Tool
 	Invoke(ctx context.Context, name string, args json.RawMessage) (ToolResult, error)
 }
+
+// InvocationView is the operator's view of a parked invocation (ADR-0057/0059) — the
+// internal pending-list payload services/api proxies to the operator console. It
+// carries the persisted Command so the operator gives informed consent.
+type InvocationView struct {
+	ID         string `json:"id"`
+	Agent      string `json:"agent"`
+	ResourceID string `json:"resourceId"`
+	Tool       string `json:"tool"`
+	Command    string `json:"command"`
+	Status     string `json:"status"`
+}
+
+// ResolverPort is the operator-plane seam (ADR-0057 §4): the internal HTTP handler
+// (service-service, proxied by api) lists parked invocations and resolves one. The
+// governed implementation (catalog.Resolver: policy.Resolve → grant/deny + the
+// fail-closed reconcile) lives behind it, off the agent plane.
+type ResolverPort interface {
+	ListPending(ctx context.Context) ([]InvocationView, error)
+	// Resolve applies the operator's decision ("granted" | "denied"). It returns
+	// ErrInvocationNotFound for an unknown id and ErrApprovalNotPending when the
+	// invocation is no longer awaiting approval (already resolved, or policy timed
+	// it out); any other error is an infrastructure failure.
+	Resolve(ctx context.Context, id, decision, resolvedBy string) error
+}
+
+// Operator-plane sentinels the resolve handler maps to HTTP status (404 / 409).
+var (
+	ErrInvocationNotFound = errors.New("invocation not found")
+	ErrApprovalNotPending = errors.New("invocation is not awaiting approval")
+)
+
+// Resolve decision vocabulary (ADR-0054 policy verbs). services/api maps the operator
+// verbs approve/deny → these before proxying to the gateway's internal resolve route.
+const (
+	DecisionGranted = "granted"
+	DecisionDenied  = "denied"
+)
 
 // ctxKey is the private type for this package's context values.
 type ctxKey int

@@ -203,13 +203,15 @@ func (f *fakeStore) ClaimForExec(_ context.Context, id string) (store.Invocation
 }
 
 type fakePolicy struct {
-	decision string
-	err      error
+	decision   string
+	err        error
+	resolveErr error
 }
 
 func (f *fakePolicy) Decide(context.Context, string, string, string, string, string, bool) (string, error) {
 	return f.decision, f.err
 }
+func (f *fakePolicy) Resolve(context.Context, string, string, string) error { return f.resolveErr }
 
 type fakeBroker struct {
 	stdout      string
@@ -408,6 +410,122 @@ func TestInvokeIdempotentTerminalNoReplay(t *testing.T) {
 	}
 	if brk.called {
 		t.Fatal("a terminal idempotent hit must not re-execute")
+	}
+}
+
+// --- operator resolve/list plane (T-040a2) ----------------------------------
+
+type fakeResolver struct {
+	pending     []mcp.InvocationView
+	listErr     error
+	resolveErr  error
+	gotID       string
+	gotDecision string
+	gotResolved string
+}
+
+func (f *fakeResolver) ListPending(context.Context) ([]mcp.InvocationView, error) {
+	return f.pending, f.listErr
+}
+func (f *fakeResolver) Resolve(_ context.Context, id, decision, resolvedBy string) error {
+	f.gotID, f.gotDecision, f.gotResolved = id, decision, resolvedBy
+	return f.resolveErr
+}
+
+func resolverHandler(t *testing.T, rsv mcp.ResolverPort) (http.Handler, *auth.Signer) {
+	t.Helper()
+	key, _ := auth.GenerateKey()
+	v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "", "mcp-gateway"))
+	return New(Config{Verifier: v, Catalog: emptyCatalog{}, Resolver: rsv}), auth.NewSigner(key, "")
+}
+
+func serviceToken(t *testing.T, s *auth.Signer) string {
+	t.Helper()
+	tok, err := s.IssueService("api", "mcp-gateway")
+	if err != nil {
+		t.Fatalf("mint service token: %v", err)
+	}
+	return tok
+}
+
+func doReq(t *testing.T, h http.Handler, method, path, body, bearer string) *httptest.ResponseRecorder {
+	t.Helper()
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	}
+	if bearer != "" {
+		r.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// The internal resolve/list plane is service-service only (ADR-0056 two planes): an
+// agent-tool token (the agent plane) must not reach it, and no token is 401.
+func TestInternalPlaneRequiresServiceEdge(t *testing.T) {
+	h, s := resolverHandler(t, &fakeResolver{})
+	if rec := doReq(t, h, http.MethodGet, "/v1/invocations", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: status = %d, want 401", rec.Code)
+	}
+	if rec := doReq(t, h, http.MethodGet, "/v1/invocations", "", agentToken(t, s)); rec.Code != http.StatusForbidden {
+		t.Fatalf("agent-tool token on internal plane: status = %d, want 403", rec.Code)
+	}
+}
+
+// With no resolver wired the internal routes are not mounted (mirrors the broker's
+// nil-disables-exec): a service token gets 404, not 200.
+func TestInternalRoutesDisabledWhenNoResolver(t *testing.T) {
+	h, s := newTestHandler(t) // nil Resolver
+	if rec := doReq(t, h, http.MethodGet, "/v1/invocations", "", serviceToken(t, s)); rec.Code != http.StatusNotFound {
+		t.Fatalf("nil resolver: GET /v1/invocations = %d, want 404 (route absent)", rec.Code)
+	}
+}
+
+func TestListInvocationsReturnsPending(t *testing.T) {
+	rsv := &fakeResolver{pending: []mcp.InvocationView{{ID: "inv-1", Agent: "agent:x", ResourceID: "r1", Tool: "remote.exec", Command: "uname -a", Status: "pending_approval"}}}
+	h, s := resolverHandler(t, rsv)
+	rec := doReq(t, h, http.MethodGet, "/v1/invocations", "", serviceToken(t, s))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"command":"uname -a"`) {
+		t.Fatalf("list body missing the command (ADR-0059 operator payload): %s", rec.Body.String())
+	}
+}
+
+func TestResolveRouteStatusMapping(t *testing.T) {
+	tok := func(s *auth.Signer) string { return serviceToken(t, s) }
+	cases := []struct {
+		name     string
+		body     string
+		err      error
+		want     int
+		wantVerb string
+	}{
+		{"granted", `{"decision":"granted","resolvedBy":"operator:1"}`, nil, http.StatusOK, "granted"},
+		{"denied", `{"decision":"denied","resolvedBy":"operator:1"}`, nil, http.StatusOK, "denied"},
+		{"bad decision", `{"decision":"maybe"}`, nil, http.StatusBadRequest, ""},
+		{"not found", `{"decision":"granted"}`, mcp.ErrInvocationNotFound, http.StatusNotFound, "granted"},
+		{"not pending", `{"decision":"granted"}`, mcp.ErrApprovalNotPending, http.StatusConflict, "granted"},
+		{"policy outage", `{"decision":"granted"}`, errors.New("boom"), http.StatusBadGateway, "granted"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rsv := &fakeResolver{resolveErr: c.err}
+			h, s := resolverHandler(t, rsv)
+			rec := doReq(t, h, http.MethodPost, "/v1/invocations/inv-9/resolve", c.body, tok(s))
+			if rec.Code != c.want {
+				t.Fatalf("status = %d, want %d (body=%s)", rec.Code, c.want, rec.Body.String())
+			}
+			if c.wantVerb != "" && rsv.gotDecision != c.wantVerb {
+				t.Fatalf("resolver got decision %q, want %q", rsv.gotDecision, c.wantVerb)
+			}
+		})
 	}
 }
 

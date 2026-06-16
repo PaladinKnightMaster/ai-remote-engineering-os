@@ -98,13 +98,17 @@ func serve() error {
 
 	signer := serviceSigner()
 	gw := store.New(pool)
+	pol := policy.New(os.Getenv("POLICY_URL"), signer)
 	cat := catalog.New(catalog.Config{
 		Store:       gw,
-		Policy:      policy.New(os.Getenv("POLICY_URL"), signer),
+		Policy:      pol,
 		Broker:      brokerexec.New(os.Getenv("BROKER_URL"), signer),
 		MaxInFlight: maxInFlight(),
 		WaitTimeout: durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
 	})
+	// Operator-plane resolver (ADR-0057 §4): the internal resolve/list routes, gated
+	// service-service, that services/api proxies the operator's approve/deny to.
+	resolver := catalog.NewResolver(gw, pol)
 
 	// Invocation reaper (ADR-0059): a parked invocation whose agent disconnected
 	// mid-wait would otherwise leak its concurrency slot and retain its command
@@ -114,7 +118,7 @@ func serve() error {
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("MCP_ADDR"), ":8085"),
-		Handler:           server.New(server.Config{Verifier: v, Catalog: cat}),
+		Handler:           server.New(server.Config{Verifier: v, Catalog: cat, Resolver: resolver}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: a governed tools/call may block on synchronous human
 		// approval (ADR-0054/0057 block-and-wait) once T-040 wires it.

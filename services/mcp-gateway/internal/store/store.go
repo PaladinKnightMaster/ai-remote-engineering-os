@@ -207,7 +207,9 @@ func (s *Store) ReapStale(ctx context.Context, olderThan time.Duration) (int, er
 
 	n := 0
 	for _, id := range ids {
-		reaped, err := s.reapOne(ctx, id, cutoff)
+		// FinalizeIfPending's status guard skips a row resolved/claimed between the
+		// scan and here, so the reaper never clobbers an in-flight grant.
+		reaped, err := s.FinalizeIfPending(ctx, id, "failed", "tool.result:error")
 		if err != nil {
 			return n, err
 		}
@@ -218,10 +220,12 @@ func (s *Store) ReapStale(ctx context.Context, olderThan time.Duration) (int, er
 	return n, nil
 }
 
-// reapOne finalizes one stale parked invocation. The status+cutoff guard means a row
-// resolved or claimed between the scan and here is skipped (returns false), so the
-// reaper never clobbers an in-flight grant.
-func (s *Store) reapOne(ctx context.Context, id string, cutoff time.Time) (bool, error) {
+// FinalizeIfPending moves a still-parked invocation to a terminal status and enqueues
+// its outcome in the same transaction (AUD-9). The status guard makes it a no-op
+// (ok=false) if the row already left pending_approval — the safe primitive the reaper
+// (→failed) and the operator deny path (→denied, T-040a2) share. The grant path is
+// Grant, which keeps the row parked-but-allow for the waiter to claim.
+func (s *Store) FinalizeIfPending(ctx context.Context, id, status, outcome string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -230,26 +234,64 @@ func (s *Store) reapOne(ctx context.Context, id string, cutoff time.Time) (bool,
 
 	var agent, resource string
 	err = tx.QueryRow(ctx, `
-		UPDATE invocations SET status = 'failed', updated_at = now()
-		 WHERE id = $1 AND status = 'pending_approval' AND updated_at < $2
-		 RETURNING agent_subject, resource_id`, id, cutoff).Scan(&agent, &resource)
+		UPDATE invocations SET status = $2, updated_at = now()
+		 WHERE id = $1 AND status = 'pending_approval'
+		 RETURNING agent_subject, resource_id`, id, status).Scan(&agent, &resource)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("reap invocation: %w", err)
+		return false, fmt.Errorf("finalize invocation: %w", err)
 	}
 	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
 		Timestamp: time.Now(), Actor: agent, Edge: auditEdge,
-		Target: "resource:" + resource, Outcome: "tool.result:error",
+		Target: "resource:" + resource, Outcome: outcome,
 		EvidencePacketID: "invocation:" + id,
 	}); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit reap: %w", err)
+		return false, fmt.Errorf("commit finalize: %w", err)
 	}
 	return true, nil
+}
+
+// Grant records an operator approval: it flips a still-parked invocation's decision
+// to allow (status stays pending_approval) so the waiting orchestrator's ClaimForExec
+// can win and run it (ADR-0057/0059). ok=false if the row already left pending_approval
+// (resolved or reaped meanwhile). No audit event — policy-service chains approval.granted.
+func (s *Store) Grant(ctx context.Context, id string) (bool, error) {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE invocations SET decision = 'allow', updated_at = now()
+		 WHERE id = $1 AND status = 'pending_approval'`, id)
+	if err != nil {
+		return false, fmt.Errorf("grant invocation: %w", err)
+	}
+	return ct.RowsAffected() == 1, nil
+}
+
+// ListPending returns the parked invocations awaiting an operator decision — the
+// operator pending-list read (proxied by services/api, T-040b). It includes the
+// persisted command (ADR-0059) — operator-only, exposed solely on this internal
+// service-service surface, never on the agent plane.
+func (s *Store) ListPending(ctx context.Context) ([]Invocation, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision
+		  FROM invocations WHERE status = 'pending_approval' ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list pending invocations: %w", err)
+	}
+	defer rows.Close()
+	var out []Invocation
+	for rows.Next() {
+		var inv Invocation
+		if err := rows.Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject, &inv.ResourceID,
+			&inv.Tool, &inv.Command, &inv.Status, &inv.Decision); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
 }
 
 // RequiresApproval reads the resource's requires_approval label (ADR-0057) — the

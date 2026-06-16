@@ -20,6 +20,7 @@ import (
 
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/services/mcp-gateway/internal/mcp"
+	"aireos.local/services/mcp-gateway/internal/policy"
 	"aireos.local/services/mcp-gateway/internal/store"
 )
 
@@ -367,3 +368,100 @@ const PolicyAllow = "allow"
 func toolError(msg string) mcp.ToolResult {
 	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: msg}}, IsError: true}
 }
+
+// --- operator plane: the invocation resolver (ADR-0057 §4 / ADR-0059) ------------
+// The agent-facing Invoke (above) parks an invocation; the operator resolves it
+// here, off the agent plane. The gateway OWNS the reconcile (api is a thin proxy,
+// T-040b): it consults policy-service (the authority), then grants (decision→allow,
+// the waiter claims + execs) or denies (terminal) — and reconciles a policy timeout.
+
+// ResolverStore is the slice of the store the resolver needs.
+type ResolverStore interface {
+	Get(ctx context.Context, id string) (store.Invocation, error)
+	Grant(ctx context.Context, id string) (bool, error)
+	FinalizeIfPending(ctx context.Context, id, status, outcome string) (bool, error)
+	ListPending(ctx context.Context) ([]store.Invocation, error)
+}
+
+// PolicyResolver records the operator's decision with policy-service (ADR-0054
+// resolve). policy.ErrNotPending signals the approval already lapsed (timeout).
+type PolicyResolver interface {
+	Resolve(ctx context.Context, invocationID, decision, resolvedBy string) error
+}
+
+// Resolver implements mcp.ResolverPort: the operator pending-list + resolve surface.
+type Resolver struct {
+	store  ResolverStore
+	policy PolicyResolver
+}
+
+// NewResolver builds the operator-plane resolver.
+func NewResolver(st ResolverStore, pol PolicyResolver) *Resolver {
+	return &Resolver{store: st, policy: pol}
+}
+
+// ListPending returns the parked invocations for the operator console, including the
+// persisted command so the approval is informed (ADR-0059).
+func (r *Resolver) ListPending(ctx context.Context) ([]mcp.InvocationView, error) {
+	invs, err := r.store.ListPending(ctx)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]mcp.InvocationView, 0, len(invs))
+	for _, inv := range invs {
+		views = append(views, mcp.InvocationView{
+			ID: inv.ID, Agent: inv.AgentSubject, ResourceID: inv.ResourceID,
+			Tool: inv.Tool, Command: inv.Command, Status: inv.Status,
+		})
+	}
+	return views, nil
+}
+
+// Resolve applies the operator's decision ("granted" | "denied"). It pre-checks the
+// invocation is still parked (404/409), records the decision with policy (the
+// authority), then transitions the row: grant → decision=allow (the waiter claims +
+// execs); deny → terminal. A policy 409 (the fail-closed sweeper auto-denied on
+// timeout before the operator acted) reconciles the row to failed and reports
+// ErrApprovalNotPending. A policy outage is returned (the row stays parked).
+func (r *Resolver) Resolve(ctx context.Context, id, decision, resolvedBy string) error {
+	inv, err := r.store.Get(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return mcp.ErrInvocationNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if inv.Status != "pending_approval" {
+		return mcp.ErrApprovalNotPending
+	}
+
+	if perr := r.policy.Resolve(ctx, id, decision, resolvedBy); perr != nil {
+		if errors.Is(perr, policy.ErrNotPending) {
+			_, _ = r.store.FinalizeIfPending(ctx, id, "failed", "tool.result:error")
+			return mcp.ErrApprovalNotPending
+		}
+		return perr
+	}
+
+	if decision == mcp.DecisionGranted {
+		ok, err := r.store.Grant(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return mcp.ErrApprovalNotPending
+		}
+		return nil
+	}
+	// denied
+	ok, err := r.store.FinalizeIfPending(ctx, id, "denied", "tool.result:error")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return mcp.ErrApprovalNotPending
+	}
+	return nil
+}
+
+var _ mcp.ResolverPort = (*Resolver)(nil)

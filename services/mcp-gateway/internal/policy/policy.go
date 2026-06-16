@@ -23,6 +23,11 @@ const (
 	DecisionRequiresApproval = "requires_approval"
 )
 
+// ErrNotPending maps policy-service's 409 on resolve — the approval is no longer
+// pending (already resolved, or the fail-closed sweeper auto-denied it on timeout).
+// The gateway reconciles this by finalizing the invocation (ADR-0057 §4 / ADR-0059).
+var ErrNotPending = errors.New("policy: no pending approval for invocation")
+
 // Client calls policy-service POST /v1/decisions with a service-service bearer
 // (IssueService("mcp-gateway","policy-service")). A nil signer → no bearer (dev).
 type Client struct {
@@ -96,4 +101,50 @@ func (c *Client) Decide(ctx context.Context, invocationID, subject, edge, target
 		return "", fmt.Errorf("decode decision: %w", err)
 	}
 	return d.Decision, nil
+}
+
+type resolveRequest struct {
+	Decision   string `json:"decision"` // granted | denied (policy vocabulary)
+	ResolvedBy string `json:"resolved_by"`
+}
+
+// Resolve records the operator's grant/deny on a parked invocation via
+// policy-service's POST /v1/approvals/{id}/resolve (the invocation id rides in the
+// path, policy's opaque key). A 409 (no still-pending approval — already resolved or
+// timed out) surfaces as ErrNotPending; any other non-200 is an error (the gateway
+// then keeps the invocation parked / fails closed).
+func (c *Client) Resolve(ctx context.Context, invocationID, decision, resolvedBy string) error {
+	if c.baseURL == "" {
+		return errors.New("policy URL not configured")
+	}
+	body, err := json.Marshal(resolveRequest{Decision: decision, ResolvedBy: resolvedBy})
+	if err != nil {
+		return fmt.Errorf("marshal resolve request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/v1/approvals/"+invocationID+"/resolve", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build resolve request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	tok, err := c.token(ctx)
+	if err != nil {
+		return fmt.Errorf("mint policy token: %w", err)
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("resolve request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusConflict:
+		return ErrNotPending
+	default:
+		return fmt.Errorf("policy resolve: unexpected status %d", resp.StatusCode)
+	}
 }
