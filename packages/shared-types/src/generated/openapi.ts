@@ -422,6 +422,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/invocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List tool invocations parked pending operator approval (AP-2 / FE-11) */
+        get: operations["listInvocations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invocations/{id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve or deny a tool invocation parked pending approval (AP-2; ADR-0057 §4) */
+        post: operations["resolveInvocation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -496,6 +530,18 @@ export interface components {
             mode: "terminal";
         };
         SessionResolve: {
+            /** @enum {string} */
+            decision: "approve" | "deny";
+        };
+        PendingInvocation: {
+            id: string;
+            agent: string;
+            resourceId: string;
+            tool: string;
+            command: string;
+            status: string;
+        };
+        InvocationResolve: {
             /** @enum {string} */
             decision: "approve" | "deny";
         };
@@ -1064,6 +1110,89 @@ export interface operations {
             404: components["responses"]["NotFound"];
             /** @description The session is not awaiting approval (already resolved or the approval expired). */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listInvocations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The parked invocations awaiting a decision (each carries its command, ADR-0059). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invocations: components["schemas"]["PendingInvocation"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The gateway (decision plane) is unavailable. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resolveInvocation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvocationResolve"];
+            };
+        };
+        responses: {
+            /** @description Resolved — approve lets the invocation proceed; deny blocks it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        status: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The invocation is not awaiting approval (already resolved or timed out). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The gateway (decision plane) is unavailable. */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

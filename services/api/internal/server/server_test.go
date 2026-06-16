@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -266,6 +267,139 @@ func TestIssueAgentTokenValidation(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing resourceId: status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// --- invocation approval proxy (T-040b) -------------------------------------
+// The api routes proxy to the gateway's internal plane. The stub gateway is a REAL
+// httptest server, so these exercise the real api gateway client (path/verb/body/
+// bearer); the live api->real-gateway->policy->exec chain is the T-041 capstone.
+
+type capturedReq struct {
+	method, path, auth, body string
+}
+
+// TestResolveInvocationProxied — the operator's approve is mapped to the policy verb
+// and proxied to the gateway's exact route with a service-service bearer; the bearer
+// verifies under the gateway's verifier config (the audience-alignment guard, ADR-0050).
+func TestResolveInvocationProxied(t *testing.T) {
+	var got capturedReq
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = capturedReq{method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(b)}
+		_, _ = w.Write([]byte(`{"status":"resolved"}`))
+	}))
+	defer stub.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "cluster-test")
+	h := New(newFake(), nil, signer, allowAll{}, "", "", WithGateway(stub.URL))
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/invocations/inv-1/resolve", strings.NewReader(`{"decision":"approve"}`))
+	r.Header.Set("Authorization", "Bearer x") // allowAll → operator/human-agent; header auth → no CSRF
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if got.method != http.MethodPost || got.path != "/v1/invocations/inv-1/resolve" {
+		t.Fatalf("gateway got %s %s, want POST /v1/invocations/inv-1/resolve", got.method, got.path)
+	}
+	if !strings.Contains(got.body, `"decision":"granted"`) || !strings.Contains(got.body, `"resolvedBy":"operator"`) {
+		t.Fatalf("gateway body = %s, want granted + resolvedBy operator", got.body)
+	}
+	tok := strings.TrimPrefix(got.auth, "Bearer ")
+	if tok == "" || tok == got.auth {
+		t.Fatalf("api->gateway call missing a service-service bearer: %q", got.auth)
+	}
+	ct, err := auth.NewVerifier(key, "cluster-test", "mcp-gateway").Verify(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("the api-minted token must verify at the gateway (audience alignment): %v", err)
+	}
+	if ct.Edge != "service-service" {
+		t.Fatalf("api->gateway token edge = %q, want service-service", ct.Edge)
+	}
+}
+
+func TestResolveInvocationStatusMapping(t *testing.T) {
+	cases := []struct {
+		name             string
+		gwStatus, wanted int
+	}{
+		{"not found", http.StatusNotFound, http.StatusNotFound},
+		{"not pending", http.StatusConflict, http.StatusConflict},
+		{"gateway outage", http.StatusInternalServerError, http.StatusBadGateway},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(c.gwStatus)
+			}))
+			defer stub.Close()
+			key, _ := auth.GenerateKey()
+			h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", WithGateway(stub.URL))
+			r := httptest.NewRequest(http.MethodPost, "/v1/invocations/x/resolve", strings.NewReader(`{"decision":"deny"}`))
+			r.Header.Set("Authorization", "Bearer x")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			if rec.Code != c.wanted {
+				t.Fatalf("gateway %d → api %d, want %d", c.gwStatus, rec.Code, c.wanted)
+			}
+		})
+	}
+}
+
+func TestResolveInvocationBadDecision(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", WithGateway("http://unused.invalid"))
+	r := httptest.NewRequest(http.MethodPost, "/v1/invocations/x/resolve", strings.NewReader(`{"decision":"maybe"}`))
+	r.Header.Set("Authorization", "Bearer x")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad decision: status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// No WithGateway → the routes exist but answer 503 (dependency absent), not 404.
+func TestInvocationRoutesUnconfigured(t *testing.T) {
+	h := New(newFake(), nil, nil, allowAll{}, "", "")
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodGet, "/v1/invocations", ""},
+		{http.MethodPost, "/v1/invocations/x/resolve", `{"decision":"approve"}`},
+	} {
+		var rdr io.Reader
+		if tc.body != "" {
+			rdr = strings.NewReader(tc.body)
+		}
+		r := httptest.NewRequest(tc.method, tc.path, rdr)
+		r.Header.Set("Authorization", "Bearer x")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s %s unconfigured: status = %d, want 503", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
+func TestListInvocationsProxied(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/invocations" || r.Method != http.MethodGet {
+			t.Errorf("gateway got %s %s, want GET /v1/invocations", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"invocations":[{"id":"inv-1","agent":"agent:x","resourceId":"r1","tool":"remote.exec","command":"uname -a","status":"pending_approval"}]}`))
+	}))
+	defer stub.Close()
+	key, _ := auth.GenerateKey()
+	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", WithGateway(stub.URL))
+	rec := req(t, h, http.MethodGet, "/v1/invocations", "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"command":"uname -a"`) {
+		t.Fatalf("list body missing the operator command payload (ADR-0059): %s", rec.Body.String())
 	}
 }
 

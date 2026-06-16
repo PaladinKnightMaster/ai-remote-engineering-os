@@ -43,6 +43,7 @@ import (
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/api/internal/gateway"
 	"aireos.local/services/api/internal/policy"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/session"
@@ -99,6 +100,14 @@ type policyDecider interface {
 	Resolve(ctx context.Context, sessionID, decision, resolvedBy string) (policy.ResolveResult, error)
 }
 
+// gatewayProxy is the slice of *gateway.Client the invocation-approval handlers
+// proxy to (ADR-0057 §4): the operator's list + approve/deny on a parked MCP tool
+// invocation. nil → no gateway is configured (the routes answer 503).
+type gatewayProxy interface {
+	ListPending(ctx context.Context) ([]gateway.PendingInvocation, error)
+	Resolve(ctx context.Context, invocationID, decision, resolvedBy string) error
+}
+
 // Authenticator verifies operator credentials (services/api/internal/account).
 type Authenticator interface {
 	Authenticate(username, password string) (subject string, ok bool)
@@ -111,6 +120,22 @@ type apiHandlers struct {
 	verifier mw.Verifier   // used by Logout to attribute the actor from the cookie
 	auditURL string        // AIREOS_AUDIT_URL — the audit-timeline read-proxy upstream (T-024); "" disables it
 	policy   policyDecider // POLICY_URL decision point (ADR-0054 / T-031b); nil → requires_approval resources fail closed
+	gateway  gatewayProxy  // GATEWAY_URL invocation-approval proxy (ADR-0057 §4 / T-040b); nil → 503
+}
+
+// Option configures optional, additively-wired dependencies on New without churning
+// its positional signature (the cross-service URLs accreted over P1).
+type Option func(*apiHandlers)
+
+// WithGateway wires the mcp-gateway invocation-approval proxy (ADR-0057 §4). An empty
+// baseURL is a no-op (the routes then answer 503), so callers can pass GATEWAY_URL
+// unconditionally.
+func WithGateway(baseURL string) Option {
+	return func(h *apiHandlers) {
+		if baseURL != "" {
+			h.gateway = gateway.NewClient(baseURL, h.signer)
+		}
+	}
 }
 
 // New returns the api router. Routes that declared security in the contract are
@@ -129,12 +154,15 @@ type apiHandlers struct {
 // iteration — so the LAST entry becomes the outermost wrapper at runtime
 // (see gen.go's per-op middleware loop). Reordering this slice without
 // understanding that loop will silently break the cookie path.
-func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, auditURL, policyURL string) http.Handler {
+func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, auditURL, policyURL string, opts ...Option) http.Handler {
 	h := &apiHandlers{store: s, authn: authn, signer: signer, verifier: v, auditURL: auditURL}
 	if policyURL != "" {
 		// The decision point is consulted at session-create for requires_approval
 		// resources (ADR-0054). api mints a service-service token from its signer.
 		h.policy = policy.NewClient(policyURL, signer)
+	}
+	for _, opt := range opts {
+		opt(h) // applied after signer is set, so WithGateway can mint its bearer
 	}
 	return HandlerWithOptions(h, ChiServerOptions{
 		BaseRouter: chi.NewRouter(),
@@ -825,6 +853,79 @@ func (a *apiHandlers) IssueAgentToken(w http.ResponseWriter, r *http.Request) {
 		"token":     token,
 		"expiresAt": expiresAt.UTC().Format(time.RFC3339),
 	})
+}
+
+// ListInvocations (GET /v1/invocations) proxies the operator's pending-tool-invocation
+// list to the mcp-gateway internal plane (ADR-0057 §4 / T-040b). The operator is
+// authenticated by the shared capability gate (human-agent); api then calls the
+// gateway with its OWN service-service token. The list carries each invocation's
+// command (ADR-0059) — operator-only, never on the agent plane.
+func (a *apiHandlers) ListInvocations(w http.ResponseWriter, r *http.Request) {
+	if _, ok := operatorSubject(r); !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.gateway == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the invocation gateway is not configured")
+		return
+	}
+	invs, err := a.gateway.ListPending(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "bad_gateway", "the invocation gateway is unavailable")
+		return
+	}
+	if invs == nil {
+		invs = []gateway.PendingInvocation{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invocations": invs})
+}
+
+// ResolveInvocation (POST /v1/invocations/{id}/resolve) proxies the operator's
+// approve/deny on a parked tool invocation to the gateway (AP-2; ADR-0057 §4). api
+// owns the operator verb (approve|deny → policy granted|denied) + the CSRF/cookie
+// (ADR-0050); the gateway owns the reconcile, so api maps its status straight through:
+// 404 unknown, 409 not-pending (already resolved / timed out), 502 gateway outage. The
+// approval itself is audit-chained by policy-service (via the gateway), not here.
+func (a *apiHandlers) ResolveInvocation(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.gateway == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the invocation gateway is not configured")
+		return
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var body struct {
+		Decision string `json:"decision"`
+	}
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
+		return
+	}
+	var polDecision string
+	switch body.Decision {
+	case "approve":
+		polDecision = "granted"
+	case "deny":
+		polDecision = "denied"
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request", "decision must be approve or deny")
+		return
+	}
+
+	switch err := a.gateway.Resolve(r.Context(), id, polDecision, operator); {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+	case errors.Is(err, gateway.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "invocation not found")
+	case errors.Is(err, gateway.ErrNotPending):
+		writeError(w, http.StatusConflict, "conflict", "invocation is not awaiting approval")
+	default:
+		writeError(w, http.StatusBadGateway, "bad_gateway", "the invocation gateway is unavailable")
+	}
 }
 
 // ListAuditEvents (GET /v1/audit/events) is the operator audit-timeline read-proxy

@@ -29,6 +29,12 @@ const (
 	ServiceService     AuditEventEdge = "service-service"
 )
 
+// Defines values for InvocationResolveDecision.
+const (
+	InvocationResolveDecisionApprove InvocationResolveDecision = "approve"
+	InvocationResolveDecisionDeny    InvocationResolveDecision = "deny"
+)
+
 // Defines values for ResourceType.
 const (
 	ResourceTypeAgenticDesktop ResourceType = "agentic_desktop"
@@ -81,8 +87,8 @@ const (
 
 // Defines values for SessionResolveDecision.
 const (
-	Approve SessionResolveDecision = "approve"
-	Deny    SessionResolveDecision = "deny"
+	SessionResolveDecisionApprove SessionResolveDecision = "approve"
+	SessionResolveDecisionDeny    SessionResolveDecision = "deny"
 )
 
 // AgentTokenRequest defines model for AgentTokenRequest.
@@ -141,6 +147,14 @@ type Identity struct {
 	Subject string `json:"subject"`
 }
 
+// InvocationResolve defines model for InvocationResolve.
+type InvocationResolve struct {
+	Decision InvocationResolveDecision `json:"decision"`
+}
+
+// InvocationResolveDecision defines model for InvocationResolve.Decision.
+type InvocationResolveDecision string
+
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
 	Password string `json:"password"`
@@ -157,6 +171,16 @@ type LoginResponse struct {
 type PageMeta struct {
 	NextCursor *string `json:"nextCursor,omitempty"`
 	Total      *int    `json:"total,omitempty"`
+}
+
+// PendingInvocation defines model for PendingInvocation.
+type PendingInvocation struct {
+	Agent      string `json:"agent"`
+	Command    string `json:"command"`
+	Id         string `json:"id"`
+	ResourceId string `json:"resourceId"`
+	Status     string `json:"status"`
+	Tool       string `json:"tool"`
 }
 
 // Resource defines model for Resource.
@@ -264,6 +288,9 @@ type IssueAgentTokenJSONRequestBody = AgentTokenRequest
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// ResolveInvocationJSONRequestBody defines body for ResolveInvocation for application/json ContentType.
+type ResolveInvocationJSONRequestBody = InvocationResolve
+
 // CreateResourceJSONRequestBody defines body for CreateResource for application/json ContentType.
 type CreateResourceJSONRequestBody = ResourceInput
 
@@ -293,6 +320,12 @@ type ServerInterface interface {
 	// The verified capability of the current token (capability-edge UI, ADR-0047)
 	// (GET /v1/auth/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
+	// List tool invocations parked pending operator approval (AP-2 / FE-11)
+	// (GET /v1/invocations)
+	ListInvocations(w http.ResponseWriter, r *http.Request)
+	// Approve or deny a tool invocation parked pending approval (AP-2; ADR-0057 §4)
+	// (POST /v1/invocations/{id}/resolve)
+	ResolveInvocation(w http.ResponseWriter, r *http.Request, id string)
 	// List resources
 	// (GET /v1/resources)
 	ListResources(w http.ResponseWriter, r *http.Request, params ListResourcesParams)
@@ -356,6 +389,18 @@ func (_ Unimplemented) Logout(w http.ResponseWriter, r *http.Request) {
 // The verified capability of the current token (capability-edge UI, ADR-0047)
 // (GET /v1/auth/me)
 func (_ Unimplemented) GetMe(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List tool invocations parked pending operator approval (AP-2 / FE-11)
+// (GET /v1/invocations)
+func (_ Unimplemented) ListInvocations(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Approve or deny a tool invocation parked pending approval (AP-2; ADR-0057 §4)
+// (POST /v1/invocations/{id}/resolve)
+func (_ Unimplemented) ResolveInvocation(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -528,6 +573,57 @@ func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListInvocations operation middleware
+func (siw *ServerInterfaceWrapper) ListInvocations(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListInvocations(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveInvocation operation middleware
+func (siw *ServerInterfaceWrapper) ResolveInvocation(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveInvocation(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -972,6 +1068,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/auth/me", wrapper.GetMe)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/invocations", wrapper.ListInvocations)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/invocations/{id}/resolve", wrapper.ResolveInvocation)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources", wrapper.ListResources)

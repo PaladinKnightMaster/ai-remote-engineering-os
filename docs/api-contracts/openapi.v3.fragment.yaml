@@ -482,6 +482,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # --- invocation approval (T-040, services/api -> services/mcp-gateway) -------
+  # The operator-facing leg of MCP tool-invocation approval (ADR-0057 §4 / ADR-0059).
+  # services/api (human-agent + double-submit CSRF) PROXIES these to the gateway's
+  # internal service-service plane; the gateway owns the invocation + the reconcile.
+  # Cookie/CSRF stay on api (ADR-0050) — the gateway has no browser surface.
+  /v1/invocations:
+    get:
+      tags: [sessions]
+      operationId: listInvocations
+      summary: List tool invocations parked pending operator approval (AP-2 / FE-11)
+      responses:
+        '200':
+          description: The parked invocations awaiting a decision (each carries its command, ADR-0059).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invocations]
+                properties:
+                  invocations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PendingInvocation'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502':
+          description: The gateway (decision plane) is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/invocations/{id}/resolve:
+    post:
+      tags: [sessions]
+      operationId: resolveInvocation
+      summary: Approve or deny a tool invocation parked pending approval (AP-2; ADR-0057 §4)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvocationResolve'
+      responses:
+        '200':
+          description: Resolved — approve lets the invocation proceed; deny blocks it.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The invocation is not awaiting approval (already resolved or timed out).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: The gateway (decision plane) is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -667,6 +742,35 @@ components:
     # The operator's intent in operator verbs (approve|deny); services/api maps it
     # to the policy decision (granted|denied).
     SessionResolve:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, deny]
+    # Parked tool invocation awaiting operator approval (ADR-0057/0059). command is
+    # the persisted approval payload — operator-only, surfaced solely on this proxied
+    # operator read, never on the agent plane.
+    PendingInvocation:
+      type: object
+      required: [id, agent, resourceId, tool, command, status]
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+        resourceId:
+          type: string
+        tool:
+          type: string
+        command:
+          type: string
+        status:
+          type: string
+    # Approve/deny body for POST /v1/invocations/{id}/resolve. Operator verbs
+    # (approve|deny); services/api maps them to the policy decision (granted|denied).
+    InvocationResolve:
       type: object
       additionalProperties: false
       required: [decision]
