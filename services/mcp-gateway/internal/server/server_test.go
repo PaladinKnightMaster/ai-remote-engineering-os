@@ -126,6 +126,16 @@ func TestToolsCallUnknownToolErrors(t *testing.T) {
 	}
 }
 
+// An oversized request body is rejected (MaxBytesReader) rather than buffered whole.
+func TestMCPRequestBodyCapped(t *testing.T) {
+	h, s := newTestHandler(t)
+	huge := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":"` + strings.Repeat("A", (1<<20)+64) + `"}`
+	resp := decodeRPC(t, postMCP(t, h, huge, agentToken(t, s)))
+	if resp.Error == nil {
+		t.Fatal("an oversized /mcp body must produce a JSON-RPC error (body cap)")
+	}
+}
+
 func TestUnknownMethod(t *testing.T) {
 	h, s := newTestHandler(t)
 	rec := postMCP(t, h, `{"jsonrpc":"2.0","id":4,"method":"does/not/exist"}`, agentToken(t, s))
@@ -311,6 +321,42 @@ func TestInvokeScopeViolation(t *testing.T) {
 	}
 }
 
+func scopedTokenOps(t *testing.T, s *auth.Signer, resource string, ops []string) string {
+	t.Helper()
+	tok, err := s.Issue(auth.IssueParams{
+		Subject: "agent:test", Edge: "agent-tool", Audience: "mcp-gateway",
+		Scope: auth.Scope{Resource: resource, Operations: ops}, TTL: auth.AgentTTL,
+	})
+	if err != nil {
+		t.Fatalf("mint scoped token: %v", err)
+	}
+	return tok
+}
+
+// SEC-16: a token whose operation scope excludes the tool's operation is refused.
+func TestInvokeOperationScopeViolation(t *testing.T) {
+	brk := &fakeBroker{}
+	h, s := governedHandler(t, &fakeStore{}, &fakePolicy{decision: "allow"}, brk)
+	resp := callRemoteExec(t, h, scopedTokenOps(t, s, "r1", []string{"read"}), "r1", "echo hi")
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "operation") {
+		t.Fatalf("operation scope: isError=%v text=%q", isErr, text)
+	}
+	if brk.called {
+		t.Fatal("broker must not run for an out-of-scope operation")
+	}
+}
+
+// A token scoping the matching operation ("exec") proceeds normally.
+func TestInvokeOperationScopeAllowed(t *testing.T) {
+	brk := &fakeBroker{stdout: "ok\n"}
+	h, s := governedHandler(t, &fakeStore{}, &fakePolicy{decision: "allow"}, brk)
+	resp := callRemoteExec(t, h, scopedTokenOps(t, s, "r1", []string{"exec"}), "r1", "echo hi")
+	if isErr, _ := toolResult(t, resp); isErr || !brk.called {
+		t.Fatalf("the exec operation should be in scope: isError=%v called=%v", isErr, brk.called)
+	}
+}
+
 func TestInvokeConcurrencyCap(t *testing.T) {
 	brk := &fakeBroker{}
 	h, s := governedHandler(t, &fakeStore{inFlight: 4}, &fakePolicy{decision: "allow"}, brk)
@@ -474,6 +520,19 @@ func TestInternalPlaneRequiresServiceEdge(t *testing.T) {
 	}
 	if rec := doReq(t, h, http.MethodGet, "/v1/invocations", "", agentToken(t, s)); rec.Code != http.StatusForbidden {
 		t.Fatalf("agent-tool token on internal plane: status = %d, want 403", rec.Code)
+	}
+}
+
+// Defense in depth (R5): a valid service-service token whose subject is NOT api is
+// refused on the internal plane — only services/api proxies the operator here.
+func TestInternalPlaneRequiresApiSubject(t *testing.T) {
+	h, s := resolverHandler(t, &fakeResolver{})
+	tok, err := s.IssueService("broker", "mcp-gateway") // service-service edge, wrong subject
+	if err != nil {
+		t.Fatalf("mint service token: %v", err)
+	}
+	if rec := doReq(t, h, http.MethodGet, "/v1/invocations", "", tok); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-api service token: status = %d, want 403", rec.Code)
 	}
 }
 

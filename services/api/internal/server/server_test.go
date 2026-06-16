@@ -403,6 +403,28 @@ func TestListInvocationsProxied(t *testing.T) {
 	}
 }
 
+// R4: the invocation resolve is a cookie-path mutation, so a cookie-authed POST
+// without a matching X-CSRF-Token is rejected at the gate (before the handler).
+func TestResolveInvocationCSRFRequired(t *testing.T) {
+	h, _, _ := loginHandler(t)
+	loginRec := req(t, h, http.MethodPost, "/v1/auth/login", `{"username":"admin","password":"hunter2"}`, false)
+	session := findCookie(t, loginRec, sessionCookieName)
+	csrf := findCookie(t, loginRec, csrfCookieName)
+	if session == nil || csrf == nil {
+		t.Fatal("setup: cookies missing")
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/invocations/inv-1/resolve", strings.NewReader(`{"decision":"approve"}`))
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Value})
+	r.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf.Value})
+	// no X-CSRF-Token header → double-submit fails
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("resolve without csrf header: want 403, got %d", rec.Code)
+	}
+}
+
 func req(t *testing.T, h http.Handler, method, path, body string, authHeader bool) *httptest.ResponseRecorder {
 	t.Helper()
 	var r *http.Request

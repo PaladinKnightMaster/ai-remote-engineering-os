@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ type ToolDef struct {
 	InputSchema json.RawMessage
 	Edge        string // the capability edge the invocation traverses (ADR-0046)
 	Action      string // the audited action (policy.Decide + the audit chain)
+	Operation   string // the agent-token scope verb gating this tool (SEC-16; e.g. "exec")
 
 	target func(args json.RawMessage) (string, error)
 }
@@ -102,6 +104,7 @@ func remoteExec() ToolDef {
 		InputSchema: json.RawMessage(inputSchema),
 		Edge:        "agent-remote-session",
 		Action:      "remote.exec",
+		Operation:   "exec",
 		target:      remoteExecTarget,
 	}
 }
@@ -219,9 +222,14 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	}
 	resourceID := strings.TrimPrefix(target, "resource:")
 
-	// SEC-16: the invocation must stay within the agent token's scope.
+	// SEC-16: the invocation must stay within the agent token's scope — both the
+	// resource and (when the token declares operations) the operation. An empty
+	// Operations set is unrestricted (back-compat for resource-only scoped tokens).
 	if capb.Scope.Resource != "" && capb.Scope.Resource != resourceID {
 		return toolError("resource is outside the agent token's scope"), nil
+	}
+	if len(capb.Scope.Operations) > 0 && !slices.Contains(capb.Scope.Operations, def.Operation) {
+		return toolError("operation is outside the agent token's scope"), nil
 	}
 
 	// PERF-3: per-agent concurrency cap.

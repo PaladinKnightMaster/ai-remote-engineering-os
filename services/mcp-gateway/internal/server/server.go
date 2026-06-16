@@ -54,8 +54,28 @@ func New(cfg Config) http.Handler {
 	return r
 }
 
+// Request-body caps (defense in depth on the authenticated planes): the agent
+// tools/call is small, the internal resolve body is tiny. MaxBytesReader bounds an
+// authenticated-but-misbehaving caller's memory footprint.
+const (
+	maxMCPRequestBytes      = 1 << 20 // 1 MiB
+	maxInternalRequestBytes = 1 << 16 // 64 KiB
+)
+
 func health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// onlyAPI restricts an internal operator-proxy call to services/api's service token
+// (subject "api") — defense in depth on top of the service-service edge gate: only
+// api legitimately proxies the operator's resolve/list here (ADR-0057 §4), so a
+// different (or compromised) workload's audience-matched token cannot drive approvals.
+func onlyAPI(w http.ResponseWriter, r *http.Request) bool {
+	if capb, ok := mw.CapabilityFromContext(r.Context()); ok && capb.Subject == "api" {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "the invocation plane is api-only"})
+	return false
 }
 
 type handler struct {
@@ -67,6 +87,9 @@ type handler struct {
 // operator decision (ADR-0057 §4). Service-service only; api proxies it to the
 // operator console.
 func (h *handler) listInvocations(w http.ResponseWriter, r *http.Request) {
+	if !onlyAPI(w, r) {
+		return
+	}
 	views, err := h.resolver.ListPending(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not list invocations"})
@@ -84,7 +107,11 @@ func (h *handler) listInvocations(w http.ResponseWriter, r *http.Request) {
 // an unknown id, 409 if it is no longer pending (already resolved / policy timeout),
 // 502 on a policy outage (the invocation stays parked).
 func (h *handler) resolveInvocation(w http.ResponseWriter, r *http.Request) {
+	if !onlyAPI(w, r) {
+		return
+	}
 	id := chi.URLParam(r, "id")
+	r.Body = http.MaxBytesReader(w, r.Body, maxInternalRequestBytes)
 	var body struct {
 		Decision   string `json:"decision"`
 		ResolvedBy string `json:"resolvedBy"`
@@ -119,6 +146,7 @@ func (h *handler) serveMCP(w http.ResponseWriter, r *http.Request) {
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		r = r.WithContext(mcp.WithIdempotencyKey(r.Context(), key))
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxMCPRequestBytes)
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeRPCError(w, nil, codeParseError, "parse error")
