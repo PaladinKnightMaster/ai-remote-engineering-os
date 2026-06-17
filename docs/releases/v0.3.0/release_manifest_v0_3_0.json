@@ -1,0 +1,68 @@
+{
+  "release": "v0.3.0",
+  "theme": "Typed MCP Gateway (the first agent surface)",
+  "status": "release-candidate — pending the human WD-3 walkthrough + tag (release-criteria §human)",
+  "baseline": "v0.2.0 (tag b35b0b8) on v3.0.1",
+  "generated": "2026-06-17",
+  "note": "Machine-readable coverage for v0.3.0. See release_notes_v0_3_0.md (human roll-up) and v0.3.0-release-criteria.md (archival copy). The ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md. The pre-tag audit + red-team are recorded in the notes; no exploitable bypass found.",
+  "adrs": {
+    "ADR-0041..ADR-0055": "Accepted at v0.1.0/v0.2.0 — unchanged",
+    "ADR-0056": "Accepted — MCP Gateway protocol surface + trust boundary (hand-rolled subset, no SDK; agent-tool Bearer; internal-facades-only TR-1)",
+    "ADR-0057": "Accepted — tool-catalog schema + tool->edge mapping + invocation-anchored governance (opaque-key reuse; operator approval via api proxy)",
+    "ADR-0058": "Accepted — broker non-interactive exec egress + stdout-SHA audit content model (sole SSH egress preserved)",
+    "ADR-0059": "Accepted — informed invocation approval: persisted command (operator-only) + parked-invocation lifecycle/reaper"
+  },
+  "tickets": {
+    "T-034": "complete — Playwright browser smoke suite + DoD addendum",
+    "T-035": "complete — mcp-gateway skeleton (MCP JSON-RPC stub + agent-tool gate)",
+    "T-036": "complete — agent identity: IssueAgent + operator-gated POST /v1/agent-tokens + mint audit",
+    "T-037": "complete — typed tool catalog + remote.exec definition (registry/executor split)",
+    "T-038a/b": "complete — broker non-interactive exec core + live egress e2e",
+    "T-039a/b/c": "complete — gateway invocation lifecycle + governed orchestrator + live allow-path e2e",
+    "T-040a1/a2/b/c": "complete — block-and-wait + reaper; resolve/list plane; api proxy; operator UI + smoke",
+    "T-041": "complete — WD-3 live e2e capstone (agent -> approve -> exec -> audit) + audit-service verify",
+    "T-041h": "complete — audit hardening: enforce ops-scope, cap bodies, pin internal plane to api, CSRF test",
+    "T-042": "complete — cockpit rider: resource picker + audit-table truncation (FE-12)",
+    "T-043a": "complete — OI-10: mcp-gateway into the offline + installed stack + installed WD-3",
+    "T-043b": "in progress — F6 doc nit + this artifact set + full release-check (this commit)"
+  },
+  "release_gates_status": {
+    "WD-3 (agent -> gateway -> policy -> connector -> broker -> sshd -> audit, no mock)": "passing (T-041 compose + T-043a installed; audit-service verify intact)",
+    "AP-1/2/3 (invocation lifecycle + api-proxied resolve + <ApprovalPrompt> reuse)": "passing (T-040)",
+    "AUD-9/10/11 (tool.invoked/result + stdout-SHA exec anchor + hash-intact chain)": "passing (dual anchor invocation:/session: by design; clarified in AUD-11)",
+    "TR-1 (internal-facades-only; MCP server not client)": "passing (no external proxying; no SDK)",
+    "SEC-16 (scoped agent token: resource + operation)": "passing (resource always; operation enforced in T-041h)",
+    "SEC-18 (broker sole SSH egress; gateway never dials)": "passing (ADR-0058)",
+    "SEC-19 (fail-closed on outage; no egress without decision+lease)": "passing (T-039b; unit + e2e)",
+    "PERF-1/2/3 (bounded exec; idempotent no-double-exec; per-agent concurrency cap)": "passing",
+    "OI-10 (gateway in offline+installed stack; :8085; Caddy fronts /mcp; size gate)": "passing (T-043a; task wd1 exit 0; 115/41 MB)",
+    "VER-8 (lint/test/build/licenses/sec13-gate cover the gateway)": "passing (Taskfile legs include mcp-gateway; sec13-gate stays connector-only)",
+    "VER-9 (codegen drift zero; MCP + internal RPCs not in the fragment)": "passing",
+    "VER-10 (task release-check green end-to-end incl. WD-3 e2e + invocation smoke)": "run at this commit (T-043b)",
+    "DOC-11 (module-map BUILT; permission-model agent-tool row; ADR ladder through 0059)": "passing"
+  },
+  "remaining_release_gates": [
+    "human-run WD-3 against the installer-produced stack (release-criteria §human — non-negotiable until automated)",
+    "CEO tag decision (local annotated tag v0.3.0; no remote)"
+  ],
+  "pre_release_audit": {
+    "scope": "cumulative code-review + adversarial red-team over T-035..T-041 + ADR-0056..0059 (this session)",
+    "verdict": "no exploitable bypass of policy/approval/lease/audit; approved-command-swap provably closed",
+    "fixed_pre_tag_T041h": "ops-scope enforced (SEC-16); request-body caps; internal plane pinned subject==api; CSRF test on the resolve route",
+    "v0_4_0_residuals": [
+      "command at-rest encryption (today: operator-only read + no-log + bounded parked retention)",
+      "asymmetric / per-workload keys (agent-facing gateway holds the symmetric cluster key under P0; strengthens the ADR-0046 P1 trigger)",
+      "S2S subject-pin extended to the broker /v1/exec + connector lease planes",
+      "external MCP-server proxying + untrusted-server isolation (TR-2); full rate-limiting/quotas; SSH connection pooling"
+    ]
+  },
+  "offline_bundle": {
+    "builder": "task offline-bundle (BUNDLE_VERSION=0.3.0)",
+    "contents": "bin/{api,audit-service,session-broker,connector-service,policy-service,mcp-gateway,authctl,caddy} + web/ + config (7 units) + install.sh",
+    "size": "115 MB unpacked / 41 MB gzipped (caps 500/150)",
+    "postgres_companions": "bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404 rocky9 (unchanged)",
+    "integrity_manifest": "dist/offline/aireos-offline-<version>/SHA256_MANIFEST.txt",
+    "verify_bundle": "sha256sum -c SHA256_MANIFEST.txt (on the unpacked bundle; OI-9)",
+    "verify_chain": "audit-service verify"
+  }
+}
