@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -497,4 +498,56 @@ func randBytes(t *testing.T, n int) []byte {
 		t.Fatalf("rand: %v", err)
 	}
 	return b
+}
+
+// mcpToolResult is the agent-facing tools/call result (MCP content blocks + isError).
+type mcpToolResult struct {
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
+	IsError bool `json:"isError"`
+}
+
+// fireHeldInvoke runs an agent's tools/call in the background against mcpURL/mcp. A
+// parked invocation BLOCKS the call (block-and-wait) until the operator resolves it;
+// a fail-closed JSON-RPC error means a downstream service is still cold-compiling, so
+// it retries. It delivers the first real tool result (success OR a tool-error such as
+// a deny) to out. No t.Fatalf here — it runs off the test goroutine. Shared by the
+// compose-e2e (T-041) and the installed wd1 WD-3 driver (T-043a); the client uses the
+// default transport, so the wd1 driver's CA-trust mutation applies to it too.
+func fireHeldInvoke(mcpURL, tok, resID, command string, out chan<- mcpToolResult, errc chan<- error) {
+	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.exec",` +
+		`"arguments":{"resourceId":"` + resID + `","command":"` + command + `"}}}`
+	client := &http.Client{Timeout: 150 * time.Second} // > the gateway block-and-wait deadline (125s)
+	deadline := time.Now().Add(240 * time.Second)
+	for {
+		req, _ := http.NewRequest(http.MethodPost, mcpURL+"/mcp", strings.NewReader(reqBody))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var rpc struct {
+				Result json.RawMessage `json:"result"`
+				Error  *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&rpc)
+			_ = resp.Body.Close()
+			if rpc.Error == nil && len(rpc.Result) > 0 {
+				var r mcpToolResult
+				if err := json.Unmarshal(rpc.Result, &r); err == nil {
+					out <- r
+					return
+				}
+			}
+		} else if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			errc <- fmt.Errorf("held tools/call never returned a tool result (last transport err=%v)", err)
+			return
+		}
+		time.Sleep(3 * time.Second)
+	}
 }

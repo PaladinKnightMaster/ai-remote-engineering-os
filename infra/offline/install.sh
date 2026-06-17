@@ -106,8 +106,11 @@ AUDIT_ADDR=127.0.0.1:8081
 BROKER_ADDR=127.0.0.1:8082
 CONNECTOR_ADDR=127.0.0.1:8083
 POLICY_ADDR=127.0.0.1:8084
+MCP_ADDR=127.0.0.1:8085
 CONNECTOR_URL=http://127.0.0.1:8083
 POLICY_URL=http://127.0.0.1:8084
+BROKER_URL=http://127.0.0.1:8082
+GATEWAY_URL=http://127.0.0.1:8085
 EOF
 )
 chown "$SVC_USER:$SVC_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
@@ -121,7 +124,7 @@ chown "$SVC_USER:$SVC_USER" "$CONNECTOR_ENV"; chmod 600 "$CONNECTOR_ENV"
 # --- 7. validate DB + run migrations (all five services share one DB) -------
 log "validate DB connection + run migrations"
 export DATABASE_URL="$DB_URL"
-for svc in api audit-service session-broker connector-service policy-service; do
+for svc in api audit-service session-broker connector-service policy-service mcp-gateway; do
   "$PREFIX/bin/$svc" migrate up \
     || die "migration failed for $svc — is postgres 16 reachable with pgcrypto available? (see the offline postgres guide)"
 done
@@ -133,6 +136,6 @@ else
   log "enable + start systemd units"
   systemctl daemon-reload
   systemctl enable --now aireos-api.service aireos-audit.service aireos-broker.service \
-    aireos-connector.service aireos-policy.service aireos-caddy.service
+    aireos-connector.service aireos-policy.service aireos-mcp-gateway.service aireos-caddy.service
 fi
 log "DONE — cockpit installed. Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."

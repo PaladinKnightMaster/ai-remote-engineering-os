@@ -31,6 +31,13 @@
 		reverse_proxy 127.0.0.1:8080
 	}
 
+	# Agent MCP plane (ADR-0056; OI-10) -> services/mcp-gateway on :8085. Bearer/
+	# agent-tool gated (no cookie/CSRF); the operator approval plane stays on /v1
+	# (api). Agent-plane isolation / per-workload keys are recorded P1 hardening (R1).
+	handle /mcp {
+		reverse_proxy 127.0.0.1:8085
+	}
+
 	# SPA: static assets with client-side-routing fallback to index.html.
 	handle {
 		root * /opt/aireos/web

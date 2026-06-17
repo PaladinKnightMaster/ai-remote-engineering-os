@@ -109,7 +109,7 @@ docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env |
 
 # 9. bring-up assertions (T-021d-a; six units since OI-6).
 log "assert: units active + Caddy serves the SPA over HTTPS"
-docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-caddy postgresql
+docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy postgresql
 docker exec "$HOST" bash -c 'curl -sk https://localhost/ | grep -qiE "<!doctype html|<html" && echo "SPA OK"'
 
 # 10. WD-1 walkthrough driver, through Caddy HTTPS, on the network by host name.
@@ -123,7 +123,7 @@ docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodc
 #     LISTEN/NOTIFY and may lag the driver by a beat.
 log "assert: audit chain intact + the WD-2 events are present"
 docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | cut -d= -f2-); DATABASE_URL="$DU" /opt/aireos/bin/audit-service verify'
-WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout"
+WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result"
 for attempt in 1 2 3 4 5 6; do
   OUTCOMES="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT outcome FROM audit_events ORDER BY seq\"")"
   MISSING=""
@@ -135,4 +135,4 @@ for attempt in 1 2 3 4 5 6; do
   sleep 5
 done
 
-log "T-033b PASS — WD-2 wedge demo end-to-end on the installed stack via Caddy HTTPS: approval round-trip + governed lease + deny leg; chain intact + complete."
+log "T-043a PASS — WD-2 + WD-3 wedges end-to-end on the installed stack via Caddy HTTPS: session approval round-trip + governed lease + deny leg, AND the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec); chain intact + complete (incl. tool.invoked/remote.exec/tool.result)."
