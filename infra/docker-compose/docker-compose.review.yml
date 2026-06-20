@@ -1,0 +1,34 @@
+# docker-compose.review.yml — local manual-review overlay for the v0.3.0 stack.
+#
+# Layers on docker-compose.e2e.yml (the fully-wired, seeded backend: postgres + the
+# six services + a bootstrap operator + seeded resources + a test sshd) and PUBLISHES
+# the host ports the Vite dev server + your browser/curl need. The e2e compose itself
+# binds everything to container-internal addresses only; this overlay exposes the
+# three the cockpit review needs:
+#
+#   api          :8080  — Vite proxies /v1 here
+#   session-broker :8082 — Vite proxies the cockpit WS (/channel) here
+#   mcp-gateway  :8085  — the agent /mcp plane (for the WD-3 curl)
+#
+# audit (:8081), connector (:8083), policy (:8084) stay internal — the browser never
+# talks to them directly.
+#
+# Bring up (from infra/docker-compose/, Windows: prefix MSYS_NO_PATHCONV=1):
+#   docker compose -f docker-compose.e2e.yml -f docker-compose.review.yml \
+#     up -d --build api audit broker connector policy mcp-gateway sshd
+# then, from the repo root: pnpm --filter @aireos/web dev   ->   http://localhost:5173
+# Login: admin / e2e-operator-pw   Resources: ...00a2 (flagged), ...00e2 (ungated)
+#
+# Tear down + reclaim disk:  infra/scripts/docker-reclaim.ps1
+name: aireos-e2e
+
+services:
+  api:
+    ports:
+      - "8080:8080"
+  broker:
+    ports:
+      - "8082:8082"
+  mcp-gateway:
+    ports:
+      - "8085:8085"
