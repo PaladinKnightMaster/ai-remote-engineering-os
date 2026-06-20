@@ -63,6 +63,18 @@ if ($Aggressive) {
 Info 'docker disk usage after prune:'
 docker system df
 
+# Elevation gate: Optimize-VHD / diskpart compact need Administrator. Without it the
+# WSL shutdown + compact are pointless (compact silently reclaims 0), so stop here
+# with clear guidance rather than tearing Docker down for nothing.
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+if (-not $isAdmin) {
+  Warn 'NOT running as Administrator - the Docker prune above freed logical space, but'
+  Warn 'the WSL2 VHDX compaction (which returns space to your C: drive) needs elevation.'
+  Warn 'Re-run from an ADMIN PowerShell (right-click -> Run as administrator):'
+  Warn '  powershell -ExecutionPolicy Bypass -File infra\scripts\docker-reclaim.ps1 -Aggressive'
+  exit 0
+}
+
 # 3. Stop WSL so the VHDX is closed (this stops Docker Desktop too).
 Warn 'shutting down WSL (Docker Desktop will stop) ...'
 wsl --shutdown
