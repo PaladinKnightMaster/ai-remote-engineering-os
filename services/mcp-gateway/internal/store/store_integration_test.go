@@ -196,6 +196,53 @@ func TestReapStaleFinalizesParked(t *testing.T) {
 	}
 }
 
+// A granted invocation (decision=allow, still pending_approval so the agent can claim
+// it) must drop OUT of the operator pending list immediately — otherwise the cockpit
+// re-prompts in the window between approve and the agent's claim (T-044).
+func TestListPendingExcludesGranted(t *testing.T) {
+	st, _ := testStore(t)
+	ctx := context.Background()
+	inv, _, err := st.Create(ctx, CreateInput{
+		AgentSubject: "agent:" + randSuffix(t), ResourceID: "r-tp", Tool: "remote.exec", Command: "echo hi",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Park it with the policy decision, as the orchestrator does.
+	if err := st.SetStatus(ctx, inv.ID, "pending_approval", "requires_approval"); err != nil {
+		t.Fatalf("park: %v", err)
+	}
+	if !listHasInvocation(t, st, inv.ID) {
+		t.Fatal("a parked invocation must appear in ListPending")
+	}
+
+	// Operator approves -> decision flips to allow (status stays pending_approval).
+	if ok, err := st.Grant(ctx, inv.ID); err != nil || !ok {
+		t.Fatalf("grant: ok=%v err=%v", ok, err)
+	}
+	if listHasInvocation(t, st, inv.ID) {
+		t.Fatal("a granted invocation must NOT appear in ListPending (T-044)")
+	}
+	// It is still directly retrievable — the agent claims it via Get/ClaimForExec.
+	if got, _ := st.Get(ctx, inv.ID); got.Status != "pending_approval" || got.Decision != "allow" {
+		t.Fatalf("granted invocation state = %+v, want pending_approval/allow", got)
+	}
+}
+
+func listHasInvocation(t *testing.T, st *Store, id string) bool {
+	t.Helper()
+	list, err := st.ListPending(context.Background())
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	for _, inv := range list {
+		if inv.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSetStatusAndNotFound(t *testing.T) {
 	st, _ := testStore(t)
 	ctx := context.Background()

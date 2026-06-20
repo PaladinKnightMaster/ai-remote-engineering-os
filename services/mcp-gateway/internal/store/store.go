@@ -270,14 +270,19 @@ func (s *Store) Grant(ctx context.Context, id string) (bool, error) {
 	return ct.RowsAffected() == 1, nil
 }
 
-// ListPending returns the parked invocations awaiting an operator decision — the
+// ListPending returns the invocations still awaiting an operator decision — the
 // operator pending-list read (proxied by services/api, T-040b). It includes the
 // persisted command (ADR-0059) — operator-only, exposed solely on this internal
 // service-service surface, never on the agent plane.
+//
+// A GRANTED invocation keeps status='pending_approval' (so the agent's block-and-wait
+// can ClaimForExec it) but carries decision='allow'; it is NOT awaiting a decision, so
+// it is excluded here (T-044) — otherwise the cockpit re-prompts in the window between
+// the operator's approve and the agent's claim.
 func (s *Store) ListPending(ctx context.Context) ([]Invocation, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision
-		  FROM invocations WHERE status = 'pending_approval' ORDER BY created_at`)
+		  FROM invocations WHERE status = 'pending_approval' AND decision <> 'allow' ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending invocations: %w", err)
 	}
