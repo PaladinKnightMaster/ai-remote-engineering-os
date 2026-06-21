@@ -92,11 +92,23 @@ type IssueParams struct {
 // Issue mints a token for params. The chain-authority and other receivers verify
 // it with a Verifier configured for the same key.
 func (s *Signer) Issue(p IssueParams) (string, error) {
+	t, err := buildToken(s.issuer, p)
+	if err != nil {
+		return "", err
+	}
+	return t.V4Encrypt(s.key.k, nil), nil
+}
+
+// buildToken assembles the typed capability claims onto a fresh PASETO token for
+// the given issuer. It is shared by the symmetric Signer (V4Encrypt) and the
+// AsymmetricSigner (V4Sign, asymmetric.go) so the two minting paths cannot drift
+// in the claims they set (ADR-0060).
+func buildToken(issuer string, p IssueParams) (paseto.Token, error) {
 	if p.Subject == "" || p.Edge == "" {
-		return "", errors.New("auth: subject and edge are required")
+		return paseto.Token{}, errors.New("auth: subject and edge are required")
 	}
 	if p.TTL <= 0 {
-		return "", errors.New("auth: ttl must be positive")
+		return paseto.Token{}, errors.New("auth: ttl must be positive")
 	}
 	now := time.Now()
 	t := paseto.NewToken()
@@ -104,16 +116,16 @@ func (s *Signer) Issue(p IssueParams) (string, error) {
 	t.SetNotBefore(now)
 	t.SetExpiration(now.Add(p.TTL))
 	t.SetSubject(p.Subject)
-	t.SetIssuer(s.issuer)
+	t.SetIssuer(issuer)
 	if p.Audience != "" {
 		t.SetAudience(p.Audience)
 	}
 	t.SetJti(uuid.NewString())
 	t.SetString("edge", p.Edge)
 	if err := t.Set("scope", p.Scope); err != nil {
-		return "", fmt.Errorf("auth: set scope claim: %w", err)
+		return paseto.Token{}, fmt.Errorf("auth: set scope claim: %w", err)
 	}
-	return t.V4Encrypt(s.key.k, nil), nil
+	return t, nil
 }
 
 // IssueService mints a service-to-service token (edge service-service, 1h TTL)
@@ -156,20 +168,34 @@ func NewVerifier(key Key, issuer, audience string) *Verifier {
 // Verify decrypts and validates the bearer token, returning the typed claims.
 // The context is accepted for interface symmetry; verification is local.
 func (v *Verifier) Verify(_ context.Context, bearer string) (CapabilityToken, error) {
-	parser := paseto.NewParser()
-	parser.AddRule(paseto.NotExpired())
-	parser.AddRule(paseto.ValidAt(time.Now()))
-	if v.issuer != "" {
-		parser.AddRule(paseto.IssuedBy(v.issuer))
-	}
-	if v.audience != "" {
-		parser.AddRule(paseto.ForAudience(v.audience))
-	}
+	parser := newParser(v.issuer, v.audience)
 	t, err := parser.ParseV4Local(v.key.k, bearer, nil)
 	if err != nil {
 		return CapabilityToken{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
+	return claimsFromToken(t)
+}
 
+// newParser builds a PASETO parser with the common capability rules (expiry +
+// optional issuer/audience). Shared by the symmetric Verifier (ParseV4Local) and
+// the AsymmetricVerifier (ParseV4Public, asymmetric.go) so the two verify paths
+// enforce identical rules (ADR-0060).
+func newParser(issuer, audience string) paseto.Parser {
+	parser := paseto.NewParser()
+	parser.AddRule(paseto.NotExpired())
+	parser.AddRule(paseto.ValidAt(time.Now()))
+	if issuer != "" {
+		parser.AddRule(paseto.IssuedBy(issuer))
+	}
+	if audience != "" {
+		parser.AddRule(paseto.ForAudience(audience))
+	}
+	return parser
+}
+
+// claimsFromToken extracts the typed CapabilityToken from a validated PASETO
+// token. Shared by both verifiers so claim mapping cannot drift (ADR-0060).
+func claimsFromToken(t *paseto.Token) (CapabilityToken, error) {
 	edge, err := t.GetString("edge")
 	if err != nil {
 		return CapabilityToken{}, fmt.Errorf("%w: missing edge claim", ErrInvalidToken)
