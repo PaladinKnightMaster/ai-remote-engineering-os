@@ -127,20 +127,22 @@ func serve() error {
 	return srv.ListenAndServe()
 }
 
-// serviceSigner builds the cluster signer the gateway uses to mint its
-// service-service tokens (→ policy-service, session-broker, audit-service). nil
-// when AIREOS_PASETO_KEY is unset (dev) — the clients then send no bearer.
-func serviceSigner() *auth.Signer {
-	keyHex := os.Getenv("AIREOS_PASETO_KEY")
+// serviceSigner builds the gateway's OWN asymmetric signer (ADR-0060): it signs
+// every outbound service-service token (→ policy-service, session-broker,
+// audit-service) with the gateway's Ed25519 key, so those peers verify it with the
+// gateway's PUBLIC key alone — the gateway holds NO symmetric cluster key (SEC-20).
+// nil when AIREOS_GATEWAY_SIGN_KEY is unset (dev) — the clients then send no bearer.
+func serviceSigner() *auth.AsymmetricSigner {
+	keyHex := os.Getenv("AIREOS_GATEWAY_SIGN_KEY")
 	if keyHex == "" {
 		return nil
 	}
-	key, err := auth.NewKeyFromHex(keyHex)
+	sk, err := auth.NewAsymmetricSecretKeyFromHex(keyHex)
 	if err != nil {
-		log.Printf("invalid AIREOS_PASETO_KEY: %v", err)
+		log.Printf("invalid AIREOS_GATEWAY_SIGN_KEY: %v", err)
 		return nil
 	}
-	return auth.NewSigner(key, os.Getenv("AIREOS_CLUSTER_ID"))
+	return auth.NewAsymmetricSigner(sk, os.Getenv("AIREOS_CLUSTER_ID"))
 }
 
 // newRelay builds the outbox relay draining gateway_outbox into audit-service.
@@ -162,12 +164,12 @@ func newRelay(pool *pgxpool.Pool) (*outbox.Relay, error) {
 }
 
 func auditTokenSource() (func(context.Context) (string, error), error) {
-	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
-		key, err := auth.NewKeyFromHex(keyHex)
+	if keyHex := os.Getenv("AIREOS_GATEWAY_SIGN_KEY"); keyHex != "" {
+		sk, err := auth.NewAsymmetricSecretKeyFromHex(keyHex)
 		if err != nil {
-			return nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
+			return nil, fmt.Errorf("invalid AIREOS_GATEWAY_SIGN_KEY: %w", err)
 		}
-		signer := auth.NewSigner(key, os.Getenv("AIREOS_CLUSTER_ID"))
+		signer := auth.NewAsymmetricSigner(sk, os.Getenv("AIREOS_CLUSTER_ID"))
 		return func(context.Context) (string, error) {
 			return signer.IssueService("mcp-gateway", "audit-service")
 		}, nil
@@ -222,37 +224,26 @@ func maxInFlight() int {
 	return 4
 }
 
-// capabilityVerifier builds the agent-token verifier (ADR-0046): tokens must be
-// minted for audience "mcp-gateway" under the cluster key. Mirrors the other
-// services' real-PASETO-or-dev-opt-in shape.
+// capabilityVerifier builds the agent-token verifier (ADR-0046/0060). The gateway
+// holds NO symmetric cluster key (SEC-20): all inbound — the agent-tool token on
+// /mcp and api's service-service token on the internal plane — is minted by api on
+// the asymmetric agent plane and verified here with api's PUBLIC key alone (audience
+// "mcp-gateway"). The dual-mode (symmetric) inbound from T-047 collapses away once
+// every inbound caller is asymmetric (T-048).
 func capabilityVerifier() (mw.Verifier, error) {
-	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
-		key, err := auth.NewKeyFromHex(keyHex)
+	if pubHex := os.Getenv("AIREOS_API_AGENT_PUBLIC_KEY"); pubHex != "" {
+		pub, err := auth.NewAsymmetricPublicKeyFromHex(pubHex)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid AIREOS_API_AGENT_PUBLIC_KEY: %w", err)
 		}
 		issuer := os.Getenv("AIREOS_CLUSTER_ID")
-		local := auth.NewVerifier(key, issuer, "mcp-gateway")
-		// ADR-0060: also accept the agent plane's v4.public tokens minted by api
-		// (the agent-tool token presented by an agent; the api→gateway service token
-		// follows in a later rung) — verified with api's PUBLIC key alone. Dual-mode
-		// during migration; the symmetric half retires when the gateway drops its
-		// cluster key.
-		if pubHex := os.Getenv("AIREOS_API_AGENT_PUBLIC_KEY"); pubHex != "" {
-			pub, perr := auth.NewAsymmetricPublicKeyFromHex(pubHex)
-			if perr != nil {
-				return nil, fmt.Errorf("invalid AIREOS_API_AGENT_PUBLIC_KEY: %w", perr)
-			}
-			apiPlane := auth.NewAsymmetricVerifier(pub, issuer, "mcp-gateway")
-			return auth.AsMiddlewareVerifier(auth.NewDualModeVerifier(local, apiPlane)), nil
-		}
-		return auth.AsMiddlewareVerifier(local), nil
+		return auth.AsMiddlewareVerifier(auth.NewAsymmetricVerifier(pub, issuer, "mcp-gateway")), nil
 	}
 	if os.Getenv("MCP_GATEWAY_DEV_INSECURE_AUTH") == "1" {
 		log.Print("WARNING: MCP_GATEWAY_DEV_INSECURE_AUTH=1 — dev allow-all verifier; NOT for production")
 		return devAllowAll{}, nil
 	}
-	return nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY or MCP_GATEWAY_DEV_INSECURE_AUTH=1 for local dev")
+	return nil, errors.New("no capability verifier configured: set AIREOS_API_AGENT_PUBLIC_KEY (ADR-0060) or MCP_GATEWAY_DEV_INSECURE_AUTH=1 for local dev")
 }
 
 type devAllowAll struct{}

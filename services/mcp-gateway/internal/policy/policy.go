@@ -29,14 +29,16 @@ const (
 var ErrNotPending = errors.New("policy: no pending approval for invocation")
 
 // Client calls policy-service POST /v1/decisions with a service-service bearer
-// (IssueService("mcp-gateway","policy-service")). A nil signer → no bearer (dev).
+// (IssueService("mcp-gateway","policy-service")), signed by the gateway's OWN
+// asymmetric key (ADR-0060); policy verifies it with the gateway's public key. A
+// nil signer → no bearer (dev).
 type Client struct {
 	baseURL string
 	token   func(context.Context) (string, error)
 	http    *http.Client
 }
 
-func New(baseURL string, signer *auth.Signer) *Client {
+func New(baseURL string, signer *auth.AsymmetricSigner) *Client {
 	return &Client{
 		baseURL: baseURL,
 		token: func(context.Context) (string, error) {

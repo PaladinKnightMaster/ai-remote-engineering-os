@@ -26,7 +26,7 @@ type Client struct {
 	http    *http.Client
 }
 
-func New(baseURL string, signer *auth.Signer) *Client {
+func New(baseURL string, signer *auth.AsymmetricSigner) *Client {
 	return &Client{
 		baseURL: baseURL,
 		token: func(context.Context) (string, error) {

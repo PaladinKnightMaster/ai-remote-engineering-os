@@ -200,6 +200,12 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *cluster-env
+      # ADR-0060 (T-049): the agent-facing gateway is KEYLESS of the cluster (SEC-20).
+      # Override the shared anchor's symmetric key to empty: the gateway signs its
+      # outbound (→ policy/broker/audit) with its OWN asymmetric key and verifies all
+      # inbound with api's public key — it can no longer mint any cluster token.
+      AIREOS_PASETO_KEY: ""
+      AIREOS_GATEWAY_SIGN_KEY: 77c62aa6ab782391dfbb81a9a58d3e6b3b78506f4b9e37d1fe7d91456ea87b21baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
       MCP_ADDR: ":8085"
       AIREOS_AUDIT_URL: http://audit:8081
       POLICY_URL: http://policy:8084

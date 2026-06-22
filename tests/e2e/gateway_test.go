@@ -19,22 +19,40 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"aireos.local/packages/go/auth"
 )
 
 func TestGatewayGovernedExecAllowPath(t *testing.T) {
+	apiURL := env("E2E_API_URL", "http://api:8080")
 	mcpURL := env("E2E_MCP_URL", "http://mcp-gateway:8085")
 	auditURL := env("E2E_AUDIT_URL", "http://audit:8081")
 	const wantOut = "EXEC-42-OK"
 
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	// Operator login (retry: the go-run stack may still be compiling). The agent
+	// token is provisioned through the real api path (ADR-0060: the asymmetric agent
+	// plane), so the keyless gateway (SEC-20) verifies it with api's public key — a
+	// cluster-key-minted token would now be rejected.
+	var sessionToken, csrf string
+	loginDeadline := time.Now().Add(120 * time.Second)
+	for {
+		s, c, status, err := doLogin(client, apiURL)
+		if err == nil && status == http.StatusOK && s != "" && c != "" {
+			sessionToken, csrf = s, c
+			break
+		}
+		if time.Now().After(loginDeadline) {
+			t.Fatalf("login never succeeded (last status=%d err=%v)", status, err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+
 	// The agent's scoped agent-tool token (audience mcp-gateway), scoped to the
-	// ungated resource it will target (SEC-16).
-	tok := mintAgentToken(t, "agent:e2e", "mcp-gateway", resourceID)
+	// ungated resource it will target (SEC-16), provisioned by the operator via api.
+	tok := mintAgentTokenViaAPI(t, client, apiURL, sessionToken, csrf, "e2e", resourceID)
 	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.exec",` +
 		`"arguments":{"resourceId":"` + resourceID + `","command":"echo ` + wantOut + `"}}}`
 
@@ -46,7 +64,6 @@ func TestGatewayGovernedExecAllowPath(t *testing.T) {
 		} `json:"content"`
 		IsError bool `json:"isError"`
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
 	deadline := time.Now().Add(180 * time.Second)
 	for {
 		req, _ := http.NewRequest(http.MethodPost, mcpURL+"/mcp", strings.NewReader(reqBody))
@@ -109,22 +126,6 @@ func TestGatewayGovernedExecAllowPath(t *testing.T) {
 	pollEvidenceOutcome(t, auditURL, auditToken, invocation, "tool.result", 45*time.Second)
 
 	t.Log("PASS T-039c — agent → gateway → policy(allow) → connector lease → broker exec → audit: full governed chain on real wires")
-}
-
-// mintAgentToken mints a scoped agent-tool token (the operator's role at T-036),
-// e.g. IssueAgent("agent:e2e","mcp-gateway",{resource}).
-func mintAgentToken(t *testing.T, subject, audience, resourceScope string) string {
-	t.Helper()
-	key, err := auth.NewKeyFromHex(os.Getenv("AIREOS_PASETO_KEY"))
-	if err != nil {
-		t.Fatalf("parse paseto key: %v", err)
-	}
-	tok, err := auth.NewSigner(key, os.Getenv("AIREOS_CLUSTER_ID")).
-		IssueAgent(subject, audience, auth.Scope{Resource: resourceScope})
-	if err != nil {
-		t.Fatalf("mint agent token: %v", err)
-	}
-	return tok
 }
 
 // pollTargetOutcome waits for an event matching (target, outcome) and returns it.
