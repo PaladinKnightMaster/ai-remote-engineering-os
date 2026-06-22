@@ -114,13 +114,17 @@ type Authenticator interface {
 }
 
 type apiHandlers struct {
-	store    Store
-	authn    Authenticator // nil → operator login disabled (503)
-	signer   *auth.Signer  // nil → operator login disabled (503)
-	verifier mw.Verifier   // used by Logout to attribute the actor from the cookie
-	auditURL string        // AIREOS_AUDIT_URL — the audit-timeline read-proxy upstream (T-024); "" disables it
-	policy   policyDecider // POLICY_URL decision point (ADR-0054 / T-031b); nil → requires_approval resources fail closed
-	gateway  gatewayProxy  // GATEWAY_URL invocation-approval proxy (ADR-0057 §4 / T-040b); nil → 503
+	store  Store
+	authn  Authenticator // nil → operator login disabled (503)
+	signer *auth.Signer  // nil → operator login disabled (503)
+	// agentSigner mints agent-tool tokens on the asymmetric agent plane (ADR-0060):
+	// api holds the secret half, the gateway verifies with the public half. nil →
+	// IssueAgentToken falls back to the symmetric signer (dev/transition).
+	agentSigner *auth.AsymmetricSigner
+	verifier    mw.Verifier   // used by Logout to attribute the actor from the cookie
+	auditURL    string        // AIREOS_AUDIT_URL — the audit-timeline read-proxy upstream (T-024); "" disables it
+	policy      policyDecider // POLICY_URL decision point (ADR-0054 / T-031b); nil → requires_approval resources fail closed
+	gateway     gatewayProxy  // GATEWAY_URL invocation-approval proxy (ADR-0057 §4 / T-040b); nil → 503
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -136,6 +140,35 @@ func WithGateway(baseURL string) Option {
 			h.gateway = gateway.NewClient(baseURL, h.signer)
 		}
 	}
+}
+
+// WithAgentSigner wires the asymmetric agent-plane signer (ADR-0060): api signs
+// agent-tool tokens with this Ed25519 secret key so the gateway can verify them
+// with the public half alone (a compromised gateway cannot mint). nil is a no-op —
+// IssueAgentToken then falls back to the symmetric signer (dev/transition). Order-
+// independent: it only stores the signer.
+func WithAgentSigner(s *auth.AsymmetricSigner) Option {
+	return func(h *apiHandlers) { h.agentSigner = s }
+}
+
+// agentIssuer is the IssueAgent behavior shared by the symmetric *auth.Signer and
+// the asymmetric *auth.AsymmetricSigner, so IssueAgentToken can select either.
+type agentIssuer interface {
+	IssueAgent(subject, audience string, scope auth.Scope) (string, error)
+}
+
+// agentTokenIssuer prefers the asymmetric agent-plane signer (ADR-0060) when
+// configured, else the symmetric signer (dev/transition). Returns nil only when
+// neither is set (the concrete nils are checked before wrapping, so the returned
+// interface is nil, not a typed-nil).
+func (a *apiHandlers) agentTokenIssuer() agentIssuer {
+	if a.agentSigner != nil {
+		return a.agentSigner
+	}
+	if a.signer != nil {
+		return a.signer
+	}
+	return nil
 }
 
 // New returns the api router. Routes that declared security in the contract are
@@ -807,14 +840,17 @@ func (a *apiHandlers) ResolveSession(w http.ResponseWriter, r *http.Request, id 
 //
 // A CLI sibling (task auth -- issue-agent) for offline/break-glass bootstrap is
 // deferred (trigger: installed-stack offline agent provisioning); it would reuse
-// the same auth.Signer.IssueAgent primitive — no second minting path is built now.
+// the same IssueAgent primitive. The token is signed on the asymmetric agent plane
+// (ADR-0060) when api is configured with an agent-plane key, else the symmetric
+// signer (dev/transition) — agentTokenIssuer selects.
 func (a *apiHandlers) IssueAgentToken(w http.ResponseWriter, r *http.Request) {
 	operator, ok := operatorSubject(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
 		return
 	}
-	if a.signer == nil {
+	issuer := a.agentTokenIssuer()
+	if issuer == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "token issuance not configured")
 		return
 	}
@@ -832,7 +868,7 @@ func (a *apiHandlers) IssueAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subject := "agent:" + req.AgentID
-	token, err := a.signer.IssueAgent(subject, "mcp-gateway", auth.Scope{Resource: req.ResourceID, Operations: req.Operations})
+	token, err := issuer.IssueAgent(subject, "mcp-gateway", auth.Scope{Resource: req.ResourceID, Operations: req.Operations})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "could not mint agent token")
 		return

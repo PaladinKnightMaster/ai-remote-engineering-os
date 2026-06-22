@@ -108,7 +108,7 @@ func serve(dsn string) error {
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
-		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL"), os.Getenv("POLICY_URL"), server.WithGateway(os.Getenv("GATEWAY_URL"))),
+		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL"), os.Getenv("POLICY_URL"), server.WithGateway(os.Getenv("GATEWAY_URL")), server.WithAgentSigner(agentPlaneSigner())),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("api listening on %s", srv.Addr)
@@ -143,6 +143,25 @@ func buildAuth() (mw.Verifier, *auth.Signer, server.Authenticator, error) {
 		return devAllowAll{}, nil, nil, nil
 	}
 	return nil, nil, nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY (hex cluster key, ADR-0046) or API_DEV_INSECURE_AUTH=1 for local dev")
+}
+
+// agentPlaneSigner builds the asymmetric agent-plane signer (ADR-0060): api signs
+// agent-tool tokens with this Ed25519 key so the gateway verifies them with the
+// matching public key alone. nil when AIREOS_API_AGENT_SIGN_KEY is unset —
+// IssueAgentToken then falls back to the symmetric signer (dev/transition). The
+// issuer matches buildAuth's (AIREOS_CLUSTER_ID), so the gateway's verifier rule
+// aligns.
+func agentPlaneSigner() *auth.AsymmetricSigner {
+	keyHex := os.Getenv("AIREOS_API_AGENT_SIGN_KEY")
+	if keyHex == "" {
+		return nil
+	}
+	sk, err := auth.NewAsymmetricSecretKeyFromHex(keyHex)
+	if err != nil {
+		log.Printf("invalid AIREOS_API_AGENT_SIGN_KEY: %v", err)
+		return nil
+	}
+	return auth.NewAsymmetricSigner(sk, os.Getenv("AIREOS_CLUSTER_ID"))
 }
 
 type devAllowAll struct{}

@@ -231,7 +231,22 @@ func capabilityVerifier() (mw.Verifier, error) {
 		if err != nil {
 			return nil, err
 		}
-		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, os.Getenv("AIREOS_CLUSTER_ID"), "mcp-gateway")), nil
+		issuer := os.Getenv("AIREOS_CLUSTER_ID")
+		local := auth.NewVerifier(key, issuer, "mcp-gateway")
+		// ADR-0060: also accept the agent plane's v4.public tokens minted by api
+		// (the agent-tool token presented by an agent; the api→gateway service token
+		// follows in a later rung) — verified with api's PUBLIC key alone. Dual-mode
+		// during migration; the symmetric half retires when the gateway drops its
+		// cluster key.
+		if pubHex := os.Getenv("AIREOS_API_AGENT_PUBLIC_KEY"); pubHex != "" {
+			pub, perr := auth.NewAsymmetricPublicKeyFromHex(pubHex)
+			if perr != nil {
+				return nil, fmt.Errorf("invalid AIREOS_API_AGENT_PUBLIC_KEY: %w", perr)
+			}
+			apiPlane := auth.NewAsymmetricVerifier(pub, issuer, "mcp-gateway")
+			return auth.AsMiddlewareVerifier(auth.NewDualModeVerifier(local, apiPlane)), nil
+		}
+		return auth.AsMiddlewareVerifier(local), nil
 	}
 	if os.Getenv("MCP_GATEWAY_DEV_INSECURE_AUTH") == "1" {
 		log.Print("WARNING: MCP_GATEWAY_DEV_INSECURE_AUTH=1 — dev allow-all verifier; NOT for production")

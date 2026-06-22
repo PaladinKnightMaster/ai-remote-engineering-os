@@ -204,7 +204,11 @@ func TestIssueAgentToken(t *testing.T) {
 	f := newFake()
 	key, _ := auth.GenerateKey()
 	signer := auth.NewSigner(key, "cluster-test")
-	h := New(f, nil, signer, allowAll{}, "", "")
+	// ADR-0060: agent-tool tokens are minted on the asymmetric agent plane. api
+	// holds the secret; the gateway verifies with the public half.
+	sk, pk, _, _ := auth.GenerateAsymmetricKey()
+	agentSigner := auth.NewAsymmetricSigner(sk, "cluster-test")
+	h := New(f, nil, signer, allowAll{}, "", "", WithAgentSigner(agentSigner))
 
 	const resID = "01900000-0000-7000-8000-0000000000a2"
 	body := `{"agentId":"wedge","resourceId":"` + resID + `","operations":["exec"]}`
@@ -228,10 +232,10 @@ func TestIssueAgentToken(t *testing.T) {
 		t.Fatalf("missing token/expiresAt: %+v", resp)
 	}
 
-	// G1 cross-check: the api-minted token verifies under the GATEWAY's verifier
-	// config (audience mcp-gateway, agent-tool edge) — the cross-service contract
-	// (the audience-alignment class behind ADR-0050).
-	ct, err := auth.NewVerifier(key, "cluster-test", "mcp-gateway").Verify(context.Background(), resp.Token)
+	// G1 cross-check: the api-minted token verifies under the GATEWAY's asymmetric
+	// verifier config (api's PUBLIC key, audience mcp-gateway, agent-tool edge) — the
+	// cross-service contract (ADR-0060; audience-alignment class behind ADR-0050).
+	ct, err := auth.NewAsymmetricVerifier(pk, "cluster-test", "mcp-gateway").Verify(context.Background(), resp.Token)
 	if err != nil {
 		t.Fatalf("minted token must verify at the gateway: %v", err)
 	}

@@ -117,6 +117,10 @@ services:
       # gateway's internal plane (ADR-0057 §4, T-040b). Without this the operator
       # invocation routes answer 503.
       GATEWAY_URL: http://mcp-gateway:8085
+      # ADR-0060: api signs agent-tool tokens on the asymmetric agent plane with
+      # this Ed25519 secret; the gateway verifies with the matching public key
+      # (AIREOS_API_AGENT_PUBLIC_KEY). Test fixture keypair — NOT a real key.
+      AIREOS_API_AGENT_SIGN_KEY: 3e95419281390e9902a82fa5284898eb727c94afecc91ce23cf2241f69ec07cf994aa3e0ebac212395d88900a2a8d2a793fe3b44c90c6dcb00148ecc9e3b5128
       AIREOS_BOOTSTRAP_OPERATOR_USER: admin
       AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH: "$$argon2id$$v=19$$m=65536,t=3,p=2$$c/1DjrxaiJU6wokhTzZpkQ$$Eb0SglfJ9v7PEDlVTyM48Sqeroyu3OFN5+7rl9wYdgI"
     command: ["bash", "-c", "go run ./services/api serve"]
@@ -191,6 +195,10 @@ services:
       AIREOS_AUDIT_URL: http://audit:8081
       POLICY_URL: http://policy:8084
       BROKER_URL: http://broker:8082
+      # ADR-0060: the gateway also verifies api's asymmetric agent-tool tokens with
+      # api's PUBLIC key (dual-mode alongside the cluster key). Matches the secret
+      # in api's AIREOS_API_AGENT_SIGN_KEY above.
+      AIREOS_API_AGENT_PUBLIC_KEY: 994aa3e0ebac212395d88900a2a8d2a793fe3b44c90c6dcb00148ecc9e3b5128
     command: ["bash", "-c", "go run ./services/mcp-gateway serve"]
 
   sshd:
