@@ -251,6 +251,11 @@ services:
       E2E_BROKER_WS: ws://broker:8082
       E2E_AUDIT_URL: http://audit:8081
       E2E_MCP_URL: http://mcp-gateway:8085
+      E2E_CONNECTOR_URL: http://connector:8083
+      # SEC-21 negative test (WD-4): the tester forges a token with the gateway's OWN
+      # signing key and proves connector/api reject it. Same fixture as the gateway's
+      # AIREOS_GATEWAY_SIGN_KEY (the tester already holds the more-powerful cluster key).
+      AIREOS_GATEWAY_SIGN_KEY: 77c62aa6ab782391dfbb81a9a58d3e6b3b78506f4b9e37d1fe7d91456ea87b21baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
     volumes:
       - ../../:/work
       - gomodcache:/go/pkg/mod
