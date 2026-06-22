@@ -22,6 +22,17 @@ func (stubVerifier) Verify(_ context.Context, bearer string) (mw.Capability, err
 	return mw.Capability{Subject: "session-broker", Edge: "service-service"}, nil
 }
 
+// wrongSubjectVerifier is a valid service-service token whose subject is NOT the
+// broker — the lease plane's subject-pin (PIN-2, ADR-0060) must reject it.
+type wrongSubjectVerifier struct{}
+
+func (wrongSubjectVerifier) Verify(_ context.Context, bearer string) (mw.Capability, error) {
+	if bearer == "" {
+		return mw.Capability{}, errors.New("empty token")
+	}
+	return mw.Capability{Subject: "mcp-gateway", Edge: "service-service"}, nil
+}
+
 func TestHealthz(t *testing.T) {
 	srv := httptest.NewServer(New(Config{}))
 	defer srv.Close()
@@ -76,5 +87,13 @@ func TestLeaseBadRequest(t *testing.T) {
 	// Gate passed, key configured, but missing required fields → 400 (before any DB).
 	if got := leaseStatus(t, Config{Verifier: stubVerifier{}, SecretKey: "k"}, "tok", `{"resource_id":""}`); got != http.StatusBadRequest {
 		t.Fatalf("bad-request lease status = %d, want 400", got)
+	}
+}
+
+func TestLeaseRejectsNonBrokerSubject(t *testing.T) {
+	// Valid service-service token, wrong workload subject → 403 (PIN-2), before any DB.
+	if got := leaseStatus(t, Config{Verifier: wrongSubjectVerifier{}, SecretKey: "k"}, "tok",
+		`{"resource_id":"r","session_id":"s","operator_subject":"operator:admin"}`); got != http.StatusForbidden {
+		t.Fatalf("non-broker lease status = %d, want 403 (PIN-2)", got)
 	}
 }

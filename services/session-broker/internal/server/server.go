@@ -292,6 +292,14 @@ type execResponse struct {
 // 502, leased-empty key → 424.
 func (b *broker) exec(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// R5-ext (PIN-1, ADR-0060): the exec plane is mcp-gateway-only — reject any other
+	// workload's audience-matched service token (defense in depth over the
+	// service-service edge; mirrors the gateway's onlyAPI pin). The gateway is exec's
+	// sole caller (ADR-0058).
+	if capb, ok := mw.CapabilityFromContext(ctx); !ok || capb.Subject != "mcp-gateway" {
+		http.Error(w, "exec plane is mcp-gateway-only", http.StatusForbidden)
+		return
+	}
 	var req execRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)

@@ -38,7 +38,15 @@ func (allowAll) Verify(context.Context, string) (mw.Capability, error) {
 type allowAllService struct{}
 
 func (allowAllService) Verify(context.Context, string) (mw.Capability, error) {
-	return mw.Capability{Subject: "svc:gateway", Edge: "service-service"}, nil
+	return mw.Capability{Subject: "mcp-gateway", Edge: "service-service"}, nil
+}
+
+// wrongSubjectService is a valid service-service token whose subject is NOT the
+// gateway — the exec plane's subject-pin (PIN-1, ADR-0060) must reject it.
+type wrongSubjectService struct{}
+
+func (wrongSubjectService) Verify(context.Context, string) (mw.Capability, error) {
+	return mw.Capability{Subject: "api", Edge: "service-service"}, nil
 }
 
 // fakeStore drives the handlers' authz/validation branches without a database or
@@ -299,6 +307,24 @@ func postExec(t *testing.T, h http.Handler, body string) *http.Response {
 		t.Fatalf("post exec: %v", err)
 	}
 	return resp
+}
+
+func TestExecRejectsNonGatewaySubject(t *testing.T) {
+	h := server.New(server.Config{
+		Verifier:     allowAll{},
+		ExecVerifier: wrongSubjectService{}, // valid service-service token, wrong workload
+		Store:        &fakeStore{target: store.Target{Host: "h", User: "u", HostKey: "ssh-ed25519 AAAA"}},
+		Leaser:       &fakeLeaser{mat: connector.Material{PrivateKey: "k"}},
+		CastDir:      t.TempDir(),
+		ExecFn: func(sshpty.Config, string, int, time.Duration) (sshpty.ExecResult, error) {
+			return sshpty.ExecResult{}, nil
+		},
+	})
+	resp := postExec(t, h, `{"resourceId":"r","command":"x","invocationId":"i","subject":"agent:x"}`)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-gateway exec status = %d, want 403 (PIN-1)", resp.StatusCode)
+	}
 }
 
 func TestExecHappyPathAuditsAndRetains(t *testing.T) {

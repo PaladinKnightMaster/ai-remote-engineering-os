@@ -60,6 +60,13 @@ type leaseResponse struct {
 // broker reads itself).
 func leaseHandler(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// R5-ext (PIN-2, ADR-0060): the lease plane is session-broker-only — reject any
+		// other workload's audience-matched service token (defense in depth over the
+		// service-service edge). The broker is the sole credential lessee (ADR-0053).
+		if capb, ok := mw.CapabilityFromContext(r.Context()); !ok || capb.Subject != "session-broker" {
+			http.Error(w, "lease plane is session-broker-only", http.StatusForbidden)
+			return
+		}
 		if cfg.SecretKey == "" {
 			http.Error(w, "credential decryption not configured", http.StatusServiceUnavailable)
 			return
