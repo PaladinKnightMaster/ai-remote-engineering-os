@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/mcp-gateway/internal/cmdcrypt"
 )
 
 const (
@@ -56,14 +57,17 @@ type CreateInput struct {
 	IdempotencyKey string
 }
 
-// Store wraps the gateway's pgx pool and the shared outbox Writer.
+// Store wraps the gateway's pgx pool, the shared outbox Writer, and the command
+// cipher (F3, ADR-0059): the command is encrypted at rest and decrypted only on
+// read. A nil cipher stores plaintext (dev/transition fallback).
 type Store struct {
 	pool   *pgxpool.Pool
 	writer outbox.Writer
+	cipher *cmdcrypt.Cipher
 }
 
-func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, writer: outbox.Writer{Table: OutboxTable}}
+func New(pool *pgxpool.Pool, cipher *cmdcrypt.Cipher) *Store {
+	return &Store{pool: pool, writer: outbox.Writer{Table: OutboxTable}, cipher: cipher}
 }
 
 // Create records a new invocation (status pending_approval) and enqueues
@@ -85,18 +89,22 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (inv Invocation, cre
 	if in.IdempotencyKey != "" {
 		keyArg = in.IdempotencyKey
 	}
+	sealed, err := s.cipher.Seal(in.Command) // F3 (ADR-0059): command encrypted at rest
+	if err != nil {
+		return Invocation{}, false, fmt.Errorf("seal command: %w", err)
+	}
 	ct, err := tx.Exec(ctx, `
 		INSERT INTO invocations (id, idempotency_key, agent_subject, resource_id, tool, command, status)
 		VALUES ($1, $2, $3, $4, $5, $6, 'pending_approval')
 		ON CONFLICT (agent_subject, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool, in.Command)
+		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool, sealed)
 	if err != nil {
 		return Invocation{}, false, fmt.Errorf("insert invocation: %w", err)
 	}
 
 	if ct.RowsAffected() == 0 {
 		// Idempotent hit: return the existing invocation, no new tool.invoked.
-		existing, ferr := getByKey(ctx, tx, in.AgentSubject, in.IdempotencyKey)
+		existing, ferr := s.getByKey(ctx, tx, in.AgentSubject, in.IdempotencyKey)
 		if ferr != nil {
 			return Invocation{}, false, ferr
 		}
@@ -122,18 +130,24 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (inv Invocation, cre
 	}, true, nil
 }
 
-func getByKey(ctx context.Context, tx pgx.Tx, agentSubject, key string) (Invocation, error) {
+// getByKey is a method so it shares the command cipher (F3): the idempotent-hit
+// re-read (Create) must decrypt the persisted command like every other read path.
+func (s *Store) getByKey(ctx context.Context, tx pgx.Tx, agentSubject, key string) (Invocation, error) {
 	var inv Invocation
+	var cmdRaw []byte
 	err := tx.QueryRow(ctx, `
 		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision
 		  FROM invocations WHERE agent_subject = $1 AND idempotency_key = $2`,
 		agentSubject, key).Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject,
-		&inv.ResourceID, &inv.Tool, &inv.Command, &inv.Status, &inv.Decision)
+		&inv.ResourceID, &inv.Tool, &cmdRaw, &inv.Status, &inv.Decision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Invocation{}, ErrNotFound
 	}
 	if err != nil {
 		return Invocation{}, fmt.Errorf("load invocation by key: %w", err)
+	}
+	if inv.Command, err = s.cipher.Open(cmdRaw); err != nil {
+		return Invocation{}, fmt.Errorf("decrypt command: %w", err)
 	}
 	return inv, nil
 }
@@ -142,15 +156,19 @@ func getByKey(ctx context.Context, tx pgx.Tx, agentSubject, key string) (Invocat
 // operator pending-list read (T-040b) both use it. ErrNotFound for an unknown id.
 func (s *Store) Get(ctx context.Context, id string) (Invocation, error) {
 	var inv Invocation
+	var cmdRaw []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision
 		  FROM invocations WHERE id = $1`, id).Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject,
-		&inv.ResourceID, &inv.Tool, &inv.Command, &inv.Status, &inv.Decision)
+		&inv.ResourceID, &inv.Tool, &cmdRaw, &inv.Status, &inv.Decision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Invocation{}, ErrNotFound
 	}
 	if err != nil {
 		return Invocation{}, fmt.Errorf("get invocation: %w", err)
+	}
+	if inv.Command, err = s.cipher.Open(cmdRaw); err != nil {
+		return Invocation{}, fmt.Errorf("decrypt command: %w", err)
 	}
 	return inv, nil
 }
@@ -163,17 +181,21 @@ func (s *Store) Get(ctx context.Context, id string) (Invocation, error) {
 // exec runs what the operator approved.
 func (s *Store) ClaimForExec(ctx context.Context, id string) (Invocation, bool, error) {
 	var inv Invocation
+	var cmdRaw []byte
 	err := s.pool.QueryRow(ctx, `
 		UPDATE invocations SET status = 'running', updated_at = now()
 		 WHERE id = $1 AND status = 'pending_approval' AND decision = 'allow'
 		 RETURNING id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision`,
 		id).Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject, &inv.ResourceID,
-		&inv.Tool, &inv.Command, &inv.Status, &inv.Decision)
+		&inv.Tool, &cmdRaw, &inv.Status, &inv.Decision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Invocation{}, false, nil
 	}
 	if err != nil {
 		return Invocation{}, false, fmt.Errorf("claim for exec: %w", err)
+	}
+	if inv.Command, err = s.cipher.Open(cmdRaw); err != nil {
+		return Invocation{}, false, fmt.Errorf("decrypt command: %w", err)
 	}
 	return inv, true, nil
 }
@@ -290,10 +312,16 @@ func (s *Store) ListPending(ctx context.Context) ([]Invocation, error) {
 	var out []Invocation
 	for rows.Next() {
 		var inv Invocation
+		var cmdRaw []byte
 		if err := rows.Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject, &inv.ResourceID,
-			&inv.Tool, &inv.Command, &inv.Status, &inv.Decision); err != nil {
+			&inv.Tool, &cmdRaw, &inv.Status, &inv.Decision); err != nil {
 			return nil, err
 		}
+		cmd, err := s.cipher.Open(cmdRaw)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt command: %w", err)
+		}
+		inv.Command = cmd
 		out = append(out, inv)
 	}
 	return out, rows.Err()

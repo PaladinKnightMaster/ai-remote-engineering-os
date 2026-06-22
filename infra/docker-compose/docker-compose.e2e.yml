@@ -206,6 +206,9 @@ services:
       # inbound with api's public key — it can no longer mint any cluster token.
       AIREOS_PASETO_KEY: ""
       AIREOS_GATEWAY_SIGN_KEY: 77c62aa6ab782391dfbb81a9a58d3e6b3b78506f4b9e37d1fe7d91456ea87b21baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
+      # F3 (ADR-0059): encrypt the persisted invocation command at rest (AES-256-GCM,
+      # 32-byte key) — distinct from the sign key above. Test fixture, NOT a real key.
+      AIREOS_GATEWAY_COMMAND_KEY: 91d5921441d28c802d5578074e108cc5b0180673ba79b94a101f24637ed5a80a
       MCP_ADDR: ":8085"
       AIREOS_AUDIT_URL: http://audit:8081
       POLICY_URL: http://policy:8084

@@ -30,6 +30,7 @@ import (
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/mcp-gateway/internal/brokerexec"
 	"aireos.local/services/mcp-gateway/internal/catalog"
+	"aireos.local/services/mcp-gateway/internal/cmdcrypt"
 	"aireos.local/services/mcp-gateway/internal/policy"
 	"aireos.local/services/mcp-gateway/internal/server"
 	"aireos.local/services/mcp-gateway/internal/store"
@@ -97,7 +98,11 @@ func serve() error {
 	}
 
 	signer := serviceSigner()
-	gw := store.New(pool)
+	cmdCipher, err := commandCipher()
+	if err != nil {
+		return err
+	}
+	gw := store.New(pool, cmdCipher)
 	pol := policy.New(os.Getenv("POLICY_URL"), signer)
 	cat := catalog.New(catalog.Config{
 		Store:       gw,
@@ -143,6 +148,22 @@ func serviceSigner() *auth.AsymmetricSigner {
 		return nil
 	}
 	return auth.NewAsymmetricSigner(sk, os.Getenv("AIREOS_CLUSTER_ID"))
+}
+
+// commandCipher builds the F3 command-at-rest cipher (ADR-0059 extension) from
+// AIREOS_GATEWAY_COMMAND_KEY (hex, 32 bytes / AES-256), kept distinct from the
+// gateway's sign / PASETO keys (authority separation). Unset → a nil cipher =
+// plaintext at rest (dev/transition; the key is provisioned at install, OI-11).
+func commandCipher() (*cmdcrypt.Cipher, error) {
+	keyHex := os.Getenv("AIREOS_GATEWAY_COMMAND_KEY")
+	if keyHex == "" {
+		log.Print("AIREOS_GATEWAY_COMMAND_KEY not set — invocation commands stored in plaintext (dev/transition)")
+		return nil, nil
+	}
+	if keyHex == os.Getenv("AIREOS_GATEWAY_SIGN_KEY") || keyHex == os.Getenv("AIREOS_PASETO_KEY") {
+		return nil, errors.New("AIREOS_GATEWAY_COMMAND_KEY must differ from the gateway sign / PASETO keys (authority separation)")
+	}
+	return cmdcrypt.NewFromHex(keyHex)
 }
 
 // newRelay builds the outbox relay draining gateway_outbox into audit-service.

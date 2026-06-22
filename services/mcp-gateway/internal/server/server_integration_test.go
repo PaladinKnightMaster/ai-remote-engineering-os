@@ -52,7 +52,7 @@ func TestInvocationBlockAndWaitResolve(t *testing.T) {
 		t.Fatalf("seed resource: %v", err)
 	}
 
-	gw := store.New(pool)
+	gw := store.New(pool, nil) // plaintext command store — this test exercises the server, not F3
 	brk := &fakeBroker{stdout: "APPROVED-OK\n"}
 	pol := &fakePolicy{decision: "requires_approval"} // Decide parks; Resolve returns nil (operator authority faked)
 	cat := catalog.New(catalog.Config{

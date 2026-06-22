@@ -16,7 +16,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aireos.local/services/mcp-gateway/internal/cmdcrypt"
 )
+
+// testKeyHex is a fixed 32-byte AES-256 key so the integration tests exercise the
+// F3 command-at-rest path (encrypt on Create, decrypt on every read).
+const testKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
@@ -29,7 +35,11 @@ func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return New(pool), pool
+	cipher, err := cmdcrypt.NewFromHex(testKeyHex)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	return New(pool, cipher), pool
 }
 
 // randSuffix returns a unique token. NOTE: use the FULL UUID — UUID v7 begins with
@@ -134,13 +144,23 @@ func TestConcurrencyCountAndFinish(t *testing.T) {
 // Get returns the persisted command (ADR-0059); ClaimForExec atomically moves a
 // granted parked invocation to running exactly once (the PERF-2 single-winner gate).
 func TestGetAndClaimForExec(t *testing.T) {
-	st, _ := testStore(t)
+	st, pool := testStore(t)
 	ctx := context.Background()
 	inv, _, err := st.Create(ctx, CreateInput{
 		AgentSubject: "agent:" + randSuffix(t), ResourceID: "r-claim", Tool: "remote.exec", Command: "uname -a",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+	}
+
+	// F3 (ADR-0059): the command is encrypted at rest — the raw column is NOT the
+	// plaintext, but reads decrypt it transparently.
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT command FROM invocations WHERE id = $1`, inv.ID).Scan(&raw); err != nil {
+		t.Fatalf("read raw command: %v", err)
+	}
+	if string(raw) == "uname -a" {
+		t.Fatal("command stored in plaintext — F3 encryption not applied")
 	}
 
 	got, err := st.Get(ctx, inv.ID)
