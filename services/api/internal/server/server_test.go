@@ -297,7 +297,11 @@ func TestResolveInvocationProxied(t *testing.T) {
 
 	key, _ := auth.GenerateKey()
 	signer := auth.NewSigner(key, "cluster-test")
-	h := New(newFake(), nil, signer, allowAll{}, "", "", WithGateway(stub.URL))
+	// ADR-0060: the api→gateway service token is signed on the asymmetric agent
+	// plane (same key as agent-tool); the gateway verifies it with api's public key.
+	sk, pk, _, _ := auth.GenerateAsymmetricKey()
+	agentSigner := auth.NewAsymmetricSigner(sk, "cluster-test")
+	h := New(newFake(), nil, signer, allowAll{}, "", "", WithGateway(stub.URL), WithAgentSigner(agentSigner))
 
 	r := httptest.NewRequest(http.MethodPost, "/v1/invocations/inv-1/resolve", strings.NewReader(`{"decision":"approve"}`))
 	r.Header.Set("Authorization", "Bearer x") // allowAll → operator/human-agent; header auth → no CSRF
@@ -318,7 +322,7 @@ func TestResolveInvocationProxied(t *testing.T) {
 	if tok == "" || tok == got.auth {
 		t.Fatalf("api->gateway call missing a service-service bearer: %q", got.auth)
 	}
-	ct, err := auth.NewVerifier(key, "cluster-test", "mcp-gateway").Verify(context.Background(), tok)
+	ct, err := auth.NewAsymmetricVerifier(pk, "cluster-test", "mcp-gateway").Verify(context.Background(), tok)
 	if err != nil {
 		t.Fatalf("the api-minted token must verify at the gateway (audience alignment): %v", err)
 	}

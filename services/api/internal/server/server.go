@@ -125,6 +125,7 @@ type apiHandlers struct {
 	auditURL    string        // AIREOS_AUDIT_URL — the audit-timeline read-proxy upstream (T-024); "" disables it
 	policy      policyDecider // POLICY_URL decision point (ADR-0054 / T-031b); nil → requires_approval resources fail closed
 	gateway     gatewayProxy  // GATEWAY_URL invocation-approval proxy (ADR-0057 §4 / T-040b); nil → 503
+	gatewayURL  string        // set by WithGateway; the client is built in New after all options apply (ADR-0060)
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -133,13 +134,10 @@ type Option func(*apiHandlers)
 
 // WithGateway wires the mcp-gateway invocation-approval proxy (ADR-0057 §4). An empty
 // baseURL is a no-op (the routes then answer 503), so callers can pass GATEWAY_URL
-// unconditionally.
+// unconditionally. The client itself is built in New after all options apply, so it
+// can pick the agent-plane signer regardless of option order (ADR-0060).
 func WithGateway(baseURL string) Option {
-	return func(h *apiHandlers) {
-		if baseURL != "" {
-			h.gateway = gateway.NewClient(baseURL, h.signer)
-		}
-	}
+	return func(h *apiHandlers) { h.gatewayURL = baseURL }
 }
 
 // WithAgentSigner wires the asymmetric agent-plane signer (ADR-0060): api signs
@@ -195,7 +193,21 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 		h.policy = policy.NewClient(policyURL, signer)
 	}
 	for _, opt := range opts {
-		opt(h) // applied after signer is set, so WithGateway can mint its bearer
+		opt(h)
+	}
+	// Build the gateway client after options apply so it picks the asymmetric
+	// agent-plane signer when configured (ADR-0060), else the symmetric signer —
+	// order-independent (WithGateway/WithAgentSigner may be passed in any order). A
+	// concrete non-nil signer or an untyped nil is passed, never a typed-nil.
+	if h.gatewayURL != "" {
+		switch {
+		case h.agentSigner != nil:
+			h.gateway = gateway.NewClient(h.gatewayURL, h.agentSigner)
+		case h.signer != nil:
+			h.gateway = gateway.NewClient(h.gatewayURL, h.signer)
+		default:
+			h.gateway = gateway.NewClient(h.gatewayURL, nil)
+		}
 	}
 	return HandlerWithOptions(h, ChiServerOptions{
 		BaseRouter: chi.NewRouter(),

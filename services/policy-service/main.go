@@ -131,7 +131,21 @@ func capabilityVerifier() (mw.Verifier, error) {
 		if err != nil {
 			return nil, err
 		}
-		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, os.Getenv("AIREOS_CLUSTER_ID"), "policy-service")), nil
+		issuer := os.Getenv("AIREOS_CLUSTER_ID")
+		local := auth.NewVerifier(key, issuer, "policy-service")
+		// ADR-0060: also accept the gateway's asymmetric service token (the gateway
+		// drops the cluster key in T-049) — verified with the gateway's public key.
+		// Dual-mode: api's symmetric token + the gateway's v4.public. policy is a
+		// permanent dual-mode boundary (api and other callers stay symmetric).
+		if pubHex := os.Getenv("AIREOS_GATEWAY_PUBLIC_KEY"); pubHex != "" {
+			pub, perr := auth.NewAsymmetricPublicKeyFromHex(pubHex)
+			if perr != nil {
+				return nil, fmt.Errorf("invalid AIREOS_GATEWAY_PUBLIC_KEY: %w", perr)
+			}
+			gw := auth.NewAsymmetricVerifier(pub, issuer, "policy-service")
+			return auth.AsMiddlewareVerifier(auth.NewDualModeVerifier(local, gw)), nil
+		}
+		return auth.AsMiddlewareVerifier(local), nil
 	}
 	if os.Getenv("POLICY_DEV_INSECURE_AUTH") == "1" {
 		log.Print("WARNING: POLICY_DEV_INSECURE_AUTH=1 — dev allow-all capability verifier; NOT for production")

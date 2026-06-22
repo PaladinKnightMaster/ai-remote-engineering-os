@@ -16,8 +16,6 @@ import (
 	"io"
 	"net/http"
 	"time"
-
-	"aireos.local/packages/go/auth"
 )
 
 // Sentinels mapping the gateway's resolve status codes (the gateway owns the
@@ -43,23 +41,32 @@ type PendingInvocation struct {
 }
 
 // Client calls the mcp-gateway internal plane with a service-service bearer
-// (IssueService("api","mcp-gateway")). A nil signer → no bearer (dev).
+// (IssueService("api","mcp-gateway")). A nil issuer → no bearer (dev).
 type Client struct {
 	baseURL string
 	token   func(context.Context) (string, error)
 	http    *http.Client
 }
 
+// serviceIssuer mints the api→gateway service-service bearer. Both *auth.Signer
+// (symmetric) and *auth.AsymmetricSigner (the agent-plane key, ADR-0060) satisfy
+// it, so api can prefer the asymmetric signer and fall back to the symmetric one —
+// the gateway's dual-mode verifier accepts either during migration.
+type serviceIssuer interface {
+	IssueService(subject, audience string) (string, error)
+}
+
 // NewClient builds a gateway client for baseURL, minting the service-service bearer
-// from signer (nil signer → no bearer, for dev/insecure).
-func NewClient(baseURL string, signer *auth.Signer) *Client {
+// from issuer (nil issuer → no bearer, for dev/insecure). Callers pass a concrete
+// non-nil signer or an untyped nil — never a typed-nil — so the nil check holds.
+func NewClient(baseURL string, issuer serviceIssuer) *Client {
 	return &Client{
 		baseURL: baseURL,
 		token: func(context.Context) (string, error) {
-			if signer == nil {
+			if issuer == nil {
 				return "", nil
 			}
-			return signer.IssueService("api", "mcp-gateway")
+			return issuer.IssueService("api", "mcp-gateway")
 		},
 		http: &http.Client{Timeout: 10 * time.Second},
 	}

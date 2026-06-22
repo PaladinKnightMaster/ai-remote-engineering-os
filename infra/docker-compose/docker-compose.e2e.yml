@@ -95,6 +95,9 @@ services:
     environment:
       <<: *cluster-env
       AUDIT_ADDR: ":8081"
+      # ADR-0060: accept the gateway's asymmetric outbox token (dual-mode alongside
+      # the cluster key). Matches the gateway's AIREOS_GATEWAY_SIGN_KEY (set in T-049).
+      AIREOS_GATEWAY_PUBLIC_KEY: baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
     command: ["bash", "-c", "go run ./services/audit-service serve"]
 
   api:
@@ -154,6 +157,9 @@ services:
       CONNECTOR_URL: http://connector:8083
       BROKER_ADDR: ":8082"
       AIREOS_AUDIT_URL: http://audit:8081
+      # ADR-0060: the exec-plane verifier also accepts the gateway's asymmetric token
+      # (dual-mode). Matches the gateway's AIREOS_GATEWAY_SIGN_KEY (set in T-049).
+      AIREOS_GATEWAY_PUBLIC_KEY: baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
       AIREOS_CAST_DIR: /var/lib/aireos/sessions
     volumes:
       - ../../:/work
@@ -176,6 +182,9 @@ services:
       <<: *cluster-env
       POLICY_ADDR: ":8084"
       AIREOS_AUDIT_URL: http://audit:8081
+      # ADR-0060: accept the gateway's asymmetric Decide token (dual-mode alongside
+      # api's symmetric token). Matches the gateway's AIREOS_GATEWAY_SIGN_KEY (T-049).
+      AIREOS_GATEWAY_PUBLIC_KEY: baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
     command: ["bash", "-c", "go run ./services/policy-service serve"]
 
   # mcp-gateway: the Typed MCP Gateway (ADR-0056/0057), the first agent surface +

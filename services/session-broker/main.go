@@ -313,7 +313,21 @@ func serviceVerifier() (mw.Verifier, error) {
 		if err != nil {
 			return nil, err
 		}
-		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, os.Getenv("AIREOS_CLUSTER_ID"), "session-broker")), nil
+		issuer := os.Getenv("AIREOS_CLUSTER_ID")
+		local := auth.NewVerifier(key, issuer, "session-broker")
+		// ADR-0060: also accept the gateway's asymmetric exec token (the gateway drops
+		// the cluster key in T-049). The gateway is exec's only caller, so this half
+		// retires to pure-asym + subject-pin in T-049; dual-mode keeps the symmetric
+		// path live across the transition.
+		if pubHex := os.Getenv("AIREOS_GATEWAY_PUBLIC_KEY"); pubHex != "" {
+			pub, perr := auth.NewAsymmetricPublicKeyFromHex(pubHex)
+			if perr != nil {
+				return nil, fmt.Errorf("invalid AIREOS_GATEWAY_PUBLIC_KEY: %w", perr)
+			}
+			gw := auth.NewAsymmetricVerifier(pub, issuer, "session-broker")
+			return auth.AsMiddlewareVerifier(auth.NewDualModeVerifier(local, gw)), nil
+		}
+		return auth.AsMiddlewareVerifier(local), nil
 	}
 	if os.Getenv("BROKER_DEV_INSECURE_AUTH") == "1" {
 		return devAllowAllService{}, nil

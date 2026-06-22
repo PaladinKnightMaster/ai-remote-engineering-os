@@ -138,7 +138,19 @@ func capabilityVerifier() (mw.Verifier, error) {
 			return nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
 		}
 		issuer := os.Getenv("AIREOS_CLUSTER_ID") // optional; empty skips the issuer rule
-		return auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "audit-service")), nil
+		local := auth.NewVerifier(key, issuer, "audit-service")
+		// ADR-0060: also accept the gateway's asymmetric outbox token (the gateway
+		// drops the cluster key in T-049). Dual-mode: every other producer (api/broker/
+		// connector/policy) stays symmetric, so audit is a permanent dual-mode boundary.
+		if pubHex := os.Getenv("AIREOS_GATEWAY_PUBLIC_KEY"); pubHex != "" {
+			pub, perr := auth.NewAsymmetricPublicKeyFromHex(pubHex)
+			if perr != nil {
+				return nil, fmt.Errorf("invalid AIREOS_GATEWAY_PUBLIC_KEY: %w", perr)
+			}
+			gw := auth.NewAsymmetricVerifier(pub, issuer, "audit-service")
+			return auth.AsMiddlewareVerifier(auth.NewDualModeVerifier(local, gw)), nil
+		}
+		return auth.AsMiddlewareVerifier(local), nil
 	}
 	if os.Getenv("AUDIT_DEV_INSECURE_AUTH") == "1" {
 		log.Print("WARNING: AUDIT_DEV_INSECURE_AUTH=1 — using dev allow-all capability verifier; NOT for production")
