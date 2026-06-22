@@ -44,3 +44,38 @@ via `api → gateway` (proxied); the operator sees the agent + the **verbatim co
 (ADR-0059, operator-only — never on the agent plane) before approving. Grant →
 governed exec; deny/timeout → typed error, no egress (fail-closed, SEC-19). A
 gateway reaper finalizes an invocation orphaned by a disconnected agent.
+
+## Per-workload key isolation (v0.4.0; ADR-0060)
+
+At v0.3.0 every service — including the agent-facing `mcp-gateway` — held the one
+symmetric cluster key (`AIREOS_PASETO_KEY`), which under PASETO v4 *local* both
+signs and verifies. RCE on the gateway therefore meant *mint any token for any
+edge* — including a `connector-service` lease that decrypts any credential. v0.4.0
+removes that blast radius:
+
+- **The gateway is keyless of the cluster (SEC-20).** The edges it touches move to
+  PASETO **v4 public** (Ed25519): `services/api` signs the `agent-tool` token (and
+  its `service-service` token to the gateway's internal plane) with a single
+  agent-plane private key; the gateway verifies inbound with api's **public** key
+  alone. The gateway signs its own outbound (→ policy / broker / audit) with its
+  **own** private key; those peers verify it with the gateway's public key. The
+  gateway boots with **no `AIREOS_PASETO_KEY`** and so can mint nothing.
+- **Dual-mode verifier (`packages/go/auth`).** policy / audit / broker-exec accept
+  *either* a `v4.local` token (the cluster key — api and the other symmetric
+  callers) *or* the gateway's `v4.public` token, dispatching on the token type.
+  Non-gateway planes (operator cookie, broker → connector, api → policy/broker)
+  stay symmetric — only the agent-facing surface is de-keyed.
+- **S2S subject-pins (R5-ext).** The broker `/v1/exec` handler rejects any caller
+  whose token subject ≠ `mcp-gateway`; the connector lease handler rejects any
+  subject ≠ `session-broker` — defense in depth over the `service-service` edge,
+  mirroring the gateway internal plane's `subject == "api"` pin.
+- **SEC-21 (proven).** With only its own key, a compromised gateway can forge no
+  token connector or api accepts (their verifiers never hold the gateway's public
+  key) — asserted by the WD-4 negative test and the installed `run-wd1.sh` check.
+- **Command at-rest (F3, extends ADR-0059).** The persisted invocation command is
+  AES-256-GCM encrypted with a gateway-local key distinct from the cluster and
+  resource keys; decrypted only on the operator-only read path.
+
+`connector-service` is deliberately **not** dual-mode — the broker (symmetric) is
+its sole caller, so the credential-decrypt authority stays reachable only by the
+cluster key, which the agent-facing gateway no longer holds.

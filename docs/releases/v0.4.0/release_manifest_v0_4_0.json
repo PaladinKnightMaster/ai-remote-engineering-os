@@ -1,0 +1,61 @@
+{
+  "release": "v0.4.0",
+  "theme": "Hardened Agent Foundation (per-workload asymmetric keys; the agent-facing gateway goes keyless)",
+  "status": "release-candidate — pending the CI/CEO WD-4 run (from-HEAD bundle + task wd1) + full release-check + the human WD-4 walkthrough + tag",
+  "baseline": "v0.3.0 (tag ccbff9f) on v3.0.1",
+  "generated": "2026-06-22",
+  "note": "Machine-readable coverage for v0.4.0. See release_notes_v0_4_0.md (human roll-up) and v0.4.0-release-criteria.md (archival copy). The ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md (through ADR-0060). The cumulative pre-tag security red-team over T-045..T-052 is recorded in the notes; no exploitable bypass found, no code fix needed.",
+  "adrs": {
+    "ADR-0041..ADR-0059": "Accepted at v0.1.0/v0.2.0/v0.3.0 — unchanged",
+    "ADR-0060": "Accepted — asymmetric per-workload keys on the agent-facing planes; removes the symmetric cluster key from services/mcp-gateway (refines ADR-0056 §7; promotes the ADR-0046 P1 trigger). Sole new ADR. F3 command-at-rest encryption extends ADR-0059 with no new ADR (T-051 ticket decision)."
+  },
+  "tickets": {
+    "criteria": "complete — docs/evaluation/v0.4.0-release-criteria.md ACCEPTED (2966972)",
+    "ADR-0060": "complete — ratified + canonical ladder row (0cf9fd8)",
+    "T-045": "complete — packages/go/auth PASETO v4 public (Ed25519) primitives (KEY-1)",
+    "T-046": "complete — dual-mode verifier in packages/go/auth (KEY-2)",
+    "T-047": "complete — api signs agent-tool tokens asymmetrically; gateway dual-mode inbound verify (KEY-3, agent plane)",
+    "T-048": "complete — policy/audit/broker accept gateway-asym (dual-mode) + api->gateway service token asym",
+    "T-049": "complete — gateway outbound asym + DROP AIREOS_PASETO_KEY (SEC-20; gateway keyless)",
+    "T-050": "complete — R5-ext subject-pins: broker-exec (mcp-gateway) + connector-lease (session-broker)",
+    "T-051": "complete — F3 command at-rest encryption (gateway-local AES-256-GCM; app-level, SEC-13 gate untouched)",
+    "T-052": "complete — WD-4 capstone + SEC-21 negative test (keyless gateway forges no foreign edge)",
+    "T-053a": "complete — OI-11: install.sh/systemd provision the asym + F3 keys; gateway unit keyless (gateway.env)",
+    "T-053b": "in progress — DOC-12 + this artifact set + build-bundle version bump (this commit)"
+  },
+  "release_gates_status": {
+    "KEY-1/2/3 (v4-public primitives + dual-mode verifier + the migrated edges)": "passing (auth unit tests + live e2e through the keyless gateway)",
+    "SEC-20 (gateway holds no symmetric cluster key)": "passing (compose: AIREOS_PASETO_KEY empty; installed: gateway.env only; run-wd1 structural check)",
+    "SEC-21 (keyless gateway forges no foreign-edge token)": "passing (TestKeylessGatewayCannotForgeForeignEdge: connector + api reject 401/401)",
+    "PIN-1/2 (R5-ext subject-pins broker-exec=mcp-gateway, connector-lease=session-broker)": "passing (unit negatives + live happy path)",
+    "F3 (command encrypted at rest; operator-only decrypt; distinct gateway-local key)": "passing (cmdcrypt unit + live-PG integration: raw column != plaintext; e2e operator reads decrypted)",
+    "WD-4 compose (keyless gateway drives the full chain + the negative)": "passing (task e2e; audit chain intact, 35 events)",
+    "SEC-13 (connector-only pgp_sym_decrypt; F3 is app-level AES)": "passing (direct grep + task sec13-gate exit 0)",
+    "VER (zero new deps; codegen drift zero; auth-internal, no fragment change)": "passing (go.mod/go.sum diff empty since v0.3.0)",
+    "OI-11 (install.sh provisions the keys; gateway unit keyless; idempotent + upgrade)": "code complete (T-053a); LIVE task wd1 is CI/CEO-env (host has no native Go)",
+    "DOC-12 (module-map + agent-permission-model + CANONICAL ladder/release pointers)": "passing (this commit)"
+  },
+  "remaining_release_gates": [
+    "from-HEAD task offline-bundle (BUNDLE_VERSION=0.4.0) — needs native Go on the build host",
+    "task wd1 (installed WD-4: keyless gateway drives the chain; SEC-20 structural check) — CI/CEO build host",
+    "full task release-check green end-to-end",
+    "CEO human-run WD-4 against the installer-produced stack",
+    "CEO tag decision (local annotated tag v0.4.0; no remote)"
+  ],
+  "pre_release_audit": {
+    "scope": "cumulative security red-team over T-045..T-052 + ADR-0060 (this session, pre-T-053)",
+    "verdict": "no exploitable bypass; no code fix needed. Blast-radius reduction is structural (AIREOS_GATEWAY_PUBLIC_KEY held only by policy/broker/audit, never connector/api); SEC-13 clean; zero new deps; no test weakened.",
+    "observations_recorded": [
+      "gateway server unit/integration tests inject a symmetric verifier (handler-logic tests; the asymmetric path is covered by auth unit tests + live e2e)",
+      "losing AIREOS_GATEWAY_COMMAND_KEY makes parked commands unreadable (errors not crashes; bounded by the reaper / ephemeral rows)"
+    ]
+  },
+  "offline_bundle": {
+    "builder": "task offline-bundle (BUNDLE_VERSION=0.4.0)",
+    "contents": "bin/{api,audit-service,session-broker,connector-service,policy-service,mcp-gateway,authctl,caddy} + web/ + config (7 units) + install.sh",
+    "key_provisioning": "install.sh: authctl genkeypair (api-agent + gateway Ed25519 pairs) + genaeskey (F3); per-holder env files api.env + gateway.env; gateway unit loads gateway.env only (no AIREOS_PASETO_KEY)",
+    "note": "dist/ currently holds the stale v0.3.0 bundle — REBUILD FROM HEAD before the wd1 run (the t033 lesson)",
+    "integrity_manifest": "dist/offline/aireos-offline-<version>/SHA256_MANIFEST.txt",
+    "verify_chain": "audit-service verify"
+  }
+}

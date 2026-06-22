@@ -39,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
-BUNDLE_VERSION="${BUNDLE_VERSION:-0.3.0}"
+BUNDLE_VERSION="${BUNDLE_VERSION:-0.4.0}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist/offline}"
 STAGE="$OUT_DIR/aireos-offline-$BUNDLE_VERSION"
 TARBALL="$OUT_DIR/aireos-offline-$BUNDLE_VERSION.tar.gz"
