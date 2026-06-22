@@ -14,7 +14,16 @@ import (
 // dependency-free (it shipped before auth, and every service imports it) and
 // auth provides this adapter. The net behavior is identical: RequireCapability
 // verifies via the PASETO Verifier and extracts edge + scope.
-type asMiddleware struct{ v *Verifier }
+// tokenVerifier is the shared verify behavior of *Verifier, *AsymmetricVerifier,
+// and *DualModeVerifier — anything that turns a bearer into typed claims. The
+// adapter takes this interface so any of the three wraps into RequireCapability
+// (ADR-0060: a migrating service may be symmetric-only, asymmetric-only, or
+// dual-mode on a given edge).
+type tokenVerifier interface {
+	Verify(ctx context.Context, bearer string) (CapabilityToken, error)
+}
+
+type asMiddleware struct{ v tokenVerifier }
 
 func (a asMiddleware) Verify(ctx context.Context, bearer string) (mw.Capability, error) {
 	ct, err := a.v.Verify(ctx, bearer)
@@ -37,5 +46,6 @@ func (a asMiddleware) Verify(ctx context.Context, bearer string) (mw.Capability,
 	}, nil
 }
 
-// AsMiddlewareVerifier wraps a *Verifier so it satisfies middleware.Verifier.
-func AsMiddlewareVerifier(v *Verifier) mw.Verifier { return asMiddleware{v} }
+// AsMiddlewareVerifier wraps any token verifier (symmetric *Verifier, asymmetric
+// *AsymmetricVerifier, or *DualModeVerifier) so it satisfies middleware.Verifier.
+func AsMiddlewareVerifier(v tokenVerifier) mw.Verifier { return asMiddleware{v} }
