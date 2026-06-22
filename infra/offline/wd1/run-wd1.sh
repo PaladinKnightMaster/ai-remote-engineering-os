@@ -112,6 +112,24 @@ log "assert: units active + Caddy serves the SPA over HTTPS"
 docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy postgresql
 docker exec "$HOST" bash -c 'curl -sk https://localhost/ | grep -qiE "<!doctype html|<html" && echo "SPA OK"'
 
+# 9b. SEC-20 (v0.4.0/ADR-0060): assert install.sh keyed the agent-facing gateway as
+#     KEYLESS of the cluster — gateway.env carries its own sign key + the F3 command
+#     key + api's public key, but NOT AIREOS_PASETO_KEY, and the unit loads gateway.env
+#     (not aireos.env). This is the installed-stack analogue of the e2e SEC-21 negative
+#     test (the gateway has no cluster key, so it can forge no foreign-edge token).
+log "assert: the installed gateway is keyless (SEC-20)"
+docker exec "$HOST" bash -c '
+  set -e
+  grep -q "^AIREOS_GATEWAY_SIGN_KEY=" /etc/aireos/gateway.env || { echo "gateway.env missing AIREOS_GATEWAY_SIGN_KEY"; exit 1; }
+  grep -q "^AIREOS_GATEWAY_COMMAND_KEY=" /etc/aireos/gateway.env || { echo "gateway.env missing AIREOS_GATEWAY_COMMAND_KEY (F3)"; exit 1; }
+  grep -q "^AIREOS_API_AGENT_PUBLIC_KEY=" /etc/aireos/gateway.env || { echo "gateway.env missing AIREOS_API_AGENT_PUBLIC_KEY"; exit 1; }
+  grep -q "^AIREOS_API_AGENT_SIGN_KEY=" /etc/aireos/api.env || { echo "api.env missing AIREOS_API_AGENT_SIGN_KEY"; exit 1; }
+  if grep -q "^AIREOS_PASETO_KEY" /etc/aireos/gateway.env; then echo "SEC-20 VIOLATION — gateway.env carries the cluster key"; exit 1; fi
+  grep -q "^EnvironmentFile=/etc/aireos/gateway.env" /etc/systemd/system/aireos-mcp-gateway.service || { echo "gateway unit does not load gateway.env"; exit 1; }
+  if grep -q "^EnvironmentFile=/etc/aireos/aireos.env" /etc/systemd/system/aireos-mcp-gateway.service; then echo "SEC-20 VIOLATION — gateway unit loads aireos.env (cluster key)"; exit 1; fi
+  echo "SEC-20 OK — gateway keyless: own sign + F3 command + api-public; no cluster key; loads gateway.env only"
+'
+
 # 10. WD-1 walkthrough driver, through Caddy HTTPS, on the network by host name.
 log "run the WD-1 walkthrough driver (Caddy HTTPS)"
 docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod \
@@ -135,4 +153,4 @@ for attempt in 1 2 3 4 5 6; do
   sleep 5
 done
 
-log "T-043a PASS — WD-2 + WD-3 wedges end-to-end on the installed stack via Caddy HTTPS: session approval round-trip + governed lease + deny leg, AND the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec); chain intact + complete (incl. tool.invoked/remote.exec/tool.result)."
+log "T-053a PASS — WD-4 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, AND the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20: gateway.env holds its own asymmetric keys + the F3 command key, no cluster key); chain intact + complete (incl. tool.invoked/remote.exec/tool.result)."

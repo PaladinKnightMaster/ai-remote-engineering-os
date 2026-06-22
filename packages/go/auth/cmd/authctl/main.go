@@ -7,6 +7,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 
@@ -29,6 +31,22 @@ func run(args []string) error {
 		_, hexKey := auth.GenerateKey()
 		fmt.Println(hexKey)
 		return nil
+	case "genkeypair":
+		// PASETO v4 public (Ed25519) keypair for an asymmetric workload edge
+		// (ADR-0060). Prints "<secret-hex> <public-hex>" — install.sh places the
+		// secret in the signer's env file and the public in each verifier's.
+		_, _, skHex, pkHex := auth.GenerateAsymmetricKey()
+		fmt.Println(skHex, pkHex)
+		return nil
+	case "genaeskey":
+		// 32-byte (AES-256) key for command-at-rest encryption (F3,
+		// AIREOS_GATEWAY_COMMAND_KEY) — hex-encoded.
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			return fmt.Errorf("generate aes key: %w", err)
+		}
+		fmt.Println(hex.EncodeToString(b))
+		return nil
 	case "hash":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: authctl hash <password>")
@@ -45,5 +63,5 @@ func run(args []string) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: authctl <genkey|hash <password>>")
+	return fmt.Errorf("usage: authctl <genkey|genkeypair|genaeskey|hash <password>>")
 }

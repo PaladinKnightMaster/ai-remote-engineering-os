@@ -14,6 +14,12 @@ Type=simple
 User=aireos
 Group=aireos
 EnvironmentFile=/etc/aireos/aireos.env
+# api signs agent-tool tokens on the asymmetric agent plane (ADR-0060); its private
+# key lives ONLY in api.env (least-privilege, like connector.env), not in shared
+# aireos.env. A missing api.env leaves AIREOS_API_AGENT_SIGN_KEY unset → api falls
+# back to symmetric agent-token mint (the gateway then expects symmetric — keep them
+# in lockstep via install.sh).
+EnvironmentFile=/etc/aireos/api.env
 ExecStart=/opt/aireos/bin/api serve
 Restart=on-failure
 RestartSec=2

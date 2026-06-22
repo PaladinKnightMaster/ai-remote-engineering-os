@@ -1,10 +1,14 @@
-# systemd unit template — services/mcp-gateway (§OI-10, ADR-0056/0057; T-043a).
+# systemd unit template — services/mcp-gateway (§OI-10/OI-11, ADR-0056/0057/0060).
 # The Typed MCP Gateway (the first agent surface): agents present an agent-tool
 # Bearer to the /mcp endpoint; the gateway opens a governed invocation (policy →
-# operator approval → connector lease → broker exec → audit). It reads its real
-# capability verifier key + downstream URLs from aireos.env — it must NEVER run with
+# operator approval → connector lease → broker exec → audit). It must NEVER run with
 # the MCP_GATEWAY_DEV_INSECURE_AUTH dev flag (R6: that is an allow-all dev verifier).
-# Holds no resource-secret key (SEC-13/17).
+#
+# SEC-20 (v0.4.0): the agent-facing gateway holds NO symmetric cluster key. It reads
+# ONLY /etc/aireos/gateway.env — its own asymmetric sign key, api's public key (to
+# verify inbound), the F3 command key, + downstream URLs/DB. It deliberately does NOT
+# load aireos.env (which carries AIREOS_PASETO_KEY) — so a compromised gateway cannot
+# mint a foreign-edge token. Holds no resource-secret key (SEC-13/17).
 [Unit]
 Description=AI ReOS — mcp-gateway (Typed MCP Gateway, the agent surface)
 After=network-online.target
@@ -14,7 +18,7 @@ Wants=network-online.target
 Type=simple
 User=aireos
 Group=aireos
-EnvironmentFile=/etc/aireos/aireos.env
+EnvironmentFile=/etc/aireos/gateway.env
 ExecStart=/opt/aireos/bin/mcp-gateway serve
 Restart=on-failure
 RestartSec=2

@@ -72,6 +72,46 @@ RESOURCE_KEY="${AIREOS_RESOURCE_SECRET_KEY:-$("$PREFIX/bin/connector-service" cr
 [ -n "$PASETO_KEY" ] && [ -n "$RESOURCE_KEY" ] || die "key generation failed"
 [ "$PASETO_KEY" != "$RESOURCE_KEY" ] || die "key separation failed (PASETO == resource; ADR-0048 §7)"
 
+# --- 3b. v0.4.0 asymmetric agent-plane keys + F3 command key (ADR-0060/OI-11) ---
+# The agent-facing mcp-gateway holds NO symmetric cluster key (SEC-20): it verifies
+# inbound with api's PUBLIC key and signs outbound with its OWN key; api signs
+# agent-tool tokens with the agent-plane private key. Secrets live in per-holder env
+# files (api.env, gateway.env); the gateway PUBLIC key — verified by policy/broker/
+# audit — rides shared aireos.env. Idempotent: reuse existing pairs from those files;
+# a v0.3.0 install (gateway on aireos.env) is upgraded here — the new bundle's
+# gateway unit reads gateway.env and never the cluster key.
+API_ENV="$ETC/api.env"
+GATEWAY_ENV="$ETC/gateway.env"
+if [ -f "$API_ENV" ]; then
+  eval "$(grep -E '^AIREOS_API_AGENT_SIGN_KEY=' "$API_ENV" | sed 's/^/export /')"
+fi
+if [ -f "$GATEWAY_ENV" ]; then
+  eval "$(grep -E '^(AIREOS_GATEWAY_SIGN_KEY|AIREOS_API_AGENT_PUBLIC_KEY|AIREOS_GATEWAY_COMMAND_KEY)=' "$GATEWAY_ENV" | sed 's/^/export /')"
+fi
+if [ -f "$ENV_FILE" ]; then
+  eval "$(grep -E '^AIREOS_GATEWAY_PUBLIC_KEY=' "$ENV_FILE" | sed 's/^/export /')"
+fi
+# api agent-plane keypair (secret → api.env, public → gateway.env). Regenerate the
+# whole pair if either half is missing (a public is useless without its secret).
+API_AGENT_SK="${AIREOS_API_AGENT_SIGN_KEY:-}"
+API_AGENT_PK="${AIREOS_API_AGENT_PUBLIC_KEY:-}"
+if [ -z "$API_AGENT_SK" ] || [ -z "$API_AGENT_PK" ]; then
+  KP="$("$PREFIX/bin/authctl" genkeypair)"; API_AGENT_SK="${KP%% *}"; API_AGENT_PK="${KP##* }"
+fi
+# gateway keypair (secret → gateway.env, public → aireos.env).
+GW_SK="${AIREOS_GATEWAY_SIGN_KEY:-}"
+GW_PK="${AIREOS_GATEWAY_PUBLIC_KEY:-}"
+if [ -z "$GW_SK" ] || [ -z "$GW_PK" ]; then
+  KP="$("$PREFIX/bin/authctl" genkeypair)"; GW_SK="${KP%% *}"; GW_PK="${KP##* }"
+fi
+# F3 command-at-rest key (gateway.env).
+GW_CMD_KEY="${AIREOS_GATEWAY_COMMAND_KEY:-$("$PREFIX/bin/authctl" genaeskey)}"
+[ -n "$API_AGENT_SK" ] && [ -n "$API_AGENT_PK" ] && [ -n "$GW_SK" ] && [ -n "$GW_PK" ] && [ -n "$GW_CMD_KEY" ] || die "v0.4.0 key generation failed"
+# Authority separation (ADR-0060): the secrets must differ from the cluster key and
+# from each other.
+{ [ "$GW_CMD_KEY" != "$PASETO_KEY" ] && [ "$GW_CMD_KEY" != "$GW_SK" ]; } || die "command key must differ from the cluster / gateway sign keys (authority separation)"
+[ "$API_AGENT_SK" != "$GW_SK" ] || die "api-agent and gateway sign keys must differ (per-workload keys, ADR-0060)"
+
 # --- 4. operator credentials (prompt default, env override; OQ-4) -----------
 OP_USER="${AIREOS_BOOTSTRAP_OPERATOR_USER:-}"
 OP_HASH="${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH:-}"
@@ -96,6 +136,7 @@ log "write $ENV_FILE"
 ( umask 077; cat > "$ENV_FILE" <<EOF
 DATABASE_URL=$DB_URL
 AIREOS_PASETO_KEY=$PASETO_KEY
+AIREOS_GATEWAY_PUBLIC_KEY=$GW_PK
 AIREOS_CAST_DIR=$STATE/sessions
 AIREOS_AUDIT_URL=http://127.0.0.1:8081
 AIREOS_SITE_ADDRESS=${AIREOS_SITE_ADDRESS:-localhost}
@@ -120,6 +161,32 @@ AIREOS_RESOURCE_SECRET_KEY=$RESOURCE_KEY
 EOF
 )
 chown "$SVC_USER:$SVC_USER" "$CONNECTOR_ENV"; chmod 600 "$CONNECTOR_ENV"
+
+# api.env = api's agent-plane signing key only (ADR-0060; least-privilege, like
+# connector.env). Loaded by aireos-api.service in addition to aireos.env.
+log "write $API_ENV (api agent-plane signing key)"
+( umask 077; cat > "$API_ENV" <<EOF
+AIREOS_API_AGENT_SIGN_KEY=$API_AGENT_SK
+EOF
+)
+chown "$SVC_USER:$SVC_USER" "$API_ENV"; chmod 600 "$API_ENV"
+
+# gateway.env = the agent-facing gateway's ENTIRE env (SEC-20: NO AIREOS_PASETO_KEY).
+# Its own sign key + api's public key (verify inbound) + the F3 command key, plus the
+# URLs/DB it needs. aireos-mcp-gateway.service loads ONLY this file, never aireos.env.
+log "write $GATEWAY_ENV (keyless of the cluster — SEC-20)"
+( umask 077; cat > "$GATEWAY_ENV" <<EOF
+DATABASE_URL=$DB_URL
+AIREOS_AUDIT_URL=http://127.0.0.1:8081
+MCP_ADDR=127.0.0.1:8085
+POLICY_URL=http://127.0.0.1:8084
+BROKER_URL=http://127.0.0.1:8082
+AIREOS_GATEWAY_SIGN_KEY=$GW_SK
+AIREOS_API_AGENT_PUBLIC_KEY=$API_AGENT_PK
+AIREOS_GATEWAY_COMMAND_KEY=$GW_CMD_KEY
+EOF
+)
+chown "$SVC_USER:$SVC_USER" "$GATEWAY_ENV"; chmod 600 "$GATEWAY_ENV"
 
 # --- 7. validate DB + run migrations (all five services share one DB) -------
 log "validate DB connection + run migrations"
