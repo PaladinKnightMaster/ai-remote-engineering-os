@@ -61,24 +61,37 @@ task doc-check                # doc-ref resolution (needs python3)
 
 ## Step 4 — §human WD-4 (interactive feature test)
 
-Bring up a **persistent** installed stack and drive it yourself (run-wd1 auto-tears-down,
-so for hands-on testing run its bring-up steps manually, or comment out the
-`trap cleanup EXIT` line). Then, through Caddy HTTPS:
+Stand up a **persistent** installed stack (no teardown; Caddy published to
+`localhost:8443`; `fire-agent.sh` staged), then drive it:
+
+```sh
+bash infra/offline/wd1/bringup-demo.sh    # → https://localhost:8443 (admin / demo-operator-pw)
+```
+
+Then, through Caddy HTTPS:
 
 1. **Log in** as the bootstrap operator (browser; accept the self-signed local CA).
-2. **Provision an agent token** — `POST /v1/agent-tokens` (operator-gated) for a
-   `requires_approval`-flagged resource.
-3. **Agent calls `remote.exec`** via `/mcp` → the call **parks and blocks**.
-4. In the cockpit's **pending tool invocations**, confirm you see the agent + the
-   **verbatim command** (F3: it's stored encrypted, decrypted only for you here).
-5. **Approve** → the held agent call returns the command's stdout; **deny** a second
-   one → typed error, no exec.
-6. **Confirm keyless** on the host: `grep AIREOS_PASETO_KEY /etc/aireos/gateway.env`
-   returns nothing; `cat /etc/aireos/gateway.env` shows only the gateway's own keys +
-   URLs. `systemctl cat aireos-mcp-gateway` shows `EnvironmentFile=…/gateway.env` only.
+2. **Cockpit (Part A):** Sessions → pick `demo-target` → Create → it parks → **Approve**
+   → terminal → run a command → End. Then create a second → **Deny** (blocked).
+   Check **Audit** for the chained timeline.
+3. **Agent surface (Part B):** drive an agent call (it parks + blocks ~125s):
+   ```sh
+   docker exec aireos-demo-host fire-agent.sh            # or: fire-agent.sh "echo your command"
+   ```
+4. In the browser, open **`/invocations`** → you see the agent + the **verbatim command**
+   (F3: stored encrypted, decrypted only for you here) → **Approve** within ~2 min →
+   `fire-agent` returns the stdout (executed by the **keyless** gateway). Run it again
+   and **Deny** → typed error, no exec.
+5. **Keyless hand-check (Part C / SEC-20):**
+   ```sh
+   docker exec aireos-demo-host grep AIREOS_PASETO_KEY /etc/aireos/gateway.env   # → nothing
+   docker exec aireos-demo-host systemctl cat aireos-mcp-gateway | grep EnvironmentFile  # → gateway.env only
+   ```
 
-(Steps 3–5 are also the automated `task e2e` `ApprovalPath`; step 4's command
-visibility is the F3 + ADR-0059 surface; step 6 is the SEC-20 hand-check.)
+**Tear down when done:**
+```sh
+docker rm -f aireos-demo-host aireos-demo-sshd; docker network rm aireos-demo; docker volume rm aireos-demo-keys
+```
 
 ## Step 5 — tag (local; CEO decision)
 
