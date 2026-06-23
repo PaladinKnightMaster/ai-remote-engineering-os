@@ -194,16 +194,11 @@ func New(cfg Config) *Service {
 // List implements mcp.Catalog.
 func (s *Service) List() []mcp.Tool { return s.registry.List() }
 
-// Invoke runs the governed pipeline (ADR-0057/0059): scope check (SEC-16) →
-// per-agent concurrency cap (PERF-3) → create invocation with the persisted command
-// (idempotency, PERF-2) → policy decide → allow: broker exec → tool.result;
-// requires_approval: park and BLOCK until the operator resolves it (block-and-wait)
-// → grant: exec; deny/timeout: typed error. Fail-closed (SEC-19): any downstream
-// failure marks the invocation failed and refuses egress.
-//
-// Governance refusals the agent should handle (scope/concurrency/denied/timeout/dup)
-// return an MCP tool-error result (isError); protocol/infra failures return a Go
-// error (a JSON-RPC error).
+// Invoke is the AGENT-plane entry (mcp.Catalog): it authorizes the agent's tools/call
+// (capability + SEC-16 token scope), resolves the governance target from the typed
+// args, then hands the resolved step to the shared governed core (runGovernedStep).
+// The agent-token scope check stays here — it is the agent plane's authorization and
+// has no analog on the operator Run engine plane (T-055b), which reuses the core.
 func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage) (mcp.ToolResult, error) {
 	def, ok := s.registry.Lookup(name)
 	if !ok {
@@ -213,7 +208,6 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	if !ok || capb.Subject == "" {
 		return mcp.ToolResult{}, errors.New("no agent capability on the invocation")
 	}
-	agent := capb.Subject
 
 	// Validate + resolve the governance target (resource:<id>) from the args.
 	target, err := def.Target(args)
@@ -232,8 +226,60 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		return toolError("operation is outside the agent token's scope"), nil
 	}
 
-	// PERF-3: per-agent concurrency cap.
-	inFlight, err := s.store.CountInFlight(ctx, agent)
+	// The command is persisted on the invocation (ADR-0059) so the operator approves
+	// the exact payload and any waiter execs what was approved. def.Target already
+	// validated it is present.
+	var execArgs remoteExecArgs
+	_ = json.Unmarshal(args, &execArgs)
+
+	// The idempotency key is read HERE (the agent's Idempotency-Key header, via ctx)
+	// and passed in — the core never reads it from ctx, so it equally serves the Run
+	// engine's deterministic per-step keys (T-055b).
+	return s.runGovernedStep(ctx, stepRequest{
+		Subject:        capb.Subject,
+		Tool:           def.Name,
+		ResourceID:     resourceID,
+		Command:        execArgs.Command,
+		Edge:           def.Edge,
+		Action:         def.Action,
+		Target:         target,
+		IdempotencyKey: mcp.IdempotencyKey(ctx),
+		WaitTimeout:    s.waitTimeout,
+	})
+}
+
+// stepRequest is the resolved input to the governed core — a single governed step,
+// independent of which plane initiated it. The agent path (Invoke) builds it from the
+// agent capability + ToolDef + args; the operator Run engine builds it from the
+// launching operator + a plan step (T-055b). Keeping the core plane-agnostic is the
+// seam that lets the Run engine reuse the whole governed pipeline without the
+// agent-token machinery.
+type stepRequest struct {
+	Subject        string        // the initiator (agent now; operator at T-055b)
+	Tool           string        // the tool name (def.Name)
+	ResourceID     string        // target resource
+	Command        string        // the command to persist + execute
+	Edge           string        // capability edge for policy.Decide (def.Edge)
+	Action         string        // audited action for policy.Decide (def.Action)
+	Target         string        // "resource:<id>" for policy.Decide
+	IdempotencyKey string        // resolved by the CALLER (never read from ctx here)
+	WaitTimeout    time.Duration // block-and-wait deadline for a parked step
+}
+
+// runGovernedStep is the shared, plane-agnostic governed pipeline (ADR-0057/0059):
+// per-initiator concurrency cap (PERF-3) → create the invocation with the persisted
+// command (idempotency, PERF-2) → policy decide → allow: broker exec → tool.result;
+// requires_approval: park and BLOCK until the operator resolves it (block-and-wait)
+// → grant: exec; deny/timeout: typed error. Fail-closed (SEC-19): any downstream
+// failure marks the invocation failed and refuses egress.
+//
+// Governance refusals the caller should handle (concurrency/denied/timeout/dup)
+// return an MCP tool-error result (isError); protocol/infra failures return a Go
+// error. The SEC-16 agent-token scope check is NOT here — it is the agent wrapper's
+// concern (Invoke); this core serves both the agent and the operator Run engine.
+func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (mcp.ToolResult, error) {
+	// PERF-3: per-initiator concurrency cap.
+	inFlight, err := s.store.CountInFlight(ctx, req.Subject)
 	if err != nil {
 		return mcp.ToolResult{}, fmt.Errorf("concurrency check: %w", err)
 	}
@@ -242,21 +288,15 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	}
 
 	// requires_approval from the resource label (ADR-0057).
-	requiresApproval, err := s.store.RequiresApproval(ctx, resourceID)
+	requiresApproval, err := s.store.RequiresApproval(ctx, req.ResourceID)
 	if err != nil {
 		return toolError("unknown or unavailable resource"), nil
 	}
 
-	// The command is persisted on the invocation (ADR-0059) so the operator approves
-	// the exact payload and any waiter execs what was approved, not what a retry
-	// re-passed. def.Target already validated it is present.
-	var execArgs remoteExecArgs
-	_ = json.Unmarshal(args, &execArgs)
-
 	// Create the invocation (idempotency: PERF-2).
 	inv, created, err := s.store.Create(ctx, store.CreateInput{
-		AgentSubject: agent, ResourceID: resourceID, Tool: def.Name,
-		Command: execArgs.Command, IdempotencyKey: mcp.IdempotencyKey(ctx),
+		AgentSubject: req.Subject, ResourceID: req.ResourceID, Tool: req.Tool,
+		Command: req.Command, IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
 		return mcp.ToolResult{}, fmt.Errorf("create invocation: %w", err)
@@ -265,27 +305,27 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	if !created {
 		// Idempotent hit (PERF-2). A terminal original cannot be replayed (the stdout
 		// is not stored, ADR-0058); a still-live one RE-ATTACHES to the wait so a
-		// dropped long-poll that the agent retries resumes rather than erroring.
+		// dropped long-poll that the caller retries resumes rather than erroring.
 		if isTerminal(inv.Status) {
 			return toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
 		}
-		return s.waitForApproval(ctx, inv.ID, agent)
+		return s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
 	}
 
 	// Policy decision (fail-closed: an error → mark failed, refuse egress, SEC-19).
-	decision, err := s.policy.Decide(ctx, inv.ID, agent, def.Edge, target, def.Action, requiresApproval)
+	decision, err := s.policy.Decide(ctx, inv.ID, req.Subject, req.Edge, req.Target, req.Action, requiresApproval)
 	if err != nil {
 		_ = s.store.Finish(ctx, inv.ID, "failed", "tool.result:error")
 		return mcp.ToolResult{}, fmt.Errorf("policy decision unavailable: %w", err)
 	}
 	if decision == PolicyAllow {
 		_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
-		return s.execAndFinish(ctx, inv.ID, resourceID, execArgs.Command, agent)
+		return s.execAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject)
 	}
 
 	// requires_approval → park, then block until the operator resolves it (T-040).
 	_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
-	return s.waitForApproval(ctx, inv.ID, agent)
+	return s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
 }
 
 // waitForApproval blocks the agent's tools/call on a parked invocation until the
@@ -294,8 +334,8 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 // finalize failed (policy's TTL timeout runs in parallel). An agent disconnect (ctx)
 // leaves the row parked for the reaper or an idempotent re-attach. It polls the row —
 // a short query per tick, never a held transaction.
-func (s *Service) waitForApproval(ctx context.Context, id, agent string) (mcp.ToolResult, error) {
-	deadline := time.NewTimer(s.waitTimeout)
+func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout time.Duration) (mcp.ToolResult, error) {
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
