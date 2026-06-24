@@ -20,10 +20,11 @@ const (
 // command is NOT echoed back (the operator submitted it; this view is for watching
 // progress). The full plan + commands live in the operator-only store.
 type runStepView struct {
-	StepIndex  int    `json:"stepIndex"`
-	ResourceID string `json:"resourceId"`
-	Status     string `json:"status"`
-	Outcome    string `json:"outcome,omitempty"`
+	StepIndex    int    `json:"stepIndex"`
+	ResourceID   string `json:"resourceId"`
+	Status       string `json:"status"`
+	Outcome      string `json:"outcome,omitempty"`
+	InvocationID string `json:"invocationId,omitempty"` // the chain anchor (AUD-15); absent until dispatched
 }
 
 type runView struct {
@@ -36,7 +37,8 @@ func toRunView(r run.Run) runView {
 	v := runView{ID: r.ID, Status: r.Status, Steps: make([]runStepView, 0, len(r.Steps))}
 	for _, s := range r.Steps {
 		v.Steps = append(v.Steps, runStepView{
-			StepIndex: s.Index, ResourceID: s.ResourceID, Status: s.Status, Outcome: s.Outcome,
+			StepIndex: s.Index, ResourceID: s.ResourceID, Status: s.Status,
+			Outcome: s.Outcome, InvocationID: s.InvocationID,
 		})
 	}
 	return v

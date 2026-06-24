@@ -209,16 +209,35 @@ func (s *Store) ClaimForExec(ctx context.Context, id string) (Invocation, bool, 
 	return inv, true, nil
 }
 
-// ReapStale finalizes parked invocations whose approval window has elapsed (ADR-0059):
-// a never-resolved pending_approval row older than olderThan is moved to failed —
-// freeing the PERF-3 concurrency slot and bounding command retention — and emits
-// tool.result:error in the same transaction. It is the backstop for an agent that
-// disconnected mid-wait; a connected agent's own block-and-wait deadline finalizes
-// first. Returns the number reaped.
+// ReapStale finalizes orphaned invocations older than olderThan → failed, emitting
+// tool.result:error in the same transaction. Two orphan classes (ADR-0059 / DUR-4):
+//   - pending_approval: an agent disconnected mid-wait (a connected agent's own
+//     block-and-wait deadline finalizes first); bounds command retention.
+//   - running (T-058b): the GATEWAY crashed mid-exec, so no live goroutine will Finish
+//     the row. Exec is BROKER_EXEC_TIMEOUT-bounded (~60s) ≪ the reap TTL, so only true
+//     orphans are caught; the api side already failed the Run — this frees the PERF-3
+//     slot + closes the chain.
+//
+// Returns the total number reaped.
 func (s *Store) ReapStale(ctx context.Context, olderThan time.Duration) (int, error) {
 	cutoff := time.Now().Add(-olderThan)
-	rows, err := s.pool.Query(ctx, `
-		SELECT id FROM invocations WHERE status = 'pending_approval' AND updated_at < $1`, cutoff)
+	n := 0
+	for _, fromStatus := range []string{"pending_approval", "running"} {
+		reaped, err := s.reapStatus(ctx, fromStatus, cutoff)
+		if err != nil {
+			return n, err
+		}
+		n += reaped
+	}
+	return n, nil
+}
+
+// reapStatus finalizes every invocation in fromStatus older than cutoff → failed. The
+// per-row finalizeFrom status guard skips a row that left fromStatus between the scan
+// and the finalize (so the reaper never clobbers an in-flight grant or a just-finished
+// exec).
+func (s *Store) reapStatus(ctx context.Context, fromStatus string, cutoff time.Time) (int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM invocations WHERE status = $1 AND updated_at < $2`, fromStatus, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("scan stale invocations: %w", err)
 	}
@@ -238,9 +257,7 @@ func (s *Store) ReapStale(ctx context.Context, olderThan time.Duration) (int, er
 
 	n := 0
 	for _, id := range ids {
-		// FinalizeIfPending's status guard skips a row resolved/claimed between the
-		// scan and here, so the reaper never clobbers an in-flight grant.
-		reaped, err := s.FinalizeIfPending(ctx, id, "failed", "tool.result:error")
+		reaped, err := s.finalizeFrom(ctx, id, fromStatus, "failed", "tool.result:error")
 		if err != nil {
 			return n, err
 		}
@@ -251,12 +268,20 @@ func (s *Store) ReapStale(ctx context.Context, olderThan time.Duration) (int, er
 	return n, nil
 }
 
-// FinalizeIfPending moves a still-parked invocation to a terminal status and enqueues
-// its outcome in the same transaction (AUD-9). The status guard makes it a no-op
-// (ok=false) if the row already left pending_approval — the safe primitive the reaper
-// (→failed) and the operator deny path (→denied, T-040a2) share. The grant path is
-// Grant, which keeps the row parked-but-allow for the waiter to claim.
+// FinalizeIfPending moves a still-PARKED invocation to a terminal status and enqueues
+// its outcome in the same transaction (AUD-9). The pending_approval guard makes it a
+// no-op (ok=false) if the row already left that state — the safe primitive the operator
+// deny path (→denied, T-040a2) and the reaper share. The grant path is Grant, which
+// keeps the row parked-but-allow for the waiter to claim.
 func (s *Store) FinalizeIfPending(ctx context.Context, id, status, outcome string) (bool, error) {
+	return s.finalizeFrom(ctx, id, "pending_approval", status, outcome)
+}
+
+// finalizeFrom atomically moves an invocation FROM fromStatus to toStatus and enqueues
+// its outcome event (carrying the row's bracket edge, RUN-5) in the same transaction
+// (AUD-9). ok=false (a no-op) if the row already left fromStatus — the shared status
+// guard behind FinalizeIfPending (pending_approval) and the running-orphan reaper.
+func (s *Store) finalizeFrom(ctx context.Context, id, fromStatus, toStatus, outcome string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -265,9 +290,9 @@ func (s *Store) FinalizeIfPending(ctx context.Context, id, status, outcome strin
 
 	var agent, resource, edge string
 	err = tx.QueryRow(ctx, `
-		UPDATE invocations SET status = $2, updated_at = now()
-		 WHERE id = $1 AND status = 'pending_approval'
-		 RETURNING agent_subject, resource_id, edge`, id, status).Scan(&agent, &resource, &edge)
+		UPDATE invocations SET status = $3, updated_at = now()
+		 WHERE id = $1 AND status = $2
+		 RETURNING agent_subject, resource_id, edge`, id, fromStatus, toStatus).Scan(&agent, &resource, &edge)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

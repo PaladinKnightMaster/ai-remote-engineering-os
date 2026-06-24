@@ -597,6 +597,8 @@ export interface components {
             resourceId: string;
             status: string;
             outcome?: string;
+            /** @description The gateway invocation id once the step is dispatched — the read-time evidence-packet anchor into the hash-linked audit chain (AUD-15). Absent until dispatched. */
+            invocationId?: string;
         };
         AuditEvent: {
             id: string;

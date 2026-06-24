@@ -102,8 +102,9 @@ type runStatusView struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	Steps  []struct {
-		StepIndex int    `json:"stepIndex"`
-		Status    string `json:"status"`
+		StepIndex    int    `json:"stepIndex"`
+		Status       string `json:"status"`
+		InvocationID string `json:"invocationId"`
 	} `json:"steps"`
 }
 
@@ -250,6 +251,13 @@ func TestRunEngineEndToEnd(t *testing.T) {
 	got := getRun(t, client, apiURL, session, csrf, runID)
 	if got.Status != "completed" || len(got.Steps) != 2 {
 		t.Fatalf("GET run: %+v, want completed with 2 steps", got)
+	}
+	// EVD-1: the GET surfaces each step's invocation id — the read-time evidence-packet
+	// anchor into the hash-linked chain.
+	for _, st := range got.Steps {
+		if st.InvocationID == "" {
+			t.Fatalf("GET run step %d missing invocationId (evidence-packet bridge)", st.StepIndex)
+		}
 	}
 
 	events := listAllEvents(t, auditURL, auditTok)

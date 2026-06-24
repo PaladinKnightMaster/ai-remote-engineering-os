@@ -223,10 +223,12 @@ type RunCreate struct {
 
 // RunStepView defines model for RunStepView.
 type RunStepView struct {
-	Outcome    *string `json:"outcome,omitempty"`
-	ResourceId string  `json:"resourceId"`
-	Status     string  `json:"status"`
-	StepIndex  int     `json:"stepIndex"`
+	// InvocationId The gateway invocation id once the step is dispatched — the read-time evidence-packet anchor into the hash-linked audit chain (AUD-15). Absent until dispatched.
+	InvocationId *string `json:"invocationId,omitempty"`
+	Outcome      *string `json:"outcome,omitempty"`
+	ResourceId   string  `json:"resourceId"`
+	Status       string  `json:"status"`
+	StepIndex    int     `json:"stepIndex"`
 }
 
 // Session defines model for Session.

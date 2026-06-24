@@ -881,6 +881,9 @@ components:
           type: string
         outcome:
           type: string
+        invocationId:
+          type: string
+          description: The gateway invocation id once the step is dispatched — the read-time evidence-packet anchor into the hash-linked audit chain (AUD-15). Absent until dispatched.
     AuditEvent:
       type: object
       additionalProperties: false

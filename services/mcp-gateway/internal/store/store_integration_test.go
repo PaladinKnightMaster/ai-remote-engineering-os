@@ -266,6 +266,43 @@ func TestReapStaleFinalizesParked(t *testing.T) {
 	}
 }
 
+// TestReapStaleFinalizesRunning — T-058b (DUR-4 gateway half): a 'running' invocation
+// stuck past the reap TTL (the gateway crashed mid-exec, no live goroutine to Finish
+// it) is finalized → failed and emits tool.result:error, freeing the concurrency slot.
+func TestReapStaleFinalizesRunning(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	agent := "agent:" + randSuffix(t)
+	inv, _, err := st.Create(ctx, CreateInput{AgentSubject: agent, ResourceID: "r-run", Tool: "remote.exec", Command: "sleep 9"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Move to running (as ClaimForExec does after a grant), then backdate so it is stale.
+	if err := st.SetStatus(ctx, inv.ID, "running", "allow"); err != nil {
+		t.Fatalf("set running: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE invocations SET updated_at = now() - interval '1 minute' WHERE id = $1`, inv.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	n, err := st.ReapStale(ctx, 0)
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("reaped %d, want >= 1", n)
+	}
+	if got, _ := st.Get(ctx, inv.ID); got.Status != "failed" {
+		t.Fatalf("status after reap = %q, want failed", got.Status)
+	}
+	if c, _ := st.CountInFlight(ctx, agent); c != 0 {
+		t.Fatalf("in-flight after reap = %d, want 0 (slot freed)", c)
+	}
+	if countOutcome(t, pool, "invocation:"+inv.ID, "tool.result:error") != 1 {
+		t.Fatal("reaped running invocation must emit exactly one tool.result:error")
+	}
+}
+
 // A granted invocation (decision=allow, still pending_approval so the agent can claim
 // it) must drop OUT of the operator pending list immediately — otherwise the cockpit
 // re-prompts in the window between approve and the agent's claim (T-044).
