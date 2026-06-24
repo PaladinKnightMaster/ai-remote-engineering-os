@@ -174,16 +174,18 @@ func (s *Store) Get(ctx context.Context, id string) (Run, error) {
 // List returns up to limit runs in id (≈ creation) order with id > after
 // (after="" starts at the head), without their steps (steps load on Get). The cursor
 // is the last id, or "" when empty.
-func (s *Store) List(ctx context.Context, after string, limit int) ([]Run, string, error) {
-	const cols = `SELECT id, operator, status, created_at, updated_at FROM runs`
+// It is operator-scoped (owner-only, matching GetRun): an operator never lists another
+// operator's runs (T-059a).
+func (s *Store) ListForOperator(ctx context.Context, operator, after string, limit int) ([]Run, string, error) {
+	const cols = `SELECT id, operator, status, created_at, updated_at FROM runs WHERE operator = $1`
 	var (
 		rows pgx.Rows
 		err  error
 	)
 	if after == "" {
-		rows, err = s.pool.Query(ctx, cols+` ORDER BY id ASC LIMIT $1`, limit)
+		rows, err = s.pool.Query(ctx, cols+` ORDER BY id ASC LIMIT $2`, operator, limit)
 	} else {
-		rows, err = s.pool.Query(ctx, cols+` WHERE id > $1 ORDER BY id ASC LIMIT $2`, after, limit)
+		rows, err = s.pool.Query(ctx, cols+` AND id > $2 ORDER BY id ASC LIMIT $3`, operator, after, limit)
 	}
 	if err != nil {
 		return nil, "", err
@@ -284,35 +286,69 @@ var runTerminalOutcome = map[string]string{
 	StatusCanceled:  "run.canceled",
 }
 
-// FinishRun moves a Run to a terminal status (completed | failed | canceled) and emits
-// the matching run.* lifecycle event in the SAME transaction (AUD-9/14): actor =
-// operator, anchored run:<id>, content-free. ErrNotFound if no row matched.
+// RunStatus returns just a Run's status — the sequencer's lightweight between-step
+// cancellation check (cheaper than Get, which loads the steps). ErrNotFound if absent.
+func (s *Store) RunStatus(ctx context.Context, id string) (string, error) {
+	var status string
+	err := s.pool.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, id).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("run status: %w", err)
+	}
+	return status, nil
+}
+
+// FinishRun moves a RUNNING Run to a terminal status (completed | failed) and emits the
+// run.* event in-tx (AUD-14). The status='running' guard makes it a no-op when the Run
+// already left running (an operator cancel won the race) — the sequencer ignores the
+// result, so a no-op is silent (no spurious run.completed over a canceled Run).
 func (s *Store) FinishRun(ctx context.Context, id, status string) error {
+	_, err := s.setRunTerminal(ctx, id, status, "running")
+	return err
+}
+
+// CancelRun cancels a Run mid-flight (DUR-5): pending|running → canceled + run.canceled
+// in-tx. ok=false when the Run is no longer cancelable (already terminal) — the handler
+// maps that to 409.
+func (s *Store) CancelRun(ctx context.Context, id string) (bool, error) {
+	return s.setRunTerminal(ctx, id, StatusCanceled, "pending", "running")
+}
+
+// setRunTerminal moves a Run to toStatus, guarded to fromStatuses, and emits the mapped
+// run.* lifecycle event in the SAME transaction (AUD-9/14): actor=operator, anchored
+// run:<id>, content-free. ok=false (no-op) if the row already left fromStatuses — the
+// shared guard behind FinishRun (from running) and CancelRun (from pending|running) that
+// makes a cancel/finish race safe.
+func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromStatuses ...string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var operator string
-	err = tx.QueryRow(ctx, `UPDATE runs SET status = $2, updated_at = now() WHERE id = $1 RETURNING operator`,
-		id, status).Scan(&operator)
+	err = tx.QueryRow(ctx, `
+		UPDATE runs SET status = $2, updated_at = now()
+		 WHERE id = $1 AND status = ANY($3) RETURNING operator`,
+		id, toStatus, fromStatuses).Scan(&operator)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("finish run: %w", err)
+		return false, fmt.Errorf("set run terminal: %w", err)
 	}
-	if outcome, ok := runTerminalOutcome[status]; ok {
+	if outcome, ok := runTerminalOutcome[toStatus]; ok {
 		if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
 			Timestamp: time.Now(), Actor: operator, Edge: launchEdge,
 			Target: "run:" + id, Outcome: outcome, EvidencePacketID: "run:" + id,
 		}); err != nil {
-			return fmt.Errorf("enqueue %s: %w", outcome, err)
+			return false, fmt.Errorf("enqueue %s: %w", outcome, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit finish run: %w", err)
+		return false, fmt.Errorf("commit run terminal: %w", err)
 	}
-	return nil
+	return true, nil
 }

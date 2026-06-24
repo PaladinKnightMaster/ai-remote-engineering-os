@@ -301,6 +301,12 @@ type ListResourcesParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListRunsParams defines parameters for ListRuns.
+type ListRunsParams struct {
+	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // ListSessionsParams defines parameters for ListSessions.
 type ListSessionsParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -369,12 +375,18 @@ type ServerInterface interface {
 	// Replace a resource's mutable fields
 	// (PUT /v1/resources/{id})
 	UpdateResource(w http.ResponseWriter, r *http.Request, id string)
+	// List the caller's Runs (operator-scoped; no cross-operator scope)
+	// (GET /v1/runs)
+	ListRuns(w http.ResponseWriter, r *http.Request, params ListRunsParams)
 	// Launch an operator-authored governed Run (ADR-0061; informed, bounded)
 	// (POST /v1/runs)
 	CreateRun(w http.ResponseWriter, r *http.Request)
 	// Fetch a Run's status + per-step status (the caller must own it)
 	// (GET /v1/runs/{id})
 	GetRun(w http.ResponseWriter, r *http.Request, id string)
+	// Cancel a pending/running Run the caller owns (DUR-5; stop-future-steps)
+	// (POST /v1/runs/{id}/cancel)
+	CancelRun(w http.ResponseWriter, r *http.Request, id string)
 	// List the caller's sessions (operator-scoped; no cross-operator scope at v0.1.0)
 	// (GET /v1/sessions)
 	ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams)
@@ -468,6 +480,12 @@ func (_ Unimplemented) UpdateResource(w http.ResponseWriter, r *http.Request, id
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List the caller's Runs (operator-scoped; no cross-operator scope)
+// (GET /v1/runs)
+func (_ Unimplemented) ListRuns(w http.ResponseWriter, r *http.Request, params ListRunsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Launch an operator-authored governed Run (ADR-0061; informed, bounded)
 // (POST /v1/runs)
 func (_ Unimplemented) CreateRun(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +495,12 @@ func (_ Unimplemented) CreateRun(w http.ResponseWriter, r *http.Request) {
 // Fetch a Run's status + per-step status (the caller must own it)
 // (GET /v1/runs/{id})
 func (_ Unimplemented) GetRun(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Cancel a pending/running Run the caller owns (DUR-5; stop-future-steps)
+// (POST /v1/runs/{id}/cancel)
+func (_ Unimplemented) CancelRun(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -833,6 +857,47 @@ func (siw *ServerInterfaceWrapper) UpdateResource(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListRuns operation middleware
+func (siw *ServerInterfaceWrapper) ListRuns(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListRunsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRuns(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateRun operation middleware
 func (siw *ServerInterfaceWrapper) CreateRun(w http.ResponseWriter, r *http.Request) {
 
@@ -875,6 +940,37 @@ func (siw *ServerInterfaceWrapper) GetRun(w http.ResponseWriter, r *http.Request
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetRun(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CancelRun operation middleware
+func (siw *ServerInterfaceWrapper) CancelRun(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CancelRun(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1188,10 +1284,16 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Put(options.BaseURL+"/v1/resources/{id}", wrapper.UpdateResource)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/runs", wrapper.ListRuns)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/runs", wrapper.CreateRun)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/runs/{id}", wrapper.GetRun)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/runs/{id}/cancel", wrapper.CancelRun)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/sessions", wrapper.ListSessions)

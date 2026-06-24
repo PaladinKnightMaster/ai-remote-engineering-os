@@ -12,6 +12,7 @@ type sequencerStore interface {
 	NextClaimable(ctx context.Context, limit int) ([]string, error)
 	ClaimRun(ctx context.Context, id string, leaseSecs int) (bool, error)
 	RenewClaim(ctx context.Context, id string, leaseSecs int) error
+	RunStatus(ctx context.Context, id string) (string, error)
 	Get(ctx context.Context, id string) (Run, error)
 	SetStepResult(ctx context.Context, runID string, index int, status, outcome, invocationID string) error
 	FinishRun(ctx context.Context, id, status string) error
@@ -93,6 +94,16 @@ func (s *Sequencer) DriveRun(ctx context.Context, runID string) {
 			// the operator re-launches. Applied steps stay applied (non-atomic).
 			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, "orphaned: driver restarted mid-step", "")
 			_ = s.store.FinishRun(ctx, runID, StatusFailed)
+			return
+		}
+		// DUR-5: stop dispatching if the operator canceled the Run (or it otherwise left
+		// running) — no further egress, and NO FinishRun (the Run is already terminal;
+		// CancelRun emitted run.canceled). Checked between steps; an in-flight step
+		// (e.g. parked) is not force-released here.
+		if status, err := s.store.RunStatus(ctx, runID); err != nil || status != StatusRunning {
+			if err != nil {
+				log.Printf("run sequencer: status %s: %v", runID, err)
+			}
 			return
 		}
 		// pending → renew the lease (so a live driver is not reclaimed mid-step),

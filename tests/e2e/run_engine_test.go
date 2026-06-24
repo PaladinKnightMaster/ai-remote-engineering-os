@@ -128,6 +128,61 @@ func getRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string)
 	return v
 }
 
+// cancelRun cancels a Run via the operator route (POST /v1/runs/{id}/cancel, T-059a)
+// and returns the HTTP status.
+func cancelRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/runs/"+id+"/cancel", nil)
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+// TestRunEngineCancel — T-059a (DUR-5): the operator cancels a Run whose current step is
+// parked. Cancel stops future steps (run.canceled); the parked step is then denied via
+// /invocations to release the held call, and the Run STAYS canceled (FinishRun no-ops
+// over the canceled status — the race fix).
+func TestRunEngineCancel(t *testing.T) {
+	apiURL := env("E2E_API_URL", "http://localhost:8080")
+	auditURL := env("E2E_AUDIT_URL", "http://localhost:8081")
+	pool := runEngineDB(t)
+	auditTok := mintAuditToken(t)
+	client := &http.Client{Timeout: 30 * time.Second}
+	session, csrf, status, err := doLogin(client, apiURL)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+
+	runID, st := launchRun(t, client, apiURL, session, csrf, []stepSeed{
+		{resourceID, "echo CANCEL-A"},
+		{flaggedResourceID, "echo CANCEL-B"},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("launch: status %d, want 201", st)
+	}
+	// step 0 runs; step 1 (flagged) parks — the cancel window.
+	inv := pollPendingInvocation(t, client, apiURL, session, csrf, flaggedResourceID, 90*time.Second)
+
+	if code := cancelRun(t, client, apiURL, session, csrf, runID); code != http.StatusOK {
+		t.Fatalf("cancel: status %d, want 200", code)
+	}
+	if got := getRun(t, client, apiURL, session, csrf, runID); got.Status != "canceled" {
+		t.Fatalf("after cancel: status %q, want canceled", got.Status)
+	}
+	// Release the parked step (deny) → the held /v1/steps returns; the run STAYS canceled.
+	// (Done before the audit poll so a slow relay can't strand the parked invocation.)
+	resolveInvocation(t, client, apiURL, inv.ID, session, csrf, "deny")
+	// run.canceled is drained to the chain by the async outbox relay — poll for it.
+	pollEvidenceOutcome(t, auditURL, auditTok, "run:"+runID, "run.canceled", 30*time.Second)
+	waitRunStatus(t, pool, runID, "canceled", 30*time.Second)
+	t.Logf("PASS T-059a — operator cancel stops future steps (run.canceled) + survives the parked step's deny (FinishRun no-op race)")
+}
+
 type seededStep struct {
 	resourceID string
 	command    string

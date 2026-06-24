@@ -78,7 +78,7 @@ func TestRunStoreCreateGetList(t *testing.T) {
 	}
 
 	// List is run-level (no steps populated) and includes the created run.
-	runs, _, err := s.List(ctx, "", 100)
+	runs, _, err := s.ListForOperator(ctx, "operator:admin", "", 100)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -205,6 +205,11 @@ func TestFinishRunLifecycleAndStepCorrelation(t *testing.T) {
 		t.Fatalf("step invocation_id = %q, want %q (err=%v)", got.Steps[0].InvocationID, invID, err)
 	}
 
+	// The sequencer claims (pending→running) before finishing; FinishRun guards on
+	// status='running' (T-059a), so claim first to mirror the real flow.
+	if ok, err := s.ClaimRun(ctx, created.ID, 1200); err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
 	if err := s.FinishRun(ctx, created.ID, StatusCompleted); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
@@ -213,6 +218,39 @@ func TestFinishRunLifecycleAndStepCorrelation(t *testing.T) {
 	}
 	if n := countRunOutcome(t, s, "run:"+created.ID, "run.launched"); n != 1 {
 		t.Fatalf("run.launched count = %d, want 1 (lifecycle: launched→completed)", n)
+	}
+}
+
+// TestCancelRun — T-059a (DUR-5): CancelRun cancels a pending|running Run → canceled +
+// run.canceled in-tx; a second cancel (already terminal) returns ok=false; and FinishRun
+// no-ops over a canceled Run (the race fix — no spurious run.completed).
+func TestCancelRun(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	created, err := s.Create(ctx, Input{Operator: "operator:admin", Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	ok, err := s.CancelRun(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("cancel: ok=%v err=%v", ok, err)
+	}
+	if st, _ := s.RunStatus(ctx, created.ID); st != StatusCanceled {
+		t.Fatalf("status after cancel = %q, want canceled", st)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.canceled"); n != 1 {
+		t.Fatalf("run.canceled count = %d, want 1", n)
+	}
+	if ok, _ := s.CancelRun(ctx, created.ID); ok {
+		t.Fatal("canceling an already-canceled run must return ok=false")
+	}
+	// FinishRun must no-op over a canceled run (status='running' guard) — the race fix.
+	if err := s.FinishRun(ctx, created.ID, StatusCompleted); err != nil {
+		t.Fatalf("finish over canceled: %v", err)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.completed"); n != 0 {
+		t.Fatalf("run.completed count = %d, want 0 (FinishRun must no-op over canceled)", n)
 	}
 }
 

@@ -115,6 +115,8 @@ type runStore interface {
 	Create(ctx context.Context, in run.Input) (run.Run, error)
 	Get(ctx context.Context, id string) (run.Run, error)
 	CountActiveForOperator(ctx context.Context, operator string) (int, error)
+	ListForOperator(ctx context.Context, operator, after string, limit int) ([]run.Run, string, error)
+	CancelRun(ctx context.Context, id string) (bool, error)
 }
 
 // Authenticator verifies operator credentials (services/api/internal/account).

@@ -9,6 +9,8 @@ import (
 
 type fakeSeqStore struct {
 	run       Run
+	statusSeq []string // RunStatus returns these in order, then falls back to "running"
+	statusIdx int
 	stepCalls []string // "index:status"
 	finished  string
 }
@@ -18,7 +20,15 @@ func (f *fakeSeqStore) NextClaimable(context.Context, int) ([]string, error) {
 }
 func (f *fakeSeqStore) ClaimRun(context.Context, string, int) (bool, error) { return true, nil }
 func (f *fakeSeqStore) RenewClaim(context.Context, string, int) error       { return nil }
-func (f *fakeSeqStore) Get(context.Context, string) (Run, error)            { return f.run, nil }
+func (f *fakeSeqStore) RunStatus(context.Context, string) (string, error) {
+	if f.statusIdx < len(f.statusSeq) {
+		v := f.statusSeq[f.statusIdx]
+		f.statusIdx++
+		return v, nil
+	}
+	return StatusRunning, nil
+}
+func (f *fakeSeqStore) Get(context.Context, string) (Run, error) { return f.run, nil }
 func (f *fakeSeqStore) SetStepResult(_ context.Context, _ string, index int, status, _, _ string) error {
 	f.stepCalls = append(f.stepCalls, fmt.Sprintf("%d:%s", index, status))
 	return nil
@@ -121,6 +131,23 @@ func TestDriveRunSkipsCompletedSteps(t *testing.T) {
 	}
 	if len(drv.calls) != 1 || drv.calls[0].ResourceID != "r-b" {
 		t.Fatalf("want only the pending step (r-b) dispatched, got %+v", drv.calls)
+	}
+}
+
+// DUR-5: an operator cancel mid-run stops dispatch — the next step is not driven and
+// the sequencer does NOT call FinishRun (CancelRun already set canceled + emitted
+// run.canceled). Here step 0 dispatches (status 'running'), then the cancel check sees
+// 'canceled' before step 1.
+func TestDriveRunStopsOnCancel(t *testing.T) {
+	st := &fakeSeqStore{run: twoStepRun(), statusSeq: []string{StatusRunning, StatusCanceled}}
+	drv := &fakeDriver{results: []StepResult{{}, {}}}
+	NewSequencer(st, drv).DriveRun(context.Background(), "run-1")
+
+	if len(drv.calls) != 1 {
+		t.Fatalf("driver calls = %d, want 1 (step 1 not dispatched after cancel)", len(drv.calls))
+	}
+	if st.finished != "" {
+		t.Fatalf("FinishRun must not run on cancel (CancelRun owns the terminal state), got %q", st.finished)
 	}
 }
 
