@@ -111,12 +111,22 @@ func (h *handler) runStep(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "subject, resourceId and command are required"})
 		return
 	}
-	res, err := h.stepRunner.RunStep(r.Context(), body)
+	invID, res, err := h.stepRunner.RunStep(r.Context(), body)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the governed step could not be driven"})
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	// Return the invocation id alongside the ToolResult so the Run engine records the
+	// run→invocation correlation (AUD-15, T-058a).
+	writeJSON(w, http.StatusOK, stepResponse{InvocationID: invID, Content: res.Content, IsError: res.IsError})
+}
+
+// stepResponse is the /v1/steps reply: the governed step's invocation id + its MCP
+// ToolResult (content + isError).
+type stepResponse struct {
+	InvocationID string        `json:"invocationId"`
+	Content      []mcp.Content `json:"content"`
+	IsError      bool          `json:"isError"`
 }
 
 // listInvocations (GET /v1/invocations) returns the parked invocations awaiting an

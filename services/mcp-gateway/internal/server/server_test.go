@@ -623,6 +623,9 @@ func TestRunStepAllowPath(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "RUN-OK") {
 		t.Fatalf("result missing stdout: %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"invocationId":"inv-1"`) {
+		t.Fatalf("response missing invocationId (AUD-15 correlation): %s", rec.Body.String())
+	}
 }
 
 // SEC-24: /v1/steps is api-only + field-validated. agent token / non-api service

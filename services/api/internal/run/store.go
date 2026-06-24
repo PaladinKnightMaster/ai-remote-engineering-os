@@ -256,12 +256,17 @@ func (s *Store) RenewClaim(ctx context.Context, id string, leaseSecs int) error 
 }
 
 // SetStepResult records a step's status (+ a bounded outcome): 'running' at dispatch,
-// then a terminal status. updated_at is bumped explicitly (no DB trigger). ErrNotFound
-// if the (run, index) pair is absent.
-func (s *Store) SetStepResult(ctx context.Context, runID string, index int, status, outcome string) error {
+// then a terminal status. invocationID is the gateway invocation id (the run→invocation
+// correlation anchor, AUD-15) — recorded at the terminal set when the held /v1/steps
+// call returns it; "" leaves the existing value (NULL pre-dispatch). The UUID column
+// rejects "", so NULLIF guards it. updated_at is bumped explicitly (no DB trigger).
+// ErrNotFound if the (run, index) pair is absent.
+func (s *Store) SetStepResult(ctx context.Context, runID string, index int, status, outcome, invocationID string) error {
 	ct, err := s.pool.Exec(ctx, `
-		UPDATE run_steps SET status = $3, outcome = $4, updated_at = now()
-		 WHERE run_id = $1 AND step_index = $2`, runID, index, status, outcome)
+		UPDATE run_steps
+		   SET status = $3, outcome = $4,
+		       invocation_id = COALESCE(NULLIF($5, '')::uuid, invocation_id), updated_at = now()
+		 WHERE run_id = $1 AND step_index = $2`, runID, index, status, outcome, invocationID)
 	if err != nil {
 		return fmt.Errorf("set step result: %w", err)
 	}
@@ -271,15 +276,43 @@ func (s *Store) SetStepResult(ctx context.Context, runID string, index int, stat
 	return nil
 }
 
-// FinishRun moves a Run to a terminal status (completed | failed | canceled).
-// ErrNotFound if no row matched.
+// runTerminalOutcome maps a Run's terminal status to its audit lifecycle outcome
+// (AUD-14): completed/failed/canceled → run.completed/aborted/canceled.
+var runTerminalOutcome = map[string]string{
+	StatusCompleted: "run.completed",
+	StatusFailed:    "run.aborted",
+	StatusCanceled:  "run.canceled",
+}
+
+// FinishRun moves a Run to a terminal status (completed | failed | canceled) and emits
+// the matching run.* lifecycle event in the SAME transaction (AUD-9/14): actor =
+// operator, anchored run:<id>, content-free. ErrNotFound if no row matched.
 func (s *Store) FinishRun(ctx context.Context, id, status string) error {
-	ct, err := s.pool.Exec(ctx, `UPDATE runs SET status = $2, updated_at = now() WHERE id = $1`, id, status)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var operator string
+	err = tx.QueryRow(ctx, `UPDATE runs SET status = $2, updated_at = now() WHERE id = $1 RETURNING operator`,
+		id, status).Scan(&operator)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("finish run: %w", err)
 	}
-	if ct.RowsAffected() == 0 {
-		return ErrNotFound
+	if outcome, ok := runTerminalOutcome[status]; ok {
+		if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+			Timestamp: time.Now(), Actor: operator, Edge: launchEdge,
+			Target: "run:" + id, Outcome: outcome, EvidencePacketID: "run:" + id,
+		}); err != nil {
+			return fmt.Errorf("enqueue %s: %w", outcome, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit finish run: %w", err)
 	}
 	return nil
 }

@@ -175,6 +175,8 @@ func assertStepStatus(t *testing.T, pool *pgxpool.Pool, runID string, index int,
 //     fail-closed (no re-dispatch) → failed.
 func TestRunEngineResumeAndOrphan(t *testing.T) {
 	pool := runEngineDB(t)
+	auditURL := env("E2E_AUDIT_URL", "http://localhost:8081")
+	auditTok := mintAuditToken(t)
 	stale := time.Now().Add(-time.Minute)
 
 	resumeID := seedRunWithState(t, pool, "operator:admin", "running", stale, []seededStep{
@@ -190,7 +192,10 @@ func TestRunEngineResumeAndOrphan(t *testing.T) {
 		{resourceID, "echo ORPHAN", "running"},
 	})
 	waitRunStatus(t, pool, orphanID, "failed", 120*time.Second)
-	t.Logf("PASS orphan — a step stuck 'running' across a restart fails the run closed (no re-dispatch)")
+	if !hasEventTarget(listAllEvents(t, auditURL, auditTok), "run.aborted", "run:"+orphanID) {
+		t.Fatal("run.aborted not audited for the failed orphan run (AUD-14)")
+	}
+	t.Logf("PASS orphan — a step stuck 'running' across a restart fails the run closed (no re-dispatch); run.aborted audited")
 	t.Logf("PASS T-056 — reclaimable claim + crash-resume + running-orphan fail-closed on real wires")
 }
 
@@ -257,7 +262,19 @@ func TestRunEngineEndToEnd(t *testing.T) {
 	if !hasEventTarget(events, "run.launched", "run:"+runID) {
 		t.Fatal("run.launched not audited for the launched run (GOV-1)")
 	}
-	t.Logf("PASS leg 1 — real launch (POST /v1/runs) → sequencer drove an ungated 2-step run; GET completed; run.launched audited")
+	if !hasEventTarget(events, "run.completed", "run:"+runID) {
+		t.Fatal("run.completed not audited (AUD-14 terminal lifecycle event)")
+	}
+	// AUD-15: each step records its gateway invocation id (the run→chain bridge).
+	var invCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM run_steps WHERE run_id = $1 AND invocation_id IS NOT NULL`, runID).Scan(&invCount); err != nil {
+		t.Fatalf("count step invocation_ids: %v", err)
+	}
+	if invCount != 2 {
+		t.Fatalf("recorded step invocation_ids = %d, want 2 (AUD-15 correlation)", invCount)
+	}
+	t.Logf("PASS leg 1 — real launch (POST /v1/runs) → sequencer drove an ungated 2-step run; GET completed; run.launched+run.completed audited; step invocation ids recorded")
 
 	// --- Leg 2: a flagged step parks → operator approves → run completes -------
 	runID2, st := launchRun(t, client, apiURL, session, csrf, []stepSeed{{flaggedResourceID, "echo RUN-B1"}})

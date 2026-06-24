@@ -19,12 +19,15 @@ type StepRequest struct {
 	IdempotencyKey string
 }
 
-// StepResult is the gateway's governed-step outcome: IsError marks a governance
-// refusal the sequencer must stop on (denied / timeout / concurrency); Text is the
-// tool-result text (stdout on success, the refusal reason otherwise).
+// StepResult is the gateway's governed-step outcome: InvocationID is the gateway
+// invocation id (the run→invocation correlation anchor, AUD-15; empty for a refusal
+// that created none); IsError marks a governance refusal the sequencer must stop on
+// (denied / timeout / concurrency); Text is the tool-result text (stdout on success,
+// the refusal reason otherwise).
 type StepResult struct {
-	IsError bool
-	Text    string
+	InvocationID string
+	IsError      bool
+	Text         string
 }
 
 // StepDriver dispatches one governed step. httpStepClient is the production
@@ -64,9 +67,11 @@ func NewStepClient(baseURL string, issuer ServiceIssuer) *httpStepClient {
 	}
 }
 
-// toolResultWire is the gateway /v1/steps response (mcp.ToolResult).
+// toolResultWire is the gateway /v1/steps response: the invocation id + the MCP
+// ToolResult (content + isError).
 type toolResultWire struct {
-	Content []struct {
+	InvocationID string `json:"invocationId"`
+	Content      []struct {
 		Text string `json:"text"`
 	} `json:"content"`
 	IsError bool `json:"isError"`
@@ -112,7 +117,7 @@ func (c *httpStepClient) RunStep(ctx context.Context, req StepRequest) (StepResu
 	if len(wire.Content) > 0 {
 		text = wire.Content[0].Text
 	}
-	return StepResult{IsError: wire.IsError, Text: text}, nil
+	return StepResult{InvocationID: wire.InvocationID, IsError: wire.IsError, Text: text}, nil
 }
 
 var _ StepDriver = (*httpStepClient)(nil)

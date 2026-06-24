@@ -19,7 +19,7 @@ func (f *fakeSeqStore) NextClaimable(context.Context, int) ([]string, error) {
 func (f *fakeSeqStore) ClaimRun(context.Context, string, int) (bool, error) { return true, nil }
 func (f *fakeSeqStore) RenewClaim(context.Context, string, int) error       { return nil }
 func (f *fakeSeqStore) Get(context.Context, string) (Run, error)            { return f.run, nil }
-func (f *fakeSeqStore) SetStepResult(_ context.Context, _ string, index int, status, _ string) error {
+func (f *fakeSeqStore) SetStepResult(_ context.Context, _ string, index int, status, _, _ string) error {
 	f.stepCalls = append(f.stepCalls, fmt.Sprintf("%d:%s", index, status))
 	return nil
 }

@@ -179,6 +179,54 @@ func TestRunClaimLease(t *testing.T) {
 	}
 }
 
+// TestFinishRunLifecycleAndStepCorrelation — T-058a: FinishRun emits the terminal
+// run.* event in-tx (AUD-14), and SetStepResult records the gateway invocation id (the
+// run→invocation correlation, AUD-15). With run.launched (from Create) the lifecycle is
+// fully audited: launched → completed.
+func TestFinishRunLifecycleAndStepCorrelation(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	created, err := s.Create(ctx, Input{Operator: "operator:admin", Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The pre-dispatch 'running' set carries no id ("" → NULL via NULLIF); the terminal
+	// set records the gateway invocation id.
+	const invID = "01900000-0000-7000-8000-0000000000ff"
+	if err := s.SetStepResult(ctx, created.ID, 0, StepRunning, "", ""); err != nil {
+		t.Fatalf("running set: %v", err)
+	}
+	if err := s.SetStepResult(ctx, created.ID, 0, StepCompleted, "", invID); err != nil {
+		t.Fatalf("terminal set: %v", err)
+	}
+	got, err := s.Get(ctx, created.ID)
+	if err != nil || len(got.Steps) != 1 || got.Steps[0].InvocationID != invID {
+		t.Fatalf("step invocation_id = %q, want %q (err=%v)", got.Steps[0].InvocationID, invID, err)
+	}
+
+	if err := s.FinishRun(ctx, created.ID, StatusCompleted); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.completed"); n != 1 {
+		t.Fatalf("run.completed count = %d, want 1", n)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.launched"); n != 1 {
+		t.Fatalf("run.launched count = %d, want 1 (lifecycle: launched→completed)", n)
+	}
+}
+
+func countRunOutcome(t *testing.T, s *Store, evidence, outcome string) int {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM api_outbox WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = $2`,
+		evidence, outcome).Scan(&n); err != nil {
+		t.Fatalf("count run outcome: %v", err)
+	}
+	return n
+}
+
 func inClaimable(t *testing.T, s *Store, id string) bool {
 	t.Helper()
 	ids, err := s.NextClaimable(context.Background(), 1000)

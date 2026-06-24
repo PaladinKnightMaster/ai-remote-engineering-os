@@ -13,7 +13,7 @@ type sequencerStore interface {
 	ClaimRun(ctx context.Context, id string, leaseSecs int) (bool, error)
 	RenewClaim(ctx context.Context, id string, leaseSecs int) error
 	Get(ctx context.Context, id string) (Run, error)
-	SetStepResult(ctx context.Context, runID string, index int, status, outcome string) error
+	SetStepResult(ctx context.Context, runID string, index int, status, outcome, invocationID string) error
 	FinishRun(ctx context.Context, id, status string) error
 }
 
@@ -91,7 +91,7 @@ func (s *Sequencer) DriveRun(ctx context.Context, runID string) {
 			// DUR-4 (api orphan): a prior drive died mid-step. Fail-closed — do NOT
 			// re-dispatch (the gateway's deterministic-key dedup would block it anyway);
 			// the operator re-launches. Applied steps stay applied (non-atomic).
-			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, "orphaned: driver restarted mid-step")
+			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, "orphaned: driver restarted mid-step", "")
 			_ = s.store.FinishRun(ctx, runID, StatusFailed)
 			return
 		}
@@ -100,7 +100,7 @@ func (s *Sequencer) DriveRun(ctx context.Context, runID string) {
 		if err := s.store.RenewClaim(ctx, runID, s.leaseSec); err != nil {
 			log.Printf("run sequencer: renew %s: %v", runID, err) // best-effort; dedup makes a double-drive safe
 		}
-		_ = s.store.SetStepResult(ctx, runID, step.Index, StepRunning, "")
+		_ = s.store.SetStepResult(ctx, runID, step.Index, StepRunning, "", "")
 		res, err := s.driver.RunStep(ctx, StepRequest{
 			Subject:        r.Operator,
 			ResourceID:     step.ResourceID,
@@ -108,16 +108,16 @@ func (s *Sequencer) DriveRun(ctx context.Context, runID string) {
 			IdempotencyKey: fmt.Sprintf("run:%s:step:%d", runID, step.Index),
 		})
 		if err != nil { // infra/transport failure → fail-closed, stop
-			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, truncate(err.Error()))
+			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, truncate(err.Error()), "")
 			_ = s.store.FinishRun(ctx, runID, StatusFailed)
 			return
 		}
 		if res.IsError { // governance refusal (denied / timeout / concurrency) → stop
-			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, truncate(res.Text))
+			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, truncate(res.Text), res.InvocationID)
 			_ = s.store.FinishRun(ctx, runID, StatusFailed)
 			return
 		}
-		_ = s.store.SetStepResult(ctx, runID, step.Index, StepCompleted, "")
+		_ = s.store.SetStepResult(ctx, runID, step.Index, StepCompleted, "", res.InvocationID)
 	}
 	_ = s.store.FinishRun(ctx, runID, StatusCompleted)
 }

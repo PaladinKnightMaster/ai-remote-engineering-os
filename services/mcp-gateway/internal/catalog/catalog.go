@@ -241,7 +241,8 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	// The idempotency key is read HERE (the agent's Idempotency-Key header, via ctx)
 	// and passed in — the core never reads it from ctx, so it equally serves the Run
 	// engine's deterministic per-step keys (T-055b).
-	return s.runGovernedStep(ctx, stepRequest{
+	// The agent plane does not surface the invocation id in its tools/call result.
+	_, res, err := s.runGovernedStep(ctx, stepRequest{
 		Subject:        capb.Subject,
 		Tool:           def.Name,
 		ResourceID:     resourceID,
@@ -253,6 +254,7 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		IdempotencyKey: mcp.IdempotencyKey(ctx),
 		WaitTimeout:    s.waitTimeout,
 	})
+	return res, err
 }
 
 // remoteExecTool is the wedge tool the operator Run engine drives (ADR-0061): a Run
@@ -267,20 +269,20 @@ const remoteExecTool = "remote.exec"
 // the deterministic idempotency key, and the longer Run-approval wait window. The
 // egress path is identical — the gateway still drives the broker with its own
 // identity, so the v0.4.0 subject-pins (PIN-1/PIN-2) are untouched (SEC-25).
-func (s *Service) RunStep(ctx context.Context, req mcp.StepRequest) (mcp.ToolResult, error) {
+func (s *Service) RunStep(ctx context.Context, req mcp.StepRequest) (string, mcp.ToolResult, error) {
 	def, ok := s.registry.Lookup(remoteExecTool)
 	if !ok {
-		return mcp.ToolResult{}, fmt.Errorf("%w: %q", ErrUnknownTool, remoteExecTool)
+		return "", mcp.ToolResult{}, fmt.Errorf("%w: %q", ErrUnknownTool, remoteExecTool)
 	}
 	// Reuse the tool's own arg validation + target resolution (single-sources the
 	// "resource:<id>" format and the non-empty resource/command checks).
 	args, err := json.Marshal(remoteExecArgs{ResourceID: req.ResourceID, Command: req.Command})
 	if err != nil {
-		return mcp.ToolResult{}, fmt.Errorf("marshal step args: %w", err)
+		return "", mcp.ToolResult{}, fmt.Errorf("marshal step args: %w", err)
 	}
 	target, err := def.Target(args)
 	if err != nil {
-		return mcp.ToolResult{}, err
+		return "", mcp.ToolResult{}, err
 	}
 	return s.runGovernedStep(ctx, stepRequest{
 		Subject:        req.Subject,
@@ -328,20 +330,23 @@ type stepRequest struct {
 // return an MCP tool-error result (isError); protocol/infra failures return a Go
 // error. The SEC-16 agent-token scope check is NOT here — it is the agent wrapper's
 // concern (Invoke); this core serves both the agent and the operator Run engine.
-func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (mcp.ToolResult, error) {
+// It returns the invocation id (empty for refusals that never created one — a
+// concurrency cap or unknown resource) so the operator Run engine can record the
+// run→invocation correlation (AUD-15, T-058a); the agent path discards it.
+func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string, mcp.ToolResult, error) {
 	// PERF-3: per-initiator concurrency cap.
 	inFlight, err := s.store.CountInFlight(ctx, req.Subject)
 	if err != nil {
-		return mcp.ToolResult{}, fmt.Errorf("concurrency check: %w", err)
+		return "", mcp.ToolResult{}, fmt.Errorf("concurrency check: %w", err)
 	}
 	if inFlight >= s.maxInFlight {
-		return toolError("too many concurrent invocations for this agent; retry shortly"), nil
+		return "", toolError("too many concurrent invocations for this agent; retry shortly"), nil
 	}
 
 	// requires_approval from the resource label (ADR-0057).
 	requiresApproval, err := s.store.RequiresApproval(ctx, req.ResourceID)
 	if err != nil {
-		return toolError("unknown or unavailable resource"), nil
+		return "", toolError("unknown or unavailable resource"), nil
 	}
 
 	// Create the invocation (idempotency: PERF-2).
@@ -350,7 +355,7 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (mcp.Too
 		Command: req.Command, IdempotencyKey: req.IdempotencyKey, Edge: req.BracketEdge,
 	})
 	if err != nil {
-		return mcp.ToolResult{}, fmt.Errorf("create invocation: %w", err)
+		return "", mcp.ToolResult{}, fmt.Errorf("create invocation: %w", err)
 	}
 
 	if !created {
@@ -358,25 +363,28 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (mcp.Too
 		// is not stored, ADR-0058); a still-live one RE-ATTACHES to the wait so a
 		// dropped long-poll that the caller retries resumes rather than erroring.
 		if isTerminal(inv.Status) {
-			return toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
+			return inv.ID, toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
 		}
-		return s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+		return inv.ID, res, werr
 	}
 
 	// Policy decision (fail-closed: an error → mark failed, refuse egress, SEC-19).
 	decision, err := s.policy.Decide(ctx, inv.ID, req.Subject, req.Edge, req.Target, req.Action, requiresApproval)
 	if err != nil {
 		_ = s.store.Finish(ctx, inv.ID, "failed", "tool.result:error")
-		return mcp.ToolResult{}, fmt.Errorf("policy decision unavailable: %w", err)
+		return inv.ID, mcp.ToolResult{}, fmt.Errorf("policy decision unavailable: %w", err)
 	}
 	if decision == PolicyAllow {
 		_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
-		return s.execAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject)
+		res, eerr := s.execAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject)
+		return inv.ID, res, eerr
 	}
 
 	// requires_approval → park, then block until the operator resolves it (T-040).
 	_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
-	return s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+	return inv.ID, res, werr
 }
 
 // waitForApproval blocks the agent's tools/call on a parked invocation until the

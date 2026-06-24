@@ -88,7 +88,9 @@ type StepRequest struct {
 // /v1/steps route. The implementation (catalog.Service.RunStep, reusing the agent
 // path's governed core) runs off the agent plane. nil → /v1/steps is not mounted.
 type StepRunner interface {
-	RunStep(ctx context.Context, req StepRequest) (ToolResult, error)
+	// RunStep returns the gateway invocation id (empty for a refusal that created no
+	// invocation) so the Run engine can record the run→invocation correlation (AUD-15).
+	RunStep(ctx context.Context, req StepRequest) (invocationID string, result ToolResult, err error)
 }
 
 // Operator-plane sentinels the resolve handler maps to HTTP status (404 / 409).
