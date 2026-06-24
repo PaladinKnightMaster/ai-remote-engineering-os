@@ -73,6 +73,24 @@ type ResolverPort interface {
 	Resolve(ctx context.Context, id, decision, resolvedBy string) error
 }
 
+// StepRequest is the operator Run engine's input to ONE governed step (ADR-0061,
+// T-055b): the launching operator + one plan step. The gateway's RunStep fills the
+// fixed tool + edges; the Run engine never holds agent-token machinery.
+type StepRequest struct {
+	Subject        string `json:"subject"`        // the launching operator (audit actor + policy subject)
+	ResourceID     string `json:"resourceId"`     // target resource
+	Command        string `json:"command"`        // the command to run
+	IdempotencyKey string `json:"idempotencyKey"` // deterministic per step (run:<id>:step:<index>)
+}
+
+// StepRunner is the operator Run-engine seam (ADR-0061 §2): services/api's Run
+// sequencer drives one governed step here via the gateway's subject-pinned internal
+// /v1/steps route. The implementation (catalog.Service.RunStep, reusing the agent
+// path's governed core) runs off the agent plane. nil → /v1/steps is not mounted.
+type StepRunner interface {
+	RunStep(ctx context.Context, req StepRequest) (ToolResult, error)
+}
+
 // Operator-plane sentinels the resolve handler maps to HTTP status (404 / 409).
 var (
 	ErrInvocationNotFound = errors.New("invocation not found")

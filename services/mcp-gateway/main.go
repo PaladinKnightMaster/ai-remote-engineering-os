@@ -108,8 +108,9 @@ func serve() error {
 		Store:       gw,
 		Policy:      pol,
 		Broker:      brokerexec.New(os.Getenv("BROKER_URL"), signer),
-		MaxInFlight: maxInFlight(),
-		WaitTimeout: durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
+		MaxInFlight:    maxInFlight(),
+		WaitTimeout:    durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
+		RunWaitTimeout: durationEnvSeconds("MCP_RUN_WAIT_SECONDS", 600*time.Second),
 	})
 	// Operator-plane resolver (ADR-0057 §4): the internal resolve/list routes, gated
 	// service-service, that services/api proxies the operator's approve/deny to.
@@ -123,7 +124,7 @@ func serve() error {
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("MCP_ADDR"), ":8085"),
-		Handler:           server.New(server.Config{Verifier: v, Catalog: cat, Resolver: resolver}),
+		Handler:           server.New(server.Config{Verifier: v, Catalog: cat, Resolver: resolver, StepRunner: cat}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: a governed tools/call may block on synchronous human
 		// approval (ADR-0054/0057 block-and-wait) once T-040 wires it.

@@ -67,6 +67,56 @@ func countOutcome(t *testing.T, pool *pgxpool.Pool, evidence, outcome string) in
 	return n
 }
 
+func outcomeEdge(t *testing.T, pool *pgxpool.Pool, evidence, outcome string) string {
+	t.Helper()
+	var edge string
+	err := pool.QueryRow(context.Background(), `
+		SELECT payload->>'edge' FROM gateway_outbox
+		 WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = $2`,
+		evidence, outcome).Scan(&edge)
+	if err != nil {
+		t.Fatalf("read outcome edge: %v", err)
+	}
+	return edge
+}
+
+// RUN-5: the bracket audit edge is persisted per invocation and re-emitted on BOTH
+// tool.invoked (Create) and the terminal event (Finish). An operator step records
+// 'human-agent'; an omitted edge defaults to 'agent-tool' (back-compat).
+func TestInvocationEdgeRoundTrip(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+
+	// Operator step: explicit human-agent edge, carried through to both events.
+	op, _, err := st.Create(ctx, CreateInput{
+		AgentSubject: "operator:" + randSuffix(t), ResourceID: "r-op", Tool: "remote.exec",
+		Command: "echo op", Edge: "human-agent",
+	})
+	if err != nil {
+		t.Fatalf("create op: %v", err)
+	}
+	if err := st.Finish(ctx, op.ID, "completed", "tool.result"); err != nil {
+		t.Fatalf("finish op: %v", err)
+	}
+	if e := outcomeEdge(t, pool, "invocation:"+op.ID, "tool.invoked"); e != "human-agent" {
+		t.Fatalf("tool.invoked edge = %q, want human-agent", e)
+	}
+	if e := outcomeEdge(t, pool, "invocation:"+op.ID, "tool.result"); e != "human-agent" {
+		t.Fatalf("tool.result edge = %q, want human-agent", e)
+	}
+
+	// Agent step: an omitted edge defaults to agent-tool (the v0.3/v0.4 chain).
+	ag, _, err := st.Create(ctx, CreateInput{
+		AgentSubject: "agent:" + randSuffix(t), ResourceID: "r-ag", Tool: "remote.exec", Command: "echo ag",
+	})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if e := outcomeEdge(t, pool, "invocation:"+ag.ID, "tool.invoked"); e != "agent-tool" {
+		t.Fatalf("default tool.invoked edge = %q, want agent-tool", e)
+	}
+}
+
 // A retry carrying the same idempotency key reconciles to the original invocation
 // and emits tool.invoked exactly once (PERF-2).
 func TestCreateIdempotency(t *testing.T) {

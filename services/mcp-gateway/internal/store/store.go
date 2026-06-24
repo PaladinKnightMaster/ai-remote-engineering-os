@@ -28,7 +28,9 @@ const (
 	OutboxTable   = "gateway_outbox"
 	OutboxChannel = "gateway_outbox_new"
 
-	// auditEdge is the agent→gateway edge for tool.invoked / tool.result (ADR-0046).
+	// auditEdge is the DEFAULT bracket edge for tool.invoked / tool.result when an
+	// invocation carries none (ADR-0046; the agent plane). The operator Run engine
+	// records 'human-agent' per-invocation instead (RUN-5, ADR-0061).
 	auditEdge = "agent-tool"
 )
 
@@ -48,13 +50,16 @@ type Invocation struct {
 	Decision       string
 }
 
-// CreateInput is a new invocation request. IdempotencyKey "" disables dedup.
+// CreateInput is a new invocation request. IdempotencyKey "" disables dedup. Edge is
+// the bracket audit edge (RUN-5): "" defaults to auditEdge (agent-tool); the operator
+// Run engine passes "human-agent".
 type CreateInput struct {
 	AgentSubject   string
 	ResourceID     string
 	Tool           string
 	Command        string
 	IdempotencyKey string
+	Edge           string
 }
 
 // Store wraps the gateway's pgx pool, the shared outbox Writer, and the command
@@ -89,15 +94,19 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (inv Invocation, cre
 	if in.IdempotencyKey != "" {
 		keyArg = in.IdempotencyKey
 	}
+	edge := in.Edge
+	if edge == "" {
+		edge = auditEdge // back-compat default: the agent-tool bracket (RUN-5)
+	}
 	sealed, err := s.cipher.Seal(in.Command) // F3 (ADR-0059): command encrypted at rest
 	if err != nil {
 		return Invocation{}, false, fmt.Errorf("seal command: %w", err)
 	}
 	ct, err := tx.Exec(ctx, `
-		INSERT INTO invocations (id, idempotency_key, agent_subject, resource_id, tool, command, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending_approval')
+		INSERT INTO invocations (id, idempotency_key, agent_subject, resource_id, tool, command, status, edge)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending_approval', $7)
 		ON CONFLICT (agent_subject, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool, sealed)
+		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool, sealed, edge)
 	if err != nil {
 		return Invocation{}, false, fmt.Errorf("insert invocation: %w", err)
 	}
@@ -115,7 +124,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (inv Invocation, cre
 	}
 
 	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
-		Timestamp: time.Now(), Actor: in.AgentSubject, Edge: auditEdge,
+		Timestamp: time.Now(), Actor: in.AgentSubject, Edge: edge,
 		Target: "resource:" + in.ResourceID, Outcome: "tool.invoked",
 		EvidencePacketID: "invocation:" + id.String(),
 	}); err != nil {
@@ -254,11 +263,11 @@ func (s *Store) FinalizeIfPending(ctx context.Context, id, status, outcome strin
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var agent, resource string
+	var agent, resource, edge string
 	err = tx.QueryRow(ctx, `
 		UPDATE invocations SET status = $2, updated_at = now()
 		 WHERE id = $1 AND status = 'pending_approval'
-		 RETURNING agent_subject, resource_id`, id, status).Scan(&agent, &resource)
+		 RETURNING agent_subject, resource_id, edge`, id, status).Scan(&agent, &resource, &edge)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -266,7 +275,7 @@ func (s *Store) FinalizeIfPending(ctx context.Context, id, status, outcome strin
 		return false, fmt.Errorf("finalize invocation: %w", err)
 	}
 	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
-		Timestamp: time.Now(), Actor: agent, Edge: auditEdge,
+		Timestamp: time.Now(), Actor: agent, Edge: edge,
 		Target: "resource:" + resource, Outcome: outcome,
 		EvidencePacketID: "invocation:" + id,
 	}); err != nil {
@@ -389,10 +398,10 @@ func (s *Store) Finish(ctx context.Context, id, status, outcome string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var agent, resource string
+	var agent, resource, edge string
 	err = tx.QueryRow(ctx, `
 		UPDATE invocations SET status = $2, updated_at = now()
-		 WHERE id = $1 RETURNING agent_subject, resource_id`, id, status).Scan(&agent, &resource)
+		 WHERE id = $1 RETURNING agent_subject, resource_id, edge`, id, status).Scan(&agent, &resource, &edge)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -400,7 +409,7 @@ func (s *Store) Finish(ctx context.Context, id, status, outcome string) error {
 		return fmt.Errorf("finish invocation: %w", err)
 	}
 	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
-		Timestamp: time.Now(), Actor: agent, Edge: auditEdge,
+		Timestamp: time.Now(), Actor: agent, Edge: edge,
 		Target: "resource:" + resource, Outcome: outcome,
 		EvidencePacketID: "invocation:" + id,
 	}); err != nil {

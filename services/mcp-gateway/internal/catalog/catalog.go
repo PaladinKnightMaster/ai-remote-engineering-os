@@ -155,23 +155,25 @@ type BrokerExecer interface {
 // drives the broker exec (ADR-0057). List delegates to the pure Registry; Invoke
 // is the spine.
 type Service struct {
-	registry     *Registry
-	store        Store
-	policy       PolicyDecider
-	broker       BrokerExecer
-	maxInFlight  int
-	waitTimeout  time.Duration // block-and-wait deadline for a parked invocation (ADR-0059)
-	pollInterval time.Duration // how often the wait re-reads the invocation row
+	registry       *Registry
+	store          Store
+	policy         PolicyDecider
+	broker         BrokerExecer
+	maxInFlight    int
+	waitTimeout    time.Duration // agent block-and-wait deadline for a parked invocation (ADR-0059)
+	runWaitTimeout time.Duration // operator Run-step block-and-wait deadline (T-055b)
+	pollInterval   time.Duration // how often the wait re-reads the invocation row
 }
 
 // Config wires the governed tool service. Zero values get safe defaults.
 type Config struct {
-	Store        Store
-	Policy       PolicyDecider
-	Broker       BrokerExecer
-	MaxInFlight  int           // per-agent concurrency cap (PERF-3); ≤ 0 → 4
-	WaitTimeout  time.Duration // block-and-wait deadline; ≤ 0 → 125s (just over policy's 120s TTL)
-	PollInterval time.Duration // approval poll cadence; ≤ 0 → 1s
+	Store          Store
+	Policy         PolicyDecider
+	Broker         BrokerExecer
+	MaxInFlight    int           // per-agent concurrency cap (PERF-3); ≤ 0 → 4
+	WaitTimeout    time.Duration // agent block-and-wait deadline; ≤ 0 → 125s (just over policy's 120s TTL)
+	RunWaitTimeout time.Duration // operator Run-step block-and-wait; ≤ 0 → 10m (Run approval window ≫ 125s)
+	PollInterval   time.Duration // approval poll cadence; ≤ 0 → 1s
 }
 
 // New builds the governed tool service.
@@ -185,9 +187,13 @@ func New(cfg Config) *Service {
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = time.Second
 	}
+	if cfg.RunWaitTimeout <= 0 {
+		cfg.RunWaitTimeout = 10 * time.Minute
+	}
 	return &Service{
 		registry: NewRegistry(), store: cfg.Store, policy: cfg.Policy, broker: cfg.Broker,
 		maxInFlight: cfg.MaxInFlight, waitTimeout: cfg.WaitTimeout, pollInterval: cfg.PollInterval,
+		runWaitTimeout: cfg.RunWaitTimeout,
 	}
 }
 
@@ -243,10 +249,54 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		Edge:           def.Edge,
 		Action:         def.Action,
 		Target:         target,
+		BracketEdge:    "agent-tool", // the agent plane's bracket edge (RUN-5 default)
 		IdempotencyKey: mcp.IdempotencyKey(ctx),
 		WaitTimeout:    s.waitTimeout,
 	})
 }
+
+// remoteExecTool is the wedge tool the operator Run engine drives (ADR-0061): a Run
+// step is a sequence of this EXISTING tool, not a new one.
+const remoteExecTool = "remote.exec"
+
+// RunStep drives ONE operator-initiated governed step (ADR-0061 §2, T-055b) — the
+// operator Run engine (services/api) calls this via the gateway's subject-pinned
+// internal /v1/steps route. It reuses the SAME governed core as the agent path
+// (runGovernedStep); the only differences are the initiator (the launching operator
+// = the audit actor + policy subject), the bracket edge (human-agent, not agent-tool),
+// the deterministic idempotency key, and the longer Run-approval wait window. The
+// egress path is identical — the gateway still drives the broker with its own
+// identity, so the v0.4.0 subject-pins (PIN-1/PIN-2) are untouched (SEC-25).
+func (s *Service) RunStep(ctx context.Context, req mcp.StepRequest) (mcp.ToolResult, error) {
+	def, ok := s.registry.Lookup(remoteExecTool)
+	if !ok {
+		return mcp.ToolResult{}, fmt.Errorf("%w: %q", ErrUnknownTool, remoteExecTool)
+	}
+	// Reuse the tool's own arg validation + target resolution (single-sources the
+	// "resource:<id>" format and the non-empty resource/command checks).
+	args, err := json.Marshal(remoteExecArgs{ResourceID: req.ResourceID, Command: req.Command})
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("marshal step args: %w", err)
+	}
+	target, err := def.Target(args)
+	if err != nil {
+		return mcp.ToolResult{}, err
+	}
+	return s.runGovernedStep(ctx, stepRequest{
+		Subject:        req.Subject,
+		Tool:           def.Name,
+		ResourceID:     req.ResourceID,
+		Command:        req.Command,
+		Edge:           def.Edge,
+		Action:         def.Action,
+		Target:         target,
+		BracketEdge:    "human-agent", // operator-initiated step (RUN-5; ADR-0061 §4)
+		IdempotencyKey: req.IdempotencyKey,
+		WaitTimeout:    s.runWaitTimeout,
+	})
+}
+
+var _ mcp.StepRunner = (*Service)(nil)
 
 // stepRequest is the resolved input to the governed core — a single governed step,
 // independent of which plane initiated it. The agent path (Invoke) builds it from the
@@ -262,6 +312,7 @@ type stepRequest struct {
 	Edge           string        // capability edge for policy.Decide (def.Edge)
 	Action         string        // audited action for policy.Decide (def.Action)
 	Target         string        // "resource:<id>" for policy.Decide
+	BracketEdge    string        // tool.invoked/result audit edge (agent-tool | human-agent, RUN-5)
 	IdempotencyKey string        // resolved by the CALLER (never read from ctx here)
 	WaitTimeout    time.Duration // block-and-wait deadline for a parked step
 }
@@ -296,7 +347,7 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (mcp.Too
 	// Create the invocation (idempotency: PERF-2).
 	inv, created, err := s.store.Create(ctx, store.CreateInput{
 		AgentSubject: req.Subject, ResourceID: req.ResourceID, Tool: req.Tool,
-		Command: req.Command, IdempotencyKey: req.IdempotencyKey,
+		Command: req.Command, IdempotencyKey: req.IdempotencyKey, Edge: req.BracketEdge,
 	})
 	if err != nil {
 		return mcp.ToolResult{}, fmt.Errorf("create invocation: %w", err)

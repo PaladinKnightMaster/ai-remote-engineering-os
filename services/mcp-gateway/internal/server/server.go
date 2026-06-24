@@ -28,27 +28,34 @@ import (
 // Catalog is the agent governance seam; Resolver is the operator resolve/list seam
 // (nil → the internal routes are not mounted, mirroring the broker's nil-disables-exec).
 type Config struct {
-	Verifier mw.Verifier
-	Catalog  mcp.Catalog
-	Resolver mcp.ResolverPort
+	Verifier   mw.Verifier
+	Catalog    mcp.Catalog
+	Resolver   mcp.ResolverPort
+	StepRunner mcp.StepRunner
 }
 
 // New builds the gateway HTTP handler.
 func New(cfg Config) http.Handler {
-	h := &handler{catalog: cfg.Catalog, resolver: cfg.Resolver}
+	h := &handler{catalog: cfg.Catalog, resolver: cfg.Resolver, stepRunner: cfg.StepRunner}
 	r := chi.NewRouter()
 	r.Get("/healthz", health)
 	// The MCP endpoint: agent-tool edge only (ADR-0056). A missing/forged token
 	// → 401; a valid token on the wrong edge (e.g. service-service) → 403.
 	r.With(mw.RequireCapability(cfg.Verifier, "agent-tool")).Post("/mcp", h.serveMCP)
-	// Internal operator-proxy plane (ADR-0057 §4): services/api (human-agent + CSRF)
-	// proxies the operator's resolve/list here as a service-service call. The gateway
-	// has NO browser surface — cookie/CSRF stay on api.
-	if cfg.Resolver != nil {
+	// Internal service-service plane (ADR-0057 §4 / ADR-0061): services/api proxies the
+	// operator's resolve/list here, and the operator Run engine (also api) drives a
+	// governed step here. Both are subject-pinned to api (onlyAPI). The gateway has NO
+	// browser surface — cookie/CSRF stay on api.
+	if cfg.Resolver != nil || cfg.StepRunner != nil {
 		r.Group(func(ir chi.Router) {
 			ir.Use(mw.RequireCapability(cfg.Verifier, "service-service"))
-			ir.Get("/v1/invocations", h.listInvocations)
-			ir.Post("/v1/invocations/{id}/resolve", h.resolveInvocation)
+			if cfg.Resolver != nil {
+				ir.Get("/v1/invocations", h.listInvocations)
+				ir.Post("/v1/invocations/{id}/resolve", h.resolveInvocation)
+			}
+			if cfg.StepRunner != nil {
+				ir.Post("/v1/steps", h.runStep)
+			}
 		})
 	}
 	return r
@@ -79,8 +86,37 @@ func onlyAPI(w http.ResponseWriter, r *http.Request) bool {
 }
 
 type handler struct {
-	catalog  mcp.Catalog
-	resolver mcp.ResolverPort
+	catalog    mcp.Catalog
+	resolver   mcp.ResolverPort
+	stepRunner mcp.StepRunner
+}
+
+// runStep (POST /v1/steps) drives ONE operator-initiated governed step (ADR-0061,
+// T-055b). Service-service + api-only (the operator Run engine in services/api is the
+// sole caller); body {subject, resourceId, command, idempotencyKey}. On success it
+// returns the governed step's MCP ToolResult (200; isError marks a governance refusal
+// the Run engine handles — denied/timeout); an infrastructure failure is 502
+// (fail-closed — the step did not run).
+func (h *handler) runStep(w http.ResponseWriter, r *http.Request) {
+	if !onlyAPI(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxInternalRequestBytes)
+	var body mcp.StepRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if body.Subject == "" || body.ResourceID == "" || body.Command == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "subject, resourceId and command are required"})
+		return
+	}
+	res, err := h.stepRunner.RunStep(r.Context(), body)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the governed step could not be driven"})
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // listInvocations (GET /v1/invocations) returns the parked invocations awaiting an

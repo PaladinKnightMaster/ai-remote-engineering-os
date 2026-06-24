@@ -173,6 +173,7 @@ type fakeStore struct {
 	getDecision      string // decision Get returns during the block-and-wait
 	claimOK          bool   // ClaimForExec wins (a granted invocation)
 	gotCommand       string // the command persisted at Create (ADR-0059)
+	gotEdge          string // the bracket edge persisted at Create (RUN-5)
 	setStatus        []string
 	finished         []string
 }
@@ -185,7 +186,7 @@ func (f *fakeStore) status() string {
 }
 
 func (f *fakeStore) Create(_ context.Context, in store.CreateInput) (store.Invocation, bool, error) {
-	f.gotCommand = in.Command
+	f.gotCommand, f.gotEdge = in.Command, in.Edge
 	return store.Invocation{ID: "inv-1", Status: f.status(), AgentSubject: in.AgentSubject,
 		ResourceID: in.ResourceID, Tool: in.Tool, Command: in.Command}, !f.idempotentHit, nil
 }
@@ -585,6 +586,76 @@ func TestResolveRouteStatusMapping(t *testing.T) {
 				t.Fatalf("resolver got decision %q, want %q", rsv.gotDecision, c.wantVerb)
 			}
 		})
+	}
+}
+
+// --- operator Run-step plane (T-055b) ---------------------------------------
+
+func stepHandler(t *testing.T, st catalog.Store, pol catalog.PolicyDecider, brk catalog.BrokerExecer) (http.Handler, *auth.Signer) {
+	t.Helper()
+	key, _ := auth.GenerateKey()
+	v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "", "mcp-gateway"))
+	cat := catalog.New(catalog.Config{
+		Store: st, Policy: pol, Broker: brk, MaxInFlight: 4,
+		WaitTimeout: 200 * time.Millisecond, RunWaitTimeout: 200 * time.Millisecond, PollInterval: 5 * time.Millisecond,
+	})
+	return New(Config{Verifier: v, Catalog: cat, StepRunner: cat}), auth.NewSigner(key, "")
+}
+
+// The operator Run engine drives a governed step via /v1/steps: the step records the
+// OPERATOR as actor on the human-agent bracket edge (RUN-5) and reuses the agent
+// path's governed core (here: allow → broker exec).
+func TestRunStepAllowPath(t *testing.T) {
+	st := &fakeStore{}
+	brk := &fakeBroker{stdout: "RUN-OK\n", exit: 0}
+	h, s := stepHandler(t, st, &fakePolicy{decision: "allow"}, brk)
+	body := `{"subject":"operator:admin","resourceId":"r1","command":"echo hi","idempotencyKey":"run:1:step:0"}`
+	rec := doReq(t, h, http.MethodPost, "/v1/steps", body, serviceToken(t, s))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !brk.called || brk.gotCommand != "echo hi" {
+		t.Fatalf("broker not driven: %+v", brk)
+	}
+	if st.gotEdge != "human-agent" {
+		t.Fatalf("bracket edge = %q, want human-agent (RUN-5)", st.gotEdge)
+	}
+	if !strings.Contains(rec.Body.String(), "RUN-OK") {
+		t.Fatalf("result missing stdout: %s", rec.Body.String())
+	}
+}
+
+// SEC-24: /v1/steps is api-only + field-validated. agent token / non-api service
+// token → 403; no token → 401; missing fields → 400; none of these run the broker.
+func TestRunStepSubjectPinAndValidation(t *testing.T) {
+	st := &fakeStore{}
+	brk := &fakeBroker{}
+	h, s := stepHandler(t, st, &fakePolicy{decision: "allow"}, brk)
+	good := `{"subject":"operator:admin","resourceId":"r1","command":"echo hi"}`
+
+	if rec := doReq(t, h, http.MethodPost, "/v1/steps", good, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d, want 401", rec.Code)
+	}
+	if rec := doReq(t, h, http.MethodPost, "/v1/steps", good, agentToken(t, s)); rec.Code != http.StatusForbidden {
+		t.Fatalf("agent token: %d, want 403", rec.Code)
+	}
+	nonAPI, _ := s.IssueService("broker", "mcp-gateway")
+	if rec := doReq(t, h, http.MethodPost, "/v1/steps", good, nonAPI); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-api service token: %d, want 403", rec.Code)
+	}
+	if rec := doReq(t, h, http.MethodPost, "/v1/steps", `{"subject":"operator:admin"}`, serviceToken(t, s)); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing fields: %d, want 400", rec.Code)
+	}
+	if brk.called {
+		t.Fatal("broker must not run on a rejected step")
+	}
+}
+
+// With no StepRunner wired the /v1/steps route is not mounted (mirrors the resolver).
+func TestRunStepDisabledWhenNoRunner(t *testing.T) {
+	h, s := newTestHandler(t) // nil StepRunner
+	if rec := doReq(t, h, http.MethodPost, "/v1/steps", `{}`, serviceToken(t, s)); rec.Code != http.StatusNotFound {
+		t.Fatalf("nil runner: POST /v1/steps = %d, want 404 (route absent)", rec.Code)
 	}
 }
 
