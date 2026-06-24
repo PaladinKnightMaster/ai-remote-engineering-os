@@ -13,11 +13,12 @@ type fakeSeqStore struct {
 	finished  string
 }
 
-func (f *fakeSeqStore) NextPending(context.Context, int) ([]string, error) {
+func (f *fakeSeqStore) NextClaimable(context.Context, int) ([]string, error) {
 	return []string{f.run.ID}, nil
 }
-func (f *fakeSeqStore) ClaimRun(context.Context, string) (bool, error) { return true, nil }
-func (f *fakeSeqStore) Get(context.Context, string) (Run, error)       { return f.run, nil }
+func (f *fakeSeqStore) ClaimRun(context.Context, string, int) (bool, error) { return true, nil }
+func (f *fakeSeqStore) RenewClaim(context.Context, string, int) error       { return nil }
+func (f *fakeSeqStore) Get(context.Context, string) (Run, error)            { return f.run, nil }
 func (f *fakeSeqStore) SetStepResult(_ context.Context, _ string, index int, status, _ string) error {
 	f.stepCalls = append(f.stepCalls, fmt.Sprintf("%d:%s", index, status))
 	return nil
@@ -106,7 +107,8 @@ func TestDriveRunStopsOnInfraError(t *testing.T) {
 	}
 }
 
-// An already-completed step is skipped on (re)drive — never re-dispatched.
+// An already-completed step is skipped on (re)drive — never re-dispatched (DUR-3
+// clean resume).
 func TestDriveRunSkipsCompletedSteps(t *testing.T) {
 	r := twoStepRun()
 	r.Steps[0].Status = StepCompleted
@@ -119,5 +121,22 @@ func TestDriveRunSkipsCompletedSteps(t *testing.T) {
 	}
 	if len(drv.calls) != 1 || drv.calls[0].ResourceID != "r-b" {
 		t.Fatalf("want only the pending step (r-b) dispatched, got %+v", drv.calls)
+	}
+}
+
+// DUR-4 (api orphan): a step found 'running' at resume (a prior drive died mid-step)
+// fails the Run closed and is NEVER re-dispatched.
+func TestDriveRunOrphanStepFailsClosed(t *testing.T) {
+	r := twoStepRun()
+	r.Steps[0].Status = StepRunning // a crashed prior drive left it running
+	st := &fakeSeqStore{run: r}
+	drv := &fakeDriver{results: []StepResult{{}, {}}}
+	NewSequencer(st, drv).DriveRun(context.Background(), "run-1")
+
+	if st.finished != StatusFailed {
+		t.Fatalf("run finished %q, want failed (orphan fail-closed)", st.finished)
+	}
+	if len(drv.calls) != 0 {
+		t.Fatalf("orphan step must NOT be re-dispatched, got %d calls", len(drv.calls))
 	}
 }

@@ -129,3 +129,66 @@ func TestRunStoreCreateValidation(t *testing.T) {
 		t.Fatal("step missing resource: want error, got nil")
 	}
 }
+
+// TestRunClaimLease — T-056 DUR-2: ClaimRun is reclaimable. It takes a pending Run or
+// a 'running' Run whose lease has expired, but NOT one holding a live lease;
+// NextClaimable mirrors that, and RenewClaim pushes the lease forward.
+func TestRunClaimLease(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, Input{Operator: "operator:admin", Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := created.ID
+
+	// Fresh pending → claimable, and the claim wins.
+	if !inClaimable(t, s, id) {
+		t.Fatal("a pending run must be claimable")
+	}
+	if ok, err := s.ClaimRun(ctx, id, 1200); err != nil || !ok {
+		t.Fatalf("claim pending: ok=%v err=%v", ok, err)
+	}
+
+	// Now running with a live lease → not claimable, and a second claim loses.
+	if inClaimable(t, s, id) {
+		t.Fatal("a live-leased run must not be claimable")
+	}
+	if ok, _ := s.ClaimRun(ctx, id, 1200); ok {
+		t.Fatal("claimed a live-leased run (double-drive)")
+	}
+
+	// Expire the lease (a crashed driver) → reclaimable, and the reclaim wins.
+	if _, err := s.pool.Exec(ctx, `UPDATE runs SET claimed_until = now() - interval '1 minute' WHERE id = $1`, id); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if !inClaimable(t, s, id) {
+		t.Fatal("a stale-leased run must be reclaimable")
+	}
+	if ok, _ := s.ClaimRun(ctx, id, 1200); !ok {
+		t.Fatal("failed to reclaim a stale-leased run")
+	}
+
+	// RenewClaim pushes the lease into the future → not claimable again.
+	if err := s.RenewClaim(ctx, id, 1200); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if inClaimable(t, s, id) {
+		t.Fatal("a renewed run must not be claimable")
+	}
+}
+
+func inClaimable(t *testing.T, s *Store, id string) bool {
+	t.Helper()
+	ids, err := s.NextClaimable(context.Background(), 1000)
+	if err != nil {
+		t.Fatalf("next claimable: %v", err)
+	}
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}

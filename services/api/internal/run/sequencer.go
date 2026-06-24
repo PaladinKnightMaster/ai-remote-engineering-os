@@ -9,8 +9,9 @@ import (
 
 // sequencerStore is the slice of the Run store the sequencer drives against.
 type sequencerStore interface {
-	NextPending(ctx context.Context, limit int) ([]string, error)
-	ClaimRun(ctx context.Context, id string) (bool, error)
+	NextClaimable(ctx context.Context, limit int) ([]string, error)
+	ClaimRun(ctx context.Context, id string, leaseSecs int) (bool, error)
+	RenewClaim(ctx context.Context, id string, leaseSecs int) error
 	Get(ctx context.Context, id string) (Run, error)
 	SetStepResult(ctx context.Context, runID string, index int, status, outcome string) error
 	FinishRun(ctx context.Context, id, status string) error
@@ -24,15 +25,19 @@ var _ sequencerStore = (*Store)(nil)
 // the status-guarded claim is the single-winner gate. The reclaimable lease +
 // crash-resume are T-056; bounded concurrency + the launch route are T-057.
 type Sequencer struct {
-	store  sequencerStore
-	driver StepDriver
-	tick   time.Duration
-	batch  int
+	store    sequencerStore
+	driver   StepDriver
+	tick     time.Duration
+	batch    int
+	leaseSec int
 }
 
-// NewSequencer builds the Run sequencer with safe defaults (2s scan, batch 10).
+// NewSequencer builds the Run sequencer with safe defaults (2s scan, batch 10). The
+// claim lease is 20m — comfortably above the step client's 15m HTTP timeout (which is
+// itself > the gateway's 10m RunWaitTimeout), so a live driver is never reclaimed
+// mid-step; only a crashed driver's lease expires (DUR-2, T-056).
 func NewSequencer(store sequencerStore, driver StepDriver) *Sequencer {
-	return &Sequencer{store: store, driver: driver, tick: 2 * time.Second, batch: 10}
+	return &Sequencer{store: store, driver: driver, tick: 2 * time.Second, batch: 10, leaseSec: 1200}
 }
 
 // Run scans for pending Runs on a tick, claims each, and drives it in its own
@@ -47,13 +52,13 @@ func (s *Sequencer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			ids, err := s.store.NextPending(ctx, s.batch)
+			ids, err := s.store.NextClaimable(ctx, s.batch)
 			if err != nil {
 				log.Printf("run sequencer: scan: %v", err)
 				continue
 			}
 			for _, id := range ids {
-				claimed, err := s.store.ClaimRun(ctx, id)
+				claimed, err := s.store.ClaimRun(ctx, id, s.leaseSec)
 				if err != nil {
 					log.Printf("run sequencer: claim %s: %v", id, err)
 					continue
@@ -79,8 +84,21 @@ func (s *Sequencer) DriveRun(ctx context.Context, runID string) {
 		return
 	}
 	for _, step := range r.Steps {
-		if step.Status == StepCompleted {
-			continue // resume-skip (forward-friendly; a fresh claim has all-pending steps)
+		switch step.Status {
+		case StepCompleted:
+			continue // DUR-3 clean resume: already done — skip, never re-exec
+		case StepRunning:
+			// DUR-4 (api orphan): a prior drive died mid-step. Fail-closed — do NOT
+			// re-dispatch (the gateway's deterministic-key dedup would block it anyway);
+			// the operator re-launches. Applied steps stay applied (non-atomic).
+			_ = s.store.SetStepResult(ctx, runID, step.Index, StepFailed, "orphaned: driver restarted mid-step")
+			_ = s.store.FinishRun(ctx, runID, StatusFailed)
+			return
+		}
+		// pending → renew the lease (so a live driver is not reclaimed mid-step),
+		// then dispatch.
+		if err := s.store.RenewClaim(ctx, runID, s.leaseSec); err != nil {
+			log.Printf("run sequencer: renew %s: %v", runID, err) // best-effort; dedup makes a double-drive safe
 		}
 		_ = s.store.SetStepResult(ctx, runID, step.Index, StepRunning, "")
 		res, err := s.driver.RunStep(ctx, StepRequest{

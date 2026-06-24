@@ -97,6 +97,73 @@ func assertAllSteps(t *testing.T, pool *pgxpool.Pool, runID, want string) {
 	}
 }
 
+type seededStep struct {
+	resourceID string
+	command    string
+	status     string
+}
+
+// seedRunWithState inserts a Run in an arbitrary (post-crash) state — a given run
+// status + claimed_until + per-step statuses — so a crashed mid-Run can be reproduced
+// without docker-killing the api (T-056). gen_random_uuid() supplies the id.
+func seedRunWithState(t *testing.T, pool *pgxpool.Pool, operator, runStatus string, claimedUntil time.Time, steps []seededStep) string {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO runs (id, operator, status, claimed_until) VALUES (gen_random_uuid(), $1, $2, $3) RETURNING id`,
+		operator, runStatus, claimedUntil).Scan(&id); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	for i, st := range steps {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO run_steps (run_id, step_index, resource_id, command, status) VALUES ($1, $2, $3, $4, $5)`,
+			id, i, st.resourceID, []byte(st.command), st.status); err != nil {
+			t.Fatalf("insert step %d: %v", i, err)
+		}
+	}
+	return id
+}
+
+func assertStepStatus(t *testing.T, pool *pgxpool.Pool, runID string, index int, want string) {
+	t.Helper()
+	var status string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT status FROM run_steps WHERE run_id = $1 AND step_index = $2`, runID, index).Scan(&status); err != nil {
+		t.Fatalf("read step %d: %v", index, err)
+	}
+	if status != want {
+		t.Fatalf("step %d status = %q, want %q", index, status, want)
+	}
+}
+
+// TestRunEngineResumeAndOrphan — T-056 G1: crash-safety, with the crash simulated via
+// seeded post-crash DB state (a stale lease + mixed step statuses).
+//   - Resume: a stale-leased 'running' Run with step 0 'completed', step 1 'pending' is
+//     reclaimed, step 0 skipped (NOT re-executed), step 1 driven live → completed.
+//   - Orphan: a stale-leased 'running' Run with a step stuck 'running' is reclaimed →
+//     fail-closed (no re-dispatch) → failed.
+func TestRunEngineResumeAndOrphan(t *testing.T) {
+	pool := runEngineDB(t)
+	stale := time.Now().Add(-time.Minute)
+
+	resumeID := seedRunWithState(t, pool, "operator:admin", "running", stale, []seededStep{
+		{resourceID, "echo DONE-0", "completed"},
+		{resourceID, "echo RESUME-1", "pending"},
+	})
+	waitRunStatus(t, pool, resumeID, "completed", 120*time.Second)
+	assertStepStatus(t, pool, resumeID, 0, "completed") // untouched — proves no re-exec of the done step
+	assertStepStatus(t, pool, resumeID, 1, "completed") // driven on resume
+	t.Logf("PASS resume — reclaimed a stale-leased run, skipped the completed step, drove the pending one")
+
+	orphanID := seedRunWithState(t, pool, "operator:admin", "running", stale, []seededStep{
+		{resourceID, "echo ORPHAN", "running"},
+	})
+	waitRunStatus(t, pool, orphanID, "failed", 120*time.Second)
+	t.Logf("PASS orphan — a step stuck 'running' across a restart fails the run closed (no re-dispatch)")
+	t.Logf("PASS T-056 — reclaimable claim + crash-resume + running-orphan fail-closed on real wires")
+}
+
 func hasOperatorToolInvoked(events []auditEvent, actor, target string) bool {
 	for _, e := range events {
 		if e.Outcome == "tool.invoked" && e.Actor == actor && e.Edge == "human-agent" && e.Target == target {

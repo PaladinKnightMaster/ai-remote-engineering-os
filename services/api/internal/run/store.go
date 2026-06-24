@@ -170,12 +170,18 @@ func (s *Store) List(ctx context.Context, after string, limit int) ([]Run, strin
 	return out, last, rows.Err()
 }
 
-// NextPending returns up to limit run ids awaiting the sequencer (status 'pending'),
-// in id order — the sequencer's claim-scan (uses the runs_active_idx partial index).
-func (s *Store) NextPending(ctx context.Context, limit int) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id FROM runs WHERE status = 'pending' ORDER BY id LIMIT $1`, limit)
+// NextClaimable returns up to limit run ids the sequencer may drive — a fresh
+// 'pending' Run OR a 'running' Run whose lease has expired (a crashed driver, T-056) —
+// in id order (uses the runs_active_idx partial index; claimed_until is post-filtered
+// on the small active set).
+func (s *Store) NextClaimable(ctx context.Context, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id FROM runs
+		 WHERE status = 'pending'
+		    OR (status = 'running' AND (claimed_until IS NULL OR claimed_until < now()))
+		 ORDER BY id LIMIT $1`, limit)
 	if err != nil {
-		return nil, fmt.Errorf("scan pending runs: %w", err)
+		return nil, fmt.Errorf("scan claimable runs: %w", err)
 	}
 	defer rows.Close()
 	var ids []string
@@ -189,15 +195,32 @@ func (s *Store) NextPending(ctx context.Context, limit int) ([]string, error) {
 	return ids, rows.Err()
 }
 
-// ClaimRun atomically moves a pending Run to running — the status-guarded single-winner
-// claim (the reclaimable lease + crash-resume are T-056). claimed=false means another
-// driver already took it, or it left 'pending'.
-func (s *Store) ClaimRun(ctx context.Context, id string) (bool, error) {
-	ct, err := s.pool.Exec(ctx, `UPDATE runs SET status = 'running', updated_at = now() WHERE id = $1 AND status = 'pending'`, id)
+// ClaimRun atomically takes a Run for driving — a 'pending' Run or a 'running' Run with
+// an EXPIRED lease (the reclaimable single-winner claim, DUR-2) — moving it to running
+// with a fresh lease (claimed_until = now()+leaseSecs). claimed=false means another
+// driver holds a live lease, or the Run left the claimable set.
+func (s *Store) ClaimRun(ctx context.Context, id string, leaseSecs int) (bool, error) {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE runs SET status = 'running', claimed_until = now() + $2 * interval '1 second', updated_at = now()
+		 WHERE id = $1
+		   AND (status = 'pending'
+		     OR (status = 'running' AND (claimed_until IS NULL OR claimed_until < now())))`, id, leaseSecs)
 	if err != nil {
 		return false, fmt.Errorf("claim run: %w", err)
 	}
 	return ct.RowsAffected() == 1, nil
+}
+
+// RenewClaim extends a running Run's lease so a live driver is not reclaimed mid-step
+// (T-056); the sequencer calls it before each step. Best-effort: 0 rows (the Run left
+// 'running') is not an error.
+func (s *Store) RenewClaim(ctx context.Context, id string, leaseSecs int) error {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE runs SET claimed_until = now() + $2 * interval '1 second', updated_at = now()
+		 WHERE id = $1 AND status = 'running'`, id, leaseSecs); err != nil {
+		return fmt.Errorf("renew claim: %w", err)
+	}
+	return nil
 }
 
 // SetStepResult records a step's status (+ a bounded outcome): 'running' at dispatch,
