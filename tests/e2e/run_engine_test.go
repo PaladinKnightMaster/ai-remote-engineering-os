@@ -3,7 +3,9 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"testing"
@@ -31,28 +33,6 @@ type stepSeed struct {
 	command    string
 }
 
-// seedRun inserts a launched Run + its ordered steps directly — the operator launch
-// route is T-057, so here the test plays the operator launching a plan. The api-side
-// command is plaintext at rest (nil sealer, T-054), so it is inserted as raw bytes.
-// gen_random_uuid() (PG16 core) supplies the id, so the e2e module needs no uuid dep.
-func seedRun(t *testing.T, pool *pgxpool.Pool, operator string, steps []stepSeed) string {
-	t.Helper()
-	ctx := context.Background()
-	var id string
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO runs (id, operator) VALUES (gen_random_uuid(), $1) RETURNING id`, operator).Scan(&id); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
-	for i, st := range steps {
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO run_steps (run_id, step_index, resource_id, command) VALUES ($1, $2, $3, $4)`,
-			id, i, st.resourceID, []byte(st.command)); err != nil {
-			t.Fatalf("insert step %d: %v", i, err)
-		}
-	}
-	return id
-}
-
 func waitRunStatus(t *testing.T, pool *pgxpool.Pool, runID, want string, within time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -74,27 +54,77 @@ func waitRunStatus(t *testing.T, pool *pgxpool.Pool, runID, want string, within 
 	}
 }
 
-func assertAllSteps(t *testing.T, pool *pgxpool.Pool, runID, want string) {
+func hasEventTarget(events []auditEvent, outcome, target string) bool {
+	for _, e := range events {
+		if e.Outcome == outcome && e.Target == target {
+			return true
+		}
+	}
+	return false
+}
+
+// launchRun POSTs an operator-authored plan to the real launch route (POST /v1/runs,
+// T-057). Returns the new run id (or "" on a non-201) + the HTTP status, so callers
+// can assert both the happy path (201) and a bounds rejection (422).
+func launchRun(t *testing.T, client *http.Client, apiURL, session, csrf string, steps []stepSeed) (string, int) {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `SELECT status FROM run_steps WHERE run_id = $1 ORDER BY step_index`, runID)
+	type wireStep struct {
+		ResourceID string `json:"resourceId"`
+		Command    string `json:"command"`
+	}
+	ws := make([]wireStep, len(steps))
+	for i, s := range steps {
+		ws[i] = wireStep{ResourceID: s.resourceID, Command: s.command}
+	}
+	body, _ := json.Marshal(map[string]any{"steps": ws})
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("read steps: %v", err)
+		t.Fatalf("launch run: %v", err)
 	}
-	defer rows.Close()
-	n := 0
-	for rows.Next() {
-		var status string
-		if err := rows.Scan(&status); err != nil {
-			t.Fatalf("scan step: %v", err)
-		}
-		if status != want {
-			t.Fatalf("step %d status = %q, want %q", n, status, want)
-		}
-		n++
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return "", resp.StatusCode
 	}
-	if n == 0 {
-		t.Fatal("no steps found for run")
+	var out struct {
+		ID string `json:"id"`
 	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	return out.ID, resp.StatusCode
+}
+
+type runStatusView struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Steps  []struct {
+		StepIndex int    `json:"stepIndex"`
+		Status    string `json:"status"`
+	} `json:"steps"`
+}
+
+// getRun reads a Run's status via the operator route (GET /v1/runs/{id}, T-057).
+func getRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string) runStatusView {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, apiURL+"/v1/runs/"+id, nil)
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get run: status %d", resp.StatusCode)
+	}
+	var v runStatusView
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	return v
 }
 
 type seededStep struct {
@@ -173,24 +203,49 @@ func hasOperatorToolInvoked(events []auditEvent, actor, target string) bool {
 	return false
 }
 
-// TestRunEngineEndToEnd — T-055c G1: the wired api Run sequencer drives a launched Run
-// through the gateway's governed /v1/steps (subject-pinned to api) → policy → connector
-// → broker → sshd → audit, with the OPERATOR as actor on the human-agent bracket edge
-// (RUN-5). Leg 1: an ungated multi-step Run completes. Leg 2: a flagged step parks, the
-// operator approves via /v1/invocations, the held step resumes, the Run completes.
+// TestRunEngineEndToEnd — T-057 G1: the operator launches Runs via the REAL route
+// (POST /v1/runs — informed, bounded, audited) and the wired sequencer drives them
+// through the gateway's governed /v1/steps → policy → connector → broker → sshd →
+// audit, with the OPERATOR as actor on the human-agent bracket edge (RUN-5). Bounds:
+// an oversized plan is rejected 422. Leg 1: an ungated multi-step Run completes (GET
+// shows it; run.launched is audited). Leg 2: a flagged step parks, the operator
+// approves via /v1/invocations, the held step resumes, the Run completes.
 func TestRunEngineEndToEnd(t *testing.T) {
 	apiURL := env("E2E_API_URL", "http://localhost:8080")
 	auditURL := env("E2E_AUDIT_URL", "http://localhost:8081")
 	pool := runEngineDB(t)
 	auditTok := mintAuditToken(t)
+	client := &http.Client{Timeout: 30 * time.Second}
+	session, csrf, status, err := doLogin(client, apiURL)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
 
-	// --- Leg 1: ungated multi-step run drives to completion --------------------
-	runID := seedRun(t, pool, "operator:admin", []stepSeed{
+	// Bounds (PERF-6): an oversized plan (> 50 steps) is rejected 422 before any Run
+	// is created.
+	tooMany := make([]stepSeed, 51)
+	for i := range tooMany {
+		tooMany[i] = stepSeed{resourceID, "echo x"}
+	}
+	if _, st := launchRun(t, client, apiURL, session, csrf, tooMany); st != http.StatusUnprocessableEntity {
+		t.Fatalf("oversized plan: status %d, want 422", st)
+	}
+
+	// --- Leg 1: ungated multi-step run via the REAL launch route ---------------
+	runID, st := launchRun(t, client, apiURL, session, csrf, []stepSeed{
 		{resourceID, "echo RUN-A1"},
 		{resourceID, "echo RUN-A2"},
 	})
+	if st != http.StatusCreated {
+		t.Fatalf("launch: status %d, want 201", st)
+	}
 	waitRunStatus(t, pool, runID, "completed", 120*time.Second)
-	assertAllSteps(t, pool, runID, "completed")
+
+	// GET route (owner-scoped): the run shows completed + both steps completed.
+	got := getRun(t, client, apiURL, session, csrf, runID)
+	if got.Status != "completed" || len(got.Steps) != 2 {
+		t.Fatalf("GET run: %+v, want completed with 2 steps", got)
+	}
 
 	events := listAllEvents(t, auditURL, auditTok)
 	if !hasOperatorToolInvoked(events, "operator:admin", "resource:"+resourceID) {
@@ -199,18 +254,19 @@ func TestRunEngineEndToEnd(t *testing.T) {
 	if !hasOutcome(events, "remote.exec") {
 		t.Fatal("no remote.exec egress — the sequencer did not drive a real exec")
 	}
-	t.Logf("PASS leg 1 — sequencer drove an ungated 2-step run to completion (operator/human-agent, real exec)")
+	if !hasEventTarget(events, "run.launched", "run:"+runID) {
+		t.Fatal("run.launched not audited for the launched run (GOV-1)")
+	}
+	t.Logf("PASS leg 1 — real launch (POST /v1/runs) → sequencer drove an ungated 2-step run; GET completed; run.launched audited")
 
 	// --- Leg 2: a flagged step parks → operator approves → run completes -------
-	client := &http.Client{Timeout: 30 * time.Second}
-	session, csrf, status, err := doLogin(client, apiURL)
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("login: status=%d err=%v", status, err)
+	runID2, st := launchRun(t, client, apiURL, session, csrf, []stepSeed{{flaggedResourceID, "echo RUN-B1"}})
+	if st != http.StatusCreated {
+		t.Fatalf("launch flagged: status %d, want 201", st)
 	}
-	runID2 := seedRun(t, pool, "operator:admin", []stepSeed{{flaggedResourceID, "echo RUN-B1"}})
 	inv := pollPendingInvocation(t, client, apiURL, session, csrf, flaggedResourceID, 90*time.Second)
 	resolveInvocation(t, client, apiURL, inv.ID, session, csrf, "approve")
 	waitRunStatus(t, pool, runID2, "completed", 120*time.Second)
 	t.Logf("PASS leg 2 — flagged step parked, operator approved, held step resumed, run completed")
-	t.Logf("PASS T-055c — the api Run sequencer drives launched Runs through the governed gateway plane on real wires")
+	t.Logf("PASS T-057 — operator launches Runs via POST /v1/runs (informed, bounded, audited); sequencer drives them on real wires")
 }

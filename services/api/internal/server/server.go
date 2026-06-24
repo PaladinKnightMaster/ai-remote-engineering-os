@@ -46,6 +46,7 @@ import (
 	"aireos.local/services/api/internal/gateway"
 	"aireos.local/services/api/internal/policy"
 	"aireos.local/services/api/internal/resource"
+	"aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/session"
 	"aireos.local/services/api/internal/store"
 )
@@ -108,6 +109,14 @@ type gatewayProxy interface {
 	Resolve(ctx context.Context, invocationID, decision, resolvedBy string) error
 }
 
+// runStore is the slice of the Run engine's store the launch/status handlers need
+// (ADR-0061, T-057). nil → the /v1/runs routes answer 503.
+type runStore interface {
+	Create(ctx context.Context, in run.Input) (run.Run, error)
+	Get(ctx context.Context, id string) (run.Run, error)
+	CountActiveForOperator(ctx context.Context, operator string) (int, error)
+}
+
 // Authenticator verifies operator credentials (services/api/internal/account).
 type Authenticator interface {
 	Authenticate(username, password string) (subject string, ok bool)
@@ -126,6 +135,7 @@ type apiHandlers struct {
 	policy      policyDecider // POLICY_URL decision point (ADR-0054 / T-031b); nil → requires_approval resources fail closed
 	gateway     gatewayProxy  // GATEWAY_URL invocation-approval proxy (ADR-0057 §4 / T-040b); nil → 503
 	gatewayURL  string        // set by WithGateway; the client is built in New after all options apply (ADR-0060)
+	runs        runStore      // WithRunStore; the operator Run launch/status routes (ADR-0061 / T-057); nil → 503
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -147,6 +157,14 @@ func WithGateway(baseURL string) Option {
 // independent: it only stores the signer.
 func WithAgentSigner(s *auth.AsymmetricSigner) Option {
 	return func(h *apiHandlers) { h.agentSigner = s }
+}
+
+// WithRunStore wires the operator Run engine's store (ADR-0061, T-057): the launch
+// (POST /v1/runs) + status (GET /v1/runs/{id}) routes. nil/absent → those routes
+// answer 503. Wired only when the gateway is configured (the engine drives Runs
+// through it), so the launch surface and the sequencer go live together.
+func WithRunStore(rs runStore) Option {
+	return func(h *apiHandlers) { h.runs = rs }
 }
 
 // agentIssuer is the IssueAgent behavior shared by the symmetric *auth.Signer and

@@ -19,3 +19,4 @@ output-options:
     - auth
     - sessions
     - audit-read
+    - runs

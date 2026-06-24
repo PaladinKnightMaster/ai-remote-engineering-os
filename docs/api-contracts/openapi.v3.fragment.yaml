@@ -32,6 +32,8 @@ tags:
     description: Cockpit session control plane on services/api (T-016b, ADR-0048).
   - name: audit-read
     description: Operator-facing audit-timeline read-proxy on services/api (T-024; api authenticates the operator and reads audit-service with a service token, keeping the chain authority's write gate strict).
+  - name: runs
+    description: Operator-launched governed Runs on services/api (T-057, ADR-0061; the Workstream Engine's execution layer).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -557,6 +559,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # --- governed Runs (T-057, ADR-0061) ----------------------------------------
+  # Operator-launched multi-step Runs (the Workstream Engine's execution layer).
+  # Distinct from the /v1/workstreams/{id}/runs placeholder (the future P1
+  # Workstream-owned runs). Launch inherits the global bearerAuth + (on the cookie
+  # path) double-submit CSRF; it is informed + bounded (PERF-6). run.launched is
+  # audited in the same transaction as the Run insert (AUD-9).
+  /v1/runs:
+    post:
+      tags: [runs]
+      operationId: createRun
+      summary: Launch an operator-authored governed Run (ADR-0061; informed, bounded)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunCreate'
+      responses:
+        '201':
+          description: Run launched (created pending; the sequencer drives it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: The plan exceeds the maximum step count.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Too many active runs for this operator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/runs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [runs]
+      operationId: getRun
+      summary: Fetch a Run's status + per-step status (the caller must own it)
+      responses:
+        '200':
+          description: The Run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -778,6 +840,47 @@ components:
         decision:
           type: string
           enum: [approve, deny]
+    RunCreate:
+      type: object
+      additionalProperties: false
+      required: [steps]
+      properties:
+        steps:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [resourceId, command]
+            properties:
+              resourceId:
+                type: string
+              command:
+                type: string
+    Run:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunStepView'
+    RunStepView:
+      type: object
+      required: [stepIndex, resourceId, status]
+      properties:
+        stepIndex:
+          type: integer
+        resourceId:
+          type: string
+        status:
+          type: string
+        outcome:
+          type: string
     AuditEvent:
       type: object
       additionalProperties: false

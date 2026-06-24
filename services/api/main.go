@@ -107,26 +107,33 @@ func serve(dsn string) error {
 	// (policy auto-denies but cannot write the api session row).
 	go runReaper(context.Background(), store.New(pool))
 
-	// Start the Run sequencer (ADR-0061, T-055c): drive launched Runs through the
-	// gateway's governed /v1/steps. Disabled when GATEWAY_URL is unset (no agent
-	// surface to drive — e.g. the mvp stack). The step client signs with the api
-	// agent-plane asymmetric key so the gateway's onlyAPI pin (subject=="api") accepts
-	// it; an untyped-nil issuer (no key) sends no bearer (dev).
+	// The Run engine (ADR-0061): the operator launch/status routes (T-057) + the
+	// sequencer that drives launched Runs through the gateway's governed /v1/steps
+	// (T-055c). Gated on GATEWAY_URL — without the gateway there is nothing to drive,
+	// so the launch routes answer 503 (a.runs nil) and the sequencer is not started.
+	// One run store is shared by both. The step client signs with the api agent-plane
+	// asymmetric key so the gateway's onlyAPI pin (subject=="api") accepts it; an
+	// untyped-nil issuer (no key) sends no bearer (dev).
+	opts := []server.Option{
+		server.WithGateway(os.Getenv("GATEWAY_URL")),
+		server.WithAgentSigner(agentPlaneSigner()),
+	}
 	if gwURL := os.Getenv("GATEWAY_URL"); gwURL != "" {
+		runStore := runengine.NewStore(pool, nil, store.OutboxTable)
 		var stepIssuer runengine.ServiceIssuer
 		if sg := agentPlaneSigner(); sg != nil {
 			stepIssuer = sg
 		}
-		seq := runengine.NewSequencer(runengine.NewStore(pool, nil), runengine.NewStepClient(gwURL, stepIssuer))
-		go seq.Run(context.Background())
-		log.Print("run sequencer started")
+		go runengine.NewSequencer(runStore, runengine.NewStepClient(gwURL, stepIssuer)).Run(context.Background())
+		opts = append(opts, server.WithRunStore(runStore))
+		log.Print("run engine started (launch routes + sequencer)")
 	} else {
-		log.Print("run sequencer disabled: GATEWAY_URL not set")
+		log.Print("run engine disabled: GATEWAY_URL not set")
 	}
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
-		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL"), os.Getenv("POLICY_URL"), server.WithGateway(os.Getenv("GATEWAY_URL")), server.WithAgentSigner(agentPlaneSigner())),
+		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL"), os.Getenv("POLICY_URL"), opts...),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("api listening on %s", srv.Addr)

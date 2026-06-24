@@ -206,6 +206,29 @@ type ResourceInput struct {
 // ResourceInputType defines model for ResourceInput.Type.
 type ResourceInputType string
 
+// Run defines model for Run.
+type Run struct {
+	Id     string         `json:"id"`
+	Status string         `json:"status"`
+	Steps  *[]RunStepView `json:"steps,omitempty"`
+}
+
+// RunCreate defines model for RunCreate.
+type RunCreate struct {
+	Steps []struct {
+		Command    string `json:"command"`
+		ResourceId string `json:"resourceId"`
+	} `json:"steps"`
+}
+
+// RunStepView defines model for RunStepView.
+type RunStepView struct {
+	Outcome    *string `json:"outcome,omitempty"`
+	ResourceId string  `json:"resourceId"`
+	Status     string  `json:"status"`
+	StepIndex  int     `json:"stepIndex"`
+}
+
 // Session defines model for Session.
 type Session struct {
 	CastPath     *string              `json:"castPath,omitempty"`
@@ -297,6 +320,9 @@ type CreateResourceJSONRequestBody = ResourceInput
 // UpdateResourceJSONRequestBody defines body for UpdateResource for application/json ContentType.
 type UpdateResourceJSONRequestBody = ResourceInput
 
+// CreateRunJSONRequestBody defines body for CreateRun for application/json ContentType.
+type CreateRunJSONRequestBody = RunCreate
+
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = SessionCreate
 
@@ -341,6 +367,12 @@ type ServerInterface interface {
 	// Replace a resource's mutable fields
 	// (PUT /v1/resources/{id})
 	UpdateResource(w http.ResponseWriter, r *http.Request, id string)
+	// Launch an operator-authored governed Run (ADR-0061; informed, bounded)
+	// (POST /v1/runs)
+	CreateRun(w http.ResponseWriter, r *http.Request)
+	// Fetch a Run's status + per-step status (the caller must own it)
+	// (GET /v1/runs/{id})
+	GetRun(w http.ResponseWriter, r *http.Request, id string)
 	// List the caller's sessions (operator-scoped; no cross-operator scope at v0.1.0)
 	// (GET /v1/sessions)
 	ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams)
@@ -431,6 +463,18 @@ func (_ Unimplemented) GetResource(w http.ResponseWriter, r *http.Request, id st
 // Replace a resource's mutable fields
 // (PUT /v1/resources/{id})
 func (_ Unimplemented) UpdateResource(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Launch an operator-authored governed Run (ADR-0061; informed, bounded)
+// (POST /v1/runs)
+func (_ Unimplemented) CreateRun(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Fetch a Run's status + per-step status (the caller must own it)
+// (GET /v1/runs/{id})
+func (_ Unimplemented) GetRun(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -787,6 +831,57 @@ func (siw *ServerInterfaceWrapper) UpdateResource(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// CreateRun operation middleware
+func (siw *ServerInterfaceWrapper) CreateRun(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateRun(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRun operation middleware
+func (siw *ServerInterfaceWrapper) GetRun(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRun(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSessions operation middleware
 func (siw *ServerInterfaceWrapper) ListSessions(w http.ResponseWriter, r *http.Request) {
 
@@ -1089,6 +1184,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/v1/resources/{id}", wrapper.UpdateResource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/runs", wrapper.CreateRun)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/runs/{id}", wrapper.GetRun)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/sessions", wrapper.ListSessions)

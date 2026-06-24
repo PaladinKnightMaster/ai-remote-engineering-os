@@ -4,14 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aireos.local/packages/go/outbox"
 )
 
 // ErrNotFound is returned when no run has the given id.
 var ErrNotFound = errors.New("run not found")
+
+// launchEdge is the bracket edge for the run.launched lifecycle event — the operator
+// launch is a human-agent authorization act (ADR-0061 GOV-1).
+const launchEdge = "human-agent"
 
 // CommandSealer seals/opens the operator-authored step command at rest (F3 parity
 // with the gateway, ADR-0059). A nil sealer is the plaintext dev/transition fallback
@@ -27,12 +34,15 @@ type CommandSealer interface {
 type Store struct {
 	pool   *pgxpool.Pool
 	sealer CommandSealer
+	writer outbox.Writer
 }
 
 // NewStore builds the Run store. sealer may be nil (plaintext fallback — see
-// CommandSealer).
-func NewStore(pool *pgxpool.Pool, sealer CommandSealer) *Store {
-	return &Store{pool: pool, sealer: sealer}
+// CommandSealer). outboxTable is the api outbox table (e.g. "api_outbox") into which
+// Create enqueues run.launched in the same transaction (AUD-9); the caller passes the
+// table name so this package stays free of api-internal imports (the extraction seam).
+func NewStore(pool *pgxpool.Pool, sealer CommandSealer, outboxTable string) *Store {
+	return &Store{pool: pool, sealer: sealer, writer: outbox.Writer{Table: outboxTable}}
 }
 
 func (s *Store) seal(cmd string) ([]byte, error) {
@@ -94,10 +104,32 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 		steps[i] = Step{Index: i, ResourceID: st.ResourceID, Command: st.Command, Status: StepPending}
 	}
 
+	// run.launched in the SAME transaction as the Run insert (AUD-9): a launched Run
+	// always has its launch audited. Content-free — the operator + the run:<id>
+	// correlation anchor, never the commands (ADR-0049/0061 GOV-1).
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: in.Operator, Edge: launchEdge,
+		Target: "run:" + id.String(), Outcome: "run.launched",
+		EvidencePacketID: "run:" + id.String(),
+	}); err != nil {
+		return Run{}, fmt.Errorf("enqueue run.launched: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Run{}, fmt.Errorf("commit run: %w", err)
 	}
 	return Run{ID: id.String(), Operator: in.Operator, Status: StatusPending, Steps: steps}, nil
+}
+
+// CountActiveForOperator counts an operator's not-yet-terminal Runs (pending or
+// running) — the per-operator concurrency cap input at launch (PERF-6).
+func (s *Store) CountActiveForOperator(ctx context.Context, operator string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM runs WHERE operator = $1 AND status IN ('pending', 'running')`, operator).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count active runs: %w", err)
+	}
+	return n, nil
 }
 
 // Get returns a Run with its steps in execution order, or ErrNotFound.

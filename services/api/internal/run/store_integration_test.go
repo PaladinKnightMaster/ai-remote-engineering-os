@@ -27,7 +27,7 @@ func testStore(t *testing.T) *Store {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return NewStore(pool, nil) // nil sealer → plaintext fallback (T-057 provisions the key)
+	return NewStore(pool, nil, "api_outbox") // nil sealer → plaintext; Create enqueues run.launched into api_outbox
 }
 
 // TestRunStoreCreateGetList — the T-054 G1 live-PG proof: a Run + its ordered steps
