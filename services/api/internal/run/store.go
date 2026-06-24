@@ -169,3 +169,62 @@ func (s *Store) List(ctx context.Context, after string, limit int) ([]Run, strin
 	}
 	return out, last, rows.Err()
 }
+
+// NextPending returns up to limit run ids awaiting the sequencer (status 'pending'),
+// in id order — the sequencer's claim-scan (uses the runs_active_idx partial index).
+func (s *Store) NextPending(ctx context.Context, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM runs WHERE status = 'pending' ORDER BY id LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("scan pending runs: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ClaimRun atomically moves a pending Run to running — the status-guarded single-winner
+// claim (the reclaimable lease + crash-resume are T-056). claimed=false means another
+// driver already took it, or it left 'pending'.
+func (s *Store) ClaimRun(ctx context.Context, id string) (bool, error) {
+	ct, err := s.pool.Exec(ctx, `UPDATE runs SET status = 'running', updated_at = now() WHERE id = $1 AND status = 'pending'`, id)
+	if err != nil {
+		return false, fmt.Errorf("claim run: %w", err)
+	}
+	return ct.RowsAffected() == 1, nil
+}
+
+// SetStepResult records a step's status (+ a bounded outcome): 'running' at dispatch,
+// then a terminal status. updated_at is bumped explicitly (no DB trigger). ErrNotFound
+// if the (run, index) pair is absent.
+func (s *Store) SetStepResult(ctx context.Context, runID string, index int, status, outcome string) error {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE run_steps SET status = $3, outcome = $4, updated_at = now()
+		 WHERE run_id = $1 AND step_index = $2`, runID, index, status, outcome)
+	if err != nil {
+		return fmt.Errorf("set step result: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// FinishRun moves a Run to a terminal status (completed | failed | canceled).
+// ErrNotFound if no row matched.
+func (s *Store) FinishRun(ctx context.Context, id, status string) error {
+	ct, err := s.pool.Exec(ctx, `UPDATE runs SET status = $2, updated_at = now() WHERE id = $1`, id, status)
+	if err != nil {
+		return fmt.Errorf("finish run: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

@@ -34,6 +34,7 @@ import (
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/account"
+	runengine "aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/server"
 	"aireos.local/services/api/internal/store"
 )
@@ -105,6 +106,23 @@ func serve(dsn string) error {
 	// broker attached to, or a 'pending_approval' whose approval was never resolved
 	// (policy auto-denies but cannot write the api session row).
 	go runReaper(context.Background(), store.New(pool))
+
+	// Start the Run sequencer (ADR-0061, T-055c): drive launched Runs through the
+	// gateway's governed /v1/steps. Disabled when GATEWAY_URL is unset (no agent
+	// surface to drive — e.g. the mvp stack). The step client signs with the api
+	// agent-plane asymmetric key so the gateway's onlyAPI pin (subject=="api") accepts
+	// it; an untyped-nil issuer (no key) sends no bearer (dev).
+	if gwURL := os.Getenv("GATEWAY_URL"); gwURL != "" {
+		var stepIssuer runengine.ServiceIssuer
+		if sg := agentPlaneSigner(); sg != nil {
+			stepIssuer = sg
+		}
+		seq := runengine.NewSequencer(runengine.NewStore(pool, nil), runengine.NewStepClient(gwURL, stepIssuer))
+		go seq.Run(context.Background())
+		log.Print("run sequencer started")
+	} else {
+		log.Print("run sequencer disabled: GATEWAY_URL not set")
+	}
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
