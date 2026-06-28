@@ -46,6 +46,12 @@ export function Dashboard() {
             approve or deny the commands AI agents request on governed resources.
           </p>
           <p className="mt-2 text-sm">
+            <Link to="/runs" className="font-medium text-primary hover:underline">
+              Runs →
+            </Link>{" "}
+            compose, launch, and watch governed multi-step remote.exec runs.
+          </p>
+          <p className="mt-2 text-sm">
             <Link to="/audit" className="font-medium text-primary hover:underline">
               Audit timeline →
             </Link>{" "}
