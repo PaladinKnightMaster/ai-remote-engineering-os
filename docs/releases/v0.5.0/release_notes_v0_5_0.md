@@ -1,10 +1,10 @@
 # AI Remote Engineering OS — v0.5.0 release notes
 
-**Status: release-candidate — pending the CEO §human WD-5 walkthrough + the local
-tag.** The in-session work is complete and Dockerized-verified per rung (`task e2e`
-green every rung; `task wd1` green on the installed stack). The remaining gate is the
-CEO's §human WD-5 walkthrough through the `/runs` UI and the explicit sign-off; the
-tag is a **local annotated tag only, no remote** (per repo doctrine). v0.5.0 —
+**Status: released** — local annotated tag `v0.5.0` (no remote, per repo doctrine).
+WD-5 is green on the compose stack (`task e2e`, chain 95), on the real installed
+stack (`task wd1`, chain 33), in the browser smoke suite, and in the captured CEO
+§human walkthrough (all three legs — happy / denied-abort / cancel — driven through
+the rendered cockpit; evidence retained at `tests/smoke/test-results/wd5/`). v0.5.0 —
 **"Governed Workstreams"** (layer 1: Runs) — is the first **consumer** of the v0.3.0
 Typed MCP Gateway + v0.4.0 keyless-gateway hardening (per
 `docs/releases/v0.5.0/v0.5.0-release-criteria.md`; machine-readable coverage in
@@ -90,10 +90,10 @@ the real privileged-systemd install — a 2-step governed Run drove through the 
 gateway with approvals to completion (chain intact incl. `run.launched`/`run.completed`).
 The HEAD offline bundle rebuilt as `0.5.0` under the OI-4 size cap.
 
-**Remaining:** the CEO §human WD-5 walkthrough (compose a plan in `/runs` → informed
+**Sign-off:** the CEO §human WD-5 walkthrough (compose a plan in `/runs` → informed
 launch → watch the flagged step park on `/invocations` with its Run context → approve →
-continue → cancel/deny a separate Run) + explicit sign-off, then the local annotated
-tag `v0.5.0`. No remote; nothing pushed.
+continue → deny/cancel separate Runs) was captured through the rendered cockpit and
+signed off; v0.5.0 is tagged **locally** (`v0.5.0`, annotated). No remote; nothing pushed.
 
 ## Next (v0.6+)
 

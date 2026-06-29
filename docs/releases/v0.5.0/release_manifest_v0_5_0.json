@@ -1,7 +1,7 @@
 {
   "release": "v0.5.0",
   "theme": "Governed Workstreams (layer 1: Runs) — operator-initiated, ordered, durable, governed multi-step execution; the first consumer of the Typed MCP Gateway",
-  "status": "release-candidate — pending the CEO §human WD-5 walkthrough + the local annotated tag (no remote)",
+  "status": "released — local annotated tag v0.5.0 (no remote); CEO §human WD-5 captured + signed off (evidence at tests/smoke/test-results/wd5/)",
   "baseline": "v0.4.0 (tag 874db08) on v3.0.1",
   "generated": "2026-06-29",
   "note": "Machine-readable coverage for v0.5.0. See release_notes_v0_5_0.md (human roll-up), v0.5.0-release-criteria.md (criteria), and verification_runbook.md (how-to-verify + recorded results). The ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md (through ADR-0061). WD-5 (the single gate) is green on both the compose e2e stack (task e2e) and the installed stack (task wd1); the agent tools/call path is unchanged (task e2e green every rung = the behavior guard for the gateway split refactor).",
@@ -25,7 +25,7 @@
     "T-059c": "complete — parked-step Run context on /invocations; api parses run:<id>:step:<n> (no raw-key leak); vitest 22/22 + task smoke 5/5 (FE-16) (d8f6e08)",
     "T-060": "complete — WD-5 live e2e capstone: TestWD5HappyPath (mixed 3-step park->approve->continue) + TestWD5DeniedAbort (fail-closed); task e2e green, chain intact 95 events (G1) (085ebc7)",
     "T-061": "complete — OI-12: installed WD-5 GREEN on the privileged-systemd stack; shared run_driver.go + TestWD5InstalledStack; HEAD bundle rebuilt 0.5.0 (OI-4 gate holds); task wd1 green (c50b8b1)",
-    "T-062": "in-progress — DOC-13 + v0.5.0 release artifacts + VER legs; tag pending CEO §human WD-5"
+    "T-062": "complete — DOC-13 + v0.5.0 release artifacts + VER legs; CEO §human WD-5 captured + signed off; local annotated tag v0.5.0 applied (no remote)"
   },
   "criteria_groups": {
     "WD-5": "green on compose (task e2e: TestWD5HappyPath + TestWD5DeniedAbort + cancel + resume + audit-service verify) and installed (task wd1: TestWD5InstalledStack)",
