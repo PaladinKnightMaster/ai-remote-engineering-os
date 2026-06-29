@@ -350,3 +350,127 @@ func TestRunEngineEndToEnd(t *testing.T) {
 	t.Logf("PASS leg 2 — flagged step parked, operator approved, held step resumed, run completed")
 	t.Logf("PASS T-057 — operator launches Runs via POST /v1/runs (informed, bounded, audited); sequencer drives them on real wires")
 }
+
+// stepInvocationID reads a step's recorded gateway invocation id (NULL → ""), the
+// run→chain bridge used to assert dispatch (or its absence).
+func stepInvocationID(t *testing.T, pool *pgxpool.Pool, runID string, index int) string {
+	t.Helper()
+	var inv *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT invocation_id::text FROM run_steps WHERE run_id = $1 AND step_index = $2`, runID, index).Scan(&inv); err != nil {
+		t.Fatalf("read step %d invocation_id: %v", index, err)
+	}
+	if inv == nil {
+		return ""
+	}
+	return *inv
+}
+
+// TestWD5HappyPath — WD-5 facets 1-3, 7 (the capstone happy path). On the live stack an
+// operator launches ONE ordered >=3-step plan that MIXES ungated and requires_approval
+// resources. Step 0 (ungated) runs; step 1 (flagged) PARKS and is approved on the
+// /invocations console; the engine then CONTINUES to step 2 (ungated) — the mid-plan
+// park->approve->continue that neither EndToEnd leg proves on its own. The terminal Run
+// is the evidence packet: GET surfaces each step's invocation id, and the chain carries
+// run.launched -> per-step egress -> run.completed, every run.* anchored run:<id>. Chain
+// hash-integrity is asserted by the suite's trailing `audit-service verify` (facet 7).
+func TestWD5HappyPath(t *testing.T) {
+	apiURL := env("E2E_API_URL", "http://localhost:8080")
+	auditURL := env("E2E_AUDIT_URL", "http://localhost:8081")
+	pool := runEngineDB(t)
+	auditTok := mintAuditToken(t)
+	client := &http.Client{Timeout: 30 * time.Second}
+	session, csrf, status, err := doLogin(client, apiURL)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+
+	// Compose + informed launch (facets 1-2): a 3-step plan mixing ungated + flagged.
+	runID, st := launchRun(t, client, apiURL, session, csrf, []stepSeed{
+		{resourceID, "echo WD5-H1"},
+		{flaggedResourceID, "echo WD5-H2"},
+		{resourceID, "echo WD5-H3"},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("launch: status %d, want 201", st)
+	}
+
+	// Facet 3: the flagged step 1 parks and is approved; the held step resumes.
+	inv := pollPendingInvocation(t, client, apiURL, session, csrf, flaggedResourceID, 90*time.Second)
+	resolveInvocation(t, client, apiURL, inv.ID, session, csrf, "approve")
+
+	// The engine CONTINUES past the approved step to drive step 2 → completed.
+	waitRunStatus(t, pool, runID, "completed", 180*time.Second)
+
+	// Facet 7 (evidence packet): GET surfaces completed steps each with an invocation id.
+	got := getRun(t, client, apiURL, session, csrf, runID)
+	if got.Status != "completed" || len(got.Steps) != 3 {
+		t.Fatalf("GET run: %+v, want completed with 3 steps", got)
+	}
+	for _, s := range got.Steps {
+		if s.Status != "completed" || s.InvocationID == "" {
+			t.Fatalf("step %d = %q/%q, want completed with an invocationId (evidence-packet bridge)", s.StepIndex, s.Status, s.InvocationID)
+		}
+	}
+
+	events := listAllEvents(t, auditURL, auditTok)
+	if !hasEventTarget(events, "run.launched", "run:"+runID) {
+		t.Fatal("run.launched not audited (GOV-1, facet 1)")
+	}
+	if !hasEventTarget(events, "run.completed", "run:"+runID) {
+		t.Fatal("run.completed not audited (AUD-14, facet 7)")
+	}
+	if !hasOperatorToolInvoked(events, "operator:admin", "resource:"+resourceID) {
+		t.Fatal("no operator tool.invoked (human-agent) — RUN-5 bracket not recorded (facet 2)")
+	}
+	if !hasOutcome(events, "remote.exec") {
+		t.Fatal("no remote.exec egress — the sequencer did not drive a real exec (facet 2)")
+	}
+	t.Logf("PASS WD-5 happy path — mixed 3-step run: ungated → flagged park→approve → CONTINUE → ungated → completed; evidence packet (3 step invocation ids) + run.launched/run.completed audited")
+}
+
+// TestWD5DeniedAbort — WD-5 facet 4 (fail-closed abort), the explicitly missing leg.
+// An operator launches a 2-step Run whose FIRST step is flagged; the operator DENIES it.
+// The Run is marked failed (run.aborted), and — the load-bearing assertion — the SECOND
+// step is NEVER dispatched: it stays pending with no gateway invocation id, so no further
+// egress is possible. (Commands are content-free in the chain by design, so the absence
+// of dispatch is proven by the NULL invocation id, not by a command-scoped audit search.)
+func TestWD5DeniedAbort(t *testing.T) {
+	apiURL := env("E2E_API_URL", "http://localhost:8080")
+	auditURL := env("E2E_AUDIT_URL", "http://localhost:8081")
+	pool := runEngineDB(t)
+	auditTok := mintAuditToken(t)
+	client := &http.Client{Timeout: 30 * time.Second}
+	session, csrf, status, err := doLogin(client, apiURL)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+
+	runID, st := launchRun(t, client, apiURL, session, csrf, []stepSeed{
+		{flaggedResourceID, "echo WD5-D1"},
+		{resourceID, "echo WD5-D2"},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("launch: status %d, want 201", st)
+	}
+
+	// Step 0 (flagged) parks; the operator DENIES it → the engine stops fail-closed.
+	inv := pollPendingInvocation(t, client, apiURL, session, csrf, flaggedResourceID, 90*time.Second)
+	resolveInvocation(t, client, apiURL, inv.ID, session, csrf, "deny")
+
+	waitRunStatus(t, pool, runID, "failed", 120*time.Second)
+	pollEvidenceOutcome(t, auditURL, auditTok, "run:"+runID, "run.aborted", 30*time.Second)
+
+	// The denied step is failed; the subsequent step was NEVER dispatched — no further
+	// egress. (The denied step does record an invocation id, sequencer.go; the NEXT one
+	// must not, because the loop returned before reaching it.)
+	assertStepStatus(t, pool, runID, 0, "failed")
+	assertStepStatus(t, pool, runID, 1, "pending")
+	if id := stepInvocationID(t, pool, runID, 1); id != "" {
+		t.Fatalf("undispatched step 1 has invocation_id %q — the engine dispatched past a denied step (NOT fail-closed)", id)
+	}
+	if got := getRun(t, client, apiURL, session, csrf, runID); got.Status != "failed" {
+		t.Fatalf("GET run after deny: status %q, want failed", got.Status)
+	}
+	t.Logf("PASS WD-5 denied-abort — a denied flagged step aborts the run fail-closed (run.aborted); the subsequent step is never dispatched (no invocation, no egress)")
+}
