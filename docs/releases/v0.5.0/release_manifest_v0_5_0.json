@@ -1,0 +1,41 @@
+{
+  "release": "v0.5.0",
+  "theme": "Governed Workstreams (layer 1: Runs) — operator-initiated, ordered, durable, governed multi-step execution; the first consumer of the Typed MCP Gateway",
+  "status": "release-candidate — pending the CEO §human WD-5 walkthrough + the local annotated tag (no remote)",
+  "baseline": "v0.4.0 (tag 874db08) on v3.0.1",
+  "generated": "2026-06-29",
+  "note": "Machine-readable coverage for v0.5.0. See release_notes_v0_5_0.md (human roll-up), v0.5.0-release-criteria.md (criteria), and verification_runbook.md (how-to-verify + recorded results). The ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md (through ADR-0061). WD-5 (the single gate) is green on both the compose e2e stack (task e2e) and the installed stack (task wd1); the agent tools/call path is unchanged (task e2e green every rung = the behavior guard for the gateway split refactor).",
+  "adrs": {
+    "ADR-0041..ADR-0060": "Accepted at v0.1.0..v0.4.0 — unchanged",
+    "ADR-0061": "Accepted 2026-06-23 — Governed Runs: operator-initiated multi-step execution above the gateway. Run engine in services/api internal/run (extraction seam); gateway stays sole orchestrator (split runGovernedStep + one subject-pinned POST /v1/steps); held-call reuses waitForApproval; typed human-agent launch + human-agent->agent-remote-session step bracket; reclaimable-claim crash-safe resume + deterministic run:<id>:step:<index> keys; stop-on-fail + cancel + non-atomic; run.* events + run:<id> + Evidence Packet; bounded plan + concurrency. Sole new ADR; extends ADR-0057; edits no Accepted ADR (G2-clean)."
+  },
+  "tickets": {
+    "criteria": "complete — docs/releases/v0.5.0/v0.5.0-release-criteria.md ACCEPTED (12e2897)",
+    "ADR-0061": "complete — ratified + canonical ladder row (ad24e53)",
+    "T-054": "complete — runs/run_steps migration 0006 + self-contained internal/run store (DUR-1; RUN-1 store) (52bcd54)",
+    "T-055": "complete — gateway governed-core SPLIT refactor: runGovernedStep extracted, agent task e2e green (RUN-2) (89714a8)",
+    "T-055b": "complete — invocations.edge migration + subject-pinned POST /v1/steps + RunStep operator actor (RUN-3/5) (bed13e2)",
+    "T-055c+d": "complete — api sequencer + long-timeout gateway-step client; live launch->drive e2e (RUN-1 complete) (032f3e0)",
+    "T-056": "complete — runs.claimed_until reclaimable lease + resume-with-skip + running-orphan fail-closed; live crash-resume (DUR-2/3/4-api) (66570c4)",
+    "T-057": "complete — POST /v1/runs + GET /v1/runs/{id} launch route, informed launch + bounds; first OpenAPI fragment change + codegen (SEC-23/GOV-1/PERF-6) (0597783)",
+    "T-058a": "complete — run_steps.invocation_id recorded + terminal run.* events in-tx (AUD-14/15 data layer) (2034ed4)",
+    "T-058b": "complete — RunStepView.invocationId GET surface (Evidence Packet bridge) + gateway stale-running reaper (EVD-1/2, DUR-4 gateway) (1730aa4)",
+    "T-059a": "complete — POST /v1/runs/{id}/cancel + GET /v1/runs (cooperative stop-future-steps; DUR-5) (2910a47)",
+    "T-059b": "complete — operator /runs UI: compose + informed launch + per-step status + cancel; vitest 20/20 + task smoke 4/4 (FE-14/15) (2048977)",
+    "T-059c": "complete — parked-step Run context on /invocations; api parses run:<id>:step:<n> (no raw-key leak); vitest 22/22 + task smoke 5/5 (FE-16) (d8f6e08)",
+    "T-060": "complete — WD-5 live e2e capstone: TestWD5HappyPath (mixed 3-step park->approve->continue) + TestWD5DeniedAbort (fail-closed); task e2e green, chain intact 95 events (G1) (085ebc7)",
+    "T-061": "complete — OI-12: installed WD-5 GREEN on the privileged-systemd stack; shared run_driver.go + TestWD5InstalledStack; HEAD bundle rebuilt 0.5.0 (OI-4 gate holds); task wd1 green (c50b8b1)",
+    "T-062": "in-progress — DOC-13 + v0.5.0 release artifacts + VER legs; tag pending CEO §human WD-5"
+  },
+  "criteria_groups": {
+    "WD-5": "green on compose (task e2e: TestWD5HappyPath + TestWD5DeniedAbort + cancel + resume + audit-service verify) and installed (task wd1: TestWD5InstalledStack)",
+    "SEC-23/24/25": "typed human-agent launch; subject==api /v1/steps pin; human-agent->agent-remote-session bracket with no v0.4 pin loosened",
+    "RUN-1..5 / DUR-1..6": "Run engine: sequencer, gateway step plane, reclaimable-claim crash-safe resume, running-orphan fail-closed, cancel",
+    "GOV-1..3 / PERF-6": "informed launch (full-plan review + content-free run.launched digest); bounded plan (<=50) + concurrency",
+    "AUD-14/15 + EVD-1/2": "run.* lifecycle events + run:<id> correlation + read-time Evidence Packet (run_steps.invocation_id bridge)",
+    "FE-14/15/16": "operator /runs UI (compose/informed-launch/status/cancel) + parked-step Run context on /invocations; browser DoD via task smoke",
+    "OI-12": "Run engine inside services/api (no new unit/route); installed WD-5 green via task wd1; OI-4 size gate holds",
+    "VER-14/15/16": "lint/test/build/licenses/sec13-gate green; codegen drift zero; release-check legs (see verification_runbook.md)",
+    "DOC-13": "module-map (Run engine + /v1/steps) + agent-permission-model (launch edge + step bracket + subject==api pin) + CANONICAL ladder ->0061 + this artifact set"
+  }
+}

@@ -56,6 +56,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | v0.2.0 release artifacts (DOC-10) | `docs/releases/v0.2.0/` (release notes + manifest + archival criteria copy) |
 | v0.3.0 release artifacts (DOC-11) | `docs/releases/v0.3.0/` (release notes + manifest + archival criteria copy) |
 | v0.4.0 release artifacts (DOC-12) | `docs/releases/v0.4.0/` (release notes + manifest + archival criteria copy) |
+| v0.5.0 release artifacts (DOC-13) | `docs/releases/v0.5.0/` (release notes + manifest + verification runbook + criteria) |
 | Reference inventory | `references/references_v3.csv` |
 | Reference tags | `references/reference-tags-v3.md` |
 | Deep-dive / historical docs | `docs/deep-dive/` |

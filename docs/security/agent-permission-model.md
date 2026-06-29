@@ -23,11 +23,12 @@ the eighth, infra-level edge ADR-0046 added to the seven above.
 
 | Edge | Decision enforced | Handler |
 |---|---|---|
-| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation** | `services/api/internal/server/server.go` (`CreateSession`, `ResolveSession`, `ResolveInvocation`) |
+| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`) |
 | `agent-tool` | An agent's MCP `tools/call` on the gateway (the `remote.exec` tool) — scoped (SEC-16) to the agent token's resource; drives a governed invocation | `services/mcp-gateway/internal/server` (`/mcp`; audience `mcp-gateway`) |
 | `agent-remote-session` | Cockpit WS attach only for a `pending` session — a parked `pending_approval` session is refused (the approval gate needs no broker code) | `services/session-broker/internal/server` (status guard) |
 | `service-service` (api → policy-service) | `requires_approval` decision at session-create + operator resolution relay | `services/policy-service/internal/server/server.go` (decide + resolve handlers; audience `policy-service`) |
 | `service-service` (api → mcp-gateway) | Operator invocation list + approve/deny, proxied off the browser plane | `services/mcp-gateway/internal/server` (internal `/v1/invocations*`; audience `mcp-gateway`, edge `service-service`) |
+| `service-service` (api Run engine → mcp-gateway, v0.5.0) | One governed Run step to terminal via the held-call; **subject-pinned `subject=="api"`** (SEC-24) | `services/mcp-gateway/internal/server` (internal `POST /v1/steps`; bracket edge `human-agent → agent-remote-session`) |
 | `service-service` (gateway → policy / broker) | Per-invocation policy decide/resolve + the governed non-interactive exec | `policy-service` (audience `policy-service`) + `session-broker` `/v1/exec` (audience `session-broker`) |
 | `service-service` (broker → connector-service) | Just-in-time credential lease — the only decrypt path | `services/connector-service/internal/server/server.go` (lease handler; audience `connector-service`) |
 
@@ -79,3 +80,35 @@ removes that blast radius:
 `connector-service` is deliberately **not** dual-mode — the broker (symmetric) is
 its sole caller, so the credential-decrypt authority stays reachable only by the
 cluster key, which the agent-facing gateway no longer holds.
+
+## Governed Runs (v0.5.0; ADR-0061)
+
+A **Run** is one operator-initiated, ordered, durable, governed multi-step
+execution (the Workstream Engine's layer 1). It adds an *operator-driven* path over
+the same agent surface without weakening any v0.3/v0.4 invariant — every step still
+flows through the gateway → policy → connector → broker (the gateway stays the sole
+governed-step orchestrator; `services/api` cannot drive egress).
+
+- **Typed launch authorization (`human-agent`; SEC-23).** Launching and canceling a
+  Run is a `human-agent` capability on `services/api` (operator cookie + CSRF), the
+  same gate as session/invocation approval — `CreateRun` / `CancelRun` in
+  `services/api/internal/server`. Launch is **informed** (the operator reviews the
+  full plan before the POST) and audited (`run.launched` / `run.canceled`, actor =
+  operator, the plan's resource set — never the commands). No anonymous or
+  agent-plane launch path exists at v0.5.0.
+- **The step plane is subject-pinned (`subject=="api"`; SEC-24).** The gateway's
+  internal `POST /v1/steps` (one governed step to terminal via the held-call) rejects
+  any caller whose token subject ≠ `api` — the same pin shape as the gateway's
+  `/v1/invocations` plane. Not in the OpenAPI fragment (service-service RPC).
+- **Per-step bracket edge `human-agent → agent-remote-session` (SEC-25).** A Run step
+  carries the launching operator as actor on a `human-agent → agent-remote-session`
+  bracket (NOT `agent-tool` — it is not an agent acting). The underlying
+  gateway→broker / broker→connector tokens stay **`mcp-gateway`- / `session-broker`-
+  pinned** exactly as v0.4.0; the operator identity is audit metadata and loosens no
+  pin. A flagged step still parks on the existing `/invocations` console (with its
+  Run context) and is approved by the same `human-agent` verb.
+
+Audit: each step reuses the invocation anchor (`invocation:<id>`); the Run is
+correlated by a `run:<id>` namespace on the `run.*` lifecycle events, bridged to the
+per-step chain via `run_steps.invocation_id` (the read-time Evidence Packet). The
+whole chain stays single + hash-intact (`audit-service verify`).
