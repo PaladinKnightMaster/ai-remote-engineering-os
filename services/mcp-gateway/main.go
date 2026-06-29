@@ -105,9 +105,9 @@ func serve() error {
 	gw := store.New(pool, cmdCipher)
 	pol := policy.New(os.Getenv("POLICY_URL"), signer)
 	cat := catalog.New(catalog.Config{
-		Store:       gw,
-		Policy:      pol,
-		Broker:      brokerexec.New(os.Getenv("BROKER_URL"), signer),
+		Store:          gw,
+		Policy:         pol,
+		Broker:         brokerexec.New(os.Getenv("BROKER_URL"), signer),
 		MaxInFlight:    maxInFlight(),
 		WaitTimeout:    durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
 		RunWaitTimeout: durationEnvSeconds("MCP_RUN_WAIT_SECONDS", 600*time.Second),

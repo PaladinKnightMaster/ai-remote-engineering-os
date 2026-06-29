@@ -58,6 +58,10 @@ type InvocationView struct {
 	Tool       string `json:"tool"`
 	Command    string `json:"command"`
 	Status     string `json:"status"`
+	// IdempotencyKey is the parked step's dedup key (e.g. "run:<id>:step:<n>" for a
+	// governed Run step). Opaque to the gateway; services/api parses it for the
+	// operator's FE-16 Run context. Empty/absent for an agent-tool invocation.
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
 
 // ResolverPort is the operator-plane seam (ADR-0057 §4): the internal HTTP handler

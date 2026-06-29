@@ -80,7 +80,13 @@ export function Invocations() {
       ) : (
         <ul className="space-y-4">
           {invocations.map((inv) => (
-            <li key={inv.id}>
+            <li key={inv.id} className="space-y-1">
+              {inv.runId ? (
+                <p className="text-xs text-muted-foreground">
+                  Part of run <span className="font-mono">{inv.runId}</span>
+                  {typeof inv.stepIndex === "number" ? <> · step {inv.stepIndex + 1}</> : null}
+                </p>
+              ) : null}
               <ApprovalPrompt
                 title="Tool invocation approval"
                 description="An AI agent is requesting to run a command on a governed resource."

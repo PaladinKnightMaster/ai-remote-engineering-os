@@ -93,8 +93,9 @@ func TestInvocationBlockAndWaitResolve(t *testing.T) {
 		rec := doReq(t, h, http.MethodGet, "/v1/invocations", "", svcTok)
 		var lst struct {
 			Invocations []struct {
-				ID      string `json:"id"`
-				Command string `json:"command"`
+				ID             string `json:"id"`
+				Command        string `json:"command"`
+				IdempotencyKey string `json:"idempotencyKey"`
 			} `json:"invocations"`
 		}
 		_ = json.Unmarshal(rec.Body.Bytes(), &lst)
@@ -102,6 +103,11 @@ func TestInvocationBlockAndWaitResolve(t *testing.T) {
 			id = lst.Invocations[0].ID
 			if lst.Invocations[0].Command != "echo hi" {
 				t.Fatalf("operator list command = %q, want echo hi (ADR-0059)", lst.Invocations[0].Command)
+			}
+			// An agent-tool invocation carries no Run idempotency key — so api derives
+			// no FE-16 Run context for it (behavior guard: context is Run-steps only).
+			if lst.Invocations[0].IdempotencyKey != "" {
+				t.Fatalf("agent invocation idempotencyKey = %q, want empty", lst.Invocations[0].IdempotencyKey)
 			}
 			break
 		}

@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -38,6 +40,32 @@ type PendingInvocation struct {
 	Tool       string `json:"tool"`
 	Command    string `json:"command"`
 	Status     string `json:"status"`
+	// RunID / StepIndex carry the operator's FE-16 Run context when this parked
+	// invocation is a governed Run step. Derived here from the gateway's step
+	// idempotency key ("run:<id>:step:<n>"), which api mints (T-055c) and owns — the
+	// raw key never reaches the SPA. Empty/absent for a non-Run agent invocation.
+	RunID     string `json:"runId,omitempty"`
+	StepIndex *int   `json:"stepIndex,omitempty"`
+}
+
+// parseRunStep extracts the Run correlation from a step idempotency key of the form
+// "run:<id>:step:<index>" (minted by the api sequencer, T-055c). Any other key — an
+// agent-tool invocation, or none — yields a zero RunID and nil StepIndex.
+func parseRunStep(key string) (string, *int) {
+	const pre, mid = "run:", ":step:"
+	if !strings.HasPrefix(key, pre) {
+		return "", nil
+	}
+	rest := key[len(pre):]
+	i := strings.LastIndex(rest, mid)
+	if i <= 0 {
+		return "", nil
+	}
+	n, err := strconv.Atoi(rest[i+len(mid):])
+	if err != nil || n < 0 {
+		return "", nil
+	}
+	return rest[:i], &n
 }
 
 // Client calls the mcp-gateway internal plane with a service-service bearer
@@ -87,13 +115,25 @@ func (c *Client) ListPending(ctx context.Context) ([]PendingInvocation, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("list invocations: unexpected status %d", resp.StatusCode)
 	}
+	// Decode through a wrapper that also captures the gateway's idempotencyKey, then
+	// translate it into the structured RunID/StepIndex the SPA sees. The raw key is
+	// scoped to this function — it never lands on the returned PendingInvocation.
 	var body struct {
-		Invocations []PendingInvocation `json:"invocations"`
+		Invocations []struct {
+			PendingInvocation
+			IdempotencyKey string `json:"idempotencyKey"`
+		} `json:"invocations"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode invocations: %w", err)
 	}
-	return body.Invocations, nil
+	out := make([]PendingInvocation, 0, len(body.Invocations))
+	for _, w := range body.Invocations {
+		inv := w.PendingInvocation
+		inv.RunID, inv.StepIndex = parseRunStep(w.IdempotencyKey)
+		out = append(out, inv)
+	}
+	return out, nil
 }
 
 type resolveRequest struct {

@@ -885,6 +885,17 @@ components:
           type: string
         status:
           type: string
+        runId:
+          type: string
+          description: >-
+            The parent Run id when this parked invocation is a governed Run step
+            (FE-16); absent for a non-Run agent invocation. Derived by services/api
+            from the step idempotency key — the raw key never crosses to the client.
+        stepIndex:
+          type: integer
+          description: >-
+            The zero-based step position within the Run (FE-16). Absent for a non-Run
+            invocation.
     # Approve/deny body for POST /v1/invocations/{id}/resolve. Operator verbs
     # (approve|deny); services/api maps them to the policy decision (granted|denied).
     InvocationResolve:

@@ -179,8 +179,14 @@ type PendingInvocation struct {
 	Command    string `json:"command"`
 	Id         string `json:"id"`
 	ResourceId string `json:"resourceId"`
-	Status     string `json:"status"`
-	Tool       string `json:"tool"`
+
+	// RunId The parent Run id when this parked invocation is a governed Run step (FE-16); absent for a non-Run agent invocation. Derived by services/api from the step idempotency key — the raw key never crosses to the client.
+	RunId  *string `json:"runId,omitempty"`
+	Status string  `json:"status"`
+
+	// StepIndex The zero-based step position within the Run (FE-16). Absent for a non-Run invocation.
+	StepIndex *int   `json:"stepIndex,omitempty"`
+	Tool      string `json:"tool"`
 }
 
 // Resource defines model for Resource.

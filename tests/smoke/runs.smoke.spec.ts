@@ -57,6 +57,30 @@ test("operator launches a governed run and watches it reach completed", async ({
   await testInfo.attach("run-completed", { body: await page.screenshot(), contentType: "image/png" });
 });
 
+test("a parked Run step shows its Run context on the invocations console", async ({ page }, testInfo) => {
+  await login(page);
+  await composeAndLaunch(page, GATED_RESOURCE, "echo CONTEXT-SMOKE");
+
+  // The gated step parks for approval; the operator console (FE-16) shows it is part
+  // of a Run, at which step — derived by api from the step idempotency key — alongside
+  // the verbatim command. The list fetches on mount / Refresh, so Refresh until it lands.
+  const prompt = page.getByRole("region", { name: "approval required" });
+  await expect(async () => {
+    await page.goto("/invocations");
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(prompt).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 60_000 });
+  await expect(page.getByText(/part of run/i)).toBeVisible();
+  await expect(page.getByText(/step 1/i)).toBeVisible();
+  await expect(page.getByLabel("command")).toContainText("CONTEXT-SMOKE");
+
+  await testInfo.attach("parked-run-step-context", { body: await page.screenshot(), contentType: "image/png" });
+
+  // Deny to release the held step (cleanup) so it does not linger into later specs.
+  await page.getByRole("button", { name: "Deny" }).click();
+  await expect(prompt).toHaveCount(0, { timeout: 30_000 });
+});
+
 test("operator cancels a running governed run", async ({ page }) => {
   await login(page);
   // A gated step parks for approval server-side, so the Run stays running long enough to

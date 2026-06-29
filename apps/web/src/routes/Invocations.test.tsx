@@ -48,6 +48,29 @@ describe("Invocations route", () => {
     expect(apiClient.GET).toHaveBeenCalledWith("/v1/invocations", {});
   });
 
+  it("shows the Run context (FE-16) for a parked governed-run step", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: {
+        invocations: [
+          { id: "inv-2", agent: "operator:admin", resourceId: "r-1", tool: "remote.exec", command: "echo step", status: "pending_approval", runId: "run-abc", stepIndex: 0 },
+        ],
+      },
+      error: undefined,
+    } as never);
+    renderInvocations();
+
+    await waitFor(() => expect(screen.getByText(/part of run/i)).toBeTruthy());
+    expect(screen.getByText("run-abc")).toBeTruthy();
+    expect(screen.getByText(/step 1/i)).toBeTruthy(); // zero-based index rendered 1-based
+  });
+
+  it("omits the Run context for a non-run agent invocation", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue(onePending as never);
+    renderInvocations();
+    await waitFor(() => expect(screen.getByText(/agent:smoke/)).toBeTruthy());
+    expect(screen.queryByText(/part of run/i)).toBeNull();
+  });
+
   it("denies an invocation via POST /v1/invocations/{id}/resolve and refetches", async () => {
     vi.mocked(apiClient.GET)
       .mockResolvedValueOnce(onePending as never)
