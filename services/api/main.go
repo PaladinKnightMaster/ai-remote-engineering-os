@@ -160,7 +160,20 @@ func buildAuth() (mw.Verifier, *auth.Signer, server.Authenticator, error) {
 			return nil, nil, nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
 		}
 		issuer := os.Getenv("AIREOS_CLUSTER_ID") // optional; empty skips the issuer rule
-		v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "api"))
+		local := auth.NewVerifier(key, issuer, "api")
+		// Dual-mode (ADR-0060, T-065a): api keeps verifying operator v4.local tokens with the
+		// symmetric cluster key AND now accepts the gateway's v4.public service token on the
+		// new delegated-launch forward (the mirror of policy/broker). The gateway public key
+		// is a VERIFY key, not a mint key — api gains no minting power, so SEC-20 holds.
+		var v mw.Verifier = auth.AsMiddlewareVerifier(local)
+		if pubHex := os.Getenv("AIREOS_GATEWAY_PUBLIC_KEY"); pubHex != "" {
+			pub, perr := auth.NewAsymmetricPublicKeyFromHex(pubHex)
+			if perr != nil {
+				return nil, nil, nil, fmt.Errorf("invalid AIREOS_GATEWAY_PUBLIC_KEY: %w", perr)
+			}
+			gw := auth.NewAsymmetricVerifier(pub, issuer, "api")
+			v = auth.AsMiddlewareVerifier(auth.NewDualModeVerifier(local, gw))
+		}
 		signer := auth.NewSigner(key, issuer)
 		var authn server.Authenticator
 		if op, err := account.FromEnv(); err == nil {

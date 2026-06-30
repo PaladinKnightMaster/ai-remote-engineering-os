@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/packages/go/outbox"
@@ -15,6 +16,11 @@ import (
 
 // ErrNotFound is returned when no run has the given id.
 var ErrNotFound = errors.New("run not found")
+
+// ErrDuplicateLaunch is returned by Create when a delegated launch's (grant_id, launch_key)
+// already exists — an agent retry of run.launch. The caller re-fetches the original Run via
+// GetByLaunchKey (the idempotent re-attach, ADR-0062 T-065a) so a retry never double-launches.
+var ErrDuplicateLaunch = errors.New("duplicate delegated launch")
 
 // launchEdge is the bracket edge for the run.launched lifecycle event — the operator
 // launch is a human-agent authorization act (ADR-0061 GOV-1).
@@ -106,9 +112,13 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 	// grant_id/actor are NULL for an operator-direct Run (NULLIF on ""), set for a
 	// delegated Run (T-065). The owner/principal is always operator.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO runs (id, operator, grant_id, actor)
-		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, ''))`,
-		id.String(), in.Operator, in.GrantID, in.Actor); err != nil {
+		INSERT INTO runs (id, operator, grant_id, actor, launch_key)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, ''), $5)`,
+		id.String(), in.Operator, in.GrantID, in.Actor, in.LaunchKey); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique (grant_id, launch_key)
+			return Run{}, ErrDuplicateLaunch
+		}
 		return Run{}, fmt.Errorf("insert run: %w", err)
 	}
 
@@ -144,6 +154,22 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 		return Run{}, fmt.Errorf("commit run: %w", err)
 	}
 	return Run{ID: id.String(), Operator: in.Operator, Actor: in.Actor, GrantID: in.GrantID, Status: StatusPending, Steps: steps}, nil
+}
+
+// GetByLaunchKey returns the Run a prior delegated launch created for (grantID, launchKey),
+// or ErrNotFound — the idempotent re-attach path the handler uses after Create reports
+// ErrDuplicateLaunch (an agent retry of run.launch, ADR-0062 T-065a).
+func (s *Store) GetByLaunchKey(ctx context.Context, grantID, launchKey string) (Run, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		SELECT id FROM runs WHERE grant_id = $1::uuid AND launch_key = $2`, grantID, launchKey).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Run{}, ErrNotFound
+	}
+	if err != nil {
+		return Run{}, fmt.Errorf("get run by launch key: %w", err)
+	}
+	return s.Get(ctx, id)
 }
 
 // CountActiveForOperator counts an operator's not-yet-terminal Runs (pending or

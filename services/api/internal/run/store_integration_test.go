@@ -10,6 +10,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -291,6 +292,45 @@ func TestRunActorGrantRoundTrip(t *testing.T) {
 	}
 	if n := countRunActor(t, s, "run:"+dir.ID, "run.launched", "operator:alice"); n != 1 {
 		t.Fatalf("direct run.launched actor != operator (count=%d)", n)
+	}
+}
+
+// TestRunLaunchIdempotency — T-065a: a delegated launch dedups on (grant_id, launch_key) —
+// a retry returns ErrDuplicateLaunch and GetByLaunchKey re-attaches to the original Run (no
+// double-launch). An operator-direct Run (empty launch_key) is never deduped.
+func TestRunLaunchIdempotency(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	const grantID = "01900000-0000-7000-8000-0000000000bb"
+
+	in := Input{
+		Operator: "operator:grantor", Actor: "agent:bot-1", GrantID: grantID, LaunchKey: "idem-x",
+		Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}},
+	}
+	first, err := s.Create(ctx, in)
+	if err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	if _, err := s.Create(ctx, in); !errors.Is(err, ErrDuplicateLaunch) {
+		t.Fatalf("retry: want ErrDuplicateLaunch, got %v", err)
+	}
+	got, err := s.GetByLaunchKey(ctx, grantID, "idem-x")
+	if err != nil || got.ID != first.ID {
+		t.Fatalf("re-attach: got %q (err %v), want %q", got.ID, err, first.ID)
+	}
+
+	// Operator-direct (empty launch_key) is never deduped: two distinct Runs.
+	op := Input{Operator: "operator:alice", Steps: []StepInput{{ResourceID: "r-b", Command: "echo hi"}}}
+	a, err := s.Create(ctx, op)
+	if err != nil {
+		t.Fatalf("op run 1: %v", err)
+	}
+	b, err := s.Create(ctx, op)
+	if err != nil {
+		t.Fatalf("op run 2: %v", err)
+	}
+	if a.ID == b.ID {
+		t.Fatal("operator-direct Runs must not dedup")
 	}
 }
 

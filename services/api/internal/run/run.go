@@ -63,10 +63,11 @@ type Step struct {
 // Run (T-065) Actor is the agent and GrantID the bounding grant; both "" for an
 // operator-direct Run (the run.* audit actor then = Operator — behavior-preserving).
 type Input struct {
-	Operator string
-	Actor    string
-	GrantID  string
-	Steps    []StepInput
+	Operator  string
+	Actor     string
+	GrantID   string
+	LaunchKey string // delegated-launch idempotency key (ADR-0062, T-065a); "" disables dedup (operator-direct)
+	Steps     []StepInput
 }
 
 // StepInput is one step of a new plan.

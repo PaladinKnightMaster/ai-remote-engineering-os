@@ -179,3 +179,23 @@ func (s *Store) Revoke(ctx context.Context, id string) (bool, error) {
 	}
 	return true, nil
 }
+
+// AuditLaunchDenied records a denied delegated launch — a plan-vs-grant rejection (SEC-29,
+// ADR-0062 N1): the launch is refused before any Run is created or any egress occurs.
+// Content-free: the agent (actor) + the grant:<id> anchor, never a command or the reason
+// (the reason is the 403 body + the api log, kept out of the chain like every command).
+func (s *Store) AuditLaunchDenied(ctx context.Context, agent, grantID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: agent, Edge: grantEdge,
+		Target: "grant:" + grantID, Outcome: "run.launch.denied",
+		EvidencePacketID: "grant:" + grantID,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}

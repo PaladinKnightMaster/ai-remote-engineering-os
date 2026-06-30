@@ -115,6 +115,7 @@ type gatewayProxy interface {
 type runStore interface {
 	Create(ctx context.Context, in run.Input) (run.Run, error)
 	Get(ctx context.Context, id string) (run.Run, error)
+	GetByLaunchKey(ctx context.Context, grantID, launchKey string) (run.Run, error)
 	CountActiveForOperator(ctx context.Context, operator string) (int, error)
 	ListForOperator(ctx context.Context, operator, after string, limit int) ([]run.Run, string, error)
 	CancelRun(ctx context.Context, id string) (bool, error)
@@ -178,6 +179,7 @@ type grantStore interface {
 	Get(ctx context.Context, id string) (grant.Grant, error)
 	ListForOperator(ctx context.Context, operator, after string, limit int) ([]grant.Grant, string, error)
 	Revoke(ctx context.Context, id string) (bool, error)
+	AuditLaunchDenied(ctx context.Context, agent, grantID string) error
 }
 
 // WithGrantStore wires the delegation-grant store (ADR-0062, T-063): the operator
@@ -248,8 +250,21 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 			h.gateway = gateway.NewClient(h.gatewayURL, nil)
 		}
 	}
+	base := chi.NewRouter()
+	// api's FIRST inbound service-service route (ADR-0062, T-065a): the gateway forwards a
+	// delegated Run launch here. Manual — NOT in the OpenAPI fragment (an internal RPC, like
+	// the gateway's /v1/steps). Gated by RequireCapability(service-service) over the dual-mode
+	// verifier (it accepts the gateway's v4.public token); the handler then pins subject ==
+	// "mcp-gateway" (onlyGateway), the mirror of the gateway's onlyAPI pin. It carries Bearer,
+	// not a cookie, so it is OUTSIDE the operator cookie/CSRF middleware stack below.
+	if h.grants != nil && h.runs != nil {
+		base.Group(func(ir chi.Router) {
+			ir.Use(mw.RequireCapability(v, "service-service"))
+			ir.Post("/v1/internal/delegated-runs", h.LaunchDelegatedRun)
+		})
+	}
 	return HandlerWithOptions(h, ChiServerOptions{
-		BaseRouter: chi.NewRouter(),
+		BaseRouter: base,
 		Middlewares: []MiddlewareFunc{
 			slidingRefresh(signer, s),                                // innermost  (last to run, closest to handler)
 			gateByDeclaredSecurity(v),                                // middle
