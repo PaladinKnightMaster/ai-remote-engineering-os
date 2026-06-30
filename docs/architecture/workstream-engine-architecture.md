@@ -11,11 +11,13 @@ of that lifecycle). The full Workstream module (objective/schedule/memory) is **
 and will *create* Runs. So this doc specs the **Run engine = layer 1 of the Workstream
 Engine**. Throughout, the entity is a `Run` (`runs` + `run_steps`, `run:<id>`).
 
-Scope: the **thin vertical wedge** only — one operator-authored, ordered, durable,
-governed, evidence-bound Run. Agent-initiated Runs, parallel/branching plans, and
-plan-level blanket approval are explicitly **out of scope** (v0.6+).
+Scope: §§1–10 spec the v0.5.0 **thin vertical wedge** — one operator-authored, ordered,
+durable, governed, evidence-bound Run. **§11 is the v0.6 extension** (agent-initiated Runs
+via operator-issued delegation grants; **ADR-0062**), reusing the §§1–10 engine unchanged.
+Parallel/branching plans and plan-level blanket approval remain out of scope.
 
-Conforms to ADR-0054/0056/0057/0058/0059/0060; edits no Accepted ADR.
+Conforms to ADR-0054/0056/0057/0058/0059/0060/0061; §11 conforms to ADR-0062; edits no
+Accepted ADR.
 
 ---
 
@@ -211,9 +213,10 @@ The chain stays single + intact. Three elements:
 ## 9. Out of scope (deferred, recorded)
 
 The full **Workstream module** (objective/sources/rules/schedule/scoped-memory/owner —
-P1; it *creates* Runs); agent-initiated Runs + delegation identity (v0.6, the
-extraction trigger); plan-level blanket approval (v0.6); parallel / branching / retry
-DAG; cross-resource transactional plans; a gateway-side exec worker; SSH pooling / full
+P1; it *creates* Runs); ~~agent-initiated Runs + delegation identity~~ **→ now specced in
+§11 (ADR-0062), riding the `internal/run` seam; the standalone-service extraction stays
+deferred**; plan-level blanket approval (v0.6); parallel / branching / retry DAG;
+cross-resource transactional plans; a gateway-side exec worker; SSH pooling / full
 rate-limiting (sequential needs neither — R-5); persisted-command GC (F3-GC);
 Memory/Context Index (P2); full per-workload key registry + rotation/JWKS.
 
@@ -228,3 +231,93 @@ context + bounds → T-058 Run audit linking + evidence packet → T-059 operato
 (+ park/approve/continue + denied-aborts + cancel negatives) → T-061 OI-12
 offline/installed (`api` migration + bundle-from-HEAD + installed WD-5) → T-062 release
 closure.
+
+---
+
+## 11. v0.6 extension — Agent-initiated Runs via delegation grants (ADR-0062)
+
+Status: **DRAFT** (companion to **ADR-0062**, Accepted 2026-06-30). v0.6 adds a **second initiator**
+to the §§1–10 Run engine: an **agent** launches a governed Run **bounded by an
+operator-issued delegation grant**. The engine, the gateway `/v1/steps` path, policy /
+connector / broker, and the audit chain are **reused unchanged**; the new work is the grant
+primitive, the actor/principal split, and a keyless launch surface.
+
+### 11.1 The privilege delta (why this is not "flip the initiator")
+
+v0.5 made the initiator a human, so the operator cookie **is** the authority and
+informed-launch **is** the authorization. Agent-initiation removes both: an `agent-tool`
+token is SEC-16-scoped to one resource+verb (can't author a plan;
+[catalog.go:228](../../services/mcp-gateway/internal/catalog/catalog.go)), and no human is
+present at launch. The missing authority is supplied by a **delegation grant**.
+
+### 11.2 Delegation grant (the new primitive)
+
+An operator pre-authorizes **one agent** for **a bounded set of resources + verbs**, with
+TTL + bounds + a step budget — a durable, **revocable, server-side record** in `api`
+(`delegation_grants`), **not** a bearer token. It is the **multi-step, operator-issued,
+revocable generalization of the agent-tool token's SEC-16 scope**, and it **replaces
+informed-launch** as the human consent (consent moves per-plan → **per-grant**). Custody is
+a record (not a token) so it is **instantly revocable** (ADR-0046 defers token-revocation
+lists) and can track **stateful budget** — and so the agent holds nothing mintable
+(preserving ADR-0060/SEC-20). Lineage: RFC 8693 delegation, RFC 7662 / reference-token
+revocation, capability-security POLA — see ADR-0062 §Context.
+
+### 11.3 Launch flow (keyless-surface-preserving)
+
+```text
+agent ──(MCP run.launch: grant-id + plan; existing aud=mcp-gateway token)──> mcp-gateway
+                              │  verifies the agent token (KEYLESS of the symmetric key)
+                              │  forwards {agent-subject, grant-id, plan}
+                              └─(service-service, subject-pinned subject=="mcp-gateway")─> services/api
+                                       │  validate plan ⊆ grant (the relocated SEC-16)
+                                       │  create Run 'pending' (actor=agent, principal=operator, grant_id)
+                                       ▼
+                                  internal/run sequencer ──> EXISTING /v1/steps ──> policy/connector/broker ──> audit
+```
+
+The agent-facing surface stays on the **already-keyless gateway**; `api` (the symmetric-key
+holder) stays **non-agent-reachable**, reached only over a gateway-pinned service edge — the
+mirror of `/v1/steps`'s `onlyAPI` pin. *(Self-audit reversal: an `api`-direct agent endpoint
+was rejected for re-exposing the key holder — ADR-0062 §3.)*
+
+### 11.4 Identity, policy & audit (the actor/principal split)
+
+- **Actor = agent, principal = operator** (RFC 8693 `act`/`subject`). The conflated
+  `Subject` ([transport.go:83](../../services/mcp-gateway/internal/mcp/transport.go)) splits
+  to `{actor, principal}` across `/v1/steps`, the gateway invocation, and the `api` `runs`
+  rows (new nullable `grant_id` + `actor`; null = a v0.5 operator-direct Run). `api` binds
+  both server-side; the gateway trusts neither from an agent. Subject-pins untouched
+  (SEC-25).
+- **Bracket edge = `agent-tool → agent-remote-session`**, with `principal` + `grant_id`
+  recorded — **not** `agent-agent` (which denotes agent-to-agent; there is no second agent,
+  and a new edge would trigger an ADR-0046 edge-set revision). A delegated step is
+  distinguished by the `run:<id>` anchor + `principal` + `grant_id`. *(Self-audit
+  correction — ADR-0062 §4.)*
+- **Policy subject = the agent.** This defeats ADR-0054 self-approve under the absent
+  operator → **flagged steps genuinely park** for a live human on the existing
+  `/invocations` console (now also surfacing the agent actor + grant + principal). Ungated
+  steps run unattended.
+
+### 11.5 Revocation, bounds, lifecycle
+
+- **Instant revocation cascades:** `status → revoked` also **cancels the grant's active
+  in-flight Runs** (reusing `CancelRun` + the sequencer's between-step `RunStatus` stop;
+  [sequencer.go:103](../../services/api/internal/run/sequencer.go)) — not just new launches.
+- **Bounds (the forcing-function):** resources / verbs / TTL / `max_steps_per_run` /
+  `max_concurrent_runs` / `step_budget`. A compromised agent is capped at its grants, never
+  the operator's full authority. **Reconcile** `max_concurrent_runs` with the gateway
+  `CountInFlight` PERF-3 cap (default 4,
+  [catalog.go:342](../../services/mcp-gateway/internal/catalog/catalog.go)) — else a
+  refused step fails a legitimate Run.
+- **Issuance surface:** `POST /v1/grants`, `POST /v1/grants/{id}/revoke`, `GET /v1/grants`
+  (`human-agent` + CSRF; audited `grant.issued` / `grant.revoked`).
+
+### 11.6 Indicative v0.6 ladder
+
+ADR-0062 (Accepted) → v0.6 criteria → grant schema/store + issuance routes (`api`) → the
+actor/principal split on `/v1/steps` + gateway invocation + `runs` (behavior-preserving;
+agent + operator-Run e2e green first) → plan-vs-grant validation + the `run.launch` gateway
+tool + the gateway→`api` pinned forward → flagged-step delegated context + revocation
+cascade → live capstone (agent launches a grant-bounded Run; ungated runs unattended,
+flagged parks→approve→continue, out-of-grant denied, revoke cancels in-flight) →
+offline/installed → release closure. Each rung its own consult.
