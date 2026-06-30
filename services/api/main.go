@@ -34,6 +34,7 @@ import (
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/account"
+	"aireos.local/services/api/internal/grant"
 	runengine "aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/server"
 	"aireos.local/services/api/internal/store"
@@ -118,6 +119,12 @@ func serve(dsn string) error {
 		server.WithGateway(os.Getenv("GATEWAY_URL")),
 		server.WithAgentSigner(agentPlaneSigner()),
 	}
+
+	// The delegation-grant engine (ADR-0062, T-063): the operator issue/list/revoke
+	// routes. Grants are api-local (no gateway needed), so they are wired
+	// unconditionally — unlike the Run engine below, which needs the gateway to drive.
+	opts = append(opts, server.WithGrantStore(grant.NewStore(pool, store.OutboxTable)))
+
 	if gwURL := os.Getenv("GATEWAY_URL"); gwURL != "" {
 		runStore := runengine.NewStore(pool, nil, store.OutboxTable)
 		var stepIssuer runengine.ServiceIssuer

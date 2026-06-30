@@ -20,3 +20,4 @@ output-options:
     - sessions
     - audit-read
     - runs
+    - grants

@@ -141,6 +141,40 @@ type Error struct {
 	Message string                  `json:"message"`
 }
 
+// Grant defines model for Grant.
+type Grant struct {
+	Agent             string    `json:"agent"`
+	CreatedAt         time.Time `json:"createdAt"`
+	ExpiresAt         time.Time `json:"expiresAt"`
+	Id                string    `json:"id"`
+	Label             *string   `json:"label,omitempty"`
+	MaxConcurrentRuns int       `json:"maxConcurrentRuns"`
+	MaxStepsPerRun    int       `json:"maxStepsPerRun"`
+	Resources         []string  `json:"resources"`
+	Status            string    `json:"status"`
+	StepBudget        int       `json:"stepBudget"`
+	Verbs             []string  `json:"verbs"`
+}
+
+// GrantCreate defines model for GrantCreate.
+type GrantCreate struct {
+	// Agent The grantee agent subject this grant authorizes.
+	Agent string `json:"agent"`
+
+	// Label Operator-facing name for the grant.
+	Label             *string  `json:"label,omitempty"`
+	MaxConcurrentRuns int      `json:"maxConcurrentRuns"`
+	MaxStepsPerRun    int      `json:"maxStepsPerRun"`
+	Resources         []string `json:"resources"`
+
+	// StepBudget Total steps across all the grant's Runs (the cap; SEC-29).
+	StepBudget int `json:"stepBudget"`
+
+	// TtlSeconds Grant lifetime in seconds; expiresAt is computed as now + ttlSeconds.
+	TtlSeconds int      `json:"ttlSeconds"`
+	Verbs      []string `json:"verbs"`
+}
+
 // Identity defines model for Identity.
 type Identity struct {
 	Edge    string `json:"edge"`
@@ -301,6 +335,12 @@ type ListAuditEventsParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListGrantsParams defines parameters for ListGrants.
+type ListGrantsParams struct {
+	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // ListResourcesParams defines parameters for ListResources.
 type ListResourcesParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -324,6 +364,9 @@ type IssueAgentTokenJSONRequestBody = AgentTokenRequest
 
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
+
+// CreateGrantJSONRequestBody defines body for CreateGrant for application/json ContentType.
+type CreateGrantJSONRequestBody = GrantCreate
 
 // ResolveInvocationJSONRequestBody defines body for ResolveInvocation for application/json ContentType.
 type ResolveInvocationJSONRequestBody = InvocationResolve
@@ -360,6 +403,18 @@ type ServerInterface interface {
 	// The verified capability of the current token (capability-edge UI, ADR-0047)
 	// (GET /v1/auth/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
+	// List the caller's delegation grants (operator-scoped)
+	// (GET /v1/grants)
+	ListGrants(w http.ResponseWriter, r *http.Request, params ListGrantsParams)
+	// Issue an operator-authored delegation grant (ADR-0062; SEC-26)
+	// (POST /v1/grants)
+	CreateGrant(w http.ResponseWriter, r *http.Request)
+	// Fetch a delegation grant (the caller must own it)
+	// (GET /v1/grants/{id})
+	GetGrant(w http.ResponseWriter, r *http.Request, id string)
+	// Revoke an active delegation grant the caller owns (ADR-0062 §7)
+	// (POST /v1/grants/{id}/revoke)
+	RevokeGrant(w http.ResponseWriter, r *http.Request, id string)
 	// List tool invocations parked pending operator approval (AP-2 / FE-11)
 	// (GET /v1/invocations)
 	ListInvocations(w http.ResponseWriter, r *http.Request)
@@ -441,6 +496,30 @@ func (_ Unimplemented) Logout(w http.ResponseWriter, r *http.Request) {
 // The verified capability of the current token (capability-edge UI, ADR-0047)
 // (GET /v1/auth/me)
 func (_ Unimplemented) GetMe(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List the caller's delegation grants (operator-scoped)
+// (GET /v1/grants)
+func (_ Unimplemented) ListGrants(w http.ResponseWriter, r *http.Request, params ListGrantsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Issue an operator-authored delegation grant (ADR-0062; SEC-26)
+// (POST /v1/grants)
+func (_ Unimplemented) CreateGrant(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Fetch a delegation grant (the caller must own it)
+// (GET /v1/grants/{id})
+func (_ Unimplemented) GetGrant(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Revoke an active delegation grant the caller owns (ADR-0062 §7)
+// (POST /v1/grants/{id}/revoke)
+func (_ Unimplemented) RevokeGrant(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -649,6 +728,129 @@ func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListGrants operation middleware
+func (siw *ServerInterfaceWrapper) ListGrants(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListGrantsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListGrants(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateGrant operation middleware
+func (siw *ServerInterfaceWrapper) CreateGrant(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateGrant(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetGrant operation middleware
+func (siw *ServerInterfaceWrapper) GetGrant(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetGrant(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeGrant operation middleware
+func (siw *ServerInterfaceWrapper) RevokeGrant(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeGrant(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1267,6 +1469,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/auth/me", wrapper.GetMe)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/grants", wrapper.ListGrants)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/grants", wrapper.CreateGrant)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/grants/{id}", wrapper.GetGrant)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/grants/{id}/revoke", wrapper.RevokeGrant)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/invocations", wrapper.ListInvocations)

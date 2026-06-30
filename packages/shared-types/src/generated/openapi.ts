@@ -510,6 +510,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's delegation grants (operator-scoped) */
+        get: operations["listGrants"];
+        put?: never;
+        /** Issue an operator-authored delegation grant (ADR-0062; SEC-26) */
+        post: operations["createGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/grants/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Fetch a delegation grant (the caller must own it) */
+        get: operations["getGrant"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/grants/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke an active delegation grant the caller owns (ADR-0062 §7) */
+        post: operations["revokeGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -621,6 +675,35 @@ export interface components {
             outcome?: string;
             /** @description The gateway invocation id once the step is dispatched — the read-time evidence-packet anchor into the hash-linked audit chain (AUD-15). Absent until dispatched. */
             invocationId?: string;
+        };
+        GrantCreate: {
+            /** @description The grantee agent subject this grant authorizes. */
+            agent: string;
+            /** @description Operator-facing name for the grant. */
+            label?: string;
+            resources: string[];
+            verbs: string[];
+            /** @description Grant lifetime in seconds; expiresAt is computed as now + ttlSeconds. */
+            ttlSeconds: number;
+            maxStepsPerRun: number;
+            maxConcurrentRuns: number;
+            /** @description Total steps across all the grant's Runs (the cap; SEC-29). */
+            stepBudget: number;
+        };
+        Grant: {
+            id: string;
+            agent: string;
+            label?: string;
+            resources: string[];
+            verbs: string[];
+            /** Format: date-time */
+            expiresAt: string;
+            maxStepsPerRun: number;
+            maxConcurrentRuns: number;
+            stepBudget: number;
+            status: string;
+            /** Format: date-time */
+            createdAt: string;
         };
         AuditEvent: {
             id: string;
@@ -1403,6 +1486,131 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             /** @description The Run is no longer cancelable (already terminal). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listGrants: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["LimitParam"];
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of the caller's grants. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Grant"][];
+                        page: components["schemas"]["PageMeta"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantCreate"];
+            };
+        };
+        responses: {
+            /** @description Grant issued (active). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Grant"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The grant scope or bounds are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Grant"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    revokeGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The grant was revoked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        status: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The grant is no longer active (already revoked). */
             409: {
                 headers: {
                     [name: string]: unknown;

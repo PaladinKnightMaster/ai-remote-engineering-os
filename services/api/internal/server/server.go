@@ -44,6 +44,7 @@ import (
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/gateway"
+	"aireos.local/services/api/internal/grant"
 	"aireos.local/services/api/internal/policy"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/run"
@@ -138,6 +139,7 @@ type apiHandlers struct {
 	gateway     gatewayProxy  // GATEWAY_URL invocation-approval proxy (ADR-0057 §4 / T-040b); nil → 503
 	gatewayURL  string        // set by WithGateway; the client is built in New after all options apply (ADR-0060)
 	runs        runStore      // WithRunStore; the operator Run launch/status routes (ADR-0061 / T-057); nil → 503
+	grants      grantStore    // WithGrantStore; the operator delegation-grant routes (ADR-0062 / T-063); nil → 503
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -167,6 +169,23 @@ func WithAgentSigner(s *auth.AsymmetricSigner) Option {
 // through it), so the launch surface and the sequencer go live together.
 func WithRunStore(rs runStore) Option {
 	return func(h *apiHandlers) { h.runs = rs }
+}
+
+// grantStore is the slice of the delegation-grant store the issuance handlers need
+// (ADR-0062, T-063). nil → the /v1/grants routes answer 503.
+type grantStore interface {
+	Create(ctx context.Context, in grant.Input) (grant.Grant, error)
+	Get(ctx context.Context, id string) (grant.Grant, error)
+	ListForOperator(ctx context.Context, operator, after string, limit int) ([]grant.Grant, string, error)
+	Revoke(ctx context.Context, id string) (bool, error)
+}
+
+// WithGrantStore wires the delegation-grant store (ADR-0062, T-063): the operator
+// issue (POST /v1/grants) / list (GET /v1/grants) / revoke routes. nil/absent → those
+// routes answer 503. Grants are api-local (no gateway needed), so unlike the Run engine
+// they are wired unconditionally.
+func WithGrantStore(gs grantStore) Option {
+	return func(h *apiHandlers) { h.grants = gs }
 }
 
 // agentIssuer is the IssueAgent behavior shared by the symmetric *auth.Signer and
