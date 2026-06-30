@@ -81,10 +81,11 @@ type ResolverPort interface {
 // T-055b): the launching operator + one plan step. The gateway's RunStep fills the
 // fixed tool + edges; the Run engine never holds agent-token machinery.
 type StepRequest struct {
-	Subject        string `json:"subject"`        // the launching operator (audit actor + policy subject)
-	ResourceID     string `json:"resourceId"`     // target resource
-	Command        string `json:"command"`        // the command to run
-	IdempotencyKey string `json:"idempotencyKey"` // deterministic per step (run:<id>:step:<index>)
+	Subject        string `json:"subject"`             // the ACTOR (audit actor + policy subject): operator for a direct Run, agent for a delegated Run
+	Principal      string `json:"principal,omitempty"` // the PRINCIPAL (ADR-0062 §4): the delegating operator when an agent drives under a grant; "" for a direct operator Run
+	ResourceID     string `json:"resourceId"`          // target resource
+	Command        string `json:"command"`             // the command to run
+	IdempotencyKey string `json:"idempotencyKey"`      // deterministic per step (run:<id>:step:<index>)
 }
 
 // StepRunner is the operator Run-engine seam (ADR-0061 §2): services/api's Run

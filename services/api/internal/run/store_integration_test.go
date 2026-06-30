@@ -254,6 +254,57 @@ func TestCancelRun(t *testing.T) {
 	}
 }
 
+// TestRunActorGrantRoundTrip — T-064 (ADR-0062, the actor/principal split): a delegated
+// Run records operator=principal + actor=agent + grant_id; Get reads them back; the
+// run.launched actor = the agent. An operator-direct Run keeps actor/grant empty and
+// run.launched actor = the operator (behavior-preserving).
+func TestRunActorGrantRoundTrip(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	const grantID = "01900000-0000-7000-8000-0000000000aa"
+
+	del, err := s.Create(ctx, Input{
+		Operator: "operator:grantor", Actor: "agent:bot-1", GrantID: grantID,
+		Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}},
+	})
+	if err != nil {
+		t.Fatalf("create delegated: %v", err)
+	}
+	got, err := s.Get(ctx, del.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Operator != "operator:grantor" || got.Actor != "agent:bot-1" || got.GrantID != grantID {
+		t.Fatalf("delegated round-trip wrong: %+v", got)
+	}
+	if n := countRunActor(t, s, "run:"+del.ID, "run.launched", "agent:bot-1"); n != 1 {
+		t.Fatalf("delegated run.launched actor != agent (count=%d)", n)
+	}
+
+	dir, err := s.Create(ctx, Input{Operator: "operator:alice", Steps: []StepInput{{ResourceID: "r-b", Command: "echo hi"}}})
+	if err != nil {
+		t.Fatalf("create direct: %v", err)
+	}
+	g2, _ := s.Get(ctx, dir.ID)
+	if g2.Actor != "" || g2.GrantID != "" {
+		t.Fatalf("operator-direct must have empty actor/grant: %+v", g2)
+	}
+	if n := countRunActor(t, s, "run:"+dir.ID, "run.launched", "operator:alice"); n != 1 {
+		t.Fatalf("direct run.launched actor != operator (count=%d)", n)
+	}
+}
+
+func countRunActor(t *testing.T, s *Store, evidence, outcome, actor string) int {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM api_outbox WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = $2 AND payload->>'actor' = $3`,
+		evidence, outcome, actor).Scan(&n); err != nil {
+		t.Fatalf("count run actor: %v", err)
+	}
+	return n
+}
+
 func countRunOutcome(t *testing.T, s *Store, evidence, outcome string) int {
 	t.Helper()
 	var n int

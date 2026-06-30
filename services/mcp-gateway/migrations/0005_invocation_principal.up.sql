@@ -1,0 +1,11 @@
+-- mcp-gateway invocations.principal, migration 0005 (ADR-0062; v0.6 "Agent-initiated
+-- Runs"). The actor/principal split (T-064): an invocation records its ACTOR in
+-- agent_subject (the agent for a delegated Run, the operator for a direct operator Run,
+-- the agent for a direct tools/call) and now, additionally, its PRINCIPAL — the
+-- delegating operator on whose behalf an agent acts under a delegation grant (ADR-0062
+-- §4 / RFC 8693 subject). Empty ('') for non-delegated invocations (agent-direct +
+-- operator-Run), so this column is behavior-preserving until T-065's run.launch
+-- populates it. The audit tool.invoked/tool.result actor stays = agent_subject (already
+-- the actor); the principal lives on this durable row for the evidence packet to assemble
+-- at read time (AUD-17, the EVD-1 read-time model) — no audit-chain change.
+ALTER TABLE invocations ADD COLUMN principal TEXT NOT NULL DEFAULT '';

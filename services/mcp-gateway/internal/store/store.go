@@ -54,7 +54,8 @@ type Invocation struct {
 // the bracket audit edge (RUN-5): "" defaults to auditEdge (agent-tool); the operator
 // Run engine passes "human-agent".
 type CreateInput struct {
-	AgentSubject   string
+	AgentSubject   string // the ACTOR (agent / operator)
+	Principal      string // the PRINCIPAL (ADR-0062 §4): the delegating operator under a grant; "" for non-delegated (recorded on the row for the evidence packet, AUD-17)
 	ResourceID     string
 	Tool           string
 	Command        string
@@ -103,10 +104,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (inv Invocation, cre
 		return Invocation{}, false, fmt.Errorf("seal command: %w", err)
 	}
 	ct, err := tx.Exec(ctx, `
-		INSERT INTO invocations (id, idempotency_key, agent_subject, resource_id, tool, command, status, edge)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending_approval', $7)
+		INSERT INTO invocations (id, idempotency_key, agent_subject, resource_id, tool, command, status, edge, principal)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending_approval', $7, $8)
 		ON CONFLICT (agent_subject, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool, sealed, edge)
+		id.String(), keyArg, in.AgentSubject, in.ResourceID, in.Tool, sealed, edge, in.Principal)
 	if err != nil {
 		return Invocation{}, false, fmt.Errorf("insert invocation: %w", err)
 	}

@@ -286,6 +286,7 @@ func (s *Service) RunStep(ctx context.Context, req mcp.StepRequest) (string, mcp
 	}
 	return s.runGovernedStep(ctx, stepRequest{
 		Subject:        req.Subject,
+		Principal:      req.Principal, // the delegating operator for a delegated Run (ADR-0062, T-064); "" for a direct operator Run
 		Tool:           def.Name,
 		ResourceID:     req.ResourceID,
 		Command:        req.Command,
@@ -307,7 +308,8 @@ var _ mcp.StepRunner = (*Service)(nil)
 // seam that lets the Run engine reuse the whole governed pipeline without the
 // agent-token machinery.
 type stepRequest struct {
-	Subject        string        // the initiator (agent now; operator at T-055b)
+	Subject        string        // the ACTOR (agent for a delegated Run / a direct tools/call; operator for a direct Run) — audit actor + policy subject
+	Principal      string        // the PRINCIPAL (ADR-0062 §4): the delegating operator when an agent drives under a grant; "" for a direct operator Run or a direct agent call
 	Tool           string        // the tool name (def.Name)
 	ResourceID     string        // target resource
 	Command        string        // the command to persist + execute
@@ -353,6 +355,7 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 	inv, created, err := s.store.Create(ctx, store.CreateInput{
 		AgentSubject: req.Subject, ResourceID: req.ResourceID, Tool: req.Tool,
 		Command: req.Command, IdempotencyKey: req.IdempotencyKey, Edge: req.BracketEdge,
+		Principal: req.Principal, // the delegating operator (ADR-0062, T-064); "" for non-delegated
 	})
 	if err != nil {
 		return "", mcp.ToolResult{}, fmt.Errorf("create invocation: %w", err)

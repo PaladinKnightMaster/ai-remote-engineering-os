@@ -20,6 +20,25 @@ var ErrNotFound = errors.New("run not found")
 // launch is a human-agent authorization act (ADR-0061 GOV-1).
 const launchEdge = "human-agent"
 
+// launchActor is the audit actor for a Run's lifecycle events: the agent that drove a
+// delegated Run, else the launching operator (behavior-preserving, ADR-0062 T-064). The
+// principal/owner is Operator, recorded on the row for the evidence packet (AUD-17).
+func launchActor(in Input) string {
+	if in.Actor != "" {
+		return in.Actor
+	}
+	return in.Operator
+}
+
+// eventActor picks a Run lifecycle event's actor from the row's (operator, actor): the
+// agent for a delegated Run, else the operator (behavior-preserving).
+func eventActor(operator, actor string) string {
+	if actor != "" {
+		return actor
+	}
+	return operator
+}
+
 // CommandSealer seals/opens the operator-authored step command at rest (F3 parity
 // with the gateway, ADR-0059). A nil sealer is the plaintext dev/transition fallback
 // until T-057 provisions the AES-256-GCM key (and promotes the gateway's cmdcrypt to
@@ -84,8 +103,12 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
 
-	if _, err := tx.Exec(ctx, `INSERT INTO runs (id, operator) VALUES ($1, $2)`,
-		id.String(), in.Operator); err != nil {
+	// grant_id/actor are NULL for an operator-direct Run (NULLIF on ""), set for a
+	// delegated Run (T-065). The owner/principal is always operator.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO runs (id, operator, grant_id, actor)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, ''))`,
+		id.String(), in.Operator, in.GrantID, in.Actor); err != nil {
 		return Run{}, fmt.Errorf("insert run: %w", err)
 	}
 
@@ -105,10 +128,12 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 	}
 
 	// run.launched in the SAME transaction as the Run insert (AUD-9): a launched Run
-	// always has its launch audited. Content-free — the operator + the run:<id>
-	// correlation anchor, never the commands (ADR-0049/0061 GOV-1).
+	// always has its launch audited. Content-free — the actor + the run:<id> correlation
+	// anchor, never the commands (ADR-0049/0061 GOV-1). The actor is the agent for a
+	// delegated Run, else the launching operator (behavior-preserving); the principal is
+	// the owner (in.Operator), queryable for the evidence packet (AUD-17, ADR-0062).
 	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
-		Timestamp: time.Now(), Actor: in.Operator, Edge: launchEdge,
+		Timestamp: time.Now(), Actor: launchActor(in), Edge: launchEdge,
 		Target: "run:" + id.String(), Outcome: "run.launched",
 		EvidencePacketID: "run:" + id.String(),
 	}); err != nil {
@@ -118,7 +143,7 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return Run{}, fmt.Errorf("commit run: %w", err)
 	}
-	return Run{ID: id.String(), Operator: in.Operator, Status: StatusPending, Steps: steps}, nil
+	return Run{ID: id.String(), Operator: in.Operator, Actor: in.Actor, GrantID: in.GrantID, Status: StatusPending, Steps: steps}, nil
 }
 
 // CountActiveForOperator counts an operator's not-yet-terminal Runs (pending or
@@ -136,8 +161,9 @@ func (s *Store) CountActiveForOperator(ctx context.Context, operator string) (in
 func (s *Store) Get(ctx context.Context, id string) (Run, error) {
 	var r Run
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, operator, status, created_at, updated_at FROM runs WHERE id = $1`, id).
-		Scan(&r.ID, &r.Operator, &r.Status, &r.CreatedAt, &r.UpdatedAt)
+		SELECT id, operator, COALESCE(grant_id::text, ''), COALESCE(actor, ''), status, created_at, updated_at
+		  FROM runs WHERE id = $1`, id).
+		Scan(&r.ID, &r.Operator, &r.GrantID, &r.Actor, &r.Status, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Run{}, ErrNotFound
 	}
@@ -328,11 +354,11 @@ func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromSta
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var operator string
+	var operator, actor string
 	err = tx.QueryRow(ctx, `
 		UPDATE runs SET status = $2, updated_at = now()
-		 WHERE id = $1 AND status = ANY($3) RETURNING operator`,
-		id, toStatus, fromStatuses).Scan(&operator)
+		 WHERE id = $1 AND status = ANY($3) RETURNING operator, COALESCE(actor, '')`,
+		id, toStatus, fromStatuses).Scan(&operator, &actor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -341,7 +367,7 @@ func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromSta
 	}
 	if outcome, ok := runTerminalOutcome[toStatus]; ok {
 		if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
-			Timestamp: time.Now(), Actor: operator, Edge: launchEdge,
+			Timestamp: time.Now(), Actor: eventActor(operator, actor), Edge: launchEdge,
 			Target: "run:" + id, Outcome: outcome, EvidencePacketID: "run:" + id,
 		}); err != nil {
 			return false, fmt.Errorf("enqueue %s: %w", outcome, err)

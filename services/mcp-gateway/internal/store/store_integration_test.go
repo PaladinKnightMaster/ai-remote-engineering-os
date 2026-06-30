@@ -117,6 +117,46 @@ func TestInvocationEdgeRoundTrip(t *testing.T) {
 	}
 }
 
+// TestInvocationPrincipalRoundTrip — T-064 (ADR-0062, the actor/principal split): Create
+// records the delegating operator on invocations.principal; a non-delegated call records
+// ” (behavior-preserving). The audit actor stays = agent_subject (the actor) — unchanged.
+func TestInvocationPrincipalRoundTrip(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+
+	// A delegated step: actor = agent, principal = the delegating operator.
+	del, _, err := st.Create(ctx, CreateInput{
+		AgentSubject: "agent:" + randSuffix(t), Principal: "operator:grantor", ResourceID: "r-del",
+		Tool: "remote.exec", Command: "echo del", Edge: "human-agent",
+	})
+	if err != nil {
+		t.Fatalf("create delegated: %v", err)
+	}
+	if p := rowPrincipal(t, pool, del.ID); p != "operator:grantor" {
+		t.Fatalf("principal = %q, want operator:grantor", p)
+	}
+
+	// A non-delegated call: principal defaults to '' (behavior-preserving).
+	plain, _, err := st.Create(ctx, CreateInput{
+		AgentSubject: "agent:" + randSuffix(t), ResourceID: "r-plain", Tool: "remote.exec", Command: "echo plain",
+	})
+	if err != nil {
+		t.Fatalf("create plain: %v", err)
+	}
+	if p := rowPrincipal(t, pool, plain.ID); p != "" {
+		t.Fatalf("non-delegated principal = %q, want empty", p)
+	}
+}
+
+func rowPrincipal(t *testing.T, pool *pgxpool.Pool, id string) string {
+	t.Helper()
+	var p string
+	if err := pool.QueryRow(context.Background(), `SELECT principal FROM invocations WHERE id = $1`, id).Scan(&p); err != nil {
+		t.Fatalf("read principal: %v", err)
+	}
+	return p
+}
+
 // A retry carrying the same idempotency key reconciles to the original invocation
 // and emits tool.invoked exactly once (PERF-2).
 func TestCreateIdempotency(t *testing.T) {

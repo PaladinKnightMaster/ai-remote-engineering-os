@@ -38,7 +38,9 @@ const (
 // of the chartered Workstream lifecycle (ADR-0061).
 type Run struct {
 	ID        string
-	Operator  string // the launching operator subject (the audit actor)
+	Operator  string // the owner/principal: the launching operator (direct) or the delegating operator (delegated, T-065)
+	Actor     string // the AGENT that drove a delegated Run (ADR-0062, T-064); "" for an operator-direct Run (actor = Operator)
+	GrantID   string // the bounding delegation grant (ADR-0062, T-064); "" for an operator-direct Run
 	Status    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -57,9 +59,13 @@ type Step struct {
 	UpdatedAt    time.Time
 }
 
-// Input is a new Run: the launching operator + the ordered plan.
+// Input is a new Run: the owner/principal operator + the ordered plan. For a delegated
+// Run (T-065) Actor is the agent and GrantID the bounding grant; both "" for an
+// operator-direct Run (the run.* audit actor then = Operator — behavior-preserving).
 type Input struct {
 	Operator string
+	Actor    string
+	GrantID  string
 	Steps    []StepInput
 }
 
