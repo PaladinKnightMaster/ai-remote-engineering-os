@@ -125,6 +125,17 @@ func serve(dsn string) error {
 	// unconditionally — unlike the Run engine below, which needs the gateway to drive.
 	opts = append(opts, server.WithGrantStore(grant.NewStore(pool, store.OutboxTable)))
 
+	// The delegated-launch forward verifier (ADR-0062, T-065a): route-scoped to the gateway's
+	// v4.public token so the operator routes stay symmetric-only (SEC-20). nil (no gateway
+	// public key) → the forward route is not mounted (delegation disabled).
+	gwVerifier, gverr := gatewayVerifier()
+	if gverr != nil {
+		return gverr
+	}
+	if gwVerifier != nil {
+		opts = append(opts, server.WithGatewayVerifier(gwVerifier))
+	}
+
 	if gwURL := os.Getenv("GATEWAY_URL"); gwURL != "" {
 		runStore := runengine.NewStore(pool, nil, store.OutboxTable)
 		var stepIssuer runengine.ServiceIssuer
@@ -160,20 +171,11 @@ func buildAuth() (mw.Verifier, *auth.Signer, server.Authenticator, error) {
 			return nil, nil, nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
 		}
 		issuer := os.Getenv("AIREOS_CLUSTER_ID") // optional; empty skips the issuer rule
-		local := auth.NewVerifier(key, issuer, "api")
-		// Dual-mode (ADR-0060, T-065a): api keeps verifying operator v4.local tokens with the
-		// symmetric cluster key AND now accepts the gateway's v4.public service token on the
-		// new delegated-launch forward (the mirror of policy/broker). The gateway public key
-		// is a VERIFY key, not a mint key — api gains no minting power, so SEC-20 holds.
-		var v mw.Verifier = auth.AsMiddlewareVerifier(local)
-		if pubHex := os.Getenv("AIREOS_GATEWAY_PUBLIC_KEY"); pubHex != "" {
-			pub, perr := auth.NewAsymmetricPublicKeyFromHex(pubHex)
-			if perr != nil {
-				return nil, nil, nil, fmt.Errorf("invalid AIREOS_GATEWAY_PUBLIC_KEY: %w", perr)
-			}
-			gw := auth.NewAsymmetricVerifier(pub, issuer, "api")
-			v = auth.AsMiddlewareVerifier(auth.NewDualModeVerifier(local, gw))
-		}
+		// Operator routes stay SYMMETRIC-ONLY: they must reject the gateway's v4.public token
+		// so a compromised gateway cannot impersonate an operator on api (SEC-20). The
+		// gateway's token is accepted ONLY on the route-scoped delegated-launch forward, via
+		// gatewayVerifier() below — NOT a global dual-mode verifier (T-065a self-audit fix).
+		v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "api"))
 		signer := auth.NewSigner(key, issuer)
 		var authn server.Authenticator
 		if op, err := account.FromEnv(); err == nil {
@@ -188,6 +190,26 @@ func buildAuth() (mw.Verifier, *auth.Signer, server.Authenticator, error) {
 		return devAllowAll{}, nil, nil, nil
 	}
 	return nil, nil, nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY (hex cluster key, ADR-0046) or API_DEV_INSECURE_AUTH=1 for local dev")
+}
+
+// gatewayVerifier builds the verifier for the inbound delegated-launch forward (ADR-0062,
+// T-065a): it accepts ONLY the gateway's v4.public service token (signed with the gateway's
+// secret key; audience "api"). It is route-scoped to /v1/internal/delegated-runs — the
+// operator routes stay symmetric-only — so a compromised gateway cannot impersonate an
+// operator on api (SEC-20). Asymmetric-only is stronger than dual-mode here: even a
+// cluster-key holder cannot forge a v4.local "mcp-gateway" token onto the forward. Returns
+// nil when no gateway public key is provisioned (delegation disabled). The issuer matches
+// buildAuth's (AIREOS_CLUSTER_ID).
+func gatewayVerifier() (mw.Verifier, error) {
+	pubHex := os.Getenv("AIREOS_GATEWAY_PUBLIC_KEY")
+	if pubHex == "" {
+		return nil, nil
+	}
+	pub, err := auth.NewAsymmetricPublicKeyFromHex(pubHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AIREOS_GATEWAY_PUBLIC_KEY: %w", err)
+	}
+	return auth.AsMiddlewareVerifier(auth.NewAsymmetricVerifier(pub, os.Getenv("AIREOS_CLUSTER_ID"), "api")), nil
 }
 
 // agentPlaneSigner builds the asymmetric agent-plane signer (ADR-0060): api signs

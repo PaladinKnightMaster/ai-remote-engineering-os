@@ -141,6 +141,10 @@ type apiHandlers struct {
 	gatewayURL  string        // set by WithGateway; the client is built in New after all options apply (ADR-0060)
 	runs        runStore      // WithRunStore; the operator Run launch/status routes (ADR-0061 / T-057); nil → 503
 	grants      grantStore    // WithGrantStore; the operator delegation-grant routes (ADR-0062 / T-063); nil → 503
+	// gatewayVerifier verifies the gateway's v4.public token on the delegated-launch forward
+	// ONLY (ADR-0062 / T-065a) — route-scoped so the operator routes stay symmetric-only
+	// (SEC-20). nil → the forward route is not mounted.
+	gatewayVerifier mw.Verifier
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -188,6 +192,15 @@ type grantStore interface {
 // they are wired unconditionally.
 func WithGrantStore(gs grantStore) Option {
 	return func(h *apiHandlers) { h.grants = gs }
+}
+
+// WithGatewayVerifier wires the route-scoped verifier for the inbound delegated-launch
+// forward (ADR-0062, T-065a): it accepts ONLY the gateway's v4.public service token, so the
+// gateway's token reaches ONLY /v1/internal/delegated-runs and never the operator routes
+// (which stay symmetric-only) — a compromised gateway cannot impersonate an operator on api
+// (SEC-20 preserved). nil/absent → the forward route is not mounted.
+func WithGatewayVerifier(v mw.Verifier) Option {
+	return func(h *apiHandlers) { h.gatewayVerifier = v }
 }
 
 // agentIssuer is the IssueAgent behavior shared by the symmetric *auth.Signer and
@@ -253,13 +266,14 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 	base := chi.NewRouter()
 	// api's FIRST inbound service-service route (ADR-0062, T-065a): the gateway forwards a
 	// delegated Run launch here. Manual — NOT in the OpenAPI fragment (an internal RPC, like
-	// the gateway's /v1/steps). Gated by RequireCapability(service-service) over the dual-mode
-	// verifier (it accepts the gateway's v4.public token); the handler then pins subject ==
+	// the gateway's /v1/steps). Gated by a ROUTE-SCOPED verifier (h.gatewayVerifier) that
+	// accepts ONLY the gateway's v4.public token — the operator routes stay symmetric-only, so
+	// the gateway's token cannot reach them (SEC-20). The handler then pins subject ==
 	// "mcp-gateway" (onlyGateway), the mirror of the gateway's onlyAPI pin. It carries Bearer,
 	// not a cookie, so it is OUTSIDE the operator cookie/CSRF middleware stack below.
-	if h.grants != nil && h.runs != nil {
+	if h.grants != nil && h.runs != nil && h.gatewayVerifier != nil {
 		base.Group(func(ir chi.Router) {
-			ir.Use(mw.RequireCapability(v, "service-service"))
+			ir.Use(mw.RequireCapability(h.gatewayVerifier, "service-service"))
 			ir.Post("/v1/internal/delegated-runs", h.LaunchDelegatedRun)
 		})
 	}
