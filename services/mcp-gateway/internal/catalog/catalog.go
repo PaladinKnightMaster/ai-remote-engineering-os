@@ -60,7 +60,7 @@ type Registry struct {
 // wedge). The multi-tool catalog is v0.4.0.
 func NewRegistry() *Registry {
 	r := &Registry{defs: map[string]ToolDef{}}
-	for _, d := range []ToolDef{remoteExec()} {
+	for _, d := range []ToolDef{remoteExec(), runLaunch()} {
 		r.defs[d.Name] = d
 		r.list = append(r.list, d.Tool())
 	}
@@ -126,6 +126,50 @@ func remoteExecTarget(raw json.RawMessage) (string, error) {
 	return "resource:" + a.ResourceID, nil
 }
 
+// runLaunchTool is the v0.6 control-plane tool name (ADR-0062, T-065b).
+const runLaunchTool = "run.launch"
+
+// run.launch — an agent launches a governed multi-step Run bounded by a delegation grant an
+// operator issued to it (ADR-0062, T-065b). Unlike remote.exec it resolves NO target and
+// mints NO egress: the gateway forwards the plan to services/api, which validates it against
+// the grant and creates the Run. So it carries no Edge/Action/Operation and no target
+// resolver; Invoke dispatches it BEFORE the remote.exec target + SEC-16 path.
+func runLaunch() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "required": ["grantId", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "grantId": {
+      "type": "string",
+      "description": "The id of a delegation grant an operator issued to you (bounds the resources, verbs, and step count you may launch)."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The ordered plan: each step runs one non-interactive command on a governed resource within the grant.",
+      "items": {
+        "type": "object",
+        "required": ["resourceId", "command"],
+        "additionalProperties": false,
+        "properties": {
+          "resourceId": { "type": "string" },
+          "command": { "type": "string" }
+        }
+      }
+    }
+  }
+}`
+	return ToolDef{
+		Name: runLaunchTool,
+		Description: "Launch a governed, multi-step Run bounded by a delegation grant an operator issued to you. " +
+			"The plan is validated against your grant (resources, verbs, step count) before anything runs; " +
+			"ungated steps run unattended and flagged steps park for human approval — every step is audited. " +
+			"Returns the new run's id. It executes nothing itself; it hands the plan to the governed engine.",
+		InputSchema: json.RawMessage(inputSchema),
+	}
+}
+
 // ErrUnknownTool is returned for a tools/call against an unregistered tool.
 var ErrUnknownTool = errors.New("unknown tool")
 
@@ -160,9 +204,10 @@ type Service struct {
 	policy         PolicyDecider
 	broker         BrokerExecer
 	maxInFlight    int
-	waitTimeout    time.Duration // agent block-and-wait deadline for a parked invocation (ADR-0059)
-	runWaitTimeout time.Duration // operator Run-step block-and-wait deadline (T-055b)
-	pollInterval   time.Duration // how often the wait re-reads the invocation row
+	waitTimeout    time.Duration       // agent block-and-wait deadline for a parked invocation (ADR-0059)
+	runWaitTimeout time.Duration       // operator Run-step block-and-wait deadline (T-055b)
+	pollInterval   time.Duration       // how often the wait re-reads the invocation row
+	forwarder      mcp.LaunchForwarder // run.launch forward to services/api (ADR-0062, T-065b); nil → run.launch is unavailable
 }
 
 // Config wires the governed tool service. Zero values get safe defaults.
@@ -170,10 +215,11 @@ type Config struct {
 	Store          Store
 	Policy         PolicyDecider
 	Broker         BrokerExecer
-	MaxInFlight    int           // per-agent concurrency cap (PERF-3); ≤ 0 → 4
-	WaitTimeout    time.Duration // agent block-and-wait deadline; ≤ 0 → 125s (just over policy's 120s TTL)
-	RunWaitTimeout time.Duration // operator Run-step block-and-wait; ≤ 0 → 10m (Run approval window ≫ 125s)
-	PollInterval   time.Duration // approval poll cadence; ≤ 0 → 1s
+	MaxInFlight    int                 // per-agent concurrency cap (PERF-3); ≤ 0 → 4
+	WaitTimeout    time.Duration       // agent block-and-wait deadline; ≤ 0 → 125s (just over policy's 120s TTL)
+	RunWaitTimeout time.Duration       // operator Run-step block-and-wait; ≤ 0 → 10m (Run approval window ≫ 125s)
+	PollInterval   time.Duration       // approval poll cadence; ≤ 0 → 1s
+	Forwarder      mcp.LaunchForwarder // run.launch forward to services/api (ADR-0062, T-065b); nil → run.launch answers a tool error
 }
 
 // New builds the governed tool service.
@@ -193,7 +239,7 @@ func New(cfg Config) *Service {
 	return &Service{
 		registry: NewRegistry(), store: cfg.Store, policy: cfg.Policy, broker: cfg.Broker,
 		maxInFlight: cfg.MaxInFlight, waitTimeout: cfg.WaitTimeout, pollInterval: cfg.PollInterval,
-		runWaitTimeout: cfg.RunWaitTimeout,
+		runWaitTimeout: cfg.RunWaitTimeout, forwarder: cfg.Forwarder,
 	}
 }
 
@@ -213,6 +259,14 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	capb, ok := mw.CapabilityFromContext(ctx)
 	if !ok || capb.Subject == "" {
 		return mcp.ToolResult{}, errors.New("no agent capability on the invocation")
+	}
+
+	// run.launch is a CONTROL-PLANE tool (ADR-0062, T-065b): it has no resource target, so it
+	// is dispatched BEFORE the remote.exec target resolution + the SEC-16 scope check (which
+	// would otherwise reject it). Its authority is the delegation grant — validated by
+	// services/api — not the agent token's resource/operation scope.
+	if name == runLaunchTool {
+		return s.launchRun(ctx, capb.Subject, args)
 	}
 
 	// Validate + resolve the governance target (resource:<id>) from the args.
@@ -257,6 +311,45 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	return res, err
 }
 
+// launchRun handles the run.launch control-plane tool (ADR-0062, T-065b): it parses the
+// grant id + plan, forwards {agent, grant, plan, idempotency key} to services/api (which
+// validates plan-vs-grant and creates the Run), and returns the new run id to the agent. The
+// gateway mints no egress and creates no Run here — api is the authority. An api refusal
+// (out-of-grant, N1) is a tool error; an infrastructure failure is a Go error (fail-closed).
+func (s *Service) launchRun(ctx context.Context, agentSubject string, args json.RawMessage) (mcp.ToolResult, error) {
+	if s.forwarder == nil {
+		return toolError("run launching is not available on this gateway"), nil
+	}
+	var a struct {
+		GrantID string `json:"grantId"`
+		Steps   []struct {
+			ResourceID string `json:"resourceId"`
+			Command    string `json:"command"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolError("invalid run.launch arguments: " + err.Error()), nil
+	}
+	if a.GrantID == "" || len(a.Steps) == 0 {
+		return toolError("run.launch requires grantId and at least one step"), nil
+	}
+	steps := make([]mcp.LaunchStep, len(a.Steps))
+	for i, st := range a.Steps {
+		if st.ResourceID == "" || st.Command == "" {
+			return toolError("each run.launch step requires resourceId and command"), nil
+		}
+		steps[i] = mcp.LaunchStep{ResourceID: st.ResourceID, Command: st.Command}
+	}
+	runID, status, refusal, err := s.forwarder.Launch(ctx, agentSubject, a.GrantID, mcp.IdempotencyKey(ctx), steps)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("forward run launch: %w", err)
+	}
+	if refusal != "" {
+		return toolError("run launch refused: " + refusal), nil
+	}
+	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: fmt.Sprintf("launched run %s (%s)", runID, status)}}}, nil
+}
+
 // remoteExecTool is the wedge tool the operator Run engine drives (ADR-0061): a Run
 // step is a sequence of this EXISTING tool, not a new one.
 const remoteExecTool = "remote.exec"
@@ -293,10 +386,22 @@ func (s *Service) RunStep(ctx context.Context, req mcp.StepRequest) (string, mcp
 		Edge:           def.Edge,
 		Action:         def.Action,
 		Target:         target,
-		BracketEdge:    "human-agent", // operator-initiated step (RUN-5; ADR-0061 §4)
+		BracketEdge:    delegatedBracketEdge(req.Principal),
 		IdempotencyKey: req.IdempotencyKey,
 		WaitTimeout:    s.runWaitTimeout,
 	})
+}
+
+// delegatedBracketEdge picks a Run step's bracket audit edge (ADR-0062 §4): a DELEGATED step
+// (a Principal is set — an agent drives under a grant) is bracketed `agent-tool` (the actor is
+// an agent invoking a tool, with the principal recorded on the row); a direct OPERATOR step
+// (no Principal) stays `human-agent`. Not `agent-agent` — there is no second agent (the
+// permission model's edge set is unchanged).
+func delegatedBracketEdge(principal string) string {
+	if principal != "" {
+		return "agent-tool"
+	}
+	return "human-agent"
 }
 
 var _ mcp.StepRunner = (*Service)(nil)

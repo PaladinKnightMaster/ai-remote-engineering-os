@@ -98,6 +98,22 @@ type StepRunner interface {
 	RunStep(ctx context.Context, req StepRequest) (invocationID string, result ToolResult, err error)
 }
 
+// LaunchStep is one step of an agent-initiated Run launch (ADR-0062, T-065b).
+type LaunchStep struct {
+	ResourceID string
+	Command    string
+}
+
+// LaunchForwarder forwards an agent's grant-bounded Run launch to services/api (ADR-0062
+// §3): the gateway does NOT create Runs — it forwards {agent, grant, plan} to api, which
+// validates plan-vs-grant and creates the Run. It returns the new run id + status; a
+// non-empty refusal means api refused the plan (out-of-grant, N1) — a tool error for the
+// agent, not a Go error; err is an infrastructure failure (fail-closed). nil → run.launch
+// is not configured.
+type LaunchForwarder interface {
+	Launch(ctx context.Context, agentSubject, grantID, idempotencyKey string, steps []LaunchStep) (runID, status, refusal string, err error)
+}
+
 // Operator-plane sentinels the resolve handler maps to HTTP status (404 / 409).
 var (
 	ErrInvocationNotFound = errors.New("invocation not found")

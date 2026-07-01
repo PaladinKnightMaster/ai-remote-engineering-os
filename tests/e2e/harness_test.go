@@ -35,9 +35,10 @@ import (
 // harness env (operator credentials). sessionCookieName mirrors
 // packages/go/middleware.SessionCookieName.
 const (
-	resourceID        = "01900000-0000-7000-8000-0000000000e2"
-	flaggedResourceID = "01900000-0000-7000-8000-0000000000a2" // requires_approval=true (T-033a / WD-2)
-	operatorUser      = "admin"
+	resourceID          = "01900000-0000-7000-8000-0000000000e2"
+	flaggedResourceID   = "01900000-0000-7000-8000-0000000000a2" // requires_approval=true (T-033a / WD-2)
+	delegatedResourceID = "01900000-0000-7000-8000-0000000000d3" // ungated; the T-065b agent-initiated-Run capstone
+	operatorUser        = "admin"
 	operatorPass      = "e2e-operator-pw"
 	sessionCookieName = "aireos_session"
 )

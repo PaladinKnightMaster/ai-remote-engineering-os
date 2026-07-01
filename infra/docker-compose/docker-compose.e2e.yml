@@ -86,6 +86,8 @@ services:
           01900000-0000-7000-8000-0000000000e2 --key-file /seed-keys/client_ed25519
         go run ./services/connector-service credentials set-secret \
           01900000-0000-7000-8000-0000000000a2 --key-file /seed-keys/client_ed25519
+        go run ./services/connector-service credentials set-secret \
+          01900000-0000-7000-8000-0000000000d3 --key-file /seed-keys/client_ed25519
 
   audit:
     <<: *go
@@ -120,6 +122,11 @@ services:
       # gateway's internal plane (ADR-0057 §4, T-040b). Without this the operator
       # invocation routes answer 503.
       GATEWAY_URL: http://mcp-gateway:8085
+      # ADR-0062 (T-065a): api verifies the gateway's v4.public token on the delegated-launch
+      # forward with the gateway's PUBLIC key — route-scoped to /v1/internal/delegated-runs
+      # (the operator routes stay symmetric-only, SEC-20). Matches the gateway's
+      # AIREOS_GATEWAY_SIGN_KEY secret below (its public half).
+      AIREOS_GATEWAY_PUBLIC_KEY: baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
       # ADR-0060: api signs agent-tool tokens on the asymmetric agent plane with
       # this Ed25519 secret; the gateway verifies with the matching public key
       # (AIREOS_API_AGENT_PUBLIC_KEY). Test fixture keypair — NOT a real key.
@@ -213,6 +220,9 @@ services:
       AIREOS_AUDIT_URL: http://audit:8081
       POLICY_URL: http://policy:8084
       BROKER_URL: http://broker:8082
+      # ADR-0062 (T-065b): the gateway forwards an agent's run.launch to api's internal
+      # delegated-launch route, signed with the gateway's own asymmetric service token.
+      API_URL: http://api:8080
       # ADR-0060: the gateway also verifies api's asymmetric agent-tool tokens with
       # api's PUBLIC key (dual-mode alongside the cluster key). Matches the secret
       # in api's AIREOS_API_AGENT_SIGN_KEY above.

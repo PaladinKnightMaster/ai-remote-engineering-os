@@ -112,8 +112,17 @@ func (s *Sequencer) DriveRun(ctx context.Context, runID string) {
 			log.Printf("run sequencer: renew %s: %v", runID, err) // best-effort; dedup makes a double-drive safe
 		}
 		_ = s.store.SetStepResult(ctx, runID, step.Index, StepRunning, "", "")
+		// Delegated Run (ADR-0062, T-065b): the actor is the agent and the principal the
+		// delegating operator; an operator-direct Run has actor "" → subject = operator,
+		// principal "". The gateway derives the bracket edge from the principal (agent-tool
+		// when delegated) and records the principal on the invocation.
+		subject, principal := r.Operator, ""
+		if r.Actor != "" {
+			subject, principal = r.Actor, r.Operator
+		}
 		res, err := s.driver.RunStep(ctx, StepRequest{
-			Subject:        r.Operator,
+			Subject:        subject,
+			Principal:      principal,
 			ResourceID:     step.ResourceID,
 			Command:        step.Command,
 			IdempotencyKey: fmt.Sprintf("run:%s:step:%d", runID, step.Index),

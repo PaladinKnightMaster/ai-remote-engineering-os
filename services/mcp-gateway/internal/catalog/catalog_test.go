@@ -12,8 +12,10 @@ var _ mcp.Catalog = (*Service)(nil)
 
 func TestRegistryListsRemoteExec(t *testing.T) {
 	tools := NewRegistry().List()
-	if len(tools) != 1 || tools[0].Name != "remote.exec" {
-		t.Fatalf("List() = %+v, want exactly [remote.exec]", tools)
+	// v0.6 (ADR-0062, T-065b): the registry advertises remote.exec + the control-plane
+	// run.launch (agent-initiated Runs).
+	if len(tools) != 2 || tools[0].Name != "remote.exec" || tools[1].Name != "run.launch" {
+		t.Fatalf("List() = %+v, want [remote.exec run.launch]", tools)
 	}
 	// The advertised inputSchema is a valid JSON Schema object requiring the
 	// two typed args — this is the agent's interface (ADR-0057 / UX).

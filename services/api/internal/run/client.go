@@ -13,7 +13,8 @@ import (
 // StepRequest is one governed step the sequencer dispatches to the gateway's
 // subject-pinned /v1/steps route (T-055b). Subject is the launching operator.
 type StepRequest struct {
-	Subject        string
+	Subject        string // the ACTOR (agent for a delegated Run, operator for a direct Run)
+	Principal      string // the PRINCIPAL (delegating operator) for a delegated Run; "" for a direct Run (ADR-0062, T-065b)
 	ResourceID     string
 	Command        string
 	IdempotencyKey string
@@ -82,6 +83,7 @@ type toolResultWire struct {
 func (c *httpStepClient) RunStep(ctx context.Context, req StepRequest) (StepResult, error) {
 	body, err := json.Marshal(map[string]string{
 		"subject":        req.Subject,
+		"principal":      req.Principal,
 		"resourceId":     req.ResourceID,
 		"command":        req.Command,
 		"idempotencyKey": req.IdempotencyKey,

@@ -28,9 +28,11 @@ import (
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/mcp-gateway/internal/apiforward"
 	"aireos.local/services/mcp-gateway/internal/brokerexec"
 	"aireos.local/services/mcp-gateway/internal/catalog"
 	"aireos.local/services/mcp-gateway/internal/cmdcrypt"
+	"aireos.local/services/mcp-gateway/internal/mcp"
 	"aireos.local/services/mcp-gateway/internal/policy"
 	"aireos.local/services/mcp-gateway/internal/server"
 	"aireos.local/services/mcp-gateway/internal/store"
@@ -104,6 +106,14 @@ func serve() error {
 	}
 	gw := store.New(pool, cmdCipher)
 	pol := policy.New(os.Getenv("POLICY_URL"), signer)
+	// run.launch forward to services/api (ADR-0062, T-065b): the gateway forwards an
+	// agent-initiated Run launch; api validates plan-vs-grant and creates the Run. Signed with
+	// the gateway's OWN asymmetric service token (api's route-scoped verifier accepts it). Unset
+	// API_URL → nil → run.launch answers a tool error (agent-initiated Runs disabled).
+	var forwarder mcp.LaunchForwarder
+	if apiURL := os.Getenv("API_URL"); apiURL != "" {
+		forwarder = apiforward.New(apiURL, signer)
+	}
 	cat := catalog.New(catalog.Config{
 		Store:          gw,
 		Policy:         pol,
@@ -111,6 +121,7 @@ func serve() error {
 		MaxInFlight:    maxInFlight(),
 		WaitTimeout:    durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
 		RunWaitTimeout: durationEnvSeconds("MCP_RUN_WAIT_SECONDS", 600*time.Second),
+		Forwarder:      forwarder,
 	})
 	// Operator-plane resolver (ADR-0057 §4): the internal resolve/list routes, gated
 	// service-service, that services/api proxies the operator's approve/deny to.
