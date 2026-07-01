@@ -85,6 +85,12 @@ export function Invocations() {
                 <p className="text-xs text-muted-foreground">
                   Part of run <span className="font-mono">{inv.runId}</span>
                   {typeof inv.stepIndex === "number" ? <> · step {inv.stepIndex + 1}</> : null}
+                  {inv.principal ? (
+                    <>
+                      {" "}
+                      · on behalf of <span className="font-mono">{inv.principal}</span>
+                    </>
+                  ) : null}
                 </p>
               ) : null}
               <ApprovalPrompt

@@ -42,7 +42,8 @@ var ErrNotFound = errors.New("invocation not found")
 type Invocation struct {
 	ID             string
 	IdempotencyKey string
-	AgentSubject   string
+	AgentSubject   string // the ACTOR (agent / operator)
+	Principal      string // the delegating operator for a delegated Run step (ADR-0062); "" otherwise
 	ResourceID     string
 	Tool           string
 	Command        string
@@ -338,7 +339,7 @@ func (s *Store) Grant(ctx context.Context, id string) (bool, error) {
 // the operator's approve and the agent's claim.
 func (s *Store) ListPending(ctx context.Context) ([]Invocation, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, COALESCE(idempotency_key, ''), agent_subject, resource_id, tool, command, status, decision
+		SELECT id, COALESCE(idempotency_key, ''), agent_subject, principal, resource_id, tool, command, status, decision
 		  FROM invocations WHERE status = 'pending_approval' AND decision <> 'allow' ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending invocations: %w", err)
@@ -348,7 +349,7 @@ func (s *Store) ListPending(ctx context.Context) ([]Invocation, error) {
 	for rows.Next() {
 		var inv Invocation
 		var cmdRaw []byte
-		if err := rows.Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject, &inv.ResourceID,
+		if err := rows.Scan(&inv.ID, &inv.IdempotencyKey, &inv.AgentSubject, &inv.Principal, &inv.ResourceID,
 			&inv.Tool, &cmdRaw, &inv.Status, &inv.Decision); err != nil {
 			return nil, err
 		}

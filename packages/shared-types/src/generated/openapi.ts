@@ -648,6 +648,8 @@ export interface components {
             tool: string;
             command: string;
             status: string;
+            /** @description The delegating operator when this parked step is agent-driven under a delegation grant (ADR-0062, FE-18) — the approver sees the agent is acting on the operator's behalf. Absent for an operator-direct Run step or an agent-tool invocation. */
+            principal?: string;
             /** @description The parent Run id when this parked invocation is a governed Run step (FE-16); absent for a non-Run agent invocation. Derived by services/api from the step idempotency key — the raw key never crosses to the client. */
             runId?: string;
             /** @description The zero-based step position within the Run (FE-16). Absent for a non-Run invocation. */

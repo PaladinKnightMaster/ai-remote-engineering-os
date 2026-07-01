@@ -209,10 +209,13 @@ type PageMeta struct {
 
 // PendingInvocation defines model for PendingInvocation.
 type PendingInvocation struct {
-	Agent      string `json:"agent"`
-	Command    string `json:"command"`
-	Id         string `json:"id"`
-	ResourceId string `json:"resourceId"`
+	Agent   string `json:"agent"`
+	Command string `json:"command"`
+	Id      string `json:"id"`
+
+	// Principal The delegating operator when this parked step is agent-driven under a delegation grant (ADR-0062, FE-18) — the approver sees the agent is acting on the operator's behalf. Absent for an operator-direct Run step or an agent-tool invocation.
+	Principal  *string `json:"principal,omitempty"`
+	ResourceId string  `json:"resourceId"`
 
 	// RunId The parent Run id when this parked invocation is a governed Run step (FE-16); absent for a non-Run agent invocation. Derived by services/api from the step idempotency key — the raw key never crosses to the client.
 	RunId  *string `json:"runId,omitempty"`

@@ -52,8 +52,11 @@ type Catalog interface {
 // internal pending-list payload services/api proxies to the operator console. It
 // carries the persisted Command so the operator gives informed consent.
 type InvocationView struct {
-	ID         string `json:"id"`
-	Agent      string `json:"agent"`
+	ID    string `json:"id"`
+	Agent string `json:"agent"`
+	// Principal is the delegating operator when an agent drives this step under a grant
+	// (ADR-0062, FE-18); "" for an operator-direct Run step or an agent-tool invocation.
+	Principal  string `json:"principal,omitempty"`
 	ResourceID string `json:"resourceId"`
 	Tool       string `json:"tool"`
 	Command    string `json:"command"`

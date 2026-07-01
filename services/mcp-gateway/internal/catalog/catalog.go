@@ -625,7 +625,7 @@ func (r *Resolver) ListPending(ctx context.Context) ([]mcp.InvocationView, error
 	views := make([]mcp.InvocationView, 0, len(invs))
 	for _, inv := range invs {
 		views = append(views, mcp.InvocationView{
-			ID: inv.ID, Agent: inv.AgentSubject, ResourceID: inv.ResourceID,
+			ID: inv.ID, Agent: inv.AgentSubject, Principal: inv.Principal, ResourceID: inv.ResourceID,
 			Tool: inv.Tool, Command: inv.Command, Status: inv.Status,
 			IdempotencyKey: inv.IdempotencyKey, // api parses run:<id>:step:<n> for FE-16 context
 		})

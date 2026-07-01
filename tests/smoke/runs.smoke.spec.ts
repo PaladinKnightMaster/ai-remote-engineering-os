@@ -15,6 +15,8 @@ import { test, expect, type Page } from "@playwright/test";
 
 const UNGATED_RESOURCE = "e2e-target (ssh)"; // requires_approval=false (seed: …e2)
 const GATED_RESOURCE = "e2e-target-gated (ssh)"; // requires_approval=true  (seed: …a2)
+const GATED_RESOURCE_ID = "01900000-0000-7000-8000-0000000000a2"; // the flagged resource id (seed …a2)
+const GATEWAY_URL = process.env.SMOKE_GATEWAY_URL ?? "http://mcp-gateway:8085"; // agent /mcp surface (FE-18 leg)
 const OPERATOR_USER = "admin";
 const OPERATOR_PASS = "e2e-operator-pw";
 
@@ -88,12 +90,65 @@ test("operator cancels a running governed run", async ({ page }) => {
   // cooperative stop-future-steps, and FinishRun's running-guard keeps it canceled).
   await composeAndLaunch(page, GATED_RESOURCE, "echo CANCEL-SMOKE");
 
-  // The Run row exposes a Cancel control while it is pending/running (DUR-5).
-  const cancel = page.getByRole("button", { name: /^cancel$/i });
+  // The Run row exposes a Cancel control while it is pending/running (DUR-5). Target the
+  // NEWEST run's control (last in the id-ASC list) — an earlier spec's gated run may still be
+  // finishing (its deny→fail is async), so the page can briefly show more than one.
+  const cancel = page.getByRole("button", { name: /^cancel$/i }).last();
   await expect(cancel).toBeVisible({ timeout: 60_000 });
   await cancel.click();
 
-  // The Run resolves to canceled and stops being cancelable.
+  // The Run resolves to canceled (DUR-5 cooperative stop-future-steps).
   await expect(page.getByText("canceled")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("button", { name: /^cancel$/i })).toHaveCount(0, { timeout: 30_000 });
+});
+
+test("a parked delegated Run step shows the agent-on-behalf-of context (FE-18)", async ({ page }, testInfo) => {
+  await login(page);
+
+  // The operator issues a delegation grant + mints an agent token via api HTTP (the browser
+  // session's cookies flow through page.request; CSRF via the aireos_csrf cookie).
+  const csrf = (await page.context().cookies()).find((c) => c.name === "aireos_csrf")?.value ?? "";
+  const hdr = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+
+  const grantResp = await page.request.post("/v1/grants", {
+    headers: hdr,
+    data: { agent: "agent:smoke", label: "fe18", resources: [GATED_RESOURCE_ID], verbs: ["exec"], ttlSeconds: 3600, maxStepsPerRun: 4, maxConcurrentRuns: 4, stepBudget: 10 },
+  });
+  expect(grantResp.status(), "issue grant").toBe(201);
+  const grantId = (await grantResp.json()).id as string;
+
+  const tokResp = await page.request.post("/v1/agent-tokens", {
+    headers: hdr,
+    data: { agentId: "smoke", resourceId: GATED_RESOURCE_ID, operations: ["exec"] },
+  });
+  expect(tokResp.ok(), "mint agent token").toBeTruthy();
+  const agentToken = (await tokResp.json()).token as string;
+
+  // The agent launches a grant-bounded Run on the FLAGGED resource via run.launch → it parks.
+  const launchResp = await page.request.post(`${GATEWAY_URL}/mcp`, {
+    headers: { Authorization: `Bearer ${agentToken}`, "Content-Type": "application/json" },
+    data: {
+      jsonrpc: "2.0", id: 1, method: "tools/call",
+      params: { name: "run.launch", arguments: { grantId, steps: [{ resourceId: GATED_RESOURCE_ID, command: "echo FE18-SMOKE" }] } },
+    },
+  });
+  expect(launchResp.ok(), "agent run.launch").toBeTruthy();
+
+  // The operator console shows the parked step is AGENT-driven under the operator's grant:
+  // the FE-16 run context + FE-18 "on behalf of operator:admin". Scope to MY step's row (its
+  // command is unique) — other parked steps may linger from earlier specs.
+  const row = page.locator("li").filter({ hasText: "FE18-SMOKE" });
+  await expect(async () => {
+    await page.goto("/invocations");
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(row).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 90_000 });
+  await expect(row.getByText(/part of run/i)).toBeVisible();
+  await expect(row.getByText(/on behalf of/i)).toBeVisible();
+  await expect(row).toContainText("operator:admin"); // the delegating principal
+
+  await testInfo.attach("delegated-parked-step-context", { body: await page.screenshot(), contentType: "image/png" });
+
+  // Deny MY step (scoped) to release the held call so it does not linger into later specs.
+  await row.getByRole("button", { name: "Deny" }).click();
+  await expect(row).toHaveCount(0, { timeout: 30_000 });
 });

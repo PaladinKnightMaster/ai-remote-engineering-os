@@ -34,8 +34,13 @@ var (
 // persisted command (ADR-0059) so the operator approves the exact payload; this is
 // the only surface the command crosses — never the agent plane.
 type PendingInvocation struct {
-	ID         string `json:"id"`
-	Agent      string `json:"agent"`
+	ID    string `json:"id"`
+	Agent string `json:"agent"`
+	// Principal is the delegating operator when this parked step is agent-driven under a
+	// grant (ADR-0062, FE-18) — the approver sees the agent is acting on the operator's
+	// behalf. "" for an operator-direct Run step or an agent-tool invocation. Decoded
+	// straight from the gateway view's "principal".
+	Principal  string `json:"principal,omitempty"`
 	ResourceID string `json:"resourceId"`
 	Tool       string `json:"tool"`
 	Command    string `json:"command"`
