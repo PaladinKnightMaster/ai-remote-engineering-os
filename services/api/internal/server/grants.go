@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -14,6 +15,13 @@ import (
 const (
 	maxGrantResources = 100
 	maxGrantVerbs     = 20
+	// maxConcurrentRunsCeiling caps a grant's max_concurrent_runs at the gateway's per-agent
+	// in-flight step cap (PERF-3 / MCP_MAX_INFLIGHT default; the PERF-7 reconciliation,
+	// ADR-0062): with actor=agent every concurrent Run's in-flight step buckets on the agent,
+	// so a grant promising more concurrent Runs than the gateway accepts in-flight would see
+	// its (cap+1)th Run's step refused and that Run fail. Kept in sync with the gateway default
+	// by convention (api does not read the gateway's config).
+	maxConcurrentRunsCeiling = 4
 )
 
 // grantView is the wire shape for a grant. The principal is the caller (implicit), so it
@@ -82,6 +90,12 @@ func (a *apiHandlers) CreateGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.TTLSeconds <= 0 || body.MaxStepsPerRun <= 0 || body.MaxConcurrentRuns <= 0 || body.StepBudget <= 0 {
 		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "ttlSeconds and all bounds must be positive")
+		return
+	}
+	if body.MaxConcurrentRuns > maxConcurrentRunsCeiling {
+		// PERF-7: a grant cannot promise more concurrent Runs than the gateway accepts
+		// in-flight steps for (else the (cap+1)th Run's step is refused and it fails).
+		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "maxConcurrentRuns exceeds the gateway in-flight ceiling")
 		return
 	}
 	created, err := a.grants.Create(r.Context(), grant.Input{
@@ -206,6 +220,16 @@ func (a *apiHandlers) RevokeGrant(w http.ResponseWriter, r *http.Request, id str
 	if !revoked {
 		writeError(w, http.StatusConflict, "conflict", "grant is not active (already revoked)")
 		return
+	}
+	// DUR-7: revocation cascades — cancel the grant's in-flight Runs so a revoked grant stops
+	// running ones too, not just new launches. Best-effort (the revoke already succeeded); the
+	// sequencer's between-step RunStatus check halts each canceled Run's further dispatch.
+	if a.runs != nil {
+		if n, cerr := a.runs.CancelRunsForGrant(r.Context(), id); cerr != nil {
+			log.Printf("revoke grant %s: cancel in-flight runs: %v", id, cerr)
+		} else if n > 0 {
+			log.Printf("revoke grant %s: canceled %d in-flight run(s)", id, n)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": grant.StatusRevoked})
 }

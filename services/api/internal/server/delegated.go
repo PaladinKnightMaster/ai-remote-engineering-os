@@ -95,6 +95,30 @@ func (a *apiHandlers) LaunchDelegatedRun(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// PERF-7: per-grant concurrency + step-budget bounds (beyond the per-plan scope above).
+	// Non-atomic soft ceilings — the concurrency cap itself bounds concurrent launches, and the
+	// budget counts total planned steps across the grant's Runs (the ratified semantics).
+	active, err := a.runs.CountActiveForGrant(r.Context(), g.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "launch failed")
+		return
+	}
+	if active >= g.MaxConcurrentRuns {
+		a.denyLaunch(r, body.AgentSubject, body.GrantID)
+		writeError(w, http.StatusTooManyRequests, "too_many_requests", "the grant's concurrent-run limit is reached")
+		return
+	}
+	consumed, err := a.runs.CountStepsForGrant(r.Context(), g.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "launch failed")
+		return
+	}
+	if consumed+len(body.Steps) > g.StepBudget {
+		a.denyLaunch(r, body.AgentSubject, body.GrantID)
+		writeError(w, http.StatusTooManyRequests, "too_many_requests", "the grant's step budget is exhausted")
+		return
+	}
+
 	in := run.Input{Operator: g.Principal, Actor: body.AgentSubject, GrantID: g.ID, LaunchKey: body.IdempotencyKey}
 	for _, s := range body.Steps {
 		in.Steps = append(in.Steps, run.StepInput{ResourceID: s.ResourceID, Command: s.Command})

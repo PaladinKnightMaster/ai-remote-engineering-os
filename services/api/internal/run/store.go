@@ -183,6 +183,66 @@ func (s *Store) CountActiveForOperator(ctx context.Context, operator string) (in
 	return n, nil
 }
 
+// CountActiveForGrant counts a grant's not-yet-terminal Runs — the per-grant concurrency
+// input at delegated launch (PERF-7, ADR-0062).
+func (s *Store) CountActiveForGrant(ctx context.Context, grantID string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM runs WHERE grant_id = $1::uuid AND status IN ('pending', 'running')`, grantID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count active grant runs: %w", err)
+	}
+	return n, nil
+}
+
+// CountStepsForGrant counts the total PLANNED steps across ALL of a grant's Runs — the
+// step-budget consumption input (PERF-7). A failed/canceled Run still consumed its planned
+// steps (the ratified semantics), so this counts every run_steps row for the grant's Runs.
+func (s *Store) CountStepsForGrant(ctx context.Context, grantID string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM run_steps rs JOIN runs r ON r.id = rs.run_id
+		 WHERE r.grant_id = $1::uuid`, grantID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count grant steps: %w", err)
+	}
+	return n, nil
+}
+
+// CancelRunsForGrant cancels every not-yet-terminal Run bound to a grant (DUR-7, ADR-0062):
+// when an operator revokes a grant, its in-flight Runs stop. Each is moved to canceled with a
+// run.canceled event (reusing CancelRun/setRunTerminal); the sequencer's between-step
+// RunStatus check then halts further dispatch. Returns the number canceled.
+func (s *Store) CancelRunsForGrant(ctx context.Context, grantID string) (int, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id FROM runs WHERE grant_id = $1::uuid AND status IN ('pending', 'running')`, grantID)
+	if err != nil {
+		return 0, fmt.Errorf("scan grant runs: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, id := range ids {
+		ok, err := s.CancelRun(ctx, id) // setRunTerminal(canceled) + run.canceled in-tx
+		if err != nil {
+			return n, err
+		}
+		if ok {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // Get returns a Run with its steps in execution order, or ErrNotFound.
 func (s *Store) Get(ctx context.Context, id string) (Run, error) {
 	var r Run

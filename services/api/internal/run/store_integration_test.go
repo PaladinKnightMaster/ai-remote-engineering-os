@@ -334,6 +334,57 @@ func TestRunLaunchIdempotency(t *testing.T) {
 	}
 }
 
+// TestGrantBoundsAndCascade — T-066a: the per-grant counts (CountActiveForGrant,
+// CountStepsForGrant) drive PERF-7, and the revocation cascade (CancelRunsForGrant) cancels
+// the grant's active Runs + emits run.canceled; a canceled Run still consumed its budget.
+func TestGrantBoundsAndCascade(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	const grantID = "01900000-0000-7000-8000-0000000000cc"
+
+	mk := func(key string, steps int) Run {
+		ss := make([]StepInput, steps)
+		for i := range ss {
+			ss[i] = StepInput{ResourceID: "r-a", Command: "echo hi"}
+		}
+		r, err := s.Create(ctx, Input{Operator: "operator:grantor", Actor: "agent:bot", GrantID: grantID, LaunchKey: key, Steps: ss})
+		if err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+		return r
+	}
+	r1, r2 := mk("k1", 2), mk("k2", 3)
+
+	if n, _ := s.CountActiveForGrant(ctx, grantID); n != 2 {
+		t.Fatalf("CountActiveForGrant = %d, want 2", n)
+	}
+	if n, _ := s.CountStepsForGrant(ctx, grantID); n != 5 {
+		t.Fatalf("CountStepsForGrant = %d, want 5", n)
+	}
+
+	n, err := s.CancelRunsForGrant(ctx, grantID)
+	if err != nil || n != 2 {
+		t.Fatalf("CancelRunsForGrant = %d (err %v), want 2", n, err)
+	}
+	for _, r := range []Run{r1, r2} {
+		if st, _ := s.RunStatus(ctx, r.ID); st != StatusCanceled {
+			t.Fatalf("run %s status = %q, want canceled", r.ID, st)
+		}
+		if c := countRunOutcome(t, s, "run:"+r.ID, "run.canceled"); c != 1 {
+			t.Fatalf("run.canceled count for %s = %d, want 1", r.ID, c)
+		}
+	}
+	if n, _ := s.CancelRunsForGrant(ctx, grantID); n != 0 {
+		t.Fatalf("second cascade canceled %d, want 0 (all terminal)", n)
+	}
+	if n, _ := s.CountActiveForGrant(ctx, grantID); n != 0 {
+		t.Fatalf("CountActiveForGrant after cascade = %d, want 0", n)
+	}
+	if n, _ := s.CountStepsForGrant(ctx, grantID); n != 5 {
+		t.Fatalf("CountStepsForGrant after cancel = %d, want 5 (canceled Runs still consumed budget)", n)
+	}
+}
+
 func countRunActor(t *testing.T, s *Store, evidence, outcome, actor string) int {
 	t.Helper()
 	var n int

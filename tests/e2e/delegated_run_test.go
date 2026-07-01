@@ -51,7 +51,7 @@ func TestDelegatedRunLaunch(t *testing.T) {
 	// The operator issues a delegation grant to the agent for a DEDICATED ungated resource +
 	// verb exec (delegatedResourceID is isolated from resourceID's audit chain so the capstone
 	// does not pollute the other suites' first-match audit polls).
-	grantID := issueGrant(t, client, apiURL, session, csrf, agentSubject, []string{delegatedResourceID})
+	grantID := issueGrant(t, client, apiURL, session, csrf, agentSubject, []string{delegatedResourceID}, 50)
 
 	// The agent's token (audience mcp-gateway) — its subject is the grant's agent. run.launch
 	// is control-plane, so the token's resource scope is irrelevant (the grant is the scope).
@@ -126,14 +126,53 @@ func TestDelegatedRunLaunch(t *testing.T) {
 		t.Fatalf("direct agent→api forward = %d, want 401/403 (key-holding api not agent-reachable)", resp.StatusCode)
 	}
 	t.Logf("PASS N3 — direct agent→api forward rejected (%d)", resp.StatusCode)
+
+	// PERF-7 — a plan exceeding the grant's step budget is refused (a grant with budget 1, a
+	// 2-step plan; the check is before any Run is created).
+	tightGrant := issueGrant(t, client, apiURL, session, csrf, agentSubject, []string{delegatedResourceID}, 1)
+	bText, bErr := callRunLaunch(t, client, mcpURL, tok, tightGrant, []map[string]string{
+		{"resourceId": delegatedResourceID, "command": "echo A"},
+		{"resourceId": delegatedResourceID, "command": "echo B"},
+	})
+	if !bErr || !strings.Contains(strings.ToLower(bText), "budget") {
+		t.Fatalf("over-budget launch = {isError:%v text:%q}, want a budget refusal", bErr, bText)
+	}
+	t.Log("PASS PERF-7 — over-budget plan refused")
+
+	// DUR-7 — revoking a grant blocks further launches under it (the cascade of in-flight Runs
+	// is store-tested; the full in-flight-revoke walkthrough is T-068).
+	revokeGrantHTTP(t, client, apiURL, session, csrf, grantID)
+	rText, rErr := callRunLaunch(t, client, mcpURL, tok, grantID, []map[string]string{
+		{"resourceId": delegatedResourceID, "command": "echo X"},
+	})
+	if !rErr || !strings.Contains(strings.ToLower(rText), "refus") {
+		t.Fatalf("launch under a revoked grant = {isError:%v text:%q}, want a refusal", rErr, rText)
+	}
+	t.Log("PASS DUR-7 — launch under a revoked grant refused")
+}
+
+// revokeGrantHTTP revokes a grant via the operator route (POST /v1/grants/{id}/revoke).
+func revokeGrantHTTP(t *testing.T, client *http.Client, apiURL, session, csrf, id string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/grants/"+id+"/revoke", nil)
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("revoke grant: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke grant: status %d, want 200", resp.StatusCode)
+	}
 }
 
 // issueGrant POSTs a delegation grant (operator, POST /v1/grants) and returns its id.
-func issueGrant(t *testing.T, client *http.Client, apiURL, session, csrf, agent string, resources []string) string {
+func issueGrant(t *testing.T, client *http.Client, apiURL, session, csrf, agent string, resources []string, stepBudget int) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
 		"agent": agent, "label": "e2e", "resources": resources, "verbs": []string{"exec"},
-		"ttlSeconds": 3600, "maxStepsPerRun": 10, "maxConcurrentRuns": 4, "stepBudget": 50,
+		"ttlSeconds": 3600, "maxStepsPerRun": 10, "maxConcurrentRuns": 4, "stepBudget": stepBudget,
 	})
 	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/grants", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
