@@ -52,6 +52,12 @@ export function Dashboard() {
             compose, launch, and watch governed multi-step remote.exec runs.
           </p>
           <p className="mt-2 text-sm">
+            <Link to="/grants" className="font-medium text-primary hover:underline">
+              Delegation grants →
+            </Link>{" "}
+            issue and revoke the scoped grants that let AI agents launch governed runs on their own.
+          </p>
+          <p className="mt-2 text-sm">
             <Link to="/audit" className="font-medium text-primary hover:underline">
               Audit timeline →
             </Link>{" "}

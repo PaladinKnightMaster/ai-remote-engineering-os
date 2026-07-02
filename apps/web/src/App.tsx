@@ -8,6 +8,7 @@ import { Sessions } from "./routes/Sessions";
 import { SessionView } from "./routes/SessionView";
 import { Invocations } from "./routes/Invocations";
 import { Runs } from "./routes/Runs";
+import { Grants } from "./routes/Grants";
 import { Audit } from "./routes/Audit";
 
 /**
@@ -67,6 +68,14 @@ export function App() {
             element={
               <RequireAuth>
                 <Runs />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/grants"
+            element={
+              <RequireAuth>
+                <Grants />
               </RequireAuth>
             }
           />
