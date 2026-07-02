@@ -1047,6 +1047,14 @@ components:
           type: string
         status:
           type: string
+        actor:
+          type: string
+          description: >-
+            The agent that drove a delegated Run (FE-19, ADR-0062) — the /runs view labels it
+            agent-driven. Absent for an operator-direct Run (actor = the launching operator).
+        grantId:
+          type: string
+          description: The bounding delegation grant for a delegated Run (FE-19). Absent for operator-direct.
         steps:
           type: array
           items:

@@ -148,7 +148,18 @@ test("a parked delegated Run step shows the agent-on-behalf-of context (FE-18)",
 
   await testInfo.attach("delegated-parked-step-context", { body: await page.screenshot(), contentType: "image/png" });
 
-  // Deny MY step (scoped) to release the held call so it does not linger into later specs.
-  await row.getByRole("button", { name: "Deny" }).click();
-  await expect(row).toHaveCount(0, { timeout: 30_000 });
+  // FE-19: the operator's /runs view labels the same Run as agent-driven under the grant.
+  await page.goto("/runs");
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByText(/driven by/i)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("agent:smoke")).toBeVisible();
+  await testInfo.attach("agent-driven-run-label", { body: await page.screenshot(), contentType: "image/png" });
+
+  // Back to the console to deny the parked step (cleanup) so it does not linger into later specs.
+  await page.goto("/invocations");
+  await page.getByRole("button", { name: "Refresh" }).click();
+  const parked = page.locator("li").filter({ hasText: "FE18-SMOKE" });
+  await expect(parked).toBeVisible({ timeout: 10_000 });
+  await parked.getByRole("button", { name: "Deny" }).click();
+  await expect(parked).toHaveCount(0, { timeout: 30_000 });
 });

@@ -308,6 +308,19 @@ export function Runs() {
                   </div>
                 </div>
 
+                {/* FE-19 (ADR-0062): a delegated Run is agent-driven under an operator's grant. */}
+                {r.actor ? (
+                  <p className="text-xs text-muted-foreground">
+                    Driven by <span className="font-mono">{r.actor}</span>
+                    {r.grantId ? (
+                      <>
+                        {" "}
+                        · grant <span className="font-mono">{r.grantId}</span>
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
+
                 {selected === r.id && (
                   <ol aria-label="run steps" className="divide-y divide-border rounded-md border border-border">
                     {(detail?.steps ?? []).map((s) => (

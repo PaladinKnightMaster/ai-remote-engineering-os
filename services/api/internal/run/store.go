@@ -289,7 +289,7 @@ func (s *Store) Get(ctx context.Context, id string) (Run, error) {
 // It is operator-scoped (owner-only, matching GetRun): an operator never lists another
 // operator's runs (T-059a).
 func (s *Store) ListForOperator(ctx context.Context, operator, after string, limit int) ([]Run, string, error) {
-	const cols = `SELECT id, operator, status, created_at, updated_at FROM runs WHERE operator = $1`
+	const cols = `SELECT id, operator, COALESCE(grant_id::text, ''), COALESCE(actor, ''), status, created_at, updated_at FROM runs WHERE operator = $1`
 	var (
 		rows pgx.Rows
 		err  error
@@ -307,7 +307,7 @@ func (s *Store) ListForOperator(ctx context.Context, operator, after string, lim
 	var last string
 	for rows.Next() {
 		var r Run
-		if err := rows.Scan(&r.ID, &r.Operator, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Operator, &r.GrantID, &r.Actor, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, "", err
 		}
 		out = append(out, r)

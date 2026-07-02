@@ -55,6 +55,26 @@ describe("Runs route", () => {
     expect(apiClient.GET).toHaveBeenCalledWith("/v1/runs", {});
   });
 
+  it("labels a delegated (agent-driven) run with its actor + grant (FE-19)", async () => {
+    mockGET({ runs: { items: [{ id: "run-d", status: "running", actor: "agent:bot-1", grantId: "grant-1" }], page: {} } });
+
+    renderRuns();
+
+    await waitFor(() => expect(screen.getByText("run-d")).toBeTruthy());
+    expect(screen.getByText(/driven by/i)).toBeTruthy();
+    expect(screen.getByText("agent:bot-1")).toBeTruthy();
+    expect(screen.getByText("grant-1")).toBeTruthy();
+  });
+
+  it("omits the agent-driven label for an operator-direct run", async () => {
+    mockGET({ runs: { items: [{ id: "run-o", status: "completed" }], page: {} } });
+
+    renderRuns();
+
+    await waitFor(() => expect(screen.getByText("run-o")).toBeTruthy());
+    expect(screen.queryByText(/driven by/i)).toBeNull();
+  });
+
   it("composes a plan and launches it via POST /v1/runs after the review gate", async () => {
     mockGET({ runs: { items: [], page: {} }, resources: [{ id: "res-1", type: "ssh", name: "edge-01" }] });
     vi.mocked(apiClient.POST).mockResolvedValue({ data: { id: "run-new", status: "pending", steps: [] }, error: undefined } as never);

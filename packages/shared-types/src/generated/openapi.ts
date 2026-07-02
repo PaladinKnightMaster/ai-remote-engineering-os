@@ -668,6 +668,10 @@ export interface components {
         Run: {
             id: string;
             status: string;
+            /** @description The agent that drove a delegated Run (FE-19, ADR-0062) — the /runs view labels it agent-driven. Absent for an operator-direct Run (actor = the launching operator). */
+            actor?: string;
+            /** @description The bounding delegation grant for a delegated Run (FE-19). Absent for operator-direct. */
+            grantId?: string;
             steps?: components["schemas"]["RunStepView"][];
         };
         RunStepView: {

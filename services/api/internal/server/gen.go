@@ -251,9 +251,14 @@ type ResourceInputType string
 
 // Run defines model for Run.
 type Run struct {
-	Id     string         `json:"id"`
-	Status string         `json:"status"`
-	Steps  *[]RunStepView `json:"steps,omitempty"`
+	// Actor The agent that drove a delegated Run (FE-19, ADR-0062) — the /runs view labels it agent-driven. Absent for an operator-direct Run (actor = the launching operator).
+	Actor *string `json:"actor,omitempty"`
+
+	// GrantId The bounding delegation grant for a delegated Run (FE-19). Absent for operator-direct.
+	GrantId *string        `json:"grantId,omitempty"`
+	Id      string         `json:"id"`
+	Status  string         `json:"status"`
+	Steps   *[]RunStepView `json:"steps,omitempty"`
 }
 
 // RunCreate defines model for RunCreate.

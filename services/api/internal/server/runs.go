@@ -28,13 +28,15 @@ type runStepView struct {
 }
 
 type runView struct {
-	ID     string        `json:"id"`
-	Status string        `json:"status"`
-	Steps  []runStepView `json:"steps"`
+	ID      string        `json:"id"`
+	Status  string        `json:"status"`
+	Actor   string        `json:"actor,omitempty"`   // the agent that drove a delegated Run (FE-19, ADR-0062); absent for operator-direct
+	GrantID string        `json:"grantId,omitempty"` // the bounding delegation grant (FE-19); absent for operator-direct
+	Steps   []runStepView `json:"steps"`
 }
 
 func toRunView(r run.Run) runView {
-	v := runView{ID: r.ID, Status: r.Status, Steps: make([]runStepView, 0, len(r.Steps))}
+	v := runView{ID: r.ID, Status: r.Status, Actor: r.Actor, GrantID: r.GrantID, Steps: make([]runStepView, 0, len(r.Steps))}
 	for _, s := range r.Steps {
 		v.Steps = append(v.Steps, runStepView{
 			StepIndex: s.Index, ResourceID: s.ResourceID, Status: s.Status,
