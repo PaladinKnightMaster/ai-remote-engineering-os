@@ -108,6 +108,20 @@ func (a *apiHandlers) LaunchDelegatedRun(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusTooManyRequests, "too_many_requests", "the grant's concurrent-run limit is reached")
 		return
 	}
+	// PERF-7 cap layering (criteria): a delegated Run's operator = the principal, so it also
+	// counts against the principal's global per-operator active-run ceiling — the safety
+	// ceiling above the per-grant cap. (Grants should set max_concurrent_runs well below this
+	// so agent activity does not starve the operator's own launches.)
+	opActive, err := a.runs.CountActiveForOperator(r.Context(), g.Principal)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "launch failed")
+		return
+	}
+	if opActive >= maxActiveRunsPerOperator {
+		a.denyLaunch(r, body.AgentSubject, body.GrantID)
+		writeError(w, http.StatusTooManyRequests, "too_many_requests", "too many active runs for this operator")
+		return
+	}
 	consumed, err := a.runs.CountStepsForGrant(r.Context(), g.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "launch failed")
