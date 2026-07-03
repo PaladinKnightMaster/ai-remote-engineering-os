@@ -57,7 +57,11 @@ func launchRun(t *testing.T, client *http.Client, apiURL, session, csrf string, 
 type runStatusView struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
-	Steps  []struct {
+	// Actor / GrantID carry the delegation provenance of an agent-launched Run
+	// (T-067b, FE-19/EVD-3); both are absent for an operator-direct Run.
+	Actor   string `json:"actor,omitempty"`
+	GrantID string `json:"grantId,omitempty"`
+	Steps   []struct {
 		StepIndex    int    `json:"stepIndex"`
 		Status       string `json:"status"`
 		InvocationID string `json:"invocationId"`

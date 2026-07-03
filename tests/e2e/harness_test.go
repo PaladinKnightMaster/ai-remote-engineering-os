@@ -35,12 +35,13 @@ import (
 // harness env (operator credentials). sessionCookieName mirrors
 // packages/go/middleware.SessionCookieName.
 const (
-	resourceID          = "01900000-0000-7000-8000-0000000000e2"
-	flaggedResourceID   = "01900000-0000-7000-8000-0000000000a2" // requires_approval=true (T-033a / WD-2)
-	delegatedResourceID = "01900000-0000-7000-8000-0000000000d3" // ungated; the T-065b agent-initiated-Run capstone
-	operatorUser        = "admin"
-	operatorPass        = "e2e-operator-pw"
-	sessionCookieName   = "aireos_session"
+	resourceID                 = "01900000-0000-7000-8000-0000000000e2"
+	flaggedResourceID          = "01900000-0000-7000-8000-0000000000a2" // requires_approval=true (T-033a / WD-2)
+	delegatedResourceID        = "01900000-0000-7000-8000-0000000000d3" // ungated; the T-065b agent-initiated-Run capstone
+	delegatedFlaggedResourceID = "01900000-0000-7000-8000-0000000000d4" // requires_approval=true; the T-068 WD-6 flagged delegated leg
+	operatorUser               = "admin"
+	operatorPass               = "e2e-operator-pw"
+	sessionCookieName          = "aireos_session"
 )
 
 func env(k, def string) string {
@@ -216,6 +217,11 @@ type pendingInvocation struct {
 	Tool       string `json:"tool"`
 	Command    string `json:"command"`
 	Status     string `json:"status"`
+	// RunID carries the FE-16 Run context when the parked call is a governed Run step
+	// (T-059c); Principal carries the FE-18 delegated context (the grant's operator)
+	// when that step is agent-driven under a delegation grant (T-066b, ADR-0062).
+	RunID     string `json:"runId,omitempty"`
+	Principal string `json:"principal,omitempty"`
 }
 
 // pollPendingInvocation waits for a parked invocation against resID to surface in the
