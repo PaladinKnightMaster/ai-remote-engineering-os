@@ -219,9 +219,11 @@ type pendingInvocation struct {
 	Status     string `json:"status"`
 	// RunID carries the FE-16 Run context when the parked call is a governed Run step
 	// (T-059c); Principal carries the FE-18 delegated context (the grant's operator)
-	// when that step is agent-driven under a delegation grant (T-066b, ADR-0062).
+	// when that step is agent-driven under a delegation grant (T-066b, ADR-0062);
+	// GrantID completes the GOV-6 delegated context (the api-side join, T-068b).
 	RunID     string `json:"runId,omitempty"`
 	Principal string `json:"principal,omitempty"`
+	GrantID   string `json:"grantId,omitempty"`
 }
 
 // pollPendingInvocation waits for a parked invocation against resID to surface in the

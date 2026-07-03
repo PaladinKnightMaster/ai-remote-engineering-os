@@ -17,9 +17,11 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -175,6 +177,110 @@ func TestWD5InstalledStack(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 	t.Logf("PASS — WD-5 on the installed stack: a 2-step governed Run drove through the INSTALLED gateway; each step parked→approved→continued→completed. run.launched/run.completed in the chain are asserted by run-wd1.sh.")
+}
+
+// TestWD6InstalledStack — OI-13 (T-069): WD-6 on the INSTALLED stack through Caddy
+// HTTPS. Proves the delegated-launch plane works on the production wiring: the api
+// migrations (delegation_grants + runs actor/grant_id/launch_key) applied by
+// install.sh's migrate loop, the NEW gateway API_URL wire, and api verifying the
+// gateway's forward with the aireos.env AIREOS_GATEWAY_PUBLIC_KEY (the OI-11 key,
+// reused — SEC-27). Runs AFTER TestWD5InstalledStack (source order): the install has
+// ONE flagged resource, so parked invocations must stay one-at-a-time per test.
+//
+// Legs (all HTTP via Caddy; the delegated e2e capstone wd6_test.go is the full gate —
+// this re-proves it on the install): (1) happy — grant → agent run.launch → each step
+// parks WITH the delegated context (agent + principal + grant + run, GOV-6) → approve
+// → completed with actor/grantId provenance; (2) N2 — revoke mid-park cascades to
+// cancel, the released step finalizes, no later step dispatches; (3) N3 — a direct
+// agent→api forward through Caddy /v1 is rejected (the key-holding api is not
+// agent-reachable on the deployed topology). Chain presence (grant.issued/revoked,
+// run.canceled, agent-actor run.launched) is asserted host-internally by run-wd1.sh.
+func TestWD6InstalledStack(t *testing.T) {
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
+	client := &http.Client{Timeout: 60 * time.Second}
+	const agentSubject = "agent:wd6"
+
+	sess, csrf, status, err := doLogin(client, base)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+
+	// --- Leg 1: the delegated happy path on the install -----------------------
+	grantID := issueGrant(t, client, base, sess, csrf, agentSubject, []string{resourceID}, 50)
+	tok := mintAgentTokenViaAPI(t, client, base, sess, csrf, "wd6", resourceID)
+	runID := callRunLaunchOK(t, client, base, tok, grantID, []map[string]string{
+		{"resourceId": resourceID, "command": "echo WD6-INSTALLED-1"},
+		{"resourceId": resourceID, "command": "echo WD6-INSTALLED-2"},
+	})
+	t.Logf("agent launched delegated run %s via Caddy /mcp on the installed stack", runID)
+
+	// Both steps park (the installed resource is flagged); the FIRST parked row must
+	// carry the full GOV-6 delegated context for the approving human.
+	for i := 0; i < 2; i++ {
+		inv := pollPendingInvocation(t, client, base, sess, csrf, resourceID, 120*time.Second)
+		if inv.Agent != agentSubject || inv.Principal != "operator:admin" {
+			t.Fatalf("parked delegated step %d = {agent:%q principal:%q}, want {%s operator:admin} (GOV-6)", i, inv.Agent, inv.Principal, agentSubject)
+		}
+		if inv.RunID != runID || inv.GrantID != grantID {
+			t.Fatalf("parked delegated step %d = {run:%q grant:%q}, want {%s %s} (GOV-6)", i, inv.RunID, inv.GrantID, runID, grantID)
+		}
+		resolveInvocation(t, client, base, inv.ID, sess, csrf, "approve")
+		t.Logf("approved delegated parked step %d with full context (agent · principal · grant · run)", i)
+	}
+	view := waitRunStatusHTTP(t, client, base, sess, csrf, runID, "completed", 240*time.Second)
+	if view.Actor != agentSubject || view.GrantID != grantID {
+		t.Fatalf("completed run provenance = {actor:%q grant:%q}, want {%s %s}", view.Actor, view.GrantID, agentSubject, grantID)
+	}
+	t.Log("PASS installed WD-6 happy path — delegated 2-step run completed with actor/grant provenance")
+
+	// --- Leg 2: N2 — revoke cascades to the in-flight parked run --------------
+	grant2 := issueGrant(t, client, base, sess, csrf, agentSubject, []string{resourceID}, 50)
+	run2 := callRunLaunchOK(t, client, base, tok, grant2, []map[string]string{
+		{"resourceId": resourceID, "command": "echo WD6-INSTALLED-R1"},
+		{"resourceId": resourceID, "command": "echo WD6-INSTALLED-R2"},
+	})
+	inv := pollPendingInvocation(t, client, base, sess, csrf, resourceID, 120*time.Second)
+	revokeGrantHTTP(t, client, base, sess, csrf, grant2)
+	waitRunStatusHTTP(t, client, base, sess, csrf, run2, "canceled", 30*time.Second)
+	// Release the parked step BEFORE any settle wait (the TestRunEngineCancel ordering).
+	resolveInvocation(t, client, base, inv.ID, sess, csrf, "deny")
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		v := getRun(t, client, base, sess, csrf, run2)
+		if len(v.Steps) == 2 && v.Steps[0].Status == "failed" {
+			if v.Status != "canceled" {
+				t.Fatalf("run after release = %q, want canceled (the FinishRun guard)", v.Status)
+			}
+			if v.Steps[1].Status != "pending" || v.Steps[1].InvocationID != "" {
+				t.Fatalf("post-revoke step 1 = %q/%q, want pending with NO invocation id", v.Steps[1].Status, v.Steps[1].InvocationID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("released step never finalized on the install: %+v", v.Steps)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Log("PASS installed WD-6 N2 — revoke canceled the in-flight run; released step finalized; no later dispatch")
+
+	// --- Leg 3: N3 — the key-holding api is not agent-reachable on the install --
+	body, _ := json.Marshal(map[string]any{
+		"agentSubject": agentSubject, "grantId": grantID, "idempotencyKey": "wd6-n3",
+		"steps": []map[string]string{{"resourceId": resourceID, "command": "echo X"}},
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/internal/delegated-runs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok) // the agent's own token, not the gateway's
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("N3 direct call: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("direct agent→api forward on the install = %d, want 401/403 (SEC-27)", resp.StatusCode)
+	}
+	t.Logf("PASS installed WD-6 N3 — direct agent→api forward rejected (%d); chain presence asserted by run-wd1.sh", resp.StatusCode)
 }
 
 func assertResourceVisible(t *testing.T, client *http.Client, base, sess, csrf string) {

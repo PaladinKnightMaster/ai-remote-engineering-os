@@ -143,7 +143,10 @@ log "assert: audit chain intact + the WD-2 events are present"
 docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | cut -d= -f2-); DATABASE_URL="$DU" /opt/aireos/bin/audit-service verify'
 # Includes the WD-5 Run lifecycle events (OI-12, T-061): run.launched + run.completed
 # land via api's in-process outbox relay, proving the Run plane drives on the install.
-WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed"
+# v0.6 (OI-13, T-069) adds the delegation lifecycle: grant.issued/grant.revoked (the
+# operator's authorization + its withdrawal) and run.canceled (the revoke cascade,
+# DUR-7) — all via the same api relay.
+WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled"
 for attempt in 1 2 3 4 5 6; do
   OUTCOMES="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT outcome FROM audit_events ORDER BY seq\"")"
   MISSING=""
@@ -155,4 +158,15 @@ for attempt in 1 2 3 4 5 6; do
   sleep 5
 done
 
-log "T-053a/T-061 PASS — WD-4 + WD-5 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), AND the WD-5 Run plane (OI-12: operator launches a multi-step governed Run → each step parks→approve→continue→completed; migrations applied + GATEWAY_URL wired on the install); chain intact + complete (incl. run.launched/run.completed + tool.invoked/remote.exec/tool.result)."
+# v0.6 (OI-13): the DELEGATED launch must be attributed to the AGENT actor in the
+# installed chain (AUD-17 — distinguishable from WD-5's operator launch). grant.revoked
+# rides the same ordered api relay and was waited for above, so the earlier delegated
+# run.launched is already delivered; retry a beat anyway.
+for attempt in 1 2 3; do
+  AGENT_LAUNCHED="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT count(*) FROM audit_events WHERE outcome='run.launched' AND actor LIKE 'agent:%'\"")"
+  [ "${AGENT_LAUNCHED:-0}" -ge 1 ] && break
+  [ "$attempt" = 3 ] && { echo "no agent-actor run.launched in the installed chain — delegated attribution (AUD-17) missing"; exit 1; }
+  sleep 5
+done
+
+log "T-053a/T-061/T-069 PASS — WD-4 + WD-5 + WD-6 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), AND the WD-6 delegated-launch plane (OI-13: operator grant → agent run.launch via Caddy /mcp → gateway forward pinned to api → parked steps approved with delegated context → completed; revoke cascades to cancel; api not agent-reachable; API_URL wired + gateway pubkey reused from aireos.env); chain intact + complete (incl. grant.issued/grant.revoked/run.canceled + agent-actor run.launched)."

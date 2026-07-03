@@ -174,6 +174,10 @@ chown "$SVC_USER:$SVC_USER" "$API_ENV"; chmod 600 "$API_ENV"
 # gateway.env = the agent-facing gateway's ENTIRE env (SEC-20: NO AIREOS_PASETO_KEY).
 # Its own sign key + api's public key (verify inbound) + the F3 command key, plus the
 # URLs/DB it needs. aireos-mcp-gateway.service loads ONLY this file, never aireos.env.
+# API_URL (v0.6/OI-13) enables the run.launch delegated-launch forward: the gateway
+# POSTs {agent, grant, plan} to api's subject-pinned internal route (ADR-0062); api
+# verifies the forward with AIREOS_GATEWAY_PUBLIC_KEY, which already rides shared
+# aireos.env (the OI-11 provisioning) — v0.6 writes NO new key material.
 log "write $GATEWAY_ENV (keyless of the cluster — SEC-20)"
 ( umask 077; cat > "$GATEWAY_ENV" <<EOF
 DATABASE_URL=$DB_URL
@@ -181,6 +185,7 @@ AIREOS_AUDIT_URL=http://127.0.0.1:8081
 MCP_ADDR=127.0.0.1:8085
 POLICY_URL=http://127.0.0.1:8084
 BROKER_URL=http://127.0.0.1:8082
+API_URL=http://127.0.0.1:8080
 AIREOS_GATEWAY_SIGN_KEY=$GW_SK
 AIREOS_API_AGENT_PUBLIC_KEY=$API_AGENT_PK
 AIREOS_GATEWAY_COMMAND_KEY=$GW_CMD_KEY
