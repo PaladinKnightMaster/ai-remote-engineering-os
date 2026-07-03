@@ -654,6 +654,8 @@ export interface components {
             runId?: string;
             /** @description The zero-based step position within the Run (FE-16). Absent for a non-Run invocation. */
             stepIndex?: number;
+            /** @description The bounding delegation grant when this parked step is agent-driven (ADR-0062, GOV-6) — with agent + principal it completes the delegated context the approving human needs. Joined by services/api from the Run row; absent for an operator-direct step or a plain agent invocation. */
+            grantId?: string;
         };
         InvocationResolve: {
             /** @enum {string} */

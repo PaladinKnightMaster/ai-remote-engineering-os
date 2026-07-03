@@ -134,8 +134,9 @@ test("a parked delegated Run step shows the agent-on-behalf-of context (FE-18)",
   expect(launchResp.ok(), "agent run.launch").toBeTruthy();
 
   // The operator console shows the parked step is AGENT-driven under the operator's grant:
-  // the FE-16 run context + FE-18 "on behalf of operator:admin". Scope to MY step's row (its
-  // command is unique) — other parked steps may linger from earlier specs.
+  // the FE-16 run context + FE-18 "on behalf of operator:admin" + the GOV-6 bounding grant
+  // id (T-068b). Scope to MY step's row (its command is unique) — other parked steps may
+  // linger from earlier specs.
   const row = page.locator("li").filter({ hasText: "FE18-SMOKE" });
   await expect(async () => {
     await page.goto("/invocations");
@@ -145,6 +146,8 @@ test("a parked delegated Run step shows the agent-on-behalf-of context (FE-18)",
   await expect(row.getByText(/part of run/i)).toBeVisible();
   await expect(row.getByText(/on behalf of/i)).toBeVisible();
   await expect(row).toContainText("operator:admin"); // the delegating principal
+  await expect(row.getByText(/· grant/i)).toBeVisible();
+  await expect(row).toContainText(grantId); // GOV-6: the full delegated context beside the command
 
   await testInfo.attach("delegated-parked-step-context", { body: await page.screenshot(), contentType: "image/png" });
 

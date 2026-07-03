@@ -996,6 +996,26 @@ func (a *apiHandlers) ListInvocations(w http.ResponseWriter, r *http.Request) {
 	if invs == nil {
 		invs = []gateway.PendingInvocation{}
 	}
+	// GOV-6 (ADR-0062, T-068b): join the bounding grant id onto agent-driven Run steps
+	// so the approver sees agent + principal + grant beside the verbatim command.
+	// api-side because the gateway does not know grants; best-effort per row — a
+	// missing Run row must not take down the approval surface.
+	if a.runs != nil {
+		grantByRun := map[string]string{}
+		for i, inv := range invs {
+			if inv.RunID == "" || inv.Principal == "" {
+				continue // operator-direct Run step or plain agent invocation
+			}
+			gid, seen := grantByRun[inv.RunID]
+			if !seen {
+				if rn, err := a.runs.Get(r.Context(), inv.RunID); err == nil {
+					gid = rn.GrantID
+				}
+				grantByRun[inv.RunID] = gid
+			}
+			invs[i].GrantID = gid
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"invocations": invs})
 }
 

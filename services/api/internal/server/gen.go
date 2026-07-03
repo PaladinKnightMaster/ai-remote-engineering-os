@@ -211,7 +211,10 @@ type PageMeta struct {
 type PendingInvocation struct {
 	Agent   string `json:"agent"`
 	Command string `json:"command"`
-	Id      string `json:"id"`
+
+	// GrantId The bounding delegation grant when this parked step is agent-driven (ADR-0062, GOV-6) — with agent + principal it completes the delegated context the approving human needs. Joined by services/api from the Run row; absent for an operator-direct step or a plain agent invocation.
+	GrantId *string `json:"grantId,omitempty"`
+	Id      string  `json:"id"`
 
 	// Principal The delegating operator when this parked step is agent-driven under a delegation grant (ADR-0062, FE-18) — the approver sees the agent is acting on the operator's behalf. Absent for an operator-direct Run step or an agent-tool invocation.
 	Principal  *string `json:"principal,omitempty"`

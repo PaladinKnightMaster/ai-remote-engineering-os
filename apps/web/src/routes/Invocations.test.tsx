@@ -64,11 +64,11 @@ describe("Invocations route", () => {
     expect(screen.getByText(/step 1/i)).toBeTruthy(); // zero-based index rendered 1-based
   });
 
-  it("shows the delegated context (FE-18) for an agent-driven grant-bounded step", async () => {
+  it("shows the delegated context (FE-18/GOV-6) for an agent-driven grant-bounded step", async () => {
     vi.mocked(apiClient.GET).mockResolvedValue({
       data: {
         invocations: [
-          { id: "inv-3", agent: "agent:bot-1", resourceId: "r-1", tool: "remote.exec", command: "echo del", status: "pending_approval", runId: "run-xyz", stepIndex: 0, principal: "operator:admin" },
+          { id: "inv-3", agent: "agent:bot-1", resourceId: "r-1", tool: "remote.exec", command: "echo del", status: "pending_approval", runId: "run-xyz", stepIndex: 0, principal: "operator:admin", grantId: "grant-42" },
         ],
       },
       error: undefined,
@@ -78,6 +78,8 @@ describe("Invocations route", () => {
     await waitFor(() => expect(screen.getByText(/on behalf of/i)).toBeTruthy());
     expect(screen.getByText("operator:admin")).toBeTruthy();
     expect(screen.getByText("run-xyz")).toBeTruthy(); // the FE-16 run context is still shown
+    expect(screen.getByText(/· grant/i)).toBeTruthy(); // GOV-6: the bounding grant id
+    expect(screen.getByText("grant-42")).toBeTruthy();
   });
 
   it("omits the delegated context for an operator-direct run step", async () => {
@@ -92,6 +94,7 @@ describe("Invocations route", () => {
     renderInvocations();
     await waitFor(() => expect(screen.getByText(/part of run/i)).toBeTruthy());
     expect(screen.queryByText(/on behalf of/i)).toBeNull();
+    expect(screen.queryByText(/· grant/i)).toBeNull();
   });
 
   it("omits the Run context for a non-run agent invocation", async () => {

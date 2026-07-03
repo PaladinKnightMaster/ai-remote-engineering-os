@@ -61,7 +61,18 @@ describe("Grants route", () => {
 
     await waitFor(() => expect(screen.getByText("agent:bot-1")).toBeTruthy());
     expect(screen.getByText("active")).toBeTruthy();
+    // T-068b polish: the row shows when the grant expires (the TTL made visible).
+    expect(screen.getByText(/expires/i)).toBeTruthy();
+    expect(screen.getByText("2026-01-01T00:00:00Z")).toBeTruthy();
     expect(apiClient.GET).toHaveBeenCalledWith("/v1/grants", {});
+  });
+
+  it("caps the max-concurrent-runs input at the gateway in-flight ceiling (4)", async () => {
+    mockGET({ grants: { items: [], page: {} } });
+    renderGrants();
+    await waitFor(() => expect(screen.getByLabelText("Max concurrent runs")).toBeTruthy());
+    // api still 422s above the PERF-7 ceiling; the max attr keeps the form's stepper honest.
+    expect(screen.getByLabelText("Max concurrent runs").getAttribute("max")).toBe("4");
   });
 
   it("issues a grant via POST /v1/grants (agent + a picked resource)", async () => {

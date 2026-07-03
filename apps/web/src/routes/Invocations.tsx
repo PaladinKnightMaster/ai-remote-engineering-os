@@ -91,6 +91,12 @@ export function Invocations() {
                       · on behalf of <span className="font-mono">{inv.principal}</span>
                     </>
                   ) : null}
+                  {inv.grantId ? (
+                    <>
+                      {" "}
+                      · grant <span className="font-mono">{inv.grantId}</span>
+                    </>
+                  ) : null}
                 </p>
               ) : null}
               <ApprovalPrompt

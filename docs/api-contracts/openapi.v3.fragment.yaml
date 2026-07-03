@@ -1012,6 +1012,13 @@ components:
           description: >-
             The zero-based step position within the Run (FE-16). Absent for a non-Run
             invocation.
+        grantId:
+          type: string
+          description: >-
+            The bounding delegation grant when this parked step is agent-driven
+            (ADR-0062, GOV-6) — with agent + principal it completes the delegated
+            context the approving human needs. Joined by services/api from the Run
+            row; absent for an operator-direct step or a plain agent invocation.
     # Approve/deny body for POST /v1/invocations/{id}/resolve. Operator verbs
     # (approve|deny); services/api maps them to the policy decision (granted|denied).
     InvocationResolve:

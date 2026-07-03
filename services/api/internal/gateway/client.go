@@ -51,6 +51,10 @@ type PendingInvocation struct {
 	// raw key never reaches the SPA. Empty/absent for a non-Run agent invocation.
 	RunID     string `json:"runId,omitempty"`
 	StepIndex *int   `json:"stepIndex,omitempty"`
+	// GrantID carries the bounding delegation grant when the parked step is
+	// agent-driven (ADR-0062, GOV-6 informed approval). Joined api-side from the Run
+	// row by ListInvocations — the gateway does not know grants. "" otherwise.
+	GrantID string `json:"grantId,omitempty"`
 }
 
 // parseRunStep extracts the Run correlation from a step idempotency key of the form

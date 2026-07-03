@@ -106,7 +106,7 @@ export function Grants() {
     }
   }
 
-  const numberField = (label: string, value: number, set: (n: number) => void) => (
+  const numberField = (label: string, value: number, set: (n: number) => void, max?: number) => (
     <label className="text-xs text-muted-foreground">
       {label}
       <input
@@ -114,6 +114,7 @@ export function Grants() {
         aria-label={label}
         value={value}
         min={1}
+        max={max}
         onChange={(e) => set(Number(e.target.value))}
         className="mt-1 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
       />
@@ -197,7 +198,9 @@ export function Grants() {
             </label>
             {numberField("TTL seconds", ttlSeconds, setTtlSeconds)}
             {numberField("Max steps per run", maxStepsPerRun, setMaxStepsPerRun)}
-            {numberField("Max concurrent runs", maxConcurrentRuns, setMaxConcurrentRuns)}
+            {/* api enforces the ceiling (422 above the gateway in-flight cap, PERF-7); the
+                max attr keeps the browser's stepper honest so the form can't compose it. */}
+            {numberField("Max concurrent runs", maxConcurrentRuns, setMaxConcurrentRuns, 4)}
             {numberField("Step budget", stepBudget, setStepBudget)}
           </div>
 
@@ -244,7 +247,8 @@ export function Grants() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {g.resources.join(", ")} · verbs {g.verbs.join(", ")} · ≤{g.maxStepsPerRun} steps/run · ≤
-                  {g.maxConcurrentRuns} concurrent · budget {g.stepBudget}
+                  {g.maxConcurrentRuns} concurrent · budget {g.stepBudget} · expires{" "}
+                  <span className="font-mono">{g.expiresAt}</span>
                 </p>
               </li>
             ))}
