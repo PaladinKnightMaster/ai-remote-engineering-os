@@ -1,0 +1,45 @@
+{
+  "release": "v0.6.0",
+  "theme": "Agent-initiated Runs — the delegation-grant model: an operator-issued, revocable, server-side grant bounds an agent's autonomous governed Runs; the second initiator for the v0.5.0 Run engine",
+  "status": "release-candidate — pending CEO §human WD-6 + local tag",
+  "baseline": "v0.5.0 (tag 981cb0e) on v3.0.1",
+  "generated": "2026-07-04",
+  "note": "Machine-readable coverage for v0.6.0. See release_notes_v0_6_0.md (human roll-up), v0.6.0-release-criteria.md (criteria), and verification_runbook.md (how-to-verify + recorded results). The ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md (through ADR-0062). WD-6 (happy path + N1 out-of-grant + N2 revoke-cancels + N3 keyless-surface, all live) is green on the compose e2e stack (task e2e, chain 142) and the installed stack (task wd1, chain 58); WD-5 operator Runs stay green in-suite (the behavior-preserving regression guard).",
+  "adrs": {
+    "ADR-0041..ADR-0061": "Accepted at v0.1.0..v0.5.0 — unchanged",
+    "ADR-0062": "Accepted 2026-06-30 (b07e887) — Agent-initiated Runs: operator-issued delegation grants as the agent's bounded standing authority. Grant = revocable server-side record (agent never mints; RFC 7662 custody); launch via the run.launch gateway tool + a subject-pinned (mcp-gateway) forward to api (the symmetric-key holder stays non-agent-reachable — SEC-20 preserved); actor/principal split (RFC 8693) with policy-subject = agent (flagged steps still park); plan-vs-grant in api (the relocated SEC-16); instant cascading revocation; agent-tool → agent-remote-session bracket with recorded principal/grant. Extends ADR-0061 + ADR-0046; preserves ADR-0060; edits no Accepted ADR (G2-clean)."
+  },
+  "tickets": {
+    "criteria": "complete — docs/releases/v0.6.0/v0.6.0-release-criteria.md ACCEPTED (edd5dfa; self-audit clarifications dbe590c)",
+    "ADR-0062": "complete — ratified + canonical ladder row (b07e887)",
+    "T-063": "complete — delegation_grants migration 0008 + internal/grant store + /v1/grants issue/list/revoke + grant.* in-tx audit + fragment/codegen (DEL-1, AUD-16, SEC-26, VER-18) (2525a6c)",
+    "T-064": "complete — actor/principal split, behavior-preserving: invocations.principal + StepRequest.Principal + runs.grant_id/actor; task e2e green chain 95 (SEC-28, DEL-5, AUD-17 data layer) (f63e519)",
+    "T-065a": "complete — api inbound: route-scoped asymmetric-only verifier + POST /v1/internal/delegated-runs pinned subject==mcp-gateway + plan-vs-grant (SEC-29) + launch idempotency (runs.launch_key); self-audit SEC fix: operator routes stay symmetric-only (737d7a0 + 714d0df)",
+    "T-065b": "complete — run.launch control-plane tool + internal/apiforward client (gateway env API_URL) + sequencer delegated dispatch + derived agent-tool bracket; the agent-launch loop closed live, chain 105 (DEL-2/3, GOV-4) (50e8431)",
+    "T-066a": "complete — DUR-7 revocation cascade (CancelRunsForGrant) + PERF-7 grant bounds (budget/concurrency/issuance ceiling); self-audit fix: the per-operator active-run ceiling also enforced on delegated launches (74569f9 + 7d5b07d)",
+    "T-066b": "complete — FE-18 delegated approval context: invocations.principal surfaced through gateway view -> api -> fragment/codegen -> /invocations 'on behalf of'; task smoke 6/6 (GOV-5/6) (25dd2ba)",
+    "T-067a": "complete — FE-17 /grants operator UI (issue with resource picker + bounds, list, revoke); vitest + grants smoke leg (8212ef0)",
+    "T-067b": "complete — FE-19 agent-Run visibility: runView actor/grantId + /runs 'Driven by agent X · grant G'; fixed the ListForOperator scan gap the smoke caught (40fc823)",
+    "T-068a": "complete — WD-6 live e2e capstone: TestWD6HappyPath (mixed plan, unattended -> park-with-delegated-context -> approve -> continue; evidence packet + provenance chained) + TestWD6RevokeCancelsInFlight (N2 mid-park); dedicated flagged delegated resource d4; shared delegated_driver.go; task e2e green chain 142 (G1) (0bb25be)",
+    "T-068b": "complete — GOV-6 conformance: grantId joined onto the parked view (api-side, from the Run row) + fragment/codegen + '· grant' on /invocations; grants-form max=4 + expiresAt polish; vitest 31/31 + task smoke 7/7 + final task e2e at HEAD chain 142 (bb5529e)",
+    "T-069": "complete — OI-13: gateway.env API_URL wire (the ONE new wire; gateway pubkey already on aireos.env from OI-11 — zero new key material) + TestWD6InstalledStack (delegated happy + N2 revoke-cascade + N3) + run-wd1.sh delegation-lifecycle & agent-actor chain checks; bundle-from-HEAD 0.6.0 (115MB/41MB, OI-4 holds); task wd1 green chain 58 (0ac9068)",
+    "T-070": "in progress — DOC-14 + this artifact set + VER legs (Phase A); CEO §human WD-6 + closure flip + local tag v0.6.0 (Phase B)"
+  },
+  "criteria_groups": {
+    "WD-6": "green — compose (task e2e: TestWD6HappyPath + TestWD6RevokeCancelsInFlight + N1/N3 in TestDelegatedRunLaunch + SEC-21 forge-negative + WD-5 regression + audit-service verify, chain 142) and installed (task wd1: TestWD6InstalledStack happy/N2/N3, chain 58 incl. agent-actor run.launched)",
+    "SEC-26": "the agent never mints — the grant is a server-side record referenced by id; api/gateway remain the sole signers (T-063/T-065)",
+    "SEC-27": "keyless launch surface — run.launch on the gateway; api's forward route pinned subject==mcp-gateway on a route-scoped asymmetric-only verifier; no agent-facing api route (N3 live, compose + installed); operator routes stay symmetric-only (the T-065a self-audit fix)",
+    "SEC-28": "actor/principal bound server-side from the grant; /v1/steps subject==api pin + broker/connector pins unchanged (SEC-25 carried)",
+    "SEC-29": "plan-vs-grant in api before any dispatch (agent/active/expiry/resource/verb/size/concurrency/budget/operator-ceiling); denial audited, no egress (N1 live)",
+    "SEC-20/21/17/18 (carried)": "gateway keyless of the cluster key; forge-negative green in-suite + run-wd1.sh; no decrypt path on the gateway; broker exec parity",
+    "DEL-1..5": "grant primitive (server-side, no sealer — carries no command); run.launch + pinned forward (control-plane, SEC-16 N/A, idempotent); plan-vs-grant; extraction stays deferred on the internal/run seam; actor/principal threaded end-to-end with the agent-tool bracket",
+    "GOV-4..7": "per-grant consent replaces informed-launch (explicit in the issuance UI); flagged steps park with policy-subject=agent (self-approve defeated); informed approval carries agent+principal+grant+run beside the verbatim command; single-bootstrap-operator delegation posture (ADR-0046)",
+    "DUR-7 (+1..6 carried)": "revocation cascades to in-flight Runs (live mid-park, compose + installed); the v0.5 durability contract reused unchanged for delegated Runs",
+    "AUD-16/17 + EVD-3": "grant.issued/grant.revoked in-tx; delegated run.launched/terminal + step events attribute the agent actor; principal/grant on durable rows -> read-time Evidence Packet attributable to both agent and operator",
+    "FE-17/18/19": "/grants issue/list/revoke UI; delegated context (incl. grant id, T-068b) on /invocations; agent-Run label + principal cancel on /runs — browser DoD via task smoke 7/7",
+    "OI-13": "grant store inside api, tool inside the gateway; no new unit/route; API_URL = the one new wire; gateway pubkey reused from aireos.env (OI-11); bundle-from-HEAD 0.6.0 under OI-4 caps; installed WD-6 green",
+    "PERF-7": "step_budget/max_steps/max_concurrent enforced at plan-vs-grant; max_concurrent_runs ceiling 4 = the gateway in-flight cap at issuance; delegated Runs also count against the per-operator ceiling (cap layering per criteria §10)",
+    "VER-17/18/19": "per-ticket lint/test/build/typecheck/vitest green; codegen drift zero (byte-deterministic); e2e + smoke + wd1 legs recorded in verification_runbook.md",
+    "DOC-14": "module-map (grant store + run.launch + pinned forward) + agent-permission-model (Delegated Runs section: grant authority, edges, split, policy-subject=agent, pin, event vocabulary, the zero-new-key install finding) + CANONICAL DOC-14 row + this artifact set"
+  }
+}
