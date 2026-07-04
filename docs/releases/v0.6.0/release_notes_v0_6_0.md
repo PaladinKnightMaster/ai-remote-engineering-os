@@ -1,9 +1,13 @@
 # AI Remote Engineering OS — v0.6.0 release notes
 
-**Status: release-candidate** — pending the CEO §human WD-6 walkthrough + the local
-annotated tag (no remote, per repo doctrine). WD-6 is green on the compose stack
+**Status: released** — local annotated tag `v0.6.0` (no remote, per repo doctrine);
+the CEO §human WD-6 walkthrough was captured + signed off (evidence retained at
+`tests/smoke/test-results/wd6/` — grant issuance → agent `run.launch` → agent-driven
+`/runs` label → the flagged step parked with the full delegated context → approve →
+completed → revoke-cancels-in-flight). WD-6 is green on the compose stack
 (`task e2e`, chain 142), on the real installed stack (`task wd1`, chain 58), and in
-the browser smoke suite (7/7, incl. the delegated-context legs). v0.6.0 —
+the browser smoke suite (7/7, incl. the delegated-context legs); the pre-release
+delegated-plane edge + stress sweep is green (chain 259). v0.6.0 —
 **"Agent-initiated Runs"** (the delegation-grant model) — adds the **second
 initiator** to the v0.5.0 Run engine (per
 `docs/releases/v0.6.0/v0.6.0-release-criteria.md`; machine-readable coverage in
@@ -98,9 +102,12 @@ delegated flagged Run rendering **agent · on behalf of · grant** in the browse
 (delegated happy + revoke-cascade + N3) with chain intact at 58 events incl. the
 delegation lifecycle + the agent-actor `run.launched` attribution check.
 
-**Sign-off:** pending the CEO §human WD-6 walkthrough (issue a grant on `/grants` →
-an agent launches within it → watch the delegated context at the approval + `/runs`
-surfaces → revoke cancels in-flight). Tag applied locally after sign-off.
+**Sign-off:** the CEO §human WD-6 walkthrough (issue a grant on `/grants` → an agent
+launches within it → watch the agent-driven `/runs` label → approve the flagged step
+seeing agent · on behalf of operator · grant beside the verbatim command → completed
+→ revoke cancels a second in-flight Run) was captured through the rendered cockpit
+and signed off; v0.6.0 is tagged **locally** (`v0.6.0`, annotated). No remote;
+nothing pushed.
 
 ## Next (v0.7+)
 

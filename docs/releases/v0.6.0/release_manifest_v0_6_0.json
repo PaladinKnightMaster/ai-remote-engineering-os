@@ -1,7 +1,7 @@
 {
   "release": "v0.6.0",
   "theme": "Agent-initiated Runs — the delegation-grant model: an operator-issued, revocable, server-side grant bounds an agent's autonomous governed Runs; the second initiator for the v0.5.0 Run engine",
-  "status": "release-candidate — pending CEO §human WD-6 + local tag",
+  "status": "released — local annotated tag v0.6.0 (no remote); CEO §human WD-6 captured + signed off (evidence at tests/smoke/test-results/wd6/)",
   "baseline": "v0.5.0 (tag 981cb0e) on v3.0.1",
   "generated": "2026-07-04",
   "note": "Machine-readable coverage for v0.6.0. See release_notes_v0_6_0.md (human roll-up), v0.6.0-release-criteria.md (criteria), and verification_runbook.md (how-to-verify + recorded results). The ADR ladder is CANONICAL_SOURCE_OF_TRUTH.md (through ADR-0062). WD-6 (happy path + N1 out-of-grant + N2 revoke-cancels + N3 keyless-surface, all live) is green on the compose e2e stack (task e2e, chain 142) and the installed stack (task wd1, chain 58); WD-5 operator Runs stay green in-suite (the behavior-preserving regression guard).",
@@ -23,7 +23,7 @@
     "T-068a": "complete — WD-6 live e2e capstone: TestWD6HappyPath (mixed plan, unattended -> park-with-delegated-context -> approve -> continue; evidence packet + provenance chained) + TestWD6RevokeCancelsInFlight (N2 mid-park); dedicated flagged delegated resource d4; shared delegated_driver.go; task e2e green chain 142 (G1) (0bb25be)",
     "T-068b": "complete — GOV-6 conformance: grantId joined onto the parked view (api-side, from the Run row) + fragment/codegen + '· grant' on /invocations; grants-form max=4 + expiresAt polish; vitest 31/31 + task smoke 7/7 + final task e2e at HEAD chain 142 (bb5529e)",
     "T-069": "complete — OI-13: gateway.env API_URL wire (the ONE new wire; gateway pubkey already on aireos.env from OI-11 — zero new key material) + TestWD6InstalledStack (delegated happy + N2 revoke-cascade + N3) + run-wd1.sh delegation-lifecycle & agent-actor chain checks; bundle-from-HEAD 0.6.0 (115MB/41MB, OI-4 holds); task wd1 green chain 58 (0ac9068)",
-    "T-070": "in progress — DOC-14 + this artifact set + VER legs (Phase A); CEO §human WD-6 + closure flip + local tag v0.6.0 (Phase B)"
+    "T-070": "complete — DOC-14 + this artifact set + VER legs (Phase A, 621a8ae) + the pre-release delegated-plane edge/stress sweep (501e672, chain 259); CEO §human WD-6 captured + signed off; closure flip + local annotated tag v0.6.0 (Phase B)"
   },
   "criteria_groups": {
     "WD-6": "green — compose (task e2e: TestWD6HappyPath + TestWD6RevokeCancelsInFlight + N1/N3 in TestDelegatedRunLaunch + SEC-21 forge-negative + WD-5 regression + audit-service verify, chain 142) and installed (task wd1: TestWD6InstalledStack happy/N2/N3, chain 58 incl. agent-actor run.launched)",
