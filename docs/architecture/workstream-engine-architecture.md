@@ -14,10 +14,12 @@ Engine**. Throughout, the entity is a `Run` (`runs` + `run_steps`, `run:<id>`).
 Scope: §§1–10 spec the v0.5.0 **thin vertical wedge** — one operator-authored, ordered,
 durable, governed, evidence-bound Run. **§11 is the v0.6 extension** (agent-initiated Runs
 via operator-issued delegation grants; **ADR-0062**), reusing the §§1–10 engine unchanged.
-Parallel/branching plans and plan-level blanket approval remain out of scope.
+**§12 is the v0.7 extension** (the chartered **Workstream** module — schedule-fired,
+grant-bounded Runs; **ADR-0063**), reusing the §§1–11 engine + grant machinery unchanged.
+Parallel/branching plans remain out of scope.
 
-Conforms to ADR-0054/0056/0057/0058/0059/0060/0061; §11 conforms to ADR-0062; edits no
-Accepted ADR.
+Conforms to ADR-0054/0056/0057/0058/0059/0060/0061; §11 conforms to ADR-0062; §12 conforms
+to ADR-0063; edits no Accepted ADR.
 
 ---
 
@@ -212,10 +214,13 @@ The chain stays single + intact. Three elements:
 
 ## 9. Out of scope (deferred, recorded)
 
-The full **Workstream module** (objective/sources/rules/schedule/scoped-memory/owner —
-P1; it *creates* Runs); ~~agent-initiated Runs + delegation identity~~ **→ now specced in
+~~The full **Workstream module** (objective/sources/rules/schedule/scoped-memory/owner —
+P1; it *creates* Runs)~~ **→ now specced in §12 (ADR-0063), riding the same api-local
+seams (sources/rules defer with Memory)**; ~~agent-initiated Runs + delegation identity~~
+**→ now specced in
 §11 (ADR-0062), riding the `internal/run` seam; the standalone-service extraction stays
-deferred**; plan-level blanket approval (v0.6); parallel / branching / retry DAG;
+deferred**; ~~plan-level blanket approval (v0.6)~~ **→ absorbed for the scheduled case by
+§12's reviewed immutable template**; parallel / branching / retry DAG;
 cross-resource transactional plans; a gateway-side exec worker; SSH pooling / full
 rate-limiting (sequential needs neither — R-5); persisted-command GC (F3-GC);
 Memory/Context Index (P2); full per-workload key registry + rotation/JWKS.
@@ -321,3 +326,99 @@ tool + the gateway→`api` pinned forward → flagged-step delegated context + r
 cascade → live capstone (agent launches a grant-bounded Run; ungated runs unattended,
 flagged parks→approve→continue, out-of-grant denied, revoke cancels in-flight) →
 offline/installed → release closure. Each rung its own consult.
+
+---
+
+## 12. v0.7 extension — the chartered Workstream module (ADR-0063)
+
+Status: **DRAFT** (companion to **ADR-0063**, Accepted 2026-07-05). v0.7 adds the **third
+initiator** — and the chartered module ADR-0061 reserved the name for: a **Workstream** is
+a standing, operator-chartered objective (label + objective text + an **immutable plan
+template** + a bounded resource/verb scope + a schedule + bounds) that **creates governed
+Runs on a schedule with nobody present at launch**. The Run engine, the grant machinery,
+`/v1/steps`, policy / connector / broker, and the audit chain are reused unchanged; there is
+**zero gateway diff**.
+
+### 12.1 The privilege delta (nobody at launch)
+
+v0.5 had a human at launch; v0.6 had an agent under a grant. A schedule tick has neither —
+the authority must be standing, bounded, revocable, consented-to in advance: **exactly the
+ADR-0062 delegation grant.** Chartering **auto-issues the Workstream's own grant in the same
+transaction** (grantee = `workstream:<id>` — a free-form subject today; principal = the
+chartering operator; scope/TTL/bounds = the charter's), so `workstream.chartered` +
+`grant.issued` form **one typed, audited `human-agent` consent act** covering objective +
+template + scope + schedule + bounds. No third authority model exists. The template is
+**immutable post-charter** (consent binds to the reviewed artifact — the ADR-0059/0061
+doctrine extended in time); changing the work = retire + re-charter.
+
+### 12.2 Launch flow (api-local; the sequencer needs no changes)
+
+```text
+operator ──(cookie/CSRF; charter = ONE consent act)──> services/api
+                   │  workstreams + workstream_steps (immutable, sealed template)
+                   │  + the charter's delegation_grant (grantee = workstream:<id>) IN-TX
+                   │
+              in-process ticker (3rd background goroutine; interval_seconds, no cron dep)
+                   │  single-winner status-guarded claim advances next_fire_at (no backfill)
+                   │  instantiate template → SHARED bounded-launch core (§12.3)
+                   │  launch key workstream:<id>:tick:<fired-at> → (grant_id, launch_key) dedup
+                   ▼
+              runs row 'pending' {operator=principal, actor=workstream:<id>, grant_id}
+                   ▼
+              EXISTING sequencer ──> EXISTING /v1/steps ──> policy/connector/broker ──> audit
+```
+
+The scoping audit's key finding: the sequencer scans for and drives **any** pending Run —
+a tick only creates a row. A bounds-refused tick (429: budget/concurrency/ceiling) audits
+`run.launch.denied` and re-fires next interval (never wedges); missed ticks collapse to one.
+
+### 12.3 The shared bounded-launch core (the v0.7 split)
+
+Plan-vs-grant (SEC-29) + the PERF-7 bounds today live only inside the gateway-pinned
+`LaunchDelegatedRun` handler ([delegated.go:48](../../services/api/internal/server/delegated.go))
+— unreachable in-process. v0.7 extracts them into **one shared function** (working shape:
+`run.LaunchBounded`, grant access behind a small read interface) used by **both** the
+gateway forward and the ticker — one validator, two callers. The split is
+behavior-preserving and lands first, **v0.6 WD-6 e2e green**, before the ticker rides on it
+(the `runGovernedStep` precedent, §4).
+
+**Budget generalization (the audit's gap):** `step_budget` is cumulative-forever
+([store.go:200](../../services/api/internal/run/store.go)) and would deterministically brick
+a standing charter. `delegation_grants` gains a **nullable `budget_window_seconds`**: set →
+the budget counts only Runs created in the current window ("steps per period"); **NULL →
+v0.6 semantics unchanged** (behavior-preserving, additive).
+
+### 12.4 Identity, policy & audit
+
+Actor = **`workstream:<id>`**, principal = the chartering operator — riding the §11.4 split
+unchanged (sequencer: `actor != "" → subject=actor, principal=operator`). Policy subject =
+the Workstream (ADR-0054 self-approve stays defeated → **flagged steps genuinely park**,
+with the FE-18/GOV-6 delegated context reused verbatim); PERF-3 buckets per Workstream;
+bracket edge = the existing **`agent-tool → agent-remote-session`** — ADR-0063 fixes the
+reading ("agent" = any non-human actor under delegated authority; no eighth edge). Events:
+`workstream.chartered/paused/resumed/retired` via the api outbox (content-free), beside the
+paired `grant.*`. Run↔Workstream linkage = `runs.grant_id` (charter↔grant is 1:1).
+
+### 12.5 Lifecycle, containment & the scoped-memory slice
+
+- **Pause** (reversible): ticks stop; in-flight Runs complete; grant stays active.
+  **Retire** (terminal): revokes the bound grant → the **existing §11.5 cascade** cancels
+  in-flight Runs and plan-vs-grant blocks stale ticks — the kill switch is v0.6 machinery
+  re-aimed.
+- **Runaway-schedule containment (the one new vector):** interval floor + per-grant
+  concurrency (≤ the gateway cap) + windowed budget + the per-operator ceiling — with
+  flagged resources still parking regardless.
+- **Surface:** `POST /v1/workstreams` + list/get + `pause|resume|retire`
+  (`human-agent`+CSRF, owner-scoped; fragment+codegen) and a `/workstreams` UI (charter
+  form reusing the FE-12 picker + the Runs-compose step pattern; list; detail). The detail
+  view's **run history + evidence-packet links are the v0.7 scoped memory** — read-time
+  assembly (EVD-1), no new blob; the full Memory/Context Index module stays deferred, with
+  the Workstream as its future owning entity. Sources/rules charter fields defer with it.
+
+### 12.6 Indicative v0.7 ladder
+
+ADR-0063 (Accepted) → v0.7 criteria → workstream schema/store + charter-issues-grant in-tx
+→ the shared launch-core split (WD-6 green first) → ticker + windowed budget → lifecycle
+verbs + retire-cascade → `/workstreams` UI + codegen → WD-7 live capstone (charter → tick
+fires unattended → flagged parks→approve→continue → evidence accrues → retire cancels
+in-flight + stops ticks) → offline/installed → release closure. Each rung its own consult.
