@@ -82,6 +82,38 @@ describe("Invocations route", () => {
     expect(screen.getByText("grant-42")).toBeTruthy();
   });
 
+  it("labels a schedule-fired step 'Scheduled by' its workstream (FE-21, ADR-0063)", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: {
+        invocations: [
+          { id: "inv-5", agent: "workstream:ws-1", resourceId: "r-1", tool: "remote.exec", command: "echo tick", status: "pending_approval", runId: "run-ws", stepIndex: 0, principal: "operator:admin", grantId: "grant-77" },
+        ],
+      },
+      error: undefined,
+    } as never);
+    renderInvocations();
+
+    await waitFor(() => expect(screen.getByText(/scheduled by/i)).toBeTruthy());
+    expect(screen.getAllByText("workstream:ws-1").length).toBeGreaterThan(0);
+    // The FE-18 delegated context is unchanged beside it.
+    expect(screen.getByText(/on behalf of/i)).toBeTruthy();
+    expect(screen.getByText("grant-77")).toBeTruthy();
+  });
+
+  it("does not label an interactive agent's step as scheduled (FE-21 is additive)", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: {
+        invocations: [
+          { id: "inv-6", agent: "agent:bot-1", resourceId: "r-1", tool: "remote.exec", command: "echo del", status: "pending_approval", runId: "run-a", stepIndex: 0, principal: "operator:admin", grantId: "grant-1" },
+        ],
+      },
+      error: undefined,
+    } as never);
+    renderInvocations();
+    await waitFor(() => expect(screen.getByText(/part of run/i)).toBeTruthy());
+    expect(screen.queryByText(/scheduled by/i)).toBeNull();
+  });
+
   it("omits the delegated context for an operator-direct run step", async () => {
     vi.mocked(apiClient.GET).mockResolvedValue({
       data: {

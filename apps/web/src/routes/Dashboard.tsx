@@ -58,6 +58,12 @@ export function Dashboard() {
             issue and revoke the scoped grants that let AI agents launch governed runs on their own.
           </p>
           <p className="mt-2 text-sm">
+            <Link to="/workstreams" className="font-medium text-primary hover:underline">
+              Workstreams →
+            </Link>{" "}
+            charter standing objectives that fire governed runs on a schedule, bounded by their own grant.
+          </p>
+          <p className="mt-2 text-sm">
             <Link to="/audit" className="font-medium text-primary hover:underline">
               Audit timeline →
             </Link>{" "}

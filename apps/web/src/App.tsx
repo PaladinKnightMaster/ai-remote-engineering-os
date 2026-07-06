@@ -9,6 +9,7 @@ import { SessionView } from "./routes/SessionView";
 import { Invocations } from "./routes/Invocations";
 import { Runs } from "./routes/Runs";
 import { Grants } from "./routes/Grants";
+import { Workstreams } from "./routes/Workstreams";
 import { Audit } from "./routes/Audit";
 
 /**
@@ -76,6 +77,14 @@ export function App() {
             element={
               <RequireAuth>
                 <Grants />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/workstreams"
+            element={
+              <RequireAuth>
+                <Workstreams />
               </RequireAuth>
             }
           />

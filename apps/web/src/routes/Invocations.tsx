@@ -83,6 +83,13 @@ export function Invocations() {
             <li key={inv.id} className="space-y-1">
               {inv.runId ? (
                 <p className="text-xs text-muted-foreground">
+                  {/* FE-21 (ADR-0063): a schedule-fired step is legible as such — the actor is
+                      the Workstream, not an interactive agent. Additive copy only. */}
+                  {inv.agent?.startsWith("workstream:") ? (
+                    <>
+                      Scheduled by <span className="font-mono">{inv.agent}</span> ·{" "}
+                    </>
+                  ) : null}
                   Part of run <span className="font-mono">{inv.runId}</span>
                   {typeof inv.stepIndex === "number" ? <> · step {inv.stepIndex + 1}</> : null}
                   {inv.principal ? (
