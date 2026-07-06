@@ -112,14 +112,15 @@ type gatewayProxy interface {
 }
 
 // runStore is the slice of the Run engine's store the launch/status handlers need
-// (ADR-0061, T-057). nil → the /v1/runs routes answer 503.
+// (ADR-0061, T-057). nil → the /v1/runs routes answer 503. Since T-072 the delegated
+// launch rides the SHARED bounded-launch core (LaunchBounded, SEC-30a) — the grant-scoped
+// counts and the launch-key lookup live inside it; CountActiveForOperator stays for the
+// operator-direct CreateRun path (its own PERF-6 ceiling, outside the grant model).
 type runStore interface {
 	Create(ctx context.Context, in run.Input) (run.Run, error)
 	Get(ctx context.Context, id string) (run.Run, error)
-	GetByLaunchKey(ctx context.Context, grantID, launchKey string) (run.Run, error)
+	LaunchBounded(ctx context.Context, grants run.GrantSource, agentSubject, grantID, launchKey string, steps []run.StepInput) (run.Run, bool, *run.Refusal, error)
 	CountActiveForOperator(ctx context.Context, operator string) (int, error)
-	CountActiveForGrant(ctx context.Context, grantID string) (int, error)
-	CountStepsForGrant(ctx context.Context, grantID string) (int, error)
 	ListForOperator(ctx context.Context, operator, after string, limit int) ([]run.Run, string, error)
 	CancelRun(ctx context.Context, id string) (bool, error)
 	CancelRunsForGrant(ctx context.Context, grantID string) (int, error)

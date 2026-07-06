@@ -8,13 +8,11 @@ import (
 	"aireos.local/services/api/internal/run"
 )
 
-// Run launch bounds (PERF-6, ADR-0061): cap the plan size and an operator's
-// concurrent active Runs so a pathological or runaway launch cannot flood the
-// governed plane.
-const (
-	maxStepsPerRun           = 50
-	maxActiveRunsPerOperator = 10
-)
+// maxStepsPerRun caps the operator-direct plan size (PERF-6, ADR-0061). The per-operator
+// active-Run ceiling moved to run.MaxActiveRunsPerOperator at T-072 — the engine owns it,
+// since BOTH launch paths (this operator-direct one and the shared bounded-launch core)
+// score against it.
+const maxStepsPerRun = 50
 
 // runStepView / runView are the wire shapes for a Run's status. The operator-authored
 // command is NOT echoed back (the operator submitted it; this view is for watching
@@ -96,7 +94,7 @@ func (a *apiHandlers) CreateRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "launch failed")
 		return
 	}
-	if active >= maxActiveRunsPerOperator {
+	if active >= run.MaxActiveRunsPerOperator {
 		writeError(w, http.StatusTooManyRequests, "too_many_requests", "too many active runs for this operator")
 		return
 	}

@@ -13,8 +13,11 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aireos.local/services/api/internal/grant"
 )
 
 func testStore(t *testing.T) *Store {
@@ -419,4 +422,103 @@ func inClaimable(t *testing.T, s *Store, id string) bool {
 		}
 	}
 	return false
+}
+
+// TestLaunchBounded — the T-072 G1 live-PG proof of the SHARED bounded-launch core
+// (SEC-30a): happy launch binds {operator=principal, actor, grant}; a same-key retry
+// re-attaches — INCLUDING after the budget is exhausted (the ratified early-re-attach
+// delta); the typed refusals carry the right kind (OutOfGrant / Bounds / GrantDead);
+// every refusal is deny-audited (run.launch.denied).
+func TestLaunchBounded(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	dsn := os.Getenv("API_TEST_DATABASE_URL")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	grants := grant.NewStore(pool, "api_outbox")
+
+	g, err := grants.Create(ctx, grant.Input{
+		Principal: "operator:lb", Agent: "agent:lb", Label: "t072",
+		Resources: []string{"res-a"}, Verbs: []string{"exec"},
+		ExpiresAt: time.Now().Add(time.Hour), MaxStepsPerRun: 2, MaxConcurrentRuns: 4, StepBudget: 3,
+	})
+	if err != nil {
+		t.Fatalf("issue grant: %v", err)
+	}
+	oneStep := []StepInput{{ResourceID: "res-a", Command: "uptime"}}
+
+	deniedCount := func() int {
+		var n int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM api_outbox
+			 WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = 'run.launch.denied'`,
+			"grant:"+g.ID).Scan(&n); err != nil {
+			t.Fatalf("count denials: %v", err)
+		}
+		return n
+	}
+
+	// Happy: created with the delegated identity bound from the grant.
+	first, reattached, refusal, err := s.LaunchBounded(ctx, grants, "agent:lb", g.ID, "key-1", oneStep)
+	if err != nil || refusal != nil || reattached {
+		t.Fatalf("happy launch: run=%+v reattached=%v refusal=%+v err=%v", first, reattached, refusal, err)
+	}
+	if first.Operator != "operator:lb" || first.Actor != "agent:lb" || first.GrantID != g.ID {
+		t.Fatalf("identity binding wrong: %+v", first)
+	}
+
+	// Same-key retry → re-attach, same Run, no refusal.
+	again, reattached, refusal, err := s.LaunchBounded(ctx, grants, "agent:lb", g.ID, "key-1", oneStep)
+	if err != nil || refusal != nil || !reattached || again.ID != first.ID {
+		t.Fatalf("re-attach: run=%+v reattached=%v refusal=%+v err=%v", again, reattached, refusal, err)
+	}
+
+	// Exhaust the budget (1 consumed + 2 = 3 = budget).
+	twoSteps := []StepInput{{ResourceID: "res-a", Command: "a"}, {ResourceID: "res-a", Command: "b"}}
+	if _, _, refusal, err = s.LaunchBounded(ctx, grants, "agent:lb", g.ID, "key-2", twoSteps); err != nil || refusal != nil {
+		t.Fatalf("second launch: refusal=%+v err=%v", refusal, err)
+	}
+
+	// Budget exhausted → a NEW key refuses with Bounds + is audited.
+	before := deniedCount()
+	_, _, refusal, err = s.LaunchBounded(ctx, grants, "agent:lb", g.ID, "key-3", oneStep)
+	if err != nil || refusal == nil || refusal.Kind != RefusalBounds {
+		t.Fatalf("budget refusal: refusal=%+v err=%v, want Bounds", refusal, err)
+	}
+	if deniedCount() != before+1 {
+		t.Fatal("budget refusal was not deny-audited")
+	}
+
+	// The early-re-attach delta, proven live: the ORIGINAL key still re-attaches even
+	// though the grant's budget is now exhausted (pre-T-072 this answered a bounds 429).
+	again, reattached, refusal, err = s.LaunchBounded(ctx, grants, "agent:lb", g.ID, "key-1", oneStep)
+	if err != nil || refusal != nil || !reattached || again.ID != first.ID {
+		t.Fatalf("post-exhaustion re-attach: run=%+v reattached=%v refusal=%+v err=%v", again, reattached, refusal, err)
+	}
+
+	// Foreign agent → OutOfGrant (validation precedes re-attach: even with a known key).
+	_, _, refusal, err = s.LaunchBounded(ctx, grants, "agent:other", g.ID, "key-1", oneStep)
+	if err != nil || refusal == nil || refusal.Kind != RefusalOutOfGrant {
+		t.Fatalf("foreign agent: refusal=%+v err=%v, want OutOfGrant", refusal, err)
+	}
+
+	// Unknown grant → OutOfGrant.
+	_, _, refusal, err = s.LaunchBounded(ctx, grants, "agent:lb", "00000000-0000-0000-0000-000000000000", "key-9", oneStep)
+	if err != nil || refusal == nil || refusal.Kind != RefusalOutOfGrant {
+		t.Fatalf("unknown grant: refusal=%+v err=%v, want OutOfGrant", refusal, err)
+	}
+
+	// Revoked grant → GrantDead (the T-073 self-retire trigger) — and validation-first
+	// means even the original launch key refuses rather than re-attaching.
+	if ok, err := grants.Revoke(ctx, g.ID); err != nil || !ok {
+		t.Fatalf("revoke: ok=%v err=%v", ok, err)
+	}
+	_, _, refusal, err = s.LaunchBounded(ctx, grants, "agent:lb", g.ID, "key-1", oneStep)
+	if err != nil || refusal == nil || refusal.Kind != RefusalGrantDead {
+		t.Fatalf("revoked grant: refusal=%+v err=%v, want GrantDead", refusal, err)
+	}
 }
