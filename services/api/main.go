@@ -38,6 +38,7 @@ import (
 	runengine "aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/server"
 	"aireos.local/services/api/internal/store"
+	"aireos.local/services/api/internal/workstream"
 )
 
 //go:embed migrations/*.sql
@@ -123,7 +124,24 @@ func serve(dsn string) error {
 	// The delegation-grant engine (ADR-0062, T-063): the operator issue/list/revoke
 	// routes. Grants are api-local (no gateway needed), so they are wired
 	// unconditionally — unlike the Run engine below, which needs the gateway to drive.
-	opts = append(opts, server.WithGrantStore(grant.NewStore(pool, store.OutboxTable)))
+	grantStore := grant.NewStore(pool, store.OutboxTable)
+	opts = append(opts, server.WithGrantStore(grantStore))
+
+	// The chartered-Workstream engine (ADR-0063, T-071): the operator charter/list/get
+	// routes. api-local like grants → wired unconditionally; the charter issues its own
+	// grant IN-TX via the grant store (WS-2). The sealer is nil — the same plaintext
+	// dev/transition wiring as the run store below, so both flip together when the
+	// command-at-rest key is provisioned. The ticker that fires charters is T-073.
+	wsMinInterval := 0 // ≤0 → the 60s production floor default (PERF-8)
+	if v := os.Getenv("AIREOS_WORKSTREAM_MIN_INTERVAL_SECONDS"); v != "" {
+		n, cerr := strconv.Atoi(v)
+		if cerr != nil || n <= 0 {
+			return fmt.Errorf("AIREOS_WORKSTREAM_MIN_INTERVAL_SECONDS must be a positive integer, got %q", v)
+		}
+		wsMinInterval = n
+	}
+	opts = append(opts, server.WithWorkstreamStore(
+		workstream.NewStore(pool, nil, grantStore, store.OutboxTable), wsMinInterval))
 
 	// The delegated-launch forward verifier (ADR-0062, T-065a): route-scoped to the gateway's
 	// v4.public token so the operator routes stay symmetric-only (SEC-20). nil (no gateway

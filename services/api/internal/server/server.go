@@ -50,6 +50,7 @@ import (
 	"aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/session"
 	"aireos.local/services/api/internal/store"
+	"aireos.local/services/api/internal/workstream"
 )
 
 // Cookie + CSRF contract names (ADR-0047). The SPA in
@@ -148,6 +149,11 @@ type apiHandlers struct {
 	// ONLY (ADR-0062 / T-065a) — route-scoped so the operator routes stay symmetric-only
 	// (SEC-20). nil → the forward route is not mounted.
 	gatewayVerifier mw.Verifier
+	// workstreams is the chartered-Workstream store (ADR-0063 / T-071); nil → the
+	// /v1/workstreams routes answer 503. workstreamMinInterval is the PERF-8 schedule
+	// floor in seconds (defaulted in New; env-overridden at wiring).
+	workstreams           workstreamStore
+	workstreamMinInterval int
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -197,6 +203,28 @@ func WithGrantStore(gs grantStore) Option {
 	return func(h *apiHandlers) { h.grants = gs }
 }
 
+// workstreamStore is the slice of the chartered-Workstream store the charter handlers
+// need (ADR-0063, T-071). nil → the /v1/workstreams routes answer 503.
+type workstreamStore interface {
+	Create(ctx context.Context, in workstream.Input) (workstream.Workstream, error)
+	Get(ctx context.Context, id string) (workstream.Workstream, error)
+	ListForOperator(ctx context.Context, operator, after string, limit int) ([]workstream.Workstream, string, error)
+}
+
+// WithWorkstreamStore wires the chartered-Workstream store (ADR-0063, T-071): the
+// operator charter (POST /v1/workstreams) / list / get routes. minIntervalSeconds is the
+// PERF-8 schedule floor (≤0 → the 60s production default). Workstreams are api-local
+// (the ticker drives the run engine in-process), so like grants they are wired
+// unconditionally.
+func WithWorkstreamStore(ws workstreamStore, minIntervalSeconds int) Option {
+	return func(h *apiHandlers) {
+		h.workstreams = ws
+		if minIntervalSeconds > 0 {
+			h.workstreamMinInterval = minIntervalSeconds
+		}
+	}
+}
+
 // WithGatewayVerifier wires the route-scoped verifier for the inbound delegated-launch
 // forward (ADR-0062, T-065a): it accepts ONLY the gateway's v4.public service token, so the
 // gateway's token reaches ONLY /v1/internal/delegated-runs and never the operator routes
@@ -243,7 +271,8 @@ func (a *apiHandlers) agentTokenIssuer() agentIssuer {
 // (see gen.go's per-op middleware loop). Reordering this slice without
 // understanding that loop will silently break the cookie path.
 func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, auditURL, policyURL string, opts ...Option) http.Handler {
-	h := &apiHandlers{store: s, authn: authn, signer: signer, verifier: v, auditURL: auditURL}
+	h := &apiHandlers{store: s, authn: authn, signer: signer, verifier: v, auditURL: auditURL,
+		workstreamMinInterval: defaultWorkstreamMinInterval}
 	if policyURL != "" {
 		// The decision point is consulted at session-create for requires_approval
 		// resources (ADR-0054). api mints a service-service token from its signer.

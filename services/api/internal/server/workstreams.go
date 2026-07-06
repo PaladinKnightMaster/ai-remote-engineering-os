@@ -1,0 +1,247 @@
+package server
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"slices"
+	"time"
+
+	"aireos.local/services/api/internal/grant"
+	"aireos.local/services/api/internal/workstream"
+)
+
+// defaultWorkstreamMinInterval is the production interval floor (PERF-8, ADR-0063 §5):
+// charters may not fire faster than this. Env-overridable at wiring
+// (AIREOS_WORKSTREAM_MIN_INTERVAL_SECONDS — the e2e compose lowers it to prove live
+// recurrence without a minute-scale gate).
+const defaultWorkstreamMinInterval = 60
+
+// workstreamStepView is one template step on the wire (detail only; operator-authored,
+// operator-readable — the run-step posture).
+type workstreamStepView struct {
+	ResourceID string `json:"resourceId"`
+	Command    string `json:"command"`
+}
+
+// workstreamView is the wire shape for a charter. The principal is the caller
+// (implicit), so it is not echoed. Steps (the template) ride the detail view only.
+type workstreamView struct {
+	ID              string               `json:"id"`
+	Label           string               `json:"label,omitempty"`
+	Objective       string               `json:"objective"`
+	GrantID         string               `json:"grantId"`
+	IntervalSeconds int                  `json:"intervalSeconds"`
+	NextFireAt      time.Time            `json:"nextFireAt"`
+	Status          string               `json:"status"`
+	CreatedAt       time.Time            `json:"createdAt"`
+	Steps           []workstreamStepView `json:"steps,omitempty"`
+}
+
+func toWorkstreamView(w workstream.Workstream, withSteps bool) workstreamView {
+	v := workstreamView{
+		ID: w.ID, Label: w.Label, Objective: w.Objective, GrantID: w.GrantID,
+		IntervalSeconds: w.IntervalSeconds, NextFireAt: w.NextFireAt,
+		Status: w.Status, CreatedAt: w.CreatedAt,
+	}
+	if withSteps {
+		for _, st := range w.Steps {
+			v.Steps = append(v.Steps, workstreamStepView{ResourceID: st.ResourceID, Command: st.Command})
+		}
+	}
+	return v
+}
+
+// CreateWorkstream (POST /v1/workstreams) charters a Workstream (ADR-0063; WS-1/WS-2):
+// human-agent + double-submit CSRF via the shared gate; the chartering operator is the
+// principal. The ONE consent act: the charter row + its IMMUTABLE sealed template + the
+// auto-issued delegation grant (grantee = workstream:<id>) are created in one
+// transaction, with workstream.chartered + grant.issued chained from it (AUD-18). The
+// 422 matrix here is the charter-time half of the never-wedge property: a charter that
+// could never fire (template outside its own scope/bounds, a sub-floor interval) is
+// rejected at consent, not discovered at tick time.
+func (a *apiHandlers) CreateWorkstream(w http.ResponseWriter, r *http.Request) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.workstreams == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the workstream engine is not configured")
+		return
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var body struct {
+		Label               string   `json:"label"`
+		Objective           string   `json:"objective"`
+		Resources           []string `json:"resources"`
+		Verbs               []string `json:"verbs"`
+		TTLSeconds          int      `json:"ttlSeconds"`
+		IntervalSeconds     int      `json:"intervalSeconds"`
+		MaxStepsPerRun      int      `json:"maxStepsPerRun"`
+		MaxConcurrentRuns   int      `json:"maxConcurrentRuns"`
+		StepBudget          int      `json:"stepBudget"`
+		BudgetWindowSeconds int      `json:"budgetWindowSeconds"` // optional; 0 → defaults to the interval
+		Steps               []struct {
+			ResourceID string `json:"resourceId"`
+			Command    string `json:"command"`
+		} `json:"steps"`
+	}
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
+		return
+	}
+	if body.Objective == "" || len(body.Steps) == 0 || len(body.Resources) == 0 || len(body.Verbs) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "a workstream requires an objective, at least one template step, and a resource+verb scope")
+		return
+	}
+	for _, st := range body.Steps {
+		if st.ResourceID == "" || st.Command == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "each template step requires resourceId and command")
+			return
+		}
+	}
+
+	// The SHARED issuance-bounds core (SEC-30b) — the same validator CreateGrant runs, so
+	// the in-process issuance path cannot drift from the HTTP one.
+	if msg := validateGrantIssuanceBounds(body.Resources, body.Verbs, body.TTLSeconds,
+		body.MaxStepsPerRun, body.MaxConcurrentRuns, body.StepBudget); msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, "unprocessable", msg)
+		return
+	}
+	// Charter-time 422 matrix (WS-2; the F2 no-wedged-by-construction check + PERF-8 floor
+	// + template ⊆ scope — the SEC-29 mirror at consent time).
+	if body.IntervalSeconds < a.workstreamMinInterval {
+		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "intervalSeconds is below the schedule floor")
+		return
+	}
+	if len(body.Steps) > body.MaxStepsPerRun || len(body.Steps) > body.StepBudget {
+		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "the template exceeds the charter's own step bounds (it could never fire)")
+		return
+	}
+	if body.BudgetWindowSeconds < 0 {
+		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "budgetWindowSeconds must not be negative")
+		return
+	}
+	for _, st := range body.Steps {
+		if !slices.Contains(body.Resources, st.ResourceID) {
+			writeError(w, http.StatusUnprocessableEntity, "unprocessable", "a template step targets a resource outside the charter scope")
+			return
+		}
+	}
+
+	// The windowed budget defaults to the interval ("steps per period", WS-4).
+	window := body.BudgetWindowSeconds
+	if window == 0 {
+		window = body.IntervalSeconds
+	}
+	in := workstream.Input{
+		Principal: operator, Label: body.Label, Objective: body.Objective,
+		IntervalSeconds: body.IntervalSeconds,
+		Grant: grant.Input{
+			// Principal + Agent are bound by the store (Agent = workstream:<id>, minted
+			// there) — never caller-supplied.
+			Label:     "workstream: " + firstNonEmptyStr(body.Label, body.Objective),
+			Resources: body.Resources, Verbs: body.Verbs,
+			ExpiresAt:           time.Now().Add(time.Duration(body.TTLSeconds) * time.Second),
+			MaxStepsPerRun:      body.MaxStepsPerRun,
+			MaxConcurrentRuns:   body.MaxConcurrentRuns,
+			StepBudget:          body.StepBudget,
+			BudgetWindowSeconds: window,
+		},
+	}
+	for _, st := range body.Steps {
+		in.Steps = append(in.Steps, workstream.StepInput{ResourceID: st.ResourceID, Command: st.Command})
+	}
+	created, err := a.workstreams.Create(r.Context(), in)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "charter failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, toWorkstreamView(created, true))
+}
+
+type workstreamPage struct {
+	Items []workstreamView `json:"items"`
+	Page  pageMeta         `json:"page"`
+}
+
+// ListWorkstreams (GET /v1/workstreams) returns a page of the caller's charters
+// (principal-scoped; no templates — the runs-list pattern).
+func (a *apiHandlers) ListWorkstreams(w http.ResponseWriter, r *http.Request, params ListWorkstreamsParams) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.workstreams == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the workstream engine is not configured")
+		return
+	}
+	limit := 50
+	if params.Limit != nil {
+		n := int(*params.Limit)
+		if n < 1 || n > 200 {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be an integer in [1,200]")
+			return
+		}
+		limit = n
+	}
+	var after string
+	if params.Cursor != nil {
+		after = string(*params.Cursor)
+	}
+	items, last, err := a.workstreams.ListForOperator(r.Context(), operator, after, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "list workstreams failed")
+		return
+	}
+	page := workstreamPage{Items: make([]workstreamView, 0, len(items))}
+	for _, ws := range items {
+		page.Items = append(page.Items, toWorkstreamView(ws, false))
+	}
+	if len(items) == limit {
+		page.Page.NextCursor = last
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+// GetWorkstream (GET /v1/workstreams/{id}) returns a charter with its template.
+// Owner-scoped: a cross-operator id answers 404 (existence-hiding, the grants pattern).
+func (a *apiHandlers) GetWorkstream(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.workstreams == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the workstream engine is not configured")
+		return
+	}
+	ws, err := a.workstreams.Get(r.Context(), id)
+	if errors.Is(err, workstream.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "workstream not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "get workstream failed")
+		return
+	}
+	if ws.Principal != operator {
+		writeError(w, http.StatusNotFound, "not_found", "workstream not found") // owner-scoped existence-hiding
+		return
+	}
+	writeJSON(w, http.StatusOK, toWorkstreamView(ws, true))
+}
+
+// firstNonEmptyStr returns the first non-empty string (the grant label falls back to the
+// objective when the charter has no label).
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}

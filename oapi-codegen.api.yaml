@@ -21,3 +21,4 @@ output-options:
     - audit-read
     - runs
     - grants
+    - workstreams

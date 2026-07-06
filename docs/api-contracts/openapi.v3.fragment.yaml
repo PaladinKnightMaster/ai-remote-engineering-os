@@ -36,6 +36,8 @@ tags:
     description: Operator-launched governed Runs on services/api (T-057, ADR-0061; the Workstream Engine's execution layer).
   - name: grants
     description: Operator-issued delegation grants on services/api (T-063, ADR-0062; the agent's bounded, revocable standing authority for agent-initiated Runs).
+  - name: workstreams
+    description: Chartered Workstreams on services/api (T-071, ADR-0063; the standing operator-chartered objective whose immutable template fires governed Runs on a schedule, bounded by its auto-issued delegation grant).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -44,15 +46,9 @@ tags:
 # operationId convention for added paths: <verb><Entity>[Qualifier],
 # e.g. listResources, createResource, getResource, terminateSession.
 paths:
-  /v1/workstreams:
-    get:
-      summary: List workstreams
-      responses:
-        '200': { description: OK }
-    post:
-      summary: Create workstream
-      responses:
-        '201': { description: Created }
+  # The /v1/workstreams placeholder stub (v3.0.1 P1 placeholder) was superseded at T-071
+  # (ADR-0063) by the real chartered-Workstream contract further down this file — the
+  # module is now BUILT; the remaining stubs below stay placeholders.
   /v1/workstreams/{workstreamId}/runs:
     post:
       summary: Start workstream run
@@ -783,6 +779,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # /v1/workstreams — chartered Workstreams (ADR-0063; v0.7). human-agent + double-submit
+  # CSRF; principal-owner-scoped. Chartering is ONE consent act (GOV-8): the charter row +
+  # its IMMUTABLE sealed template + the auto-issued delegation grant (grantee =
+  # workstream:<id>) are created in one transaction, with workstream.chartered +
+  # grant.issued chained from it (WS-2/AUD-18). Lifecycle verbs (pause/resume/retire) land
+  # at T-074.
+  /v1/workstreams:
+    post:
+      tags: [workstreams]
+      operationId: createWorkstream
+      summary: Charter a Workstream (ADR-0063; the one consent act — auto-issues its grant)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkstreamCreate'
+      responses:
+        '201':
+          description: Workstream chartered (active); first fire = charter + interval.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workstream'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: The charter is invalid — a sub-floor interval, a template outside its own scope or bounds (it could never fire), or grant bounds outside the issuance ceilings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      tags: [workstreams]
+      operationId: listWorkstreams
+      summary: List the caller's Workstreams (operator-scoped; no templates)
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        '200':
+          description: A page of the caller's Workstreams.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workstream'
+                  page:
+                    $ref: '#/components/schemas/PageMeta'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/workstreams/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [workstreams]
+      operationId: getWorkstream
+      summary: Fetch a Workstream with its immutable template (the caller must own it)
+      responses:
+        '200':
+          description: The Workstream.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workstream'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -1148,6 +1222,94 @@ components:
         createdAt:
           type: string
           format: date-time
+    WorkstreamStep:
+      type: object
+      additionalProperties: false
+      required: [resourceId, command]
+      properties:
+        resourceId:
+          type: string
+        command:
+          type: string
+          description: Operator-authored; sealed at rest server-side (F3 parity), operator-readable on the detail view.
+    WorkstreamCreate:
+      type: object
+      additionalProperties: false
+      required: [objective, resources, verbs, ttlSeconds, intervalSeconds, maxStepsPerRun, maxConcurrentRuns, stepBudget, steps]
+      properties:
+        label:
+          type: string
+          description: Operator-facing name for the charter.
+        objective:
+          type: string
+          description: The chartered objective (reviewed at consent; GOV-8).
+        resources:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: The charter scope — becomes the auto-issued grant's resources; every template step must target one of these.
+        verbs:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        ttlSeconds:
+          type: integer
+          minimum: 1
+          description: Charter (= grant) lifetime in seconds.
+        intervalSeconds:
+          type: integer
+          minimum: 1
+          description: The fixed schedule interval; must be at or above the server's floor (PERF-8). First fire = charter + interval.
+        maxStepsPerRun:
+          type: integer
+          minimum: 1
+        maxConcurrentRuns:
+          type: integer
+          minimum: 1
+        stepBudget:
+          type: integer
+          minimum: 1
+        budgetWindowSeconds:
+          type: integer
+          minimum: 1
+          description: Rolling budget window (WS-4) — the step budget counts only Runs created within it. Omitted → defaults to the interval ("steps per period").
+        steps:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WorkstreamStep'
+          description: The IMMUTABLE plan template (edit = retire + re-charter).
+    Workstream:
+      type: object
+      required: [id, objective, grantId, intervalSeconds, nextFireAt, status, createdAt]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        objective:
+          type: string
+        grantId:
+          type: string
+          description: The charter's auto-issued delegation grant (1:1; retire revokes it).
+        intervalSeconds:
+          type: integer
+        nextFireAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          description: active | paused | retired (ADR-0063 §7).
+        createdAt:
+          type: string
+          format: date-time
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkstreamStep'
+          description: The immutable template — detail view only (absent on list items).
     AuditEvent:
       type: object
       additionalProperties: false

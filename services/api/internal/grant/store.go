@@ -22,9 +22,11 @@ var ErrNotFound = errors.New("grant not found")
 const grantEdge = "human-agent"
 
 // selectCols is the shared column list for Get/List (kept in one place so the scan order
-// matches).
+// matches). budget_window_seconds is nullable (WS-4): COALESCE maps NULL → 0 (unwindowed,
+// the v0.6 semantics).
 const selectCols = `id, principal, agent, label, resources, verbs, expires_at,
-	max_steps_per_run, max_concurrent_runs, step_budget, status, created_at, updated_at`
+	max_steps_per_run, max_concurrent_runs, step_budget, COALESCE(budget_window_seconds, 0),
+	status, created_at, updated_at`
 
 // Store persists delegation_grants for the grant engine. It takes the pgx pool directly
 // (the internal/run pattern) so the package stays extraction-ready.
@@ -42,15 +44,40 @@ func NewStore(pool *pgxpool.Pool, outboxTable string) *Store {
 }
 
 // Create inserts a new grant and enqueues grant.issued in the same transaction (AUD-16):
-// an issued grant always has its issuance audited. It validates the grant is well-formed
-// (an agent, ≥1 resource + verb, a future expiry, positive bounds) — fail-loud, no partial
-// row.
+// an issued grant always has its issuance audited. It owns the transaction; the insert +
+// validation body lives in CreateInTx so the workstream charter (ADR-0063 WS-2) can issue
+// its grant inside ITS transaction — one issuance path, two callers (SEC-30).
 func (s *Store) Create(ctx context.Context, in Input) (Grant, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Grant{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	g, err := s.CreateInTx(ctx, tx, in)
+	if err != nil {
+		return Grant{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Grant{}, fmt.Errorf("commit grant: %w", err)
+	}
+	return g, nil
+}
+
+// CreateInTx inserts a new grant + enqueues grant.issued on the CALLER's transaction —
+// the T-071 extraction of Create's body (behavior-preserving) so the workstream charter
+// can create its grant atomically with the charter row (WS-2). It validates the grant is
+// well-formed (an agent, ≥1 resource + verb, a future expiry, positive bounds) —
+// fail-loud, no partial row. The caller owns commit/rollback.
+func (s *Store) CreateInTx(ctx context.Context, tx pgx.Tx, in Input) (Grant, error) {
 	if in.Agent == "" || len(in.Resources) == 0 || len(in.Verbs) == 0 {
 		return Grant{}, errors.New("grant requires an agent, at least one resource, and at least one verb")
 	}
 	if in.MaxStepsPerRun <= 0 || in.MaxConcurrentRuns <= 0 || in.StepBudget <= 0 {
 		return Grant{}, errors.New("grant bounds (maxStepsPerRun, maxConcurrentRuns, stepBudget) must be positive")
+	}
+	if in.BudgetWindowSeconds < 0 {
+		return Grant{}, errors.New("grant budget window must not be negative")
 	}
 	if !in.ExpiresAt.After(time.Now()) {
 		return Grant{}, errors.New("grant expiry must be in the future")
@@ -60,21 +87,18 @@ func (s *Store) Create(ctx context.Context, in Input) (Grant, error) {
 		return Grant{}, fmt.Errorf("mint grant id: %w", err)
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return Grant{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
-
+	// budget_window_seconds is NULL when unwindowed (WS-4): NULLIF maps 0 → NULL, so a
+	// v0.6-shaped Input keeps the v0.6 row shape exactly.
 	var createdAt, updatedAt time.Time
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO delegation_grants
 		  (id, principal, agent, label, resources, verbs, expires_at,
-		   max_steps_per_run, max_concurrent_runs, step_budget)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		   max_steps_per_run, max_concurrent_runs, step_budget, budget_window_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, 0))
 		RETURNING created_at, updated_at`,
 		id.String(), in.Principal, in.Agent, in.Label, in.Resources, in.Verbs, in.ExpiresAt,
-		in.MaxStepsPerRun, in.MaxConcurrentRuns, in.StepBudget).Scan(&createdAt, &updatedAt); err != nil {
+		in.MaxStepsPerRun, in.MaxConcurrentRuns, in.StepBudget, in.BudgetWindowSeconds).
+		Scan(&createdAt, &updatedAt); err != nil {
 		return Grant{}, fmt.Errorf("insert grant: %w", err)
 	}
 
@@ -88,14 +112,12 @@ func (s *Store) Create(ctx context.Context, in Input) (Grant, error) {
 		return Grant{}, fmt.Errorf("enqueue grant.issued: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return Grant{}, fmt.Errorf("commit grant: %w", err)
-	}
 	return Grant{
 		ID: id.String(), Principal: in.Principal, Agent: in.Agent, Label: in.Label,
 		Resources: in.Resources, Verbs: in.Verbs, ExpiresAt: in.ExpiresAt,
 		MaxStepsPerRun: in.MaxStepsPerRun, MaxConcurrentRuns: in.MaxConcurrentRuns,
-		StepBudget: in.StepBudget, Status: StatusActive, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		StepBudget: in.StepBudget, BudgetWindowSeconds: in.BudgetWindowSeconds,
+		Status: StatusActive, CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}, nil
 }
 
@@ -104,7 +126,8 @@ func (s *Store) Get(ctx context.Context, id string) (Grant, error) {
 	var g Grant
 	err := s.pool.QueryRow(ctx, `SELECT `+selectCols+` FROM delegation_grants WHERE id = $1`, id).
 		Scan(&g.ID, &g.Principal, &g.Agent, &g.Label, &g.Resources, &g.Verbs, &g.ExpiresAt,
-			&g.MaxStepsPerRun, &g.MaxConcurrentRuns, &g.StepBudget, &g.Status, &g.CreatedAt, &g.UpdatedAt)
+			&g.MaxStepsPerRun, &g.MaxConcurrentRuns, &g.StepBudget, &g.BudgetWindowSeconds,
+			&g.Status, &g.CreatedAt, &g.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -137,7 +160,8 @@ func (s *Store) ListForOperator(ctx context.Context, principal, after string, li
 	for rows.Next() {
 		var g Grant
 		if err := rows.Scan(&g.ID, &g.Principal, &g.Agent, &g.Label, &g.Resources, &g.Verbs, &g.ExpiresAt,
-			&g.MaxStepsPerRun, &g.MaxConcurrentRuns, &g.StepBudget, &g.Status, &g.CreatedAt, &g.UpdatedAt); err != nil {
+			&g.MaxStepsPerRun, &g.MaxConcurrentRuns, &g.StepBudget, &g.BudgetWindowSeconds,
+			&g.Status, &g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, "", err
 		}
 		out = append(out, g)

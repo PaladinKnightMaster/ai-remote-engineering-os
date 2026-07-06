@@ -48,6 +48,25 @@ func toGrantView(g grant.Grant) grantView {
 	}
 }
 
+// validateGrantIssuanceBounds is the SHARED grant-issuance bounds check (SEC-30b,
+// ADR-0063): one validator for BOTH issuance paths — the operator CreateGrant route and
+// the workstream charter (which issues its grant in-process via CreateInTx, bypassing
+// this handler). Returns "" when the bounds are acceptable, else the 422 message. A
+// second diverging issuance validator is a release blocker (the v0.7 criteria).
+func validateGrantIssuanceBounds(resources, verbs []string, ttlSeconds, maxStepsPerRun, maxConcurrentRuns, stepBudget int) string {
+	switch {
+	case len(resources) > maxGrantResources || len(verbs) > maxGrantVerbs:
+		return "the grant scope exceeds the maximum size"
+	case ttlSeconds <= 0 || maxStepsPerRun <= 0 || maxConcurrentRuns <= 0 || stepBudget <= 0:
+		return "ttlSeconds and all bounds must be positive"
+	case maxConcurrentRuns > maxConcurrentRunsCeiling:
+		// PERF-7: a grant cannot promise more concurrent Runs than the gateway accepts
+		// in-flight steps for (else the (cap+1)th Run's step is refused and it fails).
+		return "maxConcurrentRuns exceeds the gateway in-flight ceiling"
+	}
+	return ""
+}
+
 // CreateGrant (POST /v1/grants) issues an operator-authored delegation grant (ADR-0062):
 // SEC-26 human-agent + double-submit CSRF via the shared gate; the issuing operator is the
 // principal. The grant is created 'active' and grant.issued is audited in the SAME
@@ -84,18 +103,9 @@ func (a *apiHandlers) CreateGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "a grant requires an agent, at least one resource, and at least one verb")
 		return
 	}
-	if len(body.Resources) > maxGrantResources || len(body.Verbs) > maxGrantVerbs {
-		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "the grant scope exceeds the maximum size")
-		return
-	}
-	if body.TTLSeconds <= 0 || body.MaxStepsPerRun <= 0 || body.MaxConcurrentRuns <= 0 || body.StepBudget <= 0 {
-		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "ttlSeconds and all bounds must be positive")
-		return
-	}
-	if body.MaxConcurrentRuns > maxConcurrentRunsCeiling {
-		// PERF-7: a grant cannot promise more concurrent Runs than the gateway accepts
-		// in-flight steps for (else the (cap+1)th Run's step is refused and it fails).
-		writeError(w, http.StatusUnprocessableEntity, "unprocessable", "maxConcurrentRuns exceeds the gateway in-flight ceiling")
+	if msg := validateGrantIssuanceBounds(body.Resources, body.Verbs, body.TTLSeconds,
+		body.MaxStepsPerRun, body.MaxConcurrentRuns, body.StepBudget); msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, "unprocessable", msg)
 		return
 	}
 	created, err := a.grants.Create(r.Context(), grant.Input{

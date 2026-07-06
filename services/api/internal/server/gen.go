@@ -322,6 +322,60 @@ type SessionResolve struct {
 // SessionResolveDecision defines model for SessionResolve.Decision.
 type SessionResolveDecision string
 
+// Workstream defines model for Workstream.
+type Workstream struct {
+	CreatedAt time.Time `json:"createdAt"`
+
+	// GrantId The charter's auto-issued delegation grant (1:1; retire revokes it).
+	GrantId         string    `json:"grantId"`
+	Id              string    `json:"id"`
+	IntervalSeconds int       `json:"intervalSeconds"`
+	Label           *string   `json:"label,omitempty"`
+	NextFireAt      time.Time `json:"nextFireAt"`
+	Objective       string    `json:"objective"`
+
+	// Status active | paused | retired (ADR-0063 §7).
+	Status string `json:"status"`
+
+	// Steps The immutable template — detail view only (absent on list items).
+	Steps *[]WorkstreamStep `json:"steps,omitempty"`
+}
+
+// WorkstreamCreate defines model for WorkstreamCreate.
+type WorkstreamCreate struct {
+	// BudgetWindowSeconds Rolling budget window (WS-4) — the step budget counts only Runs created within it. Omitted → defaults to the interval ("steps per period").
+	BudgetWindowSeconds *int `json:"budgetWindowSeconds,omitempty"`
+
+	// IntervalSeconds The fixed schedule interval; must be at or above the server's floor (PERF-8). First fire = charter + interval.
+	IntervalSeconds int `json:"intervalSeconds"`
+
+	// Label Operator-facing name for the charter.
+	Label             *string `json:"label,omitempty"`
+	MaxConcurrentRuns int     `json:"maxConcurrentRuns"`
+	MaxStepsPerRun    int     `json:"maxStepsPerRun"`
+
+	// Objective The chartered objective (reviewed at consent; GOV-8).
+	Objective string `json:"objective"`
+
+	// Resources The charter scope — becomes the auto-issued grant's resources; every template step must target one of these.
+	Resources  []string `json:"resources"`
+	StepBudget int      `json:"stepBudget"`
+
+	// Steps The IMMUTABLE plan template (edit = retire + re-charter).
+	Steps []WorkstreamStep `json:"steps"`
+
+	// TtlSeconds Charter (= grant) lifetime in seconds.
+	TtlSeconds int      `json:"ttlSeconds"`
+	Verbs      []string `json:"verbs"`
+}
+
+// WorkstreamStep defines model for WorkstreamStep.
+type WorkstreamStep struct {
+	// Command Operator-authored; sealed at rest server-side (F3 parity), operator-readable on the detail view.
+	Command    string `json:"command"`
+	ResourceId string `json:"resourceId"`
+}
+
 // CursorParam defines model for CursorParam.
 type CursorParam = string
 
@@ -370,6 +424,12 @@ type ListSessionsParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListWorkstreamsParams defines parameters for ListWorkstreams.
+type ListWorkstreamsParams struct {
+	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // IssueAgentTokenJSONRequestBody defines body for IssueAgentToken for application/json ContentType.
 type IssueAgentTokenJSONRequestBody = AgentTokenRequest
 
@@ -396,6 +456,9 @@ type CreateSessionJSONRequestBody = SessionCreate
 
 // ResolveSessionJSONRequestBody defines body for ResolveSession for application/json ContentType.
 type ResolveSessionJSONRequestBody = SessionResolve
+
+// CreateWorkstreamJSONRequestBody defines body for CreateWorkstream for application/json ContentType.
+type CreateWorkstreamJSONRequestBody = WorkstreamCreate
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -474,6 +537,15 @@ type ServerInterface interface {
 	// Approve or deny a session parked pending approval (ADR-0054; same-operator self-approval at v0.2.0)
 	// (POST /v1/sessions/{id}/resolve)
 	ResolveSession(w http.ResponseWriter, r *http.Request, id string)
+	// List the caller's Workstreams (operator-scoped; no templates)
+	// (GET /v1/workstreams)
+	ListWorkstreams(w http.ResponseWriter, r *http.Request, params ListWorkstreamsParams)
+	// Charter a Workstream (ADR-0063; the one consent act — auto-issues its grant)
+	// (POST /v1/workstreams)
+	CreateWorkstream(w http.ResponseWriter, r *http.Request)
+	// Fetch a Workstream with its immutable template (the caller must own it)
+	// (GET /v1/workstreams/{id})
+	GetWorkstream(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -627,6 +699,24 @@ func (_ Unimplemented) EndSession(w http.ResponseWriter, r *http.Request, id str
 // Approve or deny a session parked pending approval (ADR-0054; same-operator self-approval at v0.2.0)
 // (POST /v1/sessions/{id}/resolve)
 func (_ Unimplemented) ResolveSession(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List the caller's Workstreams (operator-scoped; no templates)
+// (GET /v1/workstreams)
+func (_ Unimplemented) ListWorkstreams(w http.ResponseWriter, r *http.Request, params ListWorkstreamsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Charter a Workstream (ADR-0063; the one consent act — auto-issues its grant)
+// (POST /v1/workstreams)
+func (_ Unimplemented) CreateWorkstream(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Fetch a Workstream with its immutable template (the caller must own it)
+// (GET /v1/workstreams/{id})
+func (_ Unimplemented) GetWorkstream(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1353,6 +1443,98 @@ func (siw *ServerInterfaceWrapper) ResolveSession(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListWorkstreams operation middleware
+func (siw *ServerInterfaceWrapper) ListWorkstreams(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListWorkstreamsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWorkstreams(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateWorkstream operation middleware
+func (siw *ServerInterfaceWrapper) CreateWorkstream(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateWorkstream(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetWorkstream operation middleware
+func (siw *ServerInterfaceWrapper) GetWorkstream(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetWorkstream(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1540,6 +1722,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/sessions/{id}/resolve", wrapper.ResolveSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/workstreams", wrapper.ListWorkstreams)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/workstreams", wrapper.CreateWorkstream)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/workstreams/{id}", wrapper.GetWorkstream)
 	})
 
 	return r

@@ -38,21 +38,27 @@ type Grant struct {
 	MaxStepsPerRun    int
 	MaxConcurrentRuns int
 	StepBudget        int // total steps across all the grant's Runs (cap)
-	Status            string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// BudgetWindowSeconds windows the step budget (WS-4, ADR-0063 §3): when set (> 0),
+	// StepBudget counts only planned steps of Runs created within the last window
+	// (rolling, strict — enforced at T-073); 0 = NULL = the v0.6 cumulative-forever
+	// semantics unchanged. Charter grants set it; agent grants may leave it 0.
+	BudgetWindowSeconds int
+	Status              string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // Input is a new grant (the issuing operator is the Principal; ExpiresAt is resolved by
-// the handler from a TTL).
+// the handler from a TTL). BudgetWindowSeconds 0 = unwindowed (the v0.6 semantics).
 type Input struct {
-	Principal         string
-	Agent             string
-	Label             string
-	Resources         []string
-	Verbs             []string
-	ExpiresAt         time.Time
-	MaxStepsPerRun    int
-	MaxConcurrentRuns int
-	StepBudget        int
+	Principal           string
+	Agent               string
+	Label               string
+	Resources           []string
+	Verbs               []string
+	ExpiresAt           time.Time
+	MaxStepsPerRun      int
+	MaxConcurrentRuns   int
+	StepBudget          int
+	BudgetWindowSeconds int
 }

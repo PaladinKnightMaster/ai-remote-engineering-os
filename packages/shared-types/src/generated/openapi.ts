@@ -4,58 +4,6 @@
  */
 
 export interface paths {
-    "/v1/workstreams": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List workstreams */
-        get: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        put?: never;
-        /** Create workstream */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description Created */
-                201: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/workstreams/{workstreamId}/runs": {
         parameters: {
             query?: never;
@@ -564,6 +512,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/workstreams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's Workstreams (operator-scoped; no templates) */
+        get: operations["listWorkstreams"];
+        put?: never;
+        /** Charter a Workstream (ADR-0063; the one consent act — auto-issues its grant) */
+        post: operations["createWorkstream"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workstreams/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Fetch a Workstream with its immutable template (the caller must own it) */
+        get: operations["getWorkstream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -712,6 +697,47 @@ export interface components {
             status: string;
             /** Format: date-time */
             createdAt: string;
+        };
+        WorkstreamStep: {
+            resourceId: string;
+            /** @description Operator-authored; sealed at rest server-side (F3 parity), operator-readable on the detail view. */
+            command: string;
+        };
+        WorkstreamCreate: {
+            /** @description Operator-facing name for the charter. */
+            label?: string;
+            /** @description The chartered objective (reviewed at consent; GOV-8). */
+            objective: string;
+            /** @description The charter scope — becomes the auto-issued grant's resources; every template step must target one of these. */
+            resources: string[];
+            verbs: string[];
+            /** @description Charter (= grant) lifetime in seconds. */
+            ttlSeconds: number;
+            /** @description The fixed schedule interval; must be at or above the server's floor (PERF-8). First fire = charter + interval. */
+            intervalSeconds: number;
+            maxStepsPerRun: number;
+            maxConcurrentRuns: number;
+            stepBudget: number;
+            /** @description Rolling budget window (WS-4) — the step budget counts only Runs created within it. Omitted → defaults to the interval ("steps per period"). */
+            budgetWindowSeconds?: number;
+            /** @description The IMMUTABLE plan template (edit = retire + re-charter). */
+            steps: components["schemas"]["WorkstreamStep"][];
+        };
+        Workstream: {
+            id: string;
+            label?: string;
+            objective: string;
+            /** @description The charter's auto-issued delegation grant (1:1; retire revokes it). */
+            grantId: string;
+            intervalSeconds: number;
+            /** Format: date-time */
+            nextFireAt: string;
+            /** @description active | paused | retired (ADR-0063 §7). */
+            status: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description The immutable template — detail view only (absent on list items). */
+            steps?: components["schemas"]["WorkstreamStep"][];
         };
         AuditEvent: {
             id: string;
@@ -1627,6 +1653,95 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    listWorkstreams: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["LimitParam"];
+                cursor?: components["parameters"]["CursorParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of the caller's Workstreams. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Workstream"][];
+                        page: components["schemas"]["PageMeta"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createWorkstream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkstreamCreate"];
+            };
+        };
+        responses: {
+            /** @description Workstream chartered (active); first fire = charter + interval. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workstream"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The charter is invalid — a sub-floor interval, a template outside its own scope or bounds (it could never fire), or grant bounds outside the issuance ceilings. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getWorkstream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Workstream. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workstream"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
 }
