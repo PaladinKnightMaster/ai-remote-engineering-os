@@ -173,8 +173,9 @@ func (s *Store) ListForOperator(ctx context.Context, principal, after string, li
 // Revoke flips an active grant to revoked and emits grant.revoked in the SAME transaction
 // (AUD-16): actor = principal, anchored grant:<id>, content-free. ok=false (no-op) when the
 // grant is not active (unknown id OR already revoked) — the handler pre-checks ownership via
-// Get (→ 404), so a false here maps to 409. The cancel-of-in-flight-runs CASCADE (DUR-7) is
-// T-066 (it needs grant_id on runs, T-064); T-063 revoke is status-flip + audit only.
+// Get (→ 404), so a false here maps to 409. It owns the transaction; the body lives in
+// RevokeInTx so the workstream retire (ADR-0063 §7, T-074) can revoke the charter's grant
+// atomically with the charter flip — one revoke path, two callers (SEC-30).
 func (s *Store) Revoke(ctx context.Context, id string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -182,8 +183,24 @@ func (s *Store) Revoke(ctx context.Context, id string) (bool, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	ok, err := s.RevokeInTx(ctx, tx, id)
+	if err != nil || !ok {
+		return false, err // no-op needs no commit (nothing changed)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit revoke: %w", err)
+	}
+	return true, nil
+}
+
+// RevokeInTx flips an active grant to revoked + enqueues grant.revoked on the CALLER's
+// transaction — the T-074 extraction of Revoke's body (behavior-preserving; the CreateInTx
+// precedent). ok=false → the grant was not active (unknown OR already revoked — e.g. a
+// direct revoke raced the charter's retire): the caller proceeds without a duplicate
+// grant.revoked. The caller owns commit/rollback.
+func (s *Store) RevokeInTx(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 	var principal string
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		UPDATE delegation_grants SET status = 'revoked', updated_at = now()
 		 WHERE id = $1 AND status = 'active' RETURNING principal`, id).Scan(&principal)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -197,9 +214,6 @@ func (s *Store) Revoke(ctx context.Context, id string) (bool, error) {
 		Target: "grant:" + id, Outcome: "grant.revoked", EvidencePacketID: "grant:" + id,
 	}); err != nil {
 		return false, fmt.Errorf("enqueue grant.revoked: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit revoke: %w", err)
 	}
 	return true, nil
 }

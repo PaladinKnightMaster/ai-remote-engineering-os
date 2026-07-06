@@ -546,6 +546,15 @@ type ServerInterface interface {
 	// Fetch a Workstream with its immutable template (the caller must own it)
 	// (GET /v1/workstreams/{id})
 	GetWorkstream(w http.ResponseWriter, r *http.Request, id string)
+	// Pause an active Workstream (soft — ticks stop; in-flight Runs complete)
+	// (POST /v1/workstreams/{id}/pause)
+	PauseWorkstream(w http.ResponseWriter, r *http.Request, id string)
+	// Resume a paused Workstream (next fire = now + interval; no catch-up)
+	// (POST /v1/workstreams/{id}/resume)
+	ResumeWorkstream(w http.ResponseWriter, r *http.Request, id string)
+	// Retire a Workstream (terminal — revokes its grant and cancels its in-flight Runs)
+	// (POST /v1/workstreams/{id}/retire)
+	RetireWorkstream(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -717,6 +726,24 @@ func (_ Unimplemented) CreateWorkstream(w http.ResponseWriter, r *http.Request) 
 // Fetch a Workstream with its immutable template (the caller must own it)
 // (GET /v1/workstreams/{id})
 func (_ Unimplemented) GetWorkstream(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Pause an active Workstream (soft — ticks stop; in-flight Runs complete)
+// (POST /v1/workstreams/{id}/pause)
+func (_ Unimplemented) PauseWorkstream(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Resume a paused Workstream (next fire = now + interval; no catch-up)
+// (POST /v1/workstreams/{id}/resume)
+func (_ Unimplemented) ResumeWorkstream(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Retire a Workstream (terminal — revokes its grant and cancels its in-flight Runs)
+// (POST /v1/workstreams/{id}/retire)
+func (_ Unimplemented) RetireWorkstream(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1535,6 +1562,99 @@ func (siw *ServerInterfaceWrapper) GetWorkstream(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// PauseWorkstream operation middleware
+func (siw *ServerInterfaceWrapper) PauseWorkstream(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PauseWorkstream(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResumeWorkstream operation middleware
+func (siw *ServerInterfaceWrapper) ResumeWorkstream(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResumeWorkstream(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RetireWorkstream operation middleware
+func (siw *ServerInterfaceWrapper) RetireWorkstream(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RetireWorkstream(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1731,6 +1851,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/workstreams/{id}", wrapper.GetWorkstream)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/workstreams/{id}/pause", wrapper.PauseWorkstream)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/workstreams/{id}/resume", wrapper.ResumeWorkstream)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/workstreams/{id}/retire", wrapper.RetireWorkstream)
 	})
 
 	return r

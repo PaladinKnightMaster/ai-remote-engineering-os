@@ -210,6 +210,10 @@ type workstreamStore interface {
 	Create(ctx context.Context, in workstream.Input) (workstream.Workstream, error)
 	Get(ctx context.Context, id string) (workstream.Workstream, error)
 	ListForOperator(ctx context.Context, operator, after string, limit int) ([]workstream.Workstream, string, error)
+	// The lifecycle verbs (WS-5, T-074): guarded flips — ok=false → 409.
+	Pause(ctx context.Context, id string) (bool, error)
+	Resume(ctx context.Context, id string) (bool, error)
+	Retire(ctx context.Context, id string) (bool, error)
 }
 
 // WithWorkstreamStore wires the chartered-Workstream store (ADR-0063, T-071): the

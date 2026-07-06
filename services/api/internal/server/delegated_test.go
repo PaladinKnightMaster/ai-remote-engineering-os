@@ -27,11 +27,14 @@ func (gwOnlyVerifier) Verify(context.Context, string) (mw.Capability, error) {
 	return mw.Capability{Subject: "mcp-gateway", Edge: "service-service"}, nil
 }
 
-// fakeLaunchRunStore satisfies runStore; only LaunchBounded is exercised here.
+// fakeLaunchRunStore satisfies runStore; LaunchBounded is exercised here, and
+// CancelRunsForGrant records the grant ids swept (the workstream retire-cascade
+// assertion, T-074).
 type fakeLaunchRunStore struct {
-	launched   run.Run
-	reattached bool
-	refusal    *run.Refusal
+	launched       run.Run
+	reattached     bool
+	refusal        *run.Refusal
+	canceledGrants []string
 }
 
 func (f *fakeLaunchRunStore) LaunchBounded(_ context.Context, _ run.GrantSource, _, _, _ string, _ []run.StepInput) (run.Run, bool, *run.Refusal, error) {
@@ -50,8 +53,9 @@ func (f *fakeLaunchRunStore) ListForOperator(_ context.Context, _, _ string, _ i
 	return nil, "", nil
 }
 func (f *fakeLaunchRunStore) CancelRun(_ context.Context, _ string) (bool, error) { return false, nil }
-func (f *fakeLaunchRunStore) CancelRunsForGrant(_ context.Context, _ string) (int, error) {
-	return 0, nil
+func (f *fakeLaunchRunStore) CancelRunsForGrant(_ context.Context, grantID string) (int, error) {
+	f.canceledGrants = append(f.canceledGrants, grantID)
+	return 1, nil
 }
 
 // fakeGrantStore satisfies grantStore; the handler passes it through to the core as the

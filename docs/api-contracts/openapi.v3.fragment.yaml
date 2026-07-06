@@ -857,6 +857,103 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  # Lifecycle verbs (WS-5, ADR-0063 §7; T-074). Pause is SOFT (ticks stop, in-flight Runs
+  # complete, the grant stays active); resume re-arms next fire = now + interval (no
+  # catch-up fire); retire is the KILL SWITCH (terminal; one tx flips the charter AND
+  # revokes its grant, then the grant's in-flight Runs are canceled — the DUR-7 cascade).
+  /v1/workstreams/{id}/pause:
+    post:
+      tags: [workstreams]
+      operationId: pauseWorkstream
+      summary: Pause an active Workstream (soft — ticks stop; in-flight Runs complete)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The Workstream was paused.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The Workstream is not active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workstreams/{id}/resume:
+    post:
+      tags: [workstreams]
+      operationId: resumeWorkstream
+      summary: Resume a paused Workstream (next fire = now + interval; no catch-up)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The Workstream was resumed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The Workstream is not paused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workstreams/{id}/retire:
+    post:
+      tags: [workstreams]
+      operationId: retireWorkstream
+      summary: Retire a Workstream (terminal — revokes its grant and cancels its in-flight Runs)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The Workstream was retired (its grant revoked; in-flight Runs canceled).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The Workstream is already retired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is

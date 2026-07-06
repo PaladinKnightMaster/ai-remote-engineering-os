@@ -14,10 +14,28 @@ import (
 )
 
 // fakeWorkstreamStore captures the charter Input so tests can assert what the handler
-// binds (the window default, the grant scope) without Postgres.
+// binds (the window default, the grant scope) without Postgres. The lifecycle verbs
+// return the scripted verbOK (ok=false → the handler's 409).
 type fakeWorkstreamStore struct {
 	lastCreate *workstream.Input
 	byID       map[string]workstream.Workstream
+	verbOK     bool
+	verbCalls  []string
+}
+
+func (f *fakeWorkstreamStore) Pause(_ context.Context, id string) (bool, error) {
+	f.verbCalls = append(f.verbCalls, "pause:"+id)
+	return f.verbOK, nil
+}
+
+func (f *fakeWorkstreamStore) Resume(_ context.Context, id string) (bool, error) {
+	f.verbCalls = append(f.verbCalls, "resume:"+id)
+	return f.verbOK, nil
+}
+
+func (f *fakeWorkstreamStore) Retire(_ context.Context, id string) (bool, error) {
+	f.verbCalls = append(f.verbCalls, "retire:"+id)
+	return f.verbOK, nil
 }
 
 func (f *fakeWorkstreamStore) Create(_ context.Context, in workstream.Input) (workstream.Workstream, error) {
@@ -215,6 +233,79 @@ func TestGetWorkstreamOwnerScoped(t *testing.T) {
 	}
 }
 
+// TestWorkstreamLifecycleVerbHandlers — the verb routes (WS-5, T-074): owner-scoped 404,
+// 409 on a refused flip, 200 + the right status on success — and retire triggers the
+// in-flight cascade on the charter's grant (the RevokeGrant mirror).
+func TestWorkstreamLifecycleVerbHandlers(t *testing.T) {
+	own := map[string]workstream.Workstream{
+		"ws-mine":   {ID: "ws-mine", Principal: "operator", Objective: "o", GrantID: "grant-9", Status: workstream.StatusActive},
+		"ws-theirs": {ID: "ws-theirs", Principal: "operator:other", Objective: "o", Status: workstream.StatusActive},
+	}
+	post := func(t *testing.T, fake *fakeWorkstreamStore, rs *fakeLaunchRunStore, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		key, _ := auth.GenerateKey()
+		opts := []Option{WithWorkstreamStore(fake, 60)}
+		if rs != nil {
+			opts = append(opts, WithRunStore(rs))
+		}
+		h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", opts...)
+		r := httptest.NewRequest(http.MethodPost, path, nil)
+		r.Header.Set("Authorization", "Bearer x")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+
+	for _, verb := range []string{"pause", "resume", "retire"} {
+		t.Run(verb+" owner-scoped 404", func(t *testing.T) {
+			fake := &fakeWorkstreamStore{byID: own, verbOK: true}
+			if rec := post(t, fake, nil, "/v1/workstreams/ws-theirs/"+verb); rec.Code != http.StatusNotFound {
+				t.Fatalf("foreign: status=%d, want 404", rec.Code)
+			}
+			if rec := post(t, fake, nil, "/v1/workstreams/ws-unknown/"+verb); rec.Code != http.StatusNotFound {
+				t.Fatalf("unknown: status=%d, want 404", rec.Code)
+			}
+			if len(fake.verbCalls) != 0 {
+				t.Fatalf("verb reached the store on a 404: %v", fake.verbCalls)
+			}
+		})
+		t.Run(verb+" refused flip → 409", func(t *testing.T) {
+			fake := &fakeWorkstreamStore{byID: own, verbOK: false}
+			if rec := post(t, fake, nil, "/v1/workstreams/ws-mine/"+verb); rec.Code != http.StatusConflict {
+				t.Fatalf("status=%d, want 409", rec.Code)
+			}
+		})
+	}
+
+	t.Run("pause/resume happy", func(t *testing.T) {
+		fake := &fakeWorkstreamStore{byID: own, verbOK: true}
+		if rec := post(t, fake, nil, "/v1/workstreams/ws-mine/pause"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), workstream.StatusPaused) {
+			t.Fatalf("pause: status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if rec := post(t, fake, nil, "/v1/workstreams/ws-mine/resume"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), workstream.StatusActive) {
+			t.Fatalf("resume: status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("retire happy + cascade", func(t *testing.T) {
+		fake := &fakeWorkstreamStore{byID: own, verbOK: true}
+		rs := &fakeLaunchRunStore{}
+		if rec := post(t, fake, rs, "/v1/workstreams/ws-mine/retire"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), workstream.StatusRetired) {
+			t.Fatalf("retire: status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if len(rs.canceledGrants) != 1 || rs.canceledGrants[0] != "grant-9" {
+			t.Fatalf("cascade not run on the charter's grant: %v", rs.canceledGrants)
+		}
+	})
+
+	t.Run("retire without a run store skips the cascade", func(t *testing.T) {
+		fake := &fakeWorkstreamStore{byID: own, verbOK: true}
+		if rec := post(t, fake, nil, "/v1/workstreams/ws-mine/retire"); rec.Code != http.StatusOK {
+			t.Fatalf("retire sans runs: status=%d", rec.Code)
+		}
+	})
+}
+
 // TestWorkstreamRoutesUnconfigured — no WithWorkstreamStore → the routes exist but
 // answer 503 (dependency absent), not 404.
 func TestWorkstreamRoutesUnconfigured(t *testing.T) {
@@ -224,6 +315,9 @@ func TestWorkstreamRoutesUnconfigured(t *testing.T) {
 		{http.MethodPost, "/v1/workstreams", charterBody(nil)},
 		{http.MethodGet, "/v1/workstreams", ""},
 		{http.MethodGet, "/v1/workstreams/x", ""},
+		{http.MethodPost, "/v1/workstreams/x/pause", ""},
+		{http.MethodPost, "/v1/workstreams/x/resume", ""},
+		{http.MethodPost, "/v1/workstreams/x/retire", ""},
 	} {
 		r := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 		r.Header.Set("Authorization", "Bearer x")

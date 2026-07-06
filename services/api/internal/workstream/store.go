@@ -31,10 +31,14 @@ type CommandSealer interface {
 	Open(b []byte) (string, error)
 }
 
-// GrantCreator issues the charter's delegation grant INSIDE the charter transaction
-// (WS-2 atomicity). Satisfied by *grant.Store (CreateInTx).
-type GrantCreator interface {
+// GrantWriter is the slice of the grant store the charter lifecycle writes through,
+// always inside the WORKSTREAM's transaction: CreateInTx issues the charter's grant at
+// consent (WS-2 atomicity, T-071); RevokeInTx revokes it at retire (WS-5, T-074 — the
+// charter flip + the grant revoke commit or roll back together). Satisfied by
+// *grant.Store — one issuance path and one revoke path, each with two callers (SEC-30).
+type GrantWriter interface {
 	CreateInTx(ctx context.Context, tx pgx.Tx, in grant.Input) (grant.Grant, error)
+	RevokeInTx(ctx context.Context, tx pgx.Tx, id string) (bool, error)
 }
 
 // selectCols is the shared column list for Get/List (kept in one place so the scan
@@ -47,7 +51,7 @@ const selectCols = `id, principal, label, objective, grant_id, interval_seconds,
 type Store struct {
 	pool   *pgxpool.Pool
 	sealer CommandSealer
-	grants GrantCreator
+	grants GrantWriter
 	writer outbox.Writer
 }
 
@@ -55,7 +59,7 @@ type Store struct {
 // CommandSealer). grants issues the charter's grant inside the charter tx (WS-2).
 // outboxTable is the api outbox table (e.g. "api_outbox") into which Create enqueues
 // workstream.chartered in the same transaction.
-func NewStore(pool *pgxpool.Pool, sealer CommandSealer, grants GrantCreator, outboxTable string) *Store {
+func NewStore(pool *pgxpool.Pool, sealer CommandSealer, grants GrantWriter, outboxTable string) *Store {
 	return &Store{pool: pool, sealer: sealer, grants: grants, writer: outbox.Writer{Table: outboxTable}}
 }
 
@@ -246,6 +250,100 @@ func (s *Store) ClaimTick(ctx context.Context, id string, fireAt time.Time) (boo
 		return false, fmt.Errorf("claim tick: %w", err)
 	}
 	return ct.RowsAffected() == 1, nil
+}
+
+// Pause soft-stops an active charter (WS-5, ADR-0063 §7): status → paused, so the
+// ticker's claim predicate skips it; in-flight Runs COMPLETE (pause is not a kill
+// switch — retire is); the grant stays active. workstream.paused chains in-tx (actor =
+// the row's principal — owner-scoped by the handler, so ≡ the calling operator).
+// ok=false → not active (nothing changed; the handler answers 409).
+func (s *Store) Pause(ctx context.Context, id string) (bool, error) {
+	return s.flipWithEvent(ctx, `
+		UPDATE workstreams SET status = 'paused', updated_at = now()
+		 WHERE id = $1 AND status = 'active' RETURNING principal`, id, "workstream.paused")
+}
+
+// Resume re-arms a paused charter (WS-5): status → active with next_fire_at = NOW +
+// interval — never the stale pre-pause fire time, so resuming does NOT catch-up-fire
+// (the no-backfill rule extended to resume). workstream.resumed chains in-tx. ok=false →
+// not paused (409).
+func (s *Store) Resume(ctx context.Context, id string) (bool, error) {
+	return s.flipWithEvent(ctx, `
+		UPDATE workstreams
+		   SET status = 'active', next_fire_at = now() + interval_seconds * interval '1 second', updated_at = now()
+		 WHERE id = $1 AND status = 'paused' RETURNING principal`, id, "workstream.resumed")
+}
+
+// Retire terminally ends a charter (WS-5, the operator kill switch): ONE transaction
+// flips the charter retired (from active OR paused — pause is not a shield) AND revokes
+// its grant via the shared RevokeInTx, chaining workstream.retired (+ the grant's own
+// grant.revoked) from the same tx. RevokeInTx tolerates an already-dead grant (a direct
+// revoke raced the retire — ok=false there, no duplicate grant.revoked, the charter flip
+// still commits). The in-flight-Run cascade runs in the HANDLER post-tx, best-effort
+// (the RevokeGrant mirror; the documented v0.6 non-atomic residual carries). ok=false →
+// already retired (409).
+func (s *Store) Retire(ctx context.Context, id string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var principal, grantID string
+	err = tx.QueryRow(ctx, `
+		UPDATE workstreams SET status = 'retired', updated_at = now()
+		 WHERE id = $1 AND status IN ('active', 'paused') RETURNING principal, grant_id`, id).
+		Scan(&principal, &grantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("retire workstream: %w", err)
+	}
+	if _, err := s.grants.RevokeInTx(ctx, tx, grantID); err != nil {
+		return false, fmt.Errorf("revoke charter grant: %w", err)
+	}
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: principal, Edge: charterEdge,
+		Target: "workstream:" + id, Outcome: "workstream.retired",
+		EvidencePacketID: "workstream:" + id,
+	}); err != nil {
+		return false, fmt.Errorf("enqueue workstream.retired: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit retire: %w", err)
+	}
+	return true, nil
+}
+
+// flipWithEvent runs one guarded status flip + its lifecycle event in a tx (the
+// Pause/Resume shape; Retire has its own body — it also revokes the grant).
+func (s *Store) flipWithEvent(ctx context.Context, updateSQL, id, outcome string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var principal string
+	err = tx.QueryRow(ctx, updateSQL, id).Scan(&principal)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", outcome, err)
+	}
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: principal, Edge: charterEdge,
+		Target: "workstream:" + id, Outcome: outcome,
+		EvidencePacketID: "workstream:" + id,
+	}); err != nil {
+		return false, fmt.Errorf("enqueue %s: %w", outcome, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit %s: %w", outcome, err)
+	}
+	return true, nil
 }
 
 // SelfRetire retires an ACTIVE charter whose grant is dead — revoked or expired (the F1

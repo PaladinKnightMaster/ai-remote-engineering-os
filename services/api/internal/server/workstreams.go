@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"slices"
 	"time"
@@ -233,6 +234,107 @@ func (a *apiHandlers) GetWorkstream(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	writeJSON(w, http.StatusOK, toWorkstreamView(ws, true))
+}
+
+// ownedWorkstream resolves an id to a charter the caller owns, writing the error
+// response (404 unknown/foreign — existence-hiding — or 500/503) when it returns false.
+func (a *apiHandlers) ownedWorkstream(w http.ResponseWriter, r *http.Request, id string) (workstream.Workstream, bool) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return workstream.Workstream{}, false
+	}
+	if a.workstreams == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the workstream engine is not configured")
+		return workstream.Workstream{}, false
+	}
+	ws, err := a.workstreams.Get(r.Context(), id)
+	if errors.Is(err, workstream.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "workstream not found")
+		return workstream.Workstream{}, false
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "get workstream failed")
+		return workstream.Workstream{}, false
+	}
+	if ws.Principal != operator {
+		writeError(w, http.StatusNotFound, "not_found", "workstream not found") // owner-scoped existence-hiding
+		return workstream.Workstream{}, false
+	}
+	return ws, true
+}
+
+// PauseWorkstream (POST /v1/workstreams/{id}/pause) soft-stops an active charter
+// (WS-5): ticks stop; in-flight Runs complete; the grant stays active. 409 when not
+// active (already paused, or retired).
+func (a *apiHandlers) PauseWorkstream(w http.ResponseWriter, r *http.Request, id string) {
+	if _, ok := a.ownedWorkstream(w, r, id); !ok {
+		return
+	}
+	paused, err := a.workstreams.Pause(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "pause workstream failed")
+		return
+	}
+	if !paused {
+		writeError(w, http.StatusConflict, "conflict", "workstream is not active")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": workstream.StatusPaused})
+}
+
+// ResumeWorkstream (POST /v1/workstreams/{id}/resume) re-arms a paused charter: the
+// next fire is now + interval — no catch-up fire for the paused stretch (WS-5). 409
+// when not paused.
+func (a *apiHandlers) ResumeWorkstream(w http.ResponseWriter, r *http.Request, id string) {
+	if _, ok := a.ownedWorkstream(w, r, id); !ok {
+		return
+	}
+	resumed, err := a.workstreams.Resume(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "resume workstream failed")
+		return
+	}
+	if !resumed {
+		writeError(w, http.StatusConflict, "conflict", "workstream is not paused")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": workstream.StatusActive})
+}
+
+// RetireWorkstream (POST /v1/workstreams/{id}/retire) terminally ends a charter (WS-5,
+// the kill switch; from active OR paused): one tx flips the charter + revokes its grant,
+// then the in-flight cascade runs best-effort (the RevokeGrant mirror). The documented
+// v0.6 residual carries: a crash between the tx and the cascade leaves bounded,
+// self-completing Runs (no security impact) — as does the tiny launch-vs-retire race
+// (a tick's Run created after the cascade sweep completes on its own; the next tick
+// self-retires nothing further — the charter is already retired). 409 when already
+// retired.
+func (a *apiHandlers) RetireWorkstream(w http.ResponseWriter, r *http.Request, id string) {
+	ws, ok := a.ownedWorkstream(w, r, id)
+	if !ok {
+		return
+	}
+	retired, err := a.workstreams.Retire(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "retire workstream failed")
+		return
+	}
+	if !retired {
+		writeError(w, http.StatusConflict, "conflict", "workstream is already retired")
+		return
+	}
+	// DUR-7 extension: the retire cascades — cancel the charter grant's in-flight Runs so
+	// a retired charter stops running work too, not just future ticks. Best-effort (the
+	// retire already committed); the sequencer's between-step RunStatus check halts each.
+	if a.runs != nil {
+		if n, cerr := a.runs.CancelRunsForGrant(r.Context(), ws.GrantID); cerr != nil {
+			log.Printf("retire workstream %s: cancel in-flight runs: %v", id, cerr)
+		} else if n > 0 {
+			log.Printf("retire workstream %s: canceled %d in-flight run(s)", id, n)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": workstream.StatusRetired})
 }
 
 // firstNonEmptyStr returns the first non-empty string (the grant label falls back to the

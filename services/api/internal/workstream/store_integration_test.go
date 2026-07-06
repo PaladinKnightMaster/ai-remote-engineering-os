@@ -21,8 +21,8 @@ import (
 	"aireos.local/services/api/internal/grant"
 )
 
-// Interface conformance: the real grant store satisfies GrantCreator (compile-time).
-var _ GrantCreator = (*grant.Store)(nil)
+// Interface conformance: the real grant store satisfies GrantWriter (compile-time).
+var _ GrantWriter = (*grant.Store)(nil)
 
 func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	t.Helper()
@@ -35,7 +35,7 @@ func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	// The real grant store is the GrantCreator (WS-2: one issuance path, SEC-30).
+	// The real grant store is the GrantWriter (WS-2: one issuance+revoke path, SEC-30).
 	return NewStore(pool, nil, grant.NewStore(pool, "api_outbox"), "api_outbox"), pool
 }
 
@@ -313,5 +313,134 @@ func TestWorkstreamSelfRetire(t *testing.T) {
 	}
 	if ok, _ := s.SelfRetire(ctx, created.ID); ok {
 		t.Fatal("self-retiring an already-retired charter must be a no-op")
+	}
+}
+
+// TestWorkstreamLifecycleVerbs — the T-074 G1 live-PG proof (WS-5): the guarded
+// transition matrix (each verb's ok/409-no-op), the three lifecycle events chained once
+// each, resume's re-arm = now + interval (never the stale pre-pause fire time), and
+// retire's ONE-TX charter-flip + grant-revoke (with the grant.revoked event).
+func TestWorkstreamLifecycleVerbs(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, sampleInput("operator:verbs"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	events := func(outcome string) int {
+		var n int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM api_outbox
+			 WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = $2`,
+			"workstream:"+created.ID, outcome).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", outcome, err)
+		}
+		return n
+	}
+
+	// Resume on an active charter → no-op 409-class.
+	if ok, _ := s.Resume(ctx, created.ID); ok {
+		t.Fatal("resuming an active charter must be a no-op")
+	}
+
+	// Pause: active → paused + event; a second pause is a no-op.
+	if ok, err := s.Pause(ctx, created.ID); err != nil || !ok {
+		t.Fatalf("pause: ok=%v err=%v", ok, err)
+	}
+	if got, _ := s.Get(ctx, created.ID); got.Status != StatusPaused {
+		t.Fatalf("status after pause = %q", got.Status)
+	}
+	if events("workstream.paused") != 1 {
+		t.Fatal("workstream.paused not chained exactly once")
+	}
+	if ok, _ := s.Pause(ctx, created.ID); ok {
+		t.Fatal("pausing a paused charter must be a no-op")
+	}
+
+	// Make the paused fire time stale, then resume: the re-arm must be now+interval —
+	// never the stale past time (no catch-up fire).
+	if _, err := pool.Exec(ctx, `
+		UPDATE workstreams SET next_fire_at = now() - interval '1 day' WHERE id = $1`, created.ID); err != nil {
+		t.Fatalf("stale fire time: %v", err)
+	}
+	if ok, err := s.Resume(ctx, created.ID); err != nil || !ok {
+		t.Fatalf("resume: ok=%v err=%v", ok, err)
+	}
+	got, _ := s.Get(ctx, created.ID)
+	if got.Status != StatusActive {
+		t.Fatalf("status after resume = %q", got.Status)
+	}
+	wantMin := time.Now().Add(time.Duration(created.IntervalSeconds)*time.Second - time.Minute)
+	if got.NextFireAt.Before(wantMin) {
+		t.Fatalf("resume re-arm = %v — catch-up fire? want ≈ now+%ds", got.NextFireAt, created.IntervalSeconds)
+	}
+	if events("workstream.resumed") != 1 {
+		t.Fatal("workstream.resumed not chained exactly once")
+	}
+
+	// Retire from PAUSED (pause is not a shield): pause again, then retire — one tx flips
+	// the charter AND revokes the grant, chaining workstream.retired + grant.revoked.
+	if ok, _ := s.Pause(ctx, created.ID); !ok {
+		t.Fatal("re-pause failed")
+	}
+	if ok, err := s.Retire(ctx, created.ID); err != nil || !ok {
+		t.Fatalf("retire: ok=%v err=%v", ok, err)
+	}
+	if got, _ := s.Get(ctx, created.ID); got.Status != StatusRetired {
+		t.Fatalf("status after retire = %q", got.Status)
+	}
+	g, err := grant.NewStore(pool, "api_outbox").Get(ctx, created.GrantID)
+	if err != nil || g.Status != grant.StatusRevoked {
+		t.Fatalf("charter grant after retire: status=%q err=%v, want revoked", g.Status, err)
+	}
+	if events("workstream.retired") != 1 {
+		t.Fatal("workstream.retired not chained exactly once")
+	}
+	var revoked int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM api_outbox
+		 WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = 'grant.revoked'`,
+		"grant:"+created.GrantID).Scan(&revoked); err != nil || revoked != 1 {
+		t.Fatalf("grant.revoked count = %d err=%v, want 1", revoked, err)
+	}
+
+	// Every verb on a retired charter is a no-op.
+	for name, verb := range map[string]func(context.Context, string) (bool, error){
+		"pause": s.Pause, "resume": s.Resume, "retire": s.Retire, "self-retire": s.SelfRetire,
+	} {
+		if ok, _ := verb(ctx, created.ID); ok {
+			t.Fatalf("%s on a retired charter must be a no-op", name)
+		}
+	}
+}
+
+// TestWorkstreamRetireToleratesDeadGrant — a direct grant revoke raced ahead (the T-073
+// window): retire still succeeds — the charter flips and workstream.retired chains, with
+// NO duplicate grant.revoked.
+func TestWorkstreamRetireToleratesDeadGrant(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, sampleInput("operator:race"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	gs := grant.NewStore(pool, "api_outbox")
+	if ok, err := gs.Revoke(ctx, created.GrantID); err != nil || !ok {
+		t.Fatalf("direct revoke: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.Retire(ctx, created.ID); err != nil || !ok {
+		t.Fatalf("retire after direct revoke: ok=%v err=%v", ok, err)
+	}
+	if got, _ := s.Get(ctx, created.ID); got.Status != StatusRetired {
+		t.Fatalf("status = %q, want retired", got.Status)
+	}
+	var revoked int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM api_outbox
+		 WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = 'grant.revoked'`,
+		"grant:"+created.GrantID).Scan(&revoked); err != nil || revoked != 1 {
+		t.Fatalf("grant.revoked count = %d err=%v, want exactly 1 (no duplicate)", revoked, err)
 	}
 }
