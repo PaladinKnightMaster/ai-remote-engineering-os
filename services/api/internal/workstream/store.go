@@ -198,6 +198,94 @@ func (s *Store) Get(ctx context.Context, id string) (Workstream, error) {
 	return w, rows.Err()
 }
 
+// DueRef is one due charter from the ticker scan: the id plus the EXACT fire time the
+// claim CASes on (and the tick's launch key derives from).
+type DueRef struct {
+	ID         string
+	NextFireAt time.Time
+}
+
+// DueWorkstreams returns up to limit active charters whose next_fire_at is due — the
+// ticker scan (WS-3; served by the workstreams_due_idx partial index).
+func (s *Store) DueWorkstreams(ctx context.Context, limit int) ([]DueRef, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, next_fire_at FROM workstreams
+		 WHERE status = 'active' AND next_fire_at <= now()
+		 ORDER BY next_fire_at ASC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("scan due workstreams: %w", err)
+	}
+	defer rows.Close()
+	var out []DueRef
+	for rows.Next() {
+		var d DueRef
+		if err := rows.Scan(&d.ID, &d.NextFireAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// ClaimTick single-winner-claims one due tick (WS-3): a compare-and-swap on the EXACT
+// scanned fire time that advances next_fire_at from now() — NOT from the old fire time,
+// so missed ticks collapse to one (no backfill after downtime). ok=false → another
+// scanner won the CAS, or the charter left 'active' — skip.
+//
+// The claim advances BEFORE the launch: a crash in the claim→launch window drops that
+// one firing and the charter self-heals next interval — the accepted, self-throttling
+// trade (the T-073 audit's F1) over launch-first's exactly-once-but-retry-hammering.
+// (The fireAt value round-trips losslessly through pgx's microsecond timestamptz codec,
+// so the equality is exact — proven by the single-winner integration race.)
+func (s *Store) ClaimTick(ctx context.Context, id string, fireAt time.Time) (bool, error) {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE workstreams
+		   SET next_fire_at = now() + interval_seconds * interval '1 second', updated_at = now()
+		 WHERE id = $1 AND status = 'active' AND next_fire_at = $2`, id, fireAt)
+	if err != nil {
+		return false, fmt.Errorf("claim tick: %w", err)
+	}
+	return ct.RowsAffected() == 1, nil
+}
+
+// SelfRetire retires an ACTIVE charter whose grant is dead — revoked or expired (the F1
+// self-retire, WS-3): without it, every charter outliving its grant TTL would spin
+// eternal run.launch.denied every interval. Status → retired with
+// workstream.retired:grant-dead chained in the same tx (the approval.denied:timeout
+// outcome-qualifier pattern; actor = the workstream — the machine transition; T-074's
+// operator verb emits the plain workstream.retired with actor = operator). The charter's
+// grant needs no action here: a revoked grant's cascade already canceled its Runs, and an
+// expired grant's Runs complete on their own. ok=false → not active (already retired, or
+// paused — invisible to the claim predicate anyway).
+func (s *Store) SelfRetire(ctx context.Context, id string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	ct, err := tx.Exec(ctx, `
+		UPDATE workstreams SET status = 'retired', updated_at = now()
+		 WHERE id = $1 AND status = 'active'`, id)
+	if err != nil {
+		return false, fmt.Errorf("self-retire: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: "workstream:" + id, Edge: charterEdge,
+		Target: "workstream:" + id, Outcome: "workstream.retired:grant-dead",
+		EvidencePacketID: "workstream:" + id,
+	}); err != nil {
+		return false, fmt.Errorf("enqueue workstream.retired: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit self-retire: %w", err)
+	}
+	return true, nil
+}
+
 // ListForOperator returns up to limit of the principal's workstreams in id (≈ creation)
 // order with id > after (after="" starts at the head), WITHOUT templates (the runs-list
 // pattern). Owner-scoped. The cursor is the last id, or "".

@@ -140,8 +140,8 @@ func serve(dsn string) error {
 		}
 		wsMinInterval = n
 	}
-	opts = append(opts, server.WithWorkstreamStore(
-		workstream.NewStore(pool, nil, grantStore, store.OutboxTable), wsMinInterval))
+	wsStore := workstream.NewStore(pool, nil, grantStore, store.OutboxTable)
+	opts = append(opts, server.WithWorkstreamStore(wsStore, wsMinInterval))
 
 	// The delegated-launch forward verifier (ADR-0062, T-065a): route-scoped to the gateway's
 	// v4.public token so the operator routes stay symmetric-only (SEC-20). nil (no gateway
@@ -163,8 +163,15 @@ func serve(dsn string) error {
 		go runengine.NewSequencer(runStore, runengine.NewStepClient(gwURL, stepIssuer)).Run(context.Background())
 		opts = append(opts, server.WithRunStore(runStore))
 		log.Print("run engine started (launch routes + sequencer)")
+		// The workstream schedule ticker (ADR-0063 §5, T-073): fires due charters
+		// through the SAME shared bounded-launch core as the gateway forward (SEC-30a);
+		// the sequencer above drives the Runs it creates. Gated with the run engine — a
+		// charter can only fire when the engine can drive (without the gateway, charters
+		// are createable but dormant).
+		go workstream.NewTicker(wsStore, runStore, grantStore).Run(context.Background())
+		log.Print("workstream ticker started (schedule-fired charters)")
 	} else {
-		log.Print("run engine disabled: GATEWAY_URL not set")
+		log.Print("run engine disabled: GATEWAY_URL not set (workstream ticker dormant too)")
 	}
 
 	srv := &http.Server{

@@ -194,14 +194,23 @@ func (s *Store) CountActiveForGrant(ctx context.Context, grantID string) (int, e
 	return n, nil
 }
 
-// CountStepsForGrant counts the total PLANNED steps across ALL of a grant's Runs — the
+// CountStepsForGrant counts the total PLANNED steps across a grant's Runs — the
 // step-budget consumption input (PERF-7). A failed/canceled Run still consumed its planned
 // steps (the ratified semantics), so this counts every run_steps row for the grant's Runs.
-func (s *Store) CountStepsForGrant(ctx context.Context, grantID string) (int, error) {
+// windowSeconds windows the count (WS-4, ADR-0063 §3): > 0 counts only Runs created within
+// the last windowSeconds — a ROLLING window with STRICT inequality (created_at >
+// now()-window; the criteria's boundary semantics); 0 = the v0.6 cumulative-forever
+// semantics (an unwindowed grant — behavior-preserving).
+func (s *Store) CountStepsForGrant(ctx context.Context, grantID string, windowSeconds int) (int, error) {
+	q := `SELECT count(*) FROM run_steps rs JOIN runs r ON r.id = rs.run_id
+	       WHERE r.grant_id = $1::uuid`
+	args := []any{grantID}
+	if windowSeconds > 0 {
+		q += ` AND r.created_at > now() - ($2::int * interval '1 second')`
+		args = append(args, windowSeconds)
+	}
 	var n int
-	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM run_steps rs JOIN runs r ON r.id = rs.run_id
-		 WHERE r.grant_id = $1::uuid`, grantID).Scan(&n); err != nil {
+	if err := s.pool.QueryRow(ctx, q, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count grant steps: %w", err)
 	}
 	return n, nil

@@ -147,7 +147,9 @@ func (s *Store) LaunchBounded(ctx context.Context, grants GrantSource, agentSubj
 		return Run{}, false, denyAudited(ctx, grants, agentSubject, grantID,
 			&Refusal{RefusalBounds, "too many active runs for this operator"}), nil
 	}
-	consumed, err := s.CountStepsForGrant(ctx, g.ID)
+	// The budget consumption is windowed when the grant sets budget_window_seconds
+	// (WS-4; charter grants do — 0/NULL = the v0.6 cumulative semantics).
+	consumed, err := s.CountStepsForGrant(ctx, g.ID, g.BudgetWindowSeconds)
 	if err != nil {
 		return Run{}, false, nil, err
 	}

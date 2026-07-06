@@ -207,3 +207,111 @@ func containsWorkstream(items []Workstream, id string) bool {
 	}
 	return false
 }
+
+// TestWorkstreamTickClaim — the T-073 G1 live-PG proof of the schedule mechanics (WS-3/
+// DUR-8): a future charter is not due; a due one is scanned with its exact fire time;
+// the CAS claim is single-winner (a second claim on the same fire time loses); the
+// advance is FROM NOW (no backfill — a long-overdue charter's next fire is now+interval,
+// not old+interval); paused charters are invisible to the scan.
+func TestWorkstreamTickClaim(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, sampleInput("operator:tick"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	inDue := func() (DueRef, bool) {
+		due, err := s.DueWorkstreams(ctx, 1000)
+		if err != nil {
+			t.Fatalf("due scan: %v", err)
+		}
+		for _, d := range due {
+			if d.ID == created.ID {
+				return d, true
+			}
+		}
+		return DueRef{}, false
+	}
+
+	// Fresh charter: first fire = charter + interval → not yet due.
+	if _, due := inDue(); due {
+		t.Fatal("a fresh charter must not be due before its first interval")
+	}
+
+	// Make it long-overdue (simulating downtime) → due, with the exact fire time.
+	if _, err := pool.Exec(ctx, `
+		UPDATE workstreams SET next_fire_at = now() - interval '2 days' WHERE id = $1`, created.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	d, due := inDue()
+	if !due {
+		t.Fatal("backdated charter must be due")
+	}
+
+	// CAS claim: first wins, second (same fire time) loses — single-winner.
+	if ok, err := s.ClaimTick(ctx, created.ID, d.NextFireAt); err != nil || !ok {
+		t.Fatalf("first claim: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := s.ClaimTick(ctx, created.ID, d.NextFireAt); ok {
+		t.Fatal("second claim on the same fire time must lose the CAS")
+	}
+
+	// No backfill: the advance is from NOW (≈ now+interval), not from the 2-day-old
+	// fire time — missed ticks collapsed to the one claim.
+	got, err := s.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	wantMin := time.Now().Add(time.Duration(created.IntervalSeconds)*time.Second - time.Minute)
+	if got.NextFireAt.Before(wantMin) {
+		t.Fatalf("next_fire_at = %v — backfilled? want ≈ now+%ds", got.NextFireAt, created.IntervalSeconds)
+	}
+	if _, due := inDue(); due {
+		t.Fatal("a claimed charter must not still be due")
+	}
+
+	// A paused charter is invisible to the scan even when overdue.
+	if _, err := pool.Exec(ctx, `
+		UPDATE workstreams SET status = 'paused', next_fire_at = now() - interval '1 hour' WHERE id = $1`, created.ID); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if _, due := inDue(); due {
+		t.Fatal("a paused charter must not be due")
+	}
+}
+
+// TestWorkstreamSelfRetire — F1 (WS-3): SelfRetire flips an active charter to retired
+// and chains workstream.retired:grant-dead (actor = the workstream — the machine
+// transition), exactly once; a second call is a no-op (already retired).
+func TestWorkstreamSelfRetire(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, sampleInput("operator:sr"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if ok, err := s.SelfRetire(ctx, created.ID); err != nil || !ok {
+		t.Fatalf("self-retire: ok=%v err=%v", ok, err)
+	}
+	got, err := s.Get(ctx, created.ID)
+	if err != nil || got.Status != StatusRetired {
+		t.Fatalf("status after self-retire = %q err=%v, want retired", got.Status, err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM api_outbox
+		 WHERE payload->>'evidencePacketId' = $1 AND payload->>'outcome' = 'workstream.retired:grant-dead'
+		   AND payload->>'actor' = $2`,
+		"workstream:"+created.ID, "workstream:"+created.ID).Scan(&n); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("workstream.retired:grant-dead count = %d, want 1", n)
+	}
+	if ok, _ := s.SelfRetire(ctx, created.ID); ok {
+		t.Fatal("self-retiring an already-retired charter must be a no-op")
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/services/api/internal/grant"
@@ -361,7 +362,7 @@ func TestGrantBoundsAndCascade(t *testing.T) {
 	if n, _ := s.CountActiveForGrant(ctx, grantID); n != 2 {
 		t.Fatalf("CountActiveForGrant = %d, want 2", n)
 	}
-	if n, _ := s.CountStepsForGrant(ctx, grantID); n != 5 {
+	if n, _ := s.CountStepsForGrant(ctx, grantID, 0); n != 5 {
 		t.Fatalf("CountStepsForGrant = %d, want 5", n)
 	}
 
@@ -383,7 +384,7 @@ func TestGrantBoundsAndCascade(t *testing.T) {
 	if n, _ := s.CountActiveForGrant(ctx, grantID); n != 0 {
 		t.Fatalf("CountActiveForGrant after cascade = %d, want 0", n)
 	}
-	if n, _ := s.CountStepsForGrant(ctx, grantID); n != 5 {
+	if n, _ := s.CountStepsForGrant(ctx, grantID, 0); n != 5 {
 		t.Fatalf("CountStepsForGrant after cancel = %d, want 5 (canceled Runs still consumed budget)", n)
 	}
 }
@@ -520,5 +521,55 @@ func TestLaunchBounded(t *testing.T) {
 	_, _, refusal, err = s.LaunchBounded(ctx, grants, "agent:lb", g.ID, "key-1", oneStep)
 	if err != nil || refusal == nil || refusal.Kind != RefusalGrantDead {
 		t.Fatalf("revoked grant: refusal=%+v err=%v, want GrantDead", refusal, err)
+	}
+}
+
+// TestCountStepsForGrantWindowed — WS-4 (ADR-0063 §3): a windowed count includes only
+// Runs created within the rolling window (STRICT inequality), while windowSeconds=0
+// keeps the v0.6 cumulative-forever semantics — behavior-preserving for NULL-window
+// grants.
+func TestCountStepsForGrantWindowed(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	dsn := os.Getenv("API_TEST_DATABASE_URL")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	gid, err := uuid.NewV7() // fresh per run (no FK on runs.grant_id) — keeps the fixed launch keys + counts re-runnable
+	if err != nil {
+		t.Fatalf("mint grant id: %v", err)
+	}
+	grantID := gid.String()
+	mk := func(key string, steps int) Run {
+		in := Input{Operator: "operator:win", Actor: "agent:win", GrantID: grantID, LaunchKey: key}
+		for i := 0; i < steps; i++ {
+			in.Steps = append(in.Steps, StepInput{ResourceID: "res-w", Command: "c"})
+		}
+		r, err := s.Create(ctx, in)
+		if err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+		return r
+	}
+	old := mk("win-old", 2)
+	_ = mk("win-new", 3)
+
+	// Backdate the first Run beyond a 1h window.
+	if _, err := pool.Exec(ctx, `UPDATE runs SET created_at = now() - interval '2 hours' WHERE id = $1`, old.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	if n, _ := s.CountStepsForGrant(ctx, grantID, 0); n != 5 {
+		t.Fatalf("cumulative count = %d, want 5 (v0.6 semantics)", n)
+	}
+	if n, _ := s.CountStepsForGrant(ctx, grantID, 3600); n != 3 {
+		t.Fatalf("windowed count = %d, want 3 (the backdated Run left the window)", n)
+	}
+	if n, _ := s.CountStepsForGrant(ctx, grantID, 3*3600); n != 5 {
+		t.Fatalf("wide-window count = %d, want 5", n)
 	}
 }
