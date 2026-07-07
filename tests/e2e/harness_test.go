@@ -35,13 +35,15 @@ import (
 // harness env (operator credentials). sessionCookieName mirrors
 // packages/go/middleware.SessionCookieName.
 const (
-	resourceID                 = "01900000-0000-7000-8000-0000000000e2"
-	flaggedResourceID          = "01900000-0000-7000-8000-0000000000a2" // requires_approval=true (T-033a / WD-2)
-	delegatedResourceID        = "01900000-0000-7000-8000-0000000000d3" // ungated; the T-065b agent-initiated-Run capstone
-	delegatedFlaggedResourceID = "01900000-0000-7000-8000-0000000000d4" // requires_approval=true; the T-068 WD-6 flagged delegated leg
-	operatorUser               = "admin"
-	operatorPass               = "e2e-operator-pw"
-	sessionCookieName          = "aireos_session"
+	resourceID                  = "01900000-0000-7000-8000-0000000000e2"
+	flaggedResourceID           = "01900000-0000-7000-8000-0000000000a2" // requires_approval=true (T-033a / WD-2)
+	delegatedResourceID         = "01900000-0000-7000-8000-0000000000d3" // ungated; the T-065b agent-initiated-Run capstone
+	delegatedFlaggedResourceID  = "01900000-0000-7000-8000-0000000000d4" // requires_approval=true; the T-068 WD-6 flagged delegated leg
+	workstreamResourceID        = "01900000-0000-7000-8000-0000000000d5" // ungated; the T-076 WD-7 chartered-Workstream capstone
+	workstreamFlaggedResourceID = "01900000-0000-7000-8000-0000000000d6" // requires_approval=true; the T-076 WD-7 flagged-tick leg
+	operatorUser                = "admin"
+	operatorPass                = "e2e-operator-pw"
+	sessionCookieName           = "aireos_session"
 )
 
 func env(k, def string) string {

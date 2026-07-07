@@ -35,10 +35,12 @@ import (
 // T-033a / WD-2) points at the SAME sshd target with the same credential: only
 // the approval gate differs, so the approval round-trip is the only variable.
 const (
-	resourceID                 = "01900000-0000-7000-8000-0000000000e2"
-	flaggedResourceID          = "01900000-0000-7000-8000-0000000000a2"
-	delegatedResourceID        = "01900000-0000-7000-8000-0000000000d3" // ungated; the T-065b agent-initiated-Run capstone (isolated from resourceID's audit chain)
-	delegatedFlaggedResourceID = "01900000-0000-7000-8000-0000000000d4" // requires_approval=true; the T-068 WD-6 flagged delegated leg (isolated from flaggedResourceID's audit chain)
+	resourceID                  = "01900000-0000-7000-8000-0000000000e2"
+	flaggedResourceID           = "01900000-0000-7000-8000-0000000000a2"
+	delegatedResourceID         = "01900000-0000-7000-8000-0000000000d3" // ungated; the T-065b agent-initiated-Run capstone (isolated from resourceID's audit chain)
+	delegatedFlaggedResourceID  = "01900000-0000-7000-8000-0000000000d4" // requires_approval=true; the T-068 WD-6 flagged delegated leg (isolated from flaggedResourceID's audit chain)
+	workstreamResourceID        = "01900000-0000-7000-8000-0000000000d5" // ungated; the T-076 WD-7 chartered-Workstream capstone (the autonomous ticker fires continuously — isolated from d3 so its churn cannot pollute other suites' polls)
+	workstreamFlaggedResourceID = "01900000-0000-7000-8000-0000000000d6" // requires_approval=true; the T-076 WD-7 flagged-tick leg (isolated from d4)
 )
 
 func main() {
@@ -128,8 +130,10 @@ func run() error {
 	for _, r := range []struct{ id, name, labels string }{
 		{resourceID, "e2e-target", string(labels)},
 		{flaggedResourceID, "e2e-target-gated", string(flaggedLabels)},
-		{delegatedResourceID, "e2e-target-delegated", string(labels)},                     // ungated (T-065b capstone)
-		{delegatedFlaggedResourceID, "e2e-target-delegated-gated", string(flaggedLabels)}, // gated (T-068 WD-6)
+		{delegatedResourceID, "e2e-target-delegated", string(labels)},                       // ungated (T-065b capstone)
+		{delegatedFlaggedResourceID, "e2e-target-delegated-gated", string(flaggedLabels)},   // gated (T-068 WD-6)
+		{workstreamResourceID, "e2e-target-workstream", string(labels)},                     // ungated (T-076 WD-7)
+		{workstreamFlaggedResourceID, "e2e-target-workstream-gated", string(flaggedLabels)}, // gated (T-076 WD-7)
 	} {
 		if _, err := pool.Exec(context.Background(), `
 			INSERT INTO resources (id, type, name, labels)
