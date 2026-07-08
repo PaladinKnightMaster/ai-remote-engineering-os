@@ -134,7 +134,7 @@ docker exec "$HOST" bash -c '
 log "run the WD-1 walkthrough driver (Caddy HTTPS)"
 docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod \
   -e WD1_BASE_URL="https://$HOST" \
-  golang:1.23 bash -c 'go test -tags wd1 -count=1 -v -timeout 300s ./tests/e2e/...' 2>&1 | tail -15
+  golang:1.23 bash -c 'go test -tags wd1 -count=1 -v -timeout 600s ./tests/e2e/...' 2>&1 | tail -18
 
 # 11. assert the audit chain host-internally (WD-2.4: integrity + the governed
 #     wedge events in one chain). Retry: policy/connector relays deliver via
@@ -146,7 +146,11 @@ docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env |
 # v0.6 (OI-13, T-069) adds the delegation lifecycle: grant.issued/grant.revoked (the
 # operator's authorization + its withdrawal) and run.canceled (the revoke cascade,
 # DUR-7) — all via the same api relay.
-WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled"
+# v0.7 (OI-14, T-077) adds the chartered-Workstream lifecycle: workstream.chartered (the
+# ONE consent act, actor=operator) + workstream.retired (the operator kill switch) — the
+# AUD-18 events, delivered via the same api relay. The tick's own run.launched/completed
+# are already in WANTS; the schedule-fired run's workstream:<id> actor is asserted below.
+WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired"
 for attempt in 1 2 3 4 5 6; do
   OUTCOMES="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT outcome FROM audit_events ORDER BY seq\"")"
   MISSING=""
@@ -169,4 +173,14 @@ for attempt in 1 2 3; do
   sleep 5
 done
 
-log "T-053a/T-061/T-069 PASS — WD-4 + WD-5 + WD-6 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), AND the WD-6 delegated-launch plane (OI-13: operator grant → agent run.launch via Caddy /mcp → gateway forward pinned to api → parked steps approved with delegated context → completed; revoke cascades to cancel; api not agent-reachable; API_URL wired + gateway pubkey reused from aireos.env); chain intact + complete (incl. grant.issued/grant.revoked/run.canceled + agent-actor run.launched)."
+# v0.7 (OI-14): the SCHEDULE-fired Run must be attributed to the WORKSTREAM actor in the
+# installed chain (AUD-17/AUD-18 — distinguishable from WD-5's operator and WD-6's agent
+# launches). Proves the in-process ticker fired a governed Run on the real install.
+for attempt in 1 2 3; do
+  WS_LAUNCHED="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT count(*) FROM audit_events WHERE outcome='run.launched' AND actor LIKE 'workstream:%'\"")"
+  [ "${WS_LAUNCHED:-0}" -ge 1 ] && break
+  [ "$attempt" = 3 ] && { echo "no workstream-actor run.launched in the installed chain — the schedule ticker did not fire (OI-14)"; exit 1; }
+  sleep 5
+done
+
+log "T-053a/T-061/T-069/T-077 PASS — WD-4 + WD-5 + WD-6 + WD-7 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), AND the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched)."

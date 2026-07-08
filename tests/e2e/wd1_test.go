@@ -283,6 +283,75 @@ func TestWD6InstalledStack(t *testing.T) {
 	t.Logf("PASS installed WD-6 N3 — direct agent→api forward rejected (%d); chain presence asserted by run-wd1.sh", resp.StatusCode)
 }
 
+// TestWD7InstalledStack — OI-14 (T-077): the chartered-Workstream schedule fires on the
+// REAL install via Caddy HTTPS. Proves the in-process ticker runs on the production
+// wiring — migration 0011 (workstreams/workstream_steps + budget_window_seconds) applied
+// by install.sh's migrate loop; the ticker started because the installed api already
+// loads GATEWAY_URL from aireos.env (the OI-13 wire, reused — NO new env); the schedule
+// floor is the 60s main.go default (the install ships the production default, criteria
+// F5 posture — NO AIREOS_WORKSTREAM_MIN_INTERVAL_SECONDS written).
+//
+// Installed-scope = one fire + park/approve + retire (F5 split; LIVE recurrence stays
+// compose-proven — wd7_test.go — because the 60s floor makes a second-fire leg too slow
+// here). Runs AFTER the WD-5/WD-6 installed legs (source order): the install has ONE
+// flagged resource, so a single tick parks one-at-a-time; retire stops the ticker after.
+// Reuses workstream_driver.go (tagged e2e||wd1). Chain presence (workstream.chartered/
+// retired + workstream-actor run.launched) is asserted host-internally by run-wd1.sh.
+func TestWD7InstalledStack(t *testing.T) {
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
+	client := &http.Client{Timeout: 90 * time.Second}
+
+	sess, csrf, status, err := doLogin(client, base)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+
+	// Charter a single flagged-step objective at the 60s floor minimum (a lower interval
+	// 422s — proving the production floor is live). The install's one resource is flagged,
+	// so the tick parks; the charter auto-issues its own grant scoped to it (WS-2).
+	ws := charterWorkstream(t, client, base, sess, csrf, charterOpts{
+		objective:       "wd7 installed health",
+		resources:       []string{resourceID},
+		steps:           []charterStep{{resourceID, "echo WD7-INSTALLED"}},
+		intervalSeconds: 60,
+		stepBudget:      100,
+	})
+	t.Cleanup(func() { retireWorkstream(t, client, base, sess, csrf, ws.ID) })
+	t.Logf("chartered workstream %s (grant %s) via Caddy on the installed stack; awaiting the first schedule fire (~60s floor)", ws.ID, ws.GrantID)
+
+	// The first tick fires at ~charter+60s and the flagged step parks, carrying the
+	// workstream context the approving human needs (FE-21/GOV-6): actor = the Workstream
+	// (a non-human scheduled actor, not an interactive agent), principal, grant, run.
+	inv := pollPendingInvocation(t, client, base, sess, csrf, resourceID, 120*time.Second)
+	if inv.Agent != "workstream:"+ws.ID || inv.Principal != "operator:admin" {
+		t.Fatalf("parked tick = {agent:%q principal:%q}, want {workstream:%s operator:admin} (FE-21/GOV-6)", inv.Agent, inv.Principal, ws.ID)
+	}
+	if inv.RunID == "" || inv.GrantID != ws.GrantID {
+		t.Fatalf("parked tick = {run:%q grant:%q}, want a run under the charter's grant %s", inv.RunID, inv.GrantID, ws.GrantID)
+	}
+	runID := inv.RunID
+
+	// A live human approves → the tick's Run continues to completion with the workstream
+	// provenance (AUD-17/18).
+	resolveInvocation(t, client, base, inv.ID, sess, csrf, "approve")
+	view := waitRunStatusHTTP(t, client, base, sess, csrf, runID, "completed", 120*time.Second)
+	if view.Actor != "workstream:"+ws.ID || view.GrantID != ws.GrantID {
+		t.Fatalf("completed tick provenance = {actor:%q grant:%q}, want {workstream:%s %s}", view.Actor, view.GrantID, ws.ID, ws.GrantID)
+	}
+
+	// Retire (the operator kill switch): the charter flips terminal + its grant is revoked;
+	// the schedule stops. The Run already completed, so there is nothing in flight to
+	// cascade — a clean terminal retire.
+	if code := workstreamVerb(t, client, base, sess, csrf, ws.ID, "retire"); code != http.StatusOK {
+		t.Fatalf("retire: status %d, want 200", code)
+	}
+	if got := getWorkstream(t, client, base, sess, csrf, ws.ID); got.Status != "retired" {
+		t.Fatalf("charter status after retire = %q, want retired", got.Status)
+	}
+	t.Logf("PASS installed WD-7 — charter %s fired a governed Run on the schedule (unattended launch), the flagged tick parked with workstream context, live approve → completed, retire stopped the schedule", ws.ID)
+}
+
 func assertResourceVisible(t *testing.T, client *http.Client, base, sess, csrf string) {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, base+"/v1/resources", nil)
