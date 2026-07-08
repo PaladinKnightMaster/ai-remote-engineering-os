@@ -23,7 +23,7 @@ the eighth, infra-level edge ADR-0046 added to the seven above.
 
 | Edge | Decision enforced | Handler |
 |---|---|---|
-| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`) |
+| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)**; **charter/pause/resume/retire a Workstream (v0.7.0)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`, `CreateWorkstream`, `PauseWorkstream`, `ResumeWorkstream`, `RetireWorkstream`) |
 | `agent-tool` | An agent's MCP `tools/call` on the gateway (the `remote.exec` tool) — scoped (SEC-16) to the agent token's resource; drives a governed invocation | `services/mcp-gateway/internal/server` (`/mcp`; audience `mcp-gateway`) |
 | `agent-tool` (**`run.launch`**, v0.6.0) | An agent launches a grant-bounded Run — a **control-plane** tool (no single-resource target, so the per-call SEC-16 resource check is N/A; the api-validated **grant** is the scope, SEC-29); mints no egress; idempotency-keyed (a retry re-attaches, never double-launches) | `services/mcp-gateway/internal/catalog` (`run.launch` branch before the target resolver) |
 | `service-service` (mcp-gateway → api, **launch forward**, v0.6.0) | The keyless gateway forwards {agent-subject, grant-id, plan} for plan-vs-grant validation + Run creation; **subject-pinned `subject=="mcp-gateway"`** on a route-scoped asymmetric-only verifier (SEC-27) | `services/api/internal/server` (internal `POST /v1/internal/delegated-runs`; api holds the gateway's PUBLIC key only — a verify key, not a mint key) |
@@ -173,3 +173,61 @@ operator), and its steps' `tool.invoked`/`tool.result` carry the agent actor on 
 (`runs.actor`/`grant_id`, `invocations.principal`) and are assembled at read time
 into the Evidence Packet (EVD-3) — a delegated Run is attributable to **both** the
 agent that drove it and the operator whose grant authorized it.
+
+## Chartered Workstreams (v0.7.0; ADR-0063)
+
+v0.7.0 adds the **third initiator**: a standing operator-chartered **Workstream**
+fires governed Runs **on a schedule, with nobody present at launch**. It creates no
+new authority model — the charter rides the v0.6 delegation grant — and no new
+capability edge; the Run engine, `/v1/steps`, policy → connector → broker, and the
+audit chain are reused unchanged. There is **zero gateway change** (the schedule-fired
+launch never crosses the gateway).
+
+- **The charter is one consent act; its authority IS a delegation grant (WS-1/WS-2).**
+  A `workstreams` + `workstream_steps` record in `services/api` (`internal/workstream`,
+  sibling of `internal/run`/`internal/grant`): objective + a bounded resource/verb
+  scope + an **immutable, sealed plan template** + a fixed-interval schedule + bounds.
+  Chartering **auto-issues the Workstream's own delegation grant in the same
+  transaction** (grantee = `workstream:<id>`, principal = the chartering operator, 1:1);
+  `workstream.chartered` + `grant.issued` chain together. The template is immutable
+  post-charter (edit = retire + re-charter — consent binds to the reviewed artifact,
+  the ADR-0059 doctrine extended in time). Charter/pause/resume/retire are typed,
+  CSRF-gated `human-agent` routes (`/v1/workstreams*`).
+- **The schedule fires through the shared bounded-launch core (WS-3, SEC-30).** An
+  in-process ticker (a third `services/api` background goroutine — no cron dependency;
+  a durable `next_fire_at`, single-winner CAS claim, no backfill) fires due charters
+  through the **same** `run.LaunchBounded` core the gateway forward uses — one
+  validator, two callers; the existing sequencer drives the Run it creates.
+- **"Agent" = any non-human actor under delegated authority.** A Workstream Run
+  records **actor = `workstream:<id>`, principal = the chartering operator, grant_id**
+  on the ADR-0062 actor/principal split, unchanged. `policy.Decide` subject = the
+  Workstream, so ADR-0054 self-approve cannot fire — a flagged tick **parks** for a
+  live human, whose `/invocations` view shows **scheduled by `workstream:<id>` ·
+  principal · grant · run** (FE-21/GOV-6). The step bracket edge is the existing
+  **`agent-tool → agent-remote-session`** (derived: principal set → `agent-tool`) — the
+  canonical seven-edge set is **unchanged** (this ADR fixes the *reading* of
+  `agent-tool`, not the set: an LLM agent under a grant, or a chartered Workstream
+  under its grant, are both non-human actors executing delegated authority).
+- **Windowed budget + containment (WS-4, PERF-8).** The grant's `step_budget` gains a
+  nullable `budget_window_seconds` (NULL = the v0.6 cumulative semantics unchanged);
+  the one new abuse vector — a runaway schedule — is quadruple-bounded: an interval
+  floor (60s production default) + per-grant concurrency ≤ the gateway in-flight cap +
+  the windowed budget + the per-operator ceiling, with flagged resources still parking.
+- **Lifecycle (WS-5, DUR-7/8).** Pause is **soft** (ticks stop, in-flight Runs
+  complete, the grant stays active); resume re-arms `next_fire_at = now + interval`
+  (no catch-up fire); **retire** is the kill switch — one transaction flips the charter
+  terminal + revokes its grant, then the existing cascade cancels its in-flight Runs.
+  A **dead grant self-retires** the charter on the next tick (`workstream.retired:
+  grant-dead`, actor = the Workstream) so a revoked/expired grant cannot spin eternal
+  denials.
+
+Event vocabulary added (AUD-18; content-free, ADR-0049): `workstream.chartered` /
+`workstream.paused` / `workstream.resumed` / `workstream.retired` (actor = operator,
+edge `human-agent`, target `workstream:<id>`) + the machine `workstream.retired:
+grant-dead` (actor = the Workstream). A schedule-fired Run is distinguishable in the
+chain by its `workstream:<id>` actor (vs an operator Run's operator actor and a v0.6
+delegated Run's `agent:<id>` actor). **Offline (OI-14):** the ticker rides the
+existing `GATEWAY_URL` on the installed api, migration 0011 rides `install.sh`'s
+migrate loop, and the schedule floor is the 60s default — **no new unit, no new Caddy
+route, no new env, no new key material** (the leanest install leg since the module
+line began).
