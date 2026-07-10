@@ -1,15 +1,18 @@
 # AI Remote Engineering OS — v0.7.0 release notes
 
-**Status: release-candidate** — the code + verification are complete and green; the
-local annotated tag `v0.7.0` is applied at closure, after the CEO §human WD-7
-walkthrough is captured + signed off (Phase B; evidence retained at
-`tests/smoke/test-results/wd7/`, not git-archived — the v0.4/0.5/0.6 mechanics). WD-7
-is green on the compose stack (`task e2e`, chain 357), on the real installed stack
-(`task wd1`, WD-7 leg at the 60s production floor), and — for the operator surface —
-in the browser smoke suite (8/8, incl. the charter→pause→resume→retire lifecycle).
-v0.7.0 — **"Chartered Workstreams"** — adds the **third initiator** to the Run engine
-(per `docs/releases/v0.7.0/v0.7.0-release-criteria.md`; machine-readable coverage in
-`release_manifest_v0_7_0.json`; how-to-verify in `verification_runbook.md`).
+**Status: released** — local annotated tag `v0.7.0` (no remote, per repo doctrine); the
+CEO §human WD-7 walkthrough was captured + signed off (evidence retained at
+`tests/smoke/test-results/wd7/` — charter with the GOV-8 consent copy → the schedule
+fires with nobody present → the ungated tick runs unattended → the flagged tick parks
+on `/invocations` showing **scheduled by workstream:<id> · part of run · step ·
+on behalf of operator:admin · grant** → approve → completed → pause → resume →
+retire). WD-7 is green on the compose stack (`task e2e`, chain 357), on the real
+installed stack (`task wd1`, WD-7 leg at the 60s production floor), and in the browser
+smoke suite (9/9, incl. the full charter→fire→park→approve→pause→resume→retire
+lifecycle). v0.7.0 — **"Chartered Workstreams"** — adds the **third initiator** to the
+Run engine (per `docs/releases/v0.7.0/v0.7.0-release-criteria.md`; machine-readable
+coverage in `release_manifest_v0_7_0.json`; how-to-verify in
+`verification_runbook.md`).
 
 Baseline: **v0.6.0** (tag `8ba5bfe`) on v3.0.1.
 
@@ -110,12 +113,15 @@ at the 60s production floor → the flagged tick parks with workstream context �
 completed → retire), chain complete incl. `workstream.chartered`/`workstream.retired` +
 the workstream-actor `run.launched`.
 
-**Sign-off (Phase B):** the CEO §human WD-7 walkthrough (charter a Workstream on
-`/workstreams` seeing the GOV-8 consent copy → watch the schedule fire → approve the
-flagged tick seeing scheduled-by-workstream · principal · grant beside the verbatim
-command → completed → pause/resume → retire) is captured through the rendered cockpit and
-signed off; then v0.7.0 is tagged **locally** (`v0.7.0`, annotated). No remote; nothing
-pushed.
+**Sign-off:** the CEO §human WD-7 walkthrough (charter a Workstream on `/workstreams`
+seeing the GOV-8 consent copy → watch the schedule fire with nobody present → approve
+the flagged tick seeing scheduled-by-workstream · principal · grant beside the verbatim
+command → completed → pause → resume → retire) was captured through the rendered
+cockpit and signed off. One real bug was caught + fixed during capture: the charter
+form's interval field carried a hardcoded client-side 60s floor hint that diverged from
+the environment's actual (env-lowered) floor and silently blocked valid charters —
+removed, the server's own 422 is authoritative. v0.7.0 is tagged **locally** (`v0.7.0`,
+annotated). No remote; nothing pushed.
 
 ## Next (v0.8+)
 
