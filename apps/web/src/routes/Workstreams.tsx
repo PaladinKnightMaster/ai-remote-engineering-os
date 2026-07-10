@@ -305,7 +305,12 @@ export function Workstreams() {
               Verbs
               <input aria-label="verbs" value={verbs} onChange={(e) => setVerbs(e.target.value)} className="mt-1 w-full rounded-md border border-input bg-background px-2 py-1 text-sm" />
             </label>
-            {numberField("Interval seconds", intervalSeconds, setIntervalSeconds, { min: 60 })}
+            {/* No client-side floor hint: the schedule floor is env-configured
+                (60s production default; e2e/smoke lower it — AIREOS_WORKSTREAM_MIN_
+                INTERVAL_SECONDS) and the server is authoritative — a sub-floor value
+                422s with an inline error (below). A hardcoded client min here would
+                silently diverge from whatever the server actually enforces. */}
+            {numberField("Interval seconds", intervalSeconds, setIntervalSeconds)}
             {numberField("TTL seconds", ttlSeconds, setTtlSeconds)}
             {numberField("Max steps per run", maxStepsPerRun, setMaxStepsPerRun)}
             {/* api enforces the ceiling (422 above the gateway in-flight cap, PERF-7). */}
