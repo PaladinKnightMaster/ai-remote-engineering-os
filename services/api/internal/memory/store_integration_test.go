@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -326,6 +327,209 @@ func TestListLimitClamping(t *testing.T) {
 	}
 }
 
+// TestRedact — T-081 G1: the guarded, idempotent tombstone flip. The first redact
+// erases content and chains memory.redacted exactly once; a second (idempotent)
+// redact makes no further change and enqueues no second event; a foreign owner is
+// ErrNotFound (SEC-31/N3).
+func TestRedact(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	scopeID := freshID(t)
+	const plaintext = "operator note: redact me"
+
+	created, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:redactor", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: plaintext, SourceTrace: "operator",
+	})
+	if err != nil {
+		t.Fatalf("create authored: %v", err)
+	}
+
+	redacted, err := s.Redact(ctx, "operator:redactor", created.ID)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if redacted.HasContent || redacted.Content != "" {
+		t.Fatalf("redacted row must be content-free, got HasContent=%v Content=%q", redacted.HasContent, redacted.Content)
+	}
+	if redacted.RedactedAt == nil {
+		t.Fatal("redactedAt must be set")
+	}
+	if n := countOutcome(t, pool, "memory:"+created.ID, "memory.redacted"); n != 1 {
+		t.Fatalf("memory.redacted count = %d, want 1", n)
+	}
+	if n := countActorForOutcome(t, pool, "memory:"+created.ID, "operator:redactor", "memory.redacted"); n != 1 {
+		t.Fatalf("memory.redacted actor mismatch (count=%d)", n)
+	}
+
+	// Re-redact: idempotent no-op — still returns the tombstoned view, no second event.
+	again, err := s.Redact(ctx, "operator:redactor", created.ID)
+	if err != nil {
+		t.Fatalf("re-redact: %v", err)
+	}
+	if again.RedactedAt == nil {
+		t.Fatal("re-redact must still return the tombstoned view")
+	}
+	if n := countOutcome(t, pool, "memory:"+created.ID, "memory.redacted"); n != 1 {
+		t.Fatalf("memory.redacted count after re-redact = %d, want 1 (no duplicate)", n)
+	}
+
+	// Foreign owner → ErrNotFound (never a silent success on someone else's row).
+	if _, err := s.Redact(ctx, "operator:stranger", created.ID); err != ErrNotFound {
+		t.Fatalf("stranger redact: got %v, want ErrNotFound", err)
+	}
+}
+
+// TestSetPinned — T-081: pin/unpin are guarded, idempotent flips; each direction
+// chains its own event exactly once per actual flip.
+func TestSetPinned(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	scopeID := freshID(t)
+
+	created, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:pinner", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "a pinnable note",
+	})
+	if err != nil {
+		t.Fatalf("create authored: %v", err)
+	}
+
+	pinned, err := s.SetPinned(ctx, "operator:pinner", created.ID, true)
+	if err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	if !pinned.Pinned {
+		t.Fatal("pinned must be true")
+	}
+	if n := countOutcome(t, pool, "memory:"+created.ID, "memory.pinned"); n != 1 {
+		t.Fatalf("memory.pinned count = %d, want 1", n)
+	}
+
+	// Idempotent re-pin: no second event.
+	if _, err := s.SetPinned(ctx, "operator:pinner", created.ID, true); err != nil {
+		t.Fatalf("re-pin: %v", err)
+	}
+	if n := countOutcome(t, pool, "memory:"+created.ID, "memory.pinned"); n != 1 {
+		t.Fatalf("memory.pinned count after re-pin = %d, want 1", n)
+	}
+
+	unpinned, err := s.SetPinned(ctx, "operator:pinner", created.ID, false)
+	if err != nil {
+		t.Fatalf("unpin: %v", err)
+	}
+	if unpinned.Pinned {
+		t.Fatal("pinned must be false after unpin")
+	}
+	if n := countOutcome(t, pool, "memory:"+created.ID, "memory.unpinned"); n != 1 {
+		t.Fatalf("memory.unpinned count = %d, want 1", n)
+	}
+
+	// Foreign owner → ErrNotFound.
+	if _, err := s.SetPinned(ctx, "operator:stranger", created.ID, true); err != ErrNotFound {
+		t.Fatalf("stranger pin: got %v, want ErrNotFound", err)
+	}
+}
+
+// TestExpireDue — T-081 G1/DUR-9: the sweep tombstones exactly the expired-and-unpinned
+// rows, spares pinned and unexpired rows, skips a row already redacted before its
+// expiry (the guard, not the timer, is what makes this exactly-once), and a second
+// pass expires nothing further.
+func TestExpireDue(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	scopeID := freshID(t)
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+
+	// Row A: expired, unpinned — the ONLY row the sweep should touch.
+	expiredUnpinned, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:sweeper", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "expired unpinned", ExpiresAt: &past,
+	})
+	if err != nil {
+		t.Fatalf("seed expired-unpinned: %v", err)
+	}
+
+	// Row B: expired but PINNED — expiry-exempt (ADR-0064 §3).
+	expiredPinned, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:sweeper", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "expired pinned", ExpiresAt: &past,
+	})
+	if err != nil {
+		t.Fatalf("seed expired-pinned: %v", err)
+	}
+	if _, err := s.SetPinned(ctx, "operator:sweeper", expiredPinned.ID, true); err != nil {
+		t.Fatalf("pin expired row: %v", err)
+	}
+
+	// Row C: not yet expired — untouched.
+	unexpired, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:sweeper", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "not yet expired", ExpiresAt: &future,
+	})
+	if err != nil {
+		t.Fatalf("seed unexpired: %v", err)
+	}
+
+	// Row D: already redacted before its expiry — the sweep's guard (redacted_at IS
+	// NULL) must skip it; a redact-then-expire row is untouched by the sweep.
+	alreadyRedacted, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:sweeper", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "redact then expire", ExpiresAt: &past,
+	})
+	if err != nil {
+		t.Fatalf("seed already-redacted: %v", err)
+	}
+	if _, err := s.Redact(ctx, "operator:sweeper", alreadyRedacted.ID); err != nil {
+		t.Fatalf("pre-redact: %v", err)
+	}
+
+	// First pass: expires exactly the unpinned expired row.
+	n, err := s.ExpireDue(ctx, 100)
+	if err != nil {
+		t.Fatalf("expire due (pass 1): %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expired count (pass 1) = %d, want 1", n)
+	}
+
+	got, err := s.Get(ctx, "operator:sweeper", expiredUnpinned.ID)
+	if err != nil {
+		t.Fatalf("get expired row: %v", err)
+	}
+	if got.RedactedAt == nil || got.HasContent {
+		t.Fatalf("expired row must be tombstoned + content-free, got RedactedAt=%v HasContent=%v", got.RedactedAt, got.HasContent)
+	}
+	if n := countOutcome(t, pool, "memory:"+expiredUnpinned.ID, "memory.expired"); n != 1 {
+		t.Fatalf("memory.expired count = %d, want 1", n)
+	}
+	if n := countActorForOutcome(t, pool, "memory:"+expiredUnpinned.ID, "operator:sweeper", "memory.expired"); n != 1 {
+		t.Fatalf("memory.expired actor should be the row's own owner (count=%d)", n)
+	}
+
+	stillPinned, err := s.Get(ctx, "operator:sweeper", expiredPinned.ID)
+	if err != nil || stillPinned.RedactedAt != nil {
+		t.Fatalf("pinned row must be spared: RedactedAt=%v err=%v", stillPinned.RedactedAt, err)
+	}
+	stillUnexpired, err := s.Get(ctx, "operator:sweeper", unexpired.ID)
+	if err != nil || stillUnexpired.RedactedAt != nil {
+		t.Fatalf("unexpired row must be untouched: RedactedAt=%v err=%v", stillUnexpired.RedactedAt, err)
+	}
+	if n := countOutcome(t, pool, "memory:"+alreadyRedacted.ID, "memory.expired"); n != 0 {
+		t.Fatalf("already-redacted row must not accrue memory.expired, got %d", n)
+	}
+
+	// Second pass: exactly-once — nothing left to expire.
+	n2, err := s.ExpireDue(ctx, 100)
+	if err != nil {
+		t.Fatalf("expire due (pass 2): %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("expired count (pass 2) = %d, want 0 (exactly-once)", n2)
+	}
+}
+
 // stubSealer is a reversible test fixture (NOT real encryption) — it only needs to
 // prove the store calls Seal/Open, not that a specific cipher is used (the real
 // AES-256-GCM sealer is exercised by packages/go/auth's own tests).
@@ -366,6 +570,21 @@ func countActor(t *testing.T, pool *pgxpool.Pool, target, actor string) int {
 		SELECT count(*) FROM api_outbox WHERE payload->>'target' = $1 AND payload->>'actor' = $2`,
 		target, actor).Scan(&n); err != nil {
 		t.Fatalf("count actor: %v", err)
+	}
+	return n
+}
+
+// countActorForOutcome is countActor narrowed to one outcome — needed once a memory
+// row accrues MORE than one event over its life (e.g. memory.written then
+// memory.redacted both share the same target+actor), so counting by target+actor
+// alone would double-count across outcomes.
+func countActorForOutcome(t *testing.T, pool *pgxpool.Pool, target, actor, outcome string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM api_outbox WHERE payload->>'target' = $1 AND payload->>'actor' = $2 AND payload->>'outcome' = $3`,
+		target, actor, outcome).Scan(&n); err != nil {
+		t.Fatalf("count actor for outcome: %v", err)
 	}
 	return n
 }

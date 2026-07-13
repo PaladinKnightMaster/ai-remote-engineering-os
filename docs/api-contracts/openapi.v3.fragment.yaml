@@ -1024,6 +1024,90 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # The forgetting verbs (T-081, ADR-0064 §3): redact / pin / unpin. Each is an
+  # idempotent, owner-scoped flip on the once-only tombstone/pin guard (the
+  # flipWithEvent precedent applied to memory). A no-op flip (already redacted /
+  # already pinned or unpinned) still answers 200 with the current view — NOT 409
+  # (D1, ratified): same desired end state, no duplicate event (the N1 silent no-op).
+  # Same human-agent + double-submit CSRF posture as createMemory above.
+  /v1/memories/{id}/redact:
+    post:
+      tags: [memories]
+      operationId: redactMemory
+      summary: Redact a memory (idempotent tombstone flip; erases content — never the audit chain, ADR-0064 §3)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The memory's current state (already redacted, or newly redacted — idempotent, D1).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryView'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: The memory store is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/memories/{id}/pin:
+    post:
+      tags: [memories]
+      operationId: pinMemory
+      summary: Pin a memory, exempting it from the expiry sweep (idempotent; ADR-0064 §3)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The memory's current state (already pinned, or newly pinned — idempotent, D1).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryView'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: The memory store is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/memories/{id}/unpin:
+    post:
+      tags: [memories]
+      operationId: unpinMemory
+      summary: Unpin a memory, making it eligible for the expiry sweep again (idempotent; ADR-0064 §3)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The memory's current state (already unpinned, or newly unpinned — idempotent, D1).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryView'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: The memory store is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is

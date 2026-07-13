@@ -13,16 +13,22 @@ import (
 	"aireos.local/services/api/internal/memory"
 )
 
-// fakeMemoryStore captures the last List/CreateAuthored call so tests can assert what
-// the handler binds (owner, scope, limit, validated fields) without Postgres — the
-// fakeWorkstreamStore shape.
+// fakeMemoryStore captures the last List/CreateAuthored/Get/Redact/SetPinned call so
+// tests can assert what the handler binds (owner, scope, limit, validated fields)
+// without Postgres — the fakeWorkstreamStore shape. rows keys by id so Get/Redact/
+// SetPinned can simulate the store's owner-scoped guarded-flip behavior in memory.
 type fakeMemoryStore struct {
 	items []memory.Memory
+	rows  map[string]memory.Memory // id -> row, seeded via seed() for the verb tests
 
 	lastListOwner, lastListScopeType, lastListScopeID string
 	lastListLimit                                     int
 
 	lastCreate *memory.CreateInput
+
+	lastGetOwner, lastGetID       string
+	redactCalls, pinCalls         int // counts events would-be-enqueued (idempotency assertions)
+	lastSetPinnedOwner, lastSetID string
 }
 
 func (f *fakeMemoryStore) List(_ context.Context, owner, scopeType, scopeID string, limit int) ([]memory.Memory, error) {
@@ -43,6 +49,60 @@ func (f *fakeMemoryStore) CreateAuthored(_ context.Context, in memory.CreateInpu
 		Confidence: confidence, ExpiresAt: in.ExpiresAt, PermissionScope: in.Owner,
 		CreatedAt: time.Now(),
 	}, nil
+}
+
+// seed installs a row directly into rows (bypassing List/CreateAuthored) so Get/
+// Redact/SetPinned tests can start from a known owner-scoped state.
+func (f *fakeMemoryStore) seed(m memory.Memory) {
+	if f.rows == nil {
+		f.rows = map[string]memory.Memory{}
+	}
+	f.rows[m.ID] = m
+}
+
+// Get mirrors the store's owner-scoped Get (SEC-31/N3): ErrNotFound when the id is
+// unknown OR belongs to a different owner.
+func (f *fakeMemoryStore) Get(_ context.Context, owner, id string) (memory.Memory, error) {
+	f.lastGetOwner, f.lastGetID = owner, id
+	m, ok := f.rows[id]
+	if !ok || m.PermissionScope != owner {
+		return memory.Memory{}, memory.ErrNotFound
+	}
+	return m, nil
+}
+
+// Redact mirrors the store's guarded, idempotent tombstone flip: a re-redact is a
+// no-op (redactCalls only increments on an actual flip) but still returns 200 with
+// the current (already-tombstoned) view — not an error.
+func (f *fakeMemoryStore) Redact(_ context.Context, owner, id string) (memory.Memory, error) {
+	m, ok := f.rows[id]
+	if !ok || m.PermissionScope != owner {
+		return memory.Memory{}, memory.ErrNotFound
+	}
+	if m.RedactedAt == nil {
+		now := time.Now()
+		m.RedactedAt = &now
+		m.Content = ""
+		m.HasContent = false
+		f.redactCalls++
+	}
+	f.rows[id] = m
+	return m, nil
+}
+
+// SetPinned mirrors the store's guarded, idempotent pin/unpin flip.
+func (f *fakeMemoryStore) SetPinned(_ context.Context, owner, id string, pinned bool) (memory.Memory, error) {
+	f.lastSetPinnedOwner, f.lastSetID = owner, id
+	m, ok := f.rows[id]
+	if !ok || m.PermissionScope != owner {
+		return memory.Memory{}, memory.ErrNotFound
+	}
+	if m.Pinned != pinned {
+		m.Pinned = pinned
+		f.pinCalls++
+	}
+	f.rows[id] = m
+	return m, nil
 }
 
 func newMemoryHandler(fake *fakeMemoryStore) http.Handler {
@@ -238,5 +298,169 @@ func TestMemoryRoutesUnconfigured(t *testing.T) {
 	}
 	if rec := postMemory(t, h, createBody(nil), true); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST: status=%d, want 503", rec.Code)
+	}
+	if rec := postMemoryVerb(t, h, "mem-1", "redact", true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("REDACT: status=%d, want 503", rec.Code)
+	}
+	if rec := postMemoryVerb(t, h, "mem-1", "pin", true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("PIN: status=%d, want 503", rec.Code)
+	}
+	if rec := postMemoryVerb(t, h, "mem-1", "unpin", true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("UNPIN: status=%d, want 503", rec.Code)
+	}
+}
+
+// --- T-081: the forgetting verbs (redact / pin / unpin) ---
+
+// postMemoryVerb POSTs /v1/memories/{id}/{verb} — the shared shape for redact/pin/unpin.
+func postMemoryVerb(t *testing.T, h http.Handler, id, verb string, withAuth bool) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/v1/memories/"+id+"/"+verb, nil)
+	if withAuth {
+		r.Header.Set("Authorization", "Bearer x") // allowAll → operator/human-agent; header auth → no CSRF
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// TestMemoryVerbs401Unauthenticated — no Authorization header → 401 before the
+// store is ever reached, for all three verbs.
+func TestMemoryVerbs401Unauthenticated(t *testing.T) {
+	for _, verb := range []string{"redact", "pin", "unpin"} {
+		t.Run(verb, func(t *testing.T) {
+			fake := &fakeMemoryStore{}
+			h := newMemoryHandler(fake)
+			rec := postMemoryVerb(t, h, "mem-1", verb, false)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
+// TestMemoryVerbs404ForeignOwner — a foreign operator's id, or an unknown id,
+// answers 404 (the house owner-404, SEC-31/N3) BEFORE the verb ever runs; the store's
+// Get is called (existence-check) but Redact/SetPinned never are.
+func TestMemoryVerbs404ForeignOwner(t *testing.T) {
+	for _, verb := range []string{"redact", "pin", "unpin"} {
+		t.Run(verb+"/foreign owner", func(t *testing.T) {
+			fake := &fakeMemoryStore{}
+			fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "someone-else"})
+			h := newMemoryHandler(fake)
+			rec := postMemoryVerb(t, h, "mem-1", verb, true)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+			}
+			if fake.redactCalls != 0 || fake.pinCalls != 0 {
+				t.Fatal("the verb must not run when the owner-scoped Get 404s")
+			}
+		})
+		t.Run(verb+"/unknown id", func(t *testing.T) {
+			fake := &fakeMemoryStore{}
+			h := newMemoryHandler(fake)
+			rec := postMemoryVerb(t, h, "does-not-exist", verb, true)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestRedactMemoryHappy — a valid owner-scoped redact answers 200 with the
+// tombstoned view: content gone, redactedAt set.
+func TestRedactMemoryHappy(t *testing.T) {
+	fake := &fakeMemoryStore{}
+	fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "operator", HasContent: true, Content: "a secret note"})
+	h := newMemoryHandler(fake)
+
+	rec := postMemoryVerb(t, h, "mem-1", "redact", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var got memoryView
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.RedactedAt == nil {
+		t.Fatal("redactedAt must be set on the response")
+	}
+	if got.Content != nil {
+		t.Fatalf("content must never ride the wire post-redact, got %v", *got.Content)
+	}
+	if fake.redactCalls != 1 {
+		t.Fatalf("redactCalls = %d, want 1", fake.redactCalls)
+	}
+}
+
+// TestRedactMemoryIdempotent — a second redact on an already-redacted row still
+// answers 200 with the current (tombstoned) view — NOT 409 — and does not enqueue a
+// second event (the fake's redactCalls only increments on an actual flip, D1/N1).
+func TestRedactMemoryIdempotent(t *testing.T) {
+	fake := &fakeMemoryStore{}
+	fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "operator", HasContent: true, Content: "a secret note"})
+	h := newMemoryHandler(fake)
+
+	first := postMemoryVerb(t, h, "mem-1", "redact", true)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first redact: status = %d, want 200", first.Code)
+	}
+	second := postMemoryVerb(t, h, "mem-1", "redact", true)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second (idempotent) redact: status = %d, want 200 (NOT 409)", second.Code)
+	}
+	if fake.redactCalls != 1 {
+		t.Fatalf("redactCalls after two redacts = %d, want 1 (no duplicate event)", fake.redactCalls)
+	}
+}
+
+// TestPinUnpinMemoryHappy — pin flips pinned=true; unpin flips it back; both answer
+// 200 with the current view.
+func TestPinUnpinMemoryHappy(t *testing.T) {
+	fake := &fakeMemoryStore{}
+	fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "operator"})
+	h := newMemoryHandler(fake)
+
+	pinRec := postMemoryVerb(t, h, "mem-1", "pin", true)
+	if pinRec.Code != http.StatusOK {
+		t.Fatalf("pin: status = %d, want 200 (body=%s)", pinRec.Code, pinRec.Body.String())
+	}
+	var pinned memoryView
+	if err := json.Unmarshal(pinRec.Body.Bytes(), &pinned); err != nil {
+		t.Fatalf("decode pin: %v", err)
+	}
+	if !pinned.Pinned {
+		t.Fatal("pinned must be true after pin")
+	}
+
+	unpinRec := postMemoryVerb(t, h, "mem-1", "unpin", true)
+	if unpinRec.Code != http.StatusOK {
+		t.Fatalf("unpin: status = %d, want 200 (body=%s)", unpinRec.Code, unpinRec.Body.String())
+	}
+	var unpinned memoryView
+	if err := json.Unmarshal(unpinRec.Body.Bytes(), &unpinned); err != nil {
+		t.Fatalf("decode unpin: %v", err)
+	}
+	if unpinned.Pinned {
+		t.Fatal("pinned must be false after unpin")
+	}
+	if fake.pinCalls != 2 {
+		t.Fatalf("pinCalls = %d, want 2 (one flip each direction)", fake.pinCalls)
+	}
+}
+
+// TestPinMemoryIdempotent — pinning an already-pinned row is a silent no-op (still
+// 200, no duplicate event); same for unpinning an already-unpinned row.
+func TestPinMemoryIdempotent(t *testing.T) {
+	fake := &fakeMemoryStore{}
+	fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "operator", Pinned: true})
+	h := newMemoryHandler(fake)
+
+	rec := postMemoryVerb(t, h, "mem-1", "pin", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-pin: status = %d, want 200 (NOT 409)", rec.Code)
+	}
+	if fake.pinCalls != 0 {
+		t.Fatalf("pinCalls = %d, want 0 (already pinned, no flip)", fake.pinCalls)
 	}
 }

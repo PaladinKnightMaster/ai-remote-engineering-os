@@ -237,6 +237,150 @@ func (s *Store) Get(ctx context.Context, owner, id string) (Memory, error) {
 	return m, nil
 }
 
+// flip runs ONE guarded flip in its own tx (T-081, ADR-0064 §3): exec applies an
+// UPDATE whose WHERE clause already carries the once-only guard (e.g.
+// "redacted_at IS NULL"), so a no-op flip (the row is already in the desired end
+// state, or the id/owner does not match) reports 0 rows affected. When exactly one
+// row flips, outcome enqueues content-free in the SAME tx (the flipWithEvent
+// precedent — event-only-when-flipped). Either way the current owner-scoped row is
+// re-fetched INSIDE the tx and returned — ErrNotFound when the id does not exist or
+// belongs to a different owner, so a genuine no-op (row exists, already in the
+// target state) still answers 200 with the current view (D1: idempotent, not 409).
+func (s *Store) flip(ctx context.Context, owner, id string, exec func(pgx.Tx) (int64, error), outcome string) (Memory, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Memory{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	n, err := exec(tx)
+	if err != nil {
+		return Memory{}, fmt.Errorf("%s: %w", outcome, err)
+	}
+	if n == 1 {
+		if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+			Timestamp: time.Now(), Actor: owner, Edge: memoryEdge,
+			Target: "memory:" + id, Outcome: outcome,
+			EvidencePacketID: "memory:" + id,
+		}); err != nil {
+			return Memory{}, fmt.Errorf("enqueue %s: %w", outcome, err)
+		}
+	}
+
+	row := tx.QueryRow(ctx, `SELECT `+selectCols+` FROM memories WHERE id = $1 AND permission_scope = $2`, id, owner)
+	m, err := s.scan(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Memory{}, ErrNotFound
+	}
+	if err != nil {
+		return Memory{}, fmt.Errorf("refetch after %s: %w", outcome, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Memory{}, fmt.Errorf("commit %s: %w", outcome, err)
+	}
+	return m, nil
+}
+
+// Redact tombstones one owner-scoped memory (ADR-0064 §3/MEM-3): content is erased,
+// redacted_at flips once, chained as memory.redacted (content-free) — the pointer
+// skeleton remains for provenance. Idempotent: a re-redact is a silent no-op (no
+// second event) that still returns the current (already-tombstoned) view.
+// ErrNotFound when id does not exist or belongs to a different owner (SEC-31/N3).
+func (s *Store) Redact(ctx context.Context, owner, id string) (Memory, error) {
+	return s.flip(ctx, owner, id, func(tx pgx.Tx) (int64, error) {
+		ct, err := tx.Exec(ctx, `
+			UPDATE memories SET redacted_at = now(), content = NULL, updated_at = now()
+			 WHERE id = $1 AND permission_scope = $2 AND redacted_at IS NULL`, id, owner)
+		if err != nil {
+			return 0, err
+		}
+		return ct.RowsAffected(), nil
+	}, "memory.redacted")
+}
+
+// SetPinned flips one owner-scoped memory's pinned flag (ADR-0064 §3/MEM-3): pinned
+// rows are exempt from the expiry sweep (ExpireDue). Idempotent per direction: pinning
+// an already-pinned row (or unpinning an already-unpinned row) is a silent no-op — no
+// duplicate memory.pinned/memory.unpinned. ErrNotFound when id does not exist or
+// belongs to a different owner (SEC-31/N3).
+func (s *Store) SetPinned(ctx context.Context, owner, id string, pinned bool) (Memory, error) {
+	outcome := "memory.pinned"
+	if !pinned {
+		outcome = "memory.unpinned"
+	}
+	return s.flip(ctx, owner, id, func(tx pgx.Tx) (int64, error) {
+		ct, err := tx.Exec(ctx, `
+			UPDATE memories SET pinned = $3, updated_at = now()
+			 WHERE id = $1 AND permission_scope = $2 AND pinned != $3`, id, owner, pinned)
+		if err != nil {
+			return 0, err
+		}
+		return ct.RowsAffected(), nil
+	}, outcome)
+}
+
+// ExpireDue tombstones up to batch unpinned, not-yet-redacted rows whose expires_at
+// has passed (ADR-0064 §3/DUR-9, F-b — rides the api's existing reaper loop, T-081).
+// ONE tx: the SELECT ... FOR UPDATE SKIP LOCKED sub-query claims a bounded batch
+// (PERF-9(3): capped to 100) so concurrent sweeps (a slow tick overlapping the next)
+// never double-claim a row; the guarded predicate (redacted_at IS NULL AND NOT
+// pinned) is the exactly-once guard — a re-run touches nothing already tombstoned or
+// pinned, so expiry is exactly-once BY THE FLIP, not the timer (DUR-9). One
+// memory.expired chains per expired row in the SAME tx, content-free, actor = the
+// row's own owning operator (permission_scope) — the sweep has no operator caller of
+// its own. Returns the count of rows expired this pass.
+func (s *Store) ExpireDue(ctx context.Context, batch int) (int, error) {
+	if batch <= 0 || batch > 100 {
+		batch = 100
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	rows, err := tx.Query(ctx, `
+		UPDATE memories SET redacted_at = now(), content = NULL, updated_at = now()
+		 WHERE id IN (
+		     SELECT id FROM memories
+		      WHERE expires_at IS NOT NULL AND expires_at <= now()
+		        AND redacted_at IS NULL AND NOT pinned
+		      ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)
+		 RETURNING id, permission_scope`, batch)
+	if err != nil {
+		return 0, fmt.Errorf("expire due: %w", err)
+	}
+	type expiredRow struct{ id, owner string }
+	var due []expiredRow
+	for rows.Next() {
+		var e expiredRow
+		if err := rows.Scan(&e.id, &e.owner); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired row: %w", err)
+		}
+		due = append(due, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("expire due rows: %w", err)
+	}
+
+	for _, e := range due {
+		if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+			Timestamp: time.Now(), Actor: e.owner, Edge: memoryEdge,
+			Target: "memory:" + e.id, Outcome: "memory.expired",
+			EvidencePacketID: "memory:" + e.id,
+		}); err != nil {
+			return 0, fmt.Errorf("enqueue memory.expired: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit expire due: %w", err)
+	}
+	return len(due), nil
+}
+
 // rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows (Query, via
 // rows.Next()+scan), so Get and List share one scan body.
 type rowScanner interface {

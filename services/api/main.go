@@ -104,11 +104,36 @@ func serve(dsn string) error {
 		}()
 	}
 
-	// Start the stuck-session reaper (T-032): the same in-process goroutine shape
-	// as the relay. It closes sessions stranded pre-open — a 'pending' that no
-	// broker attached to, or a 'pending_approval' whose approval was never resolved
-	// (policy auto-denies but cannot write the api session row).
-	go runReaper(context.Background(), store.New(pool))
+	// The Persistent Scoped Memory expiry sweep rides THIS SAME reaper goroutine
+	// (ADR-0064 §5/F-b, T-081: "no fourth goroutine") — a second ticker in
+	// runReaper's select loop below. memStore is built here (rather than deferred to
+	// its usual spot alongside the other opts, further down) so it can be threaded
+	// into runReaper; server.WithMemoryStore(memStore) still wires it exactly as
+	// T-080 did.
+	memStore := memory.NewStore(pool, nil, store.OutboxTable)
+
+	// AIREOS_MEMORY_SWEEP_SECONDS (T-081, OI-15): an optional positive-integer-seconds
+	// override for the memory expiry sweep's cadence, resolved synchronously at boot
+	// (the AIREOS_WORKSTREAM_MIN_INTERVAL_SECONDS pattern below) so a bad value fails
+	// serve loud BEFORE the process ever starts accepting traffic — CLAUDE.md core rule
+	// 12 — rather than surfacing later inside the reaper goroutine. Unset → reaperTick
+	// (2 min), the installed stack's default posture (not written by install.sh).
+	memorySweepCadence := reaperTick
+	if v := os.Getenv("AIREOS_MEMORY_SWEEP_SECONDS"); v != "" {
+		n, cerr := strconv.Atoi(v)
+		if cerr != nil || n <= 0 {
+			return fmt.Errorf("AIREOS_MEMORY_SWEEP_SECONDS must be a positive integer, got %q", v)
+		}
+		memorySweepCadence = time.Duration(n) * time.Second
+	}
+
+	// Start the stuck-session reaper (T-032) + the memory expiry sweep (T-081): one
+	// in-process goroutine, two independent tickers. The reaper closes sessions
+	// stranded pre-open — a 'pending' that no broker attached to, or a
+	// 'pending_approval' whose approval was never resolved (policy auto-denies but
+	// cannot write the api session row). The sweep tombstones unpinned memories past
+	// expires_at (DUR-9: exactly-once by the row's redacted_at guard, not the timer).
+	go runReaper(context.Background(), store.New(pool), memStore, memorySweepCadence)
 
 	// The Run engine (ADR-0061): the operator launch/status routes (T-057) + the
 	// sequencer that drives launched Runs through the gateway's governed /v1/steps
@@ -144,13 +169,14 @@ func serve(dsn string) error {
 	wsStore := workstream.NewStore(pool, nil, grantStore, store.OutboxTable)
 	opts = append(opts, server.WithWorkstreamStore(wsStore, wsMinInterval))
 
-	// Persistent Scoped Memory (ADR-0064, T-079/T-080): api-local like grants/workstreams
-	// → wired unconditionally. The sealer is nil — the same plaintext dev/transition
-	// wiring as the run/workstream stores above, so all three flip together when the
-	// command-at-rest key is provisioned. Handed to the run store below so a terminal Run
-	// accrues a memory pointer in-tx (F-a), AND wired as the /v1/memories* routes' store
-	// (T-080): one store, two consumers (accrual in-process, the routes over HTTP).
-	memStore := memory.NewStore(pool, nil, store.OutboxTable)
+	// Persistent Scoped Memory (ADR-0064, T-079/T-080/T-081): api-local like
+	// grants/workstreams → wired unconditionally. memStore was built above (serve's
+	// top) so the reaper goroutine could take it too; the sealer is nil — the same
+	// plaintext dev/transition wiring as the run/workstream stores above, so all
+	// three flip together when the command-at-rest key is provisioned. Handed to the
+	// run store below so a terminal Run accrues a memory pointer in-tx (F-a), AND
+	// wired as the /v1/memories* routes' store (T-080/T-081): one store, three
+	// consumers (accrual in-process, the routes over HTTP, the sweep in the reaper).
 	opts = append(opts, server.WithMemoryStore(memStore))
 
 	// The delegated-launch forward verifier (ADR-0062, T-065a): route-scoped to the gateway's
@@ -282,14 +308,28 @@ const (
 	reaperTick             = 2 * time.Minute
 )
 
-// runReaper periodically closes stuck pre-open sessions (T-032). Best-effort: an
-// error logs and the loop continues — a stalled reaper surfaces as lingering
-// pending rows, not a failed serve. Runs for the life of the process.
-func runReaper(ctx context.Context, st *store.Store) {
+// memoryExpireBatch bounds ExpireDue's per-tick claim (PERF-9(3)).
+const memoryExpireBatch = 100
+
+// runReaper periodically closes stuck pre-open sessions (T-032) AND sweeps due
+// memory expiry (T-081, ADR-0064 §5/F-b — "no fourth goroutine": the sweep rides
+// this same loop on its own ticker, not a new goroutine). Both legs are
+// best-effort: an error logs and the loop continues — a stalled leg surfaces as
+// lingering rows (stuck sessions, or expired-but-untombstoned + absent
+// memory.expired events, DUR-9), not a failed serve. Runs for the life of the
+// process. memStore may be nil in tests that only exercise the session leg;
+// sweepCadence is resolved (and fail-loud validated) by the caller BEFORE this
+// goroutine starts (serve's AIREOS_MEMORY_SWEEP_SECONDS handling) — a bad override
+// stops serve at boot rather than surfacing later inside this goroutine.
+func runReaper(ctx context.Context, st *store.Store, memStore *memory.Store, sweepCadence time.Duration) {
 	pendingTTL := reapDuration("API_REAP_PENDING_MINUTES", defaultReapPendingTTL)
 	approvalTTL := reapDuration("API_REAP_APPROVAL_MINUTES", defaultReapApprovalTTL)
+
 	t := time.NewTicker(reaperTick)
 	defer t.Stop()
+	sweep := time.NewTicker(sweepCadence)
+	defer sweep.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -300,6 +340,15 @@ func runReaper(ctx context.Context, st *store.Store) {
 				log.Printf("session reaper: %v", err)
 			} else if n > 0 {
 				log.Printf("session reaper: closed %d stuck session(s)", n)
+			}
+		case <-sweep.C:
+			if memStore == nil {
+				continue
+			}
+			if n, err := memStore.ExpireDue(ctx, memoryExpireBatch); err != nil {
+				log.Printf("memory expiry sweep: %v", err)
+			} else if n > 0 {
+				log.Printf("memory expiry sweep: expired %d memor(y/ies)", n)
 			}
 		}
 	}

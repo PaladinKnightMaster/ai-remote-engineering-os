@@ -588,6 +588,15 @@ type ServerInterface interface {
 	// Author a free-text memory (sealed at rest; ADR-0064 §2 secondary path)
 	// (POST /v1/memories)
 	CreateMemory(w http.ResponseWriter, r *http.Request)
+	// Pin a memory, exempting it from the expiry sweep (idempotent; ADR-0064 §3)
+	// (POST /v1/memories/{id}/pin)
+	PinMemory(w http.ResponseWriter, r *http.Request, id string)
+	// Redact a memory (idempotent tombstone flip; erases content — never the audit chain, ADR-0064 §3)
+	// (POST /v1/memories/{id}/redact)
+	RedactMemory(w http.ResponseWriter, r *http.Request, id string)
+	// Unpin a memory, making it eligible for the expiry sweep again (idempotent; ADR-0064 §3)
+	// (POST /v1/memories/{id}/unpin)
+	UnpinMemory(w http.ResponseWriter, r *http.Request, id string)
 	// List resources
 	// (GET /v1/resources)
 	ListResources(w http.ResponseWriter, r *http.Request, params ListResourcesParams)
@@ -729,6 +738,24 @@ func (_ Unimplemented) ListMemories(w http.ResponseWriter, r *http.Request, para
 // Author a free-text memory (sealed at rest; ADR-0064 §2 secondary path)
 // (POST /v1/memories)
 func (_ Unimplemented) CreateMemory(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Pin a memory, exempting it from the expiry sweep (idempotent; ADR-0064 §3)
+// (POST /v1/memories/{id}/pin)
+func (_ Unimplemented) PinMemory(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Redact a memory (idempotent tombstone flip; erases content — never the audit chain, ADR-0064 §3)
+// (POST /v1/memories/{id}/redact)
+func (_ Unimplemented) RedactMemory(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Unpin a memory, making it eligible for the expiry sweep again (idempotent; ADR-0064 §3)
+// (POST /v1/memories/{id}/unpin)
+func (_ Unimplemented) UnpinMemory(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1218,6 +1245,99 @@ func (siw *ServerInterfaceWrapper) CreateMemory(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateMemory(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PinMemory operation middleware
+func (siw *ServerInterfaceWrapper) PinMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PinMemory(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RedactMemory operation middleware
+func (siw *ServerInterfaceWrapper) RedactMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RedactMemory(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UnpinMemory operation middleware
+func (siw *ServerInterfaceWrapper) UnpinMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UnpinMemory(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1994,6 +2114,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/memories", wrapper.CreateMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories/{id}/pin", wrapper.PinMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories/{id}/redact", wrapper.RedactMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories/{id}/unpin", wrapper.UnpinMemory)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources", wrapper.ListResources)

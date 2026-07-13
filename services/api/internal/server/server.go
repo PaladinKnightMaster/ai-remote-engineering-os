@@ -236,19 +236,24 @@ func WithWorkstreamStore(ws workstreamStore, minIntervalSeconds int) Option {
 }
 
 // memoryStore is the slice of the Persistent Scoped Memory store the memory routes
-// need (ADR-0064, T-080). nil → the /v1/memories routes answer 503. Accrual
+// need (ADR-0064, T-080/T-081). nil → the /v1/memories routes answer 503. Accrual
 // (AccrueRunTerminal) rides the Run engine's terminal flip directly (T-079) — it is not
 // reachable through this narrow interface, by design (the routes are operator-plane
-// read/author only).
+// read/author/forget only). Redact/SetPinned are the T-081 forgetting verbs — guarded,
+// idempotent flips (ok=false is never returned; a no-op flip still answers the current
+// view, D1) that answer 404 via ErrNotFound (owner-scoped, SEC-31/N3).
 type memoryStore interface {
 	List(ctx context.Context, owner, scopeType, scopeID string, limit int) ([]memory.Memory, error)
 	CreateAuthored(ctx context.Context, in memory.CreateInput) (memory.Memory, error)
+	Get(ctx context.Context, owner, id string) (memory.Memory, error)
+	Redact(ctx context.Context, owner, id string) (memory.Memory, error)
+	SetPinned(ctx context.Context, owner, id string, pinned bool) (memory.Memory, error)
 }
 
-// WithMemoryStore wires the Persistent Scoped Memory store (ADR-0064, T-080): the
-// operator list (GET /v1/memories) / authored-write (POST /v1/memories) routes.
-// nil/absent → those routes answer 503. Memory is api-local (no gateway needed), so
-// like grants/workstreams it is wired unconditionally.
+// WithMemoryStore wires the Persistent Scoped Memory store (ADR-0064, T-080/T-081): the
+// operator list (GET /v1/memories) / authored-write (POST /v1/memories) / forgetting
+// (redact/pin/unpin) routes. nil/absent → those routes answer 503. Memory is api-local
+// (no gateway needed), so like grants/workstreams it is wired unconditionally.
 func WithMemoryStore(ms memoryStore) Option {
 	return func(h *apiHandlers) { h.memories = ms }
 }

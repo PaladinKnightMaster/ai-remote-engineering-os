@@ -182,3 +182,75 @@ func (a *apiHandlers) CreateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, toMemoryView(created))
 }
+
+// ownedMemory gates the three T-081 forgetting verbs: unauthenticated → 401; the
+// memory store unconfigured → 503; owner-scoped Get-then-flip (ADR-0064 §7) — the id
+// unknown or belonging to a different operator → 404 (the house owner-404, SEC-31/N3)
+// BEFORE the verb ever runs. Returns the caller's operator subject on success.
+func (a *apiHandlers) ownedMemory(w http.ResponseWriter, r *http.Request, id string) (string, bool) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return "", false
+	}
+	if a.memories == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the memory store is not configured")
+		return "", false
+	}
+	if _, err := a.memories.Get(r.Context(), operator, id); err != nil {
+		if errors.Is(err, memory.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "memory not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal", "get memory failed")
+		}
+		return "", false
+	}
+	return operator, true
+}
+
+// RedactMemory (POST /v1/memories/{id}/redact) tombstones a memory: content is
+// erased, chained as memory.redacted (content-free) — never the audit chain, casts, or
+// prior exports (the R2 forgetting boundary, ADR-0064 §3). Idempotent 200 on a
+// re-redact (D1, ratified): same desired end state, no duplicate event — NOT 409.
+func (a *apiHandlers) RedactMemory(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := a.ownedMemory(w, r, id)
+	if !ok {
+		return
+	}
+	m, err := a.memories.Redact(r.Context(), operator, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "redact memory failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, toMemoryView(m))
+}
+
+// PinMemory (POST /v1/memories/{id}/pin) exempts a memory from the expiry sweep
+// (ADR-0064 §3). Idempotent 200 when already pinned (D1) — NOT 409.
+func (a *apiHandlers) PinMemory(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := a.ownedMemory(w, r, id)
+	if !ok {
+		return
+	}
+	m, err := a.memories.SetPinned(r.Context(), operator, id, true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "pin memory failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, toMemoryView(m))
+}
+
+// UnpinMemory (POST /v1/memories/{id}/unpin) makes a memory eligible for the expiry
+// sweep again (ADR-0064 §3). Idempotent 200 when already unpinned (D1) — NOT 409.
+func (a *apiHandlers) UnpinMemory(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := a.ownedMemory(w, r, id)
+	if !ok {
+		return
+	}
+	m, err := a.memories.SetPinned(r.Context(), operator, id, false)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "unpin memory failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, toMemoryView(m))
+}
