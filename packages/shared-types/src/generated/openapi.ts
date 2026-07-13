@@ -600,6 +600,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's memories for one scope (owner-scoped; ADR-0064 §7) */
+        get: operations["listMemories"];
+        put?: never;
+        /** Author a free-text memory (sealed at rest; ADR-0064 §2 secondary path) */
+        post: operations["createMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -789,6 +807,54 @@ export interface components {
             createdAt: string;
             /** @description The immutable template — detail view only (absent on list items). */
             steps?: components["schemas"]["WorkstreamStep"][];
+        };
+        MemoryCreate: {
+            /** @enum {string} */
+            scopeType: "workstream" | "run" | "operator";
+            scopeId: string;
+            /** @description Operator-facing name for the memory (optional). */
+            key?: string;
+            /** @description Free-text note; sealed at rest server-side (F3 parity), operator-only on read (ADR-0064 §2 secondary path). Capped at 64 KiB (PERF-9). */
+            content: string;
+            /** @description What produced the note (optional; defaults to "operator"). */
+            sourceTrace?: string;
+            /**
+             * Format: float
+             * @description Recorded, never computed (an L3 concern, deferred). Defaults to 1.0 when omitted.
+             */
+            confidence?: number;
+            /**
+             * Format: date-time
+             * @description Optional; must be in the future. Unpinned rows past this are tombstoned by the expiry sweep (T-081).
+             */
+            expiresAt?: string;
+        };
+        MemoryView: {
+            id: string;
+            /** @enum {string} */
+            scopeType: "workstream" | "run" | "operator";
+            scopeId: string;
+            key?: string;
+            /** @description The content-free evidence pointer (run/step/invocation ids + evidence-packet linkage) — never command text or stdout. */
+            ref: string;
+            /** @description True when the row carries sealed content (an authored note) — distinguishes "" content from no content. */
+            hasContent: boolean;
+            /** @description Present only when hasContent is true and the row is not redacted; opened from the sealed-at-rest bytes on read. */
+            content?: string;
+            sourceTrace: string;
+            /** Format: float */
+            confidence: number;
+            /** @description Exempts the row from the expiry sweep (T-081). */
+            pinned: boolean;
+            /** Format: date-time */
+            expiresAt?: string;
+            /**
+             * Format: date-time
+             * @description Set once a redact tombstones the row (T-081); the fact, never the erased content.
+             */
+            redactedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
         };
         AuditEvent: {
             id: string;
@@ -1894,6 +1960,76 @@ export interface operations {
             404: components["responses"]["NotFound"];
             /** @description The Workstream is already retired. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listMemories: {
+        parameters: {
+            query: {
+                scopeType: "workstream" | "run" | "operator";
+                scopeId: string;
+                limit?: components["parameters"]["LimitParam"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's memories for the scope, id-ascending (PERF-9's pushed-down limit; default 50, max 200). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"][];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    createMemory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryCreate"];
+            };
+        };
+        responses: {
+            /** @description The memory was written (owner = the authenticated caller, bound server-side). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description content exceeds the 64 KiB body cap (PERF-9). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A validation failure — an unknown scopeType, empty content, confidence outside [0,1], or a non-future expiresAt. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

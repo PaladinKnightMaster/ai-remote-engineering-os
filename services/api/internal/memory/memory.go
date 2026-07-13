@@ -55,3 +55,20 @@ type Memory struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
+
+// CreateInput is the operator-authored write's input (ADR-0064 §2 secondary path;
+// T-080, POST /v1/memories). Owner is bound by the server handler from the caller's
+// verified capability — never accepted from the request body (SEC-31/GOV-7). A nil
+// Confidence defers to the schema's 1.0 default (recorded, never computed — an L3
+// concern). No scope-existence check is performed here (GOV-7): reads are
+// permission_scope-filtered, so a foreign scope_id simply returns no rows.
+type CreateInput struct {
+	Owner       string
+	ScopeType   string
+	ScopeID     string
+	Key         string
+	Content     string
+	SourceTrace string
+	Confidence  *float32
+	ExpiresAt   *time.Time
+}

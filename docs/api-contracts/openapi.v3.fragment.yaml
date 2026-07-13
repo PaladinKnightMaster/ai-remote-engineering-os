@@ -38,6 +38,8 @@ tags:
     description: Operator-issued delegation grants on services/api (T-063, ADR-0062; the agent's bounded, revocable standing authority for agent-initiated Runs).
   - name: workstreams
     description: Chartered Workstreams on services/api (T-071, ADR-0063; the standing operator-chartered objective whose immutable template fires governed Runs on a schedule, bounded by its auto-issued delegation grant).
+  - name: memories
+    description: Persistent Scoped Memory on services/api (T-080, ADR-0064; the mutable, forgettable projection beside the immutable audit chain — accrued content-free evidence pointers plus operator-authored sealed notes, scoped to {workstream, run, operator}).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -954,6 +956,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # /v1/memories — Persistent Scoped Memory (ADR-0064; v0.8.0). human-agent + double-submit
+  # CSRF; owner-scoped (permission_scope = the caller, bound server-side — never a param).
+  # Reads take scopeType/scopeId; there is deliberately NO scope-existence check (GOV-7 —
+  # the single-bootstrap-operator posture: reads are permission_scope-filtered, so a
+  # foreign scope_id simply returns no rows, leaking nothing). Accrual (a terminal Run's
+  # content-free evidence pointer) is IN-PROCESS, not a route (ADR-0064 §7). MemoryView
+  # carries v0.8.0's full field set now so the forgetting verbs (T-081) and the UI (T-082)
+  # need zero further codegen churn.
+  /v1/memories:
+    get:
+      tags: [memories]
+      operationId: listMemories
+      summary: List the caller's memories for one scope (owner-scoped; ADR-0064 §7)
+      parameters:
+        - name: scopeType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [workstream, run, operator]
+        - name: scopeId
+          in: query
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: The caller's memories for the scope, id-ascending (PERF-9's pushed-down limit; default 50, max 200).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MemoryView'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [memories]
+      operationId: createMemory
+      summary: Author a free-text memory (sealed at rest; ADR-0064 §2 secondary path)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryCreate'
+      responses:
+        '201':
+          description: The memory was written (owner = the authenticated caller, bound server-side).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryView'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413':
+          description: content exceeds the 64 KiB body cap (PERF-9).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: A validation failure — an unknown scopeType, empty content, confidence outside [0,1], or a non-future expiresAt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -1407,6 +1477,75 @@ components:
           items:
             $ref: '#/components/schemas/WorkstreamStep'
           description: The immutable template — detail view only (absent on list items).
+    MemoryCreate:
+      type: object
+      additionalProperties: false
+      required: [scopeType, scopeId, content]
+      properties:
+        scopeType:
+          type: string
+          enum: [workstream, run, operator]
+        scopeId:
+          type: string
+        key:
+          type: string
+          description: Operator-facing name for the memory (optional).
+        content:
+          type: string
+          description: Free-text note; sealed at rest server-side (F3 parity), operator-only on read (ADR-0064 §2 secondary path). Capped at 64 KiB (PERF-9).
+        sourceTrace:
+          type: string
+          description: What produced the note (optional; defaults to "operator").
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Recorded, never computed (an L3 concern, deferred). Defaults to 1.0 when omitted.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Optional; must be in the future. Unpinned rows past this are tombstoned by the expiry sweep (T-081).
+    MemoryView:
+      type: object
+      required: [id, scopeType, scopeId, ref, hasContent, sourceTrace, confidence, pinned, createdAt]
+      properties:
+        id:
+          type: string
+        scopeType:
+          type: string
+          enum: [workstream, run, operator]
+        scopeId:
+          type: string
+        key:
+          type: string
+        ref:
+          type: string
+          description: The content-free evidence pointer (run/step/invocation ids + evidence-packet linkage) — never command text or stdout.
+        hasContent:
+          type: boolean
+          description: True when the row carries sealed content (an authored note) — distinguishes "" content from no content.
+        content:
+          type: string
+          description: Present only when hasContent is true and the row is not redacted; opened from the sealed-at-rest bytes on read.
+        sourceTrace:
+          type: string
+        confidence:
+          type: number
+          format: float
+        pinned:
+          type: boolean
+          description: Exempts the row from the expiry sweep (T-081).
+        expiresAt:
+          type: string
+          format: date-time
+        redactedAt:
+          type: string
+          format: date-time
+          description: Set once a redact tombstones the row (T-081); the fact, never the erased content.
+        createdAt:
+          type: string
+          format: date-time
     AuditEvent:
       type: object
       additionalProperties: false

@@ -626,7 +626,7 @@ func TestTerminalFlipAccruesMemory(t *testing.T) {
 		if n := countMemories(created.ID); n != 1 {
 			t.Fatalf("memory rows after finish = %d, want 1", n)
 		}
-		rows, err := mem.List(ctx, "operator:mem", memory.ScopeRun, created.ID)
+		rows, err := mem.List(ctx, "operator:mem", memory.ScopeRun, created.ID, 0)
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("list via memory store: rows=%d err=%v", len(rows), err)
 		}
@@ -682,7 +682,7 @@ func TestTerminalFlipAccruesMemory(t *testing.T) {
 		if err := s.FinishRun(ctx, created.ID, StatusFailed); err != nil {
 			t.Fatalf("finish failed: %v", err)
 		}
-		rows, err := mem.List(ctx, "operator:mem", memory.ScopeWorkstream, wsID)
+		rows, err := mem.List(ctx, "operator:mem", memory.ScopeWorkstream, wsID, 0)
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("workstream-scoped list: rows=%d err=%v", len(rows), err)
 		}

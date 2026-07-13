@@ -35,6 +35,20 @@ const (
 	InvocationResolveDecisionDeny    InvocationResolveDecision = "deny"
 )
 
+// Defines values for MemoryCreateScopeType.
+const (
+	MemoryCreateScopeTypeOperator   MemoryCreateScopeType = "operator"
+	MemoryCreateScopeTypeRun        MemoryCreateScopeType = "run"
+	MemoryCreateScopeTypeWorkstream MemoryCreateScopeType = "workstream"
+)
+
+// Defines values for MemoryViewScopeType.
+const (
+	MemoryViewScopeTypeOperator   MemoryViewScopeType = "operator"
+	MemoryViewScopeTypeRun        MemoryViewScopeType = "run"
+	MemoryViewScopeTypeWorkstream MemoryViewScopeType = "workstream"
+)
+
 // Defines values for ResourceType.
 const (
 	ResourceTypeAgenticDesktop ResourceType = "agentic_desktop"
@@ -57,13 +71,13 @@ const (
 
 // Defines values for SessionClosedReason.
 const (
-	ApprovalDenied    SessionClosedReason = "approval_denied"
-	ApprovalTimeout   SessionClosedReason = "approval_timeout"
-	BrokerCrash       SessionClosedReason = "broker_crash"
-	Idle              SessionClosedReason = "idle"
-	Operator          SessionClosedReason = "operator"
-	PolicyUnavailable SessionClosedReason = "policy_unavailable"
-	Ttl               SessionClosedReason = "ttl"
+	SessionClosedReasonApprovalDenied    SessionClosedReason = "approval_denied"
+	SessionClosedReasonApprovalTimeout   SessionClosedReason = "approval_timeout"
+	SessionClosedReasonBrokerCrash       SessionClosedReason = "broker_crash"
+	SessionClosedReasonIdle              SessionClosedReason = "idle"
+	SessionClosedReasonOperator          SessionClosedReason = "operator"
+	SessionClosedReasonPolicyUnavailable SessionClosedReason = "policy_unavailable"
+	SessionClosedReasonTtl               SessionClosedReason = "ttl"
 )
 
 // Defines values for SessionMode.
@@ -89,6 +103,13 @@ const (
 const (
 	SessionResolveDecisionApprove SessionResolveDecision = "approve"
 	SessionResolveDecisionDeny    SessionResolveDecision = "deny"
+)
+
+// Defines values for ListMemoriesParamsScopeType.
+const (
+	ListMemoriesParamsScopeTypeOperator   ListMemoriesParamsScopeType = "operator"
+	ListMemoriesParamsScopeTypeRun        ListMemoriesParamsScopeType = "run"
+	ListMemoriesParamsScopeTypeWorkstream ListMemoriesParamsScopeType = "workstream"
 )
 
 // AgentTokenRequest defines model for AgentTokenRequest.
@@ -200,6 +221,59 @@ type LoginResponse struct {
 	// ExpiresAt When the session cookie expires (RFC3339 UTC).
 	ExpiresAt time.Time `json:"expiresAt"`
 }
+
+// MemoryCreate defines model for MemoryCreate.
+type MemoryCreate struct {
+	// Confidence Recorded, never computed (an L3 concern, deferred). Defaults to 1.0 when omitted.
+	Confidence *float32 `json:"confidence,omitempty"`
+
+	// Content Free-text note; sealed at rest server-side (F3 parity), operator-only on read (ADR-0064 §2 secondary path). Capped at 64 KiB (PERF-9).
+	Content string `json:"content"`
+
+	// ExpiresAt Optional; must be in the future. Unpinned rows past this are tombstoned by the expiry sweep (T-081).
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+
+	// Key Operator-facing name for the memory (optional).
+	Key       *string               `json:"key,omitempty"`
+	ScopeId   string                `json:"scopeId"`
+	ScopeType MemoryCreateScopeType `json:"scopeType"`
+
+	// SourceTrace What produced the note (optional; defaults to "operator").
+	SourceTrace *string `json:"sourceTrace,omitempty"`
+}
+
+// MemoryCreateScopeType defines model for MemoryCreate.ScopeType.
+type MemoryCreateScopeType string
+
+// MemoryView defines model for MemoryView.
+type MemoryView struct {
+	Confidence float32 `json:"confidence"`
+
+	// Content Present only when hasContent is true and the row is not redacted; opened from the sealed-at-rest bytes on read.
+	Content   *string    `json:"content,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+
+	// HasContent True when the row carries sealed content (an authored note) — distinguishes "" content from no content.
+	HasContent bool    `json:"hasContent"`
+	Id         string  `json:"id"`
+	Key        *string `json:"key,omitempty"`
+
+	// Pinned Exempts the row from the expiry sweep (T-081).
+	Pinned bool `json:"pinned"`
+
+	// RedactedAt Set once a redact tombstones the row (T-081); the fact, never the erased content.
+	RedactedAt *time.Time `json:"redactedAt,omitempty"`
+
+	// Ref The content-free evidence pointer (run/step/invocation ids + evidence-packet linkage) — never command text or stdout.
+	Ref         string              `json:"ref"`
+	ScopeId     string              `json:"scopeId"`
+	ScopeType   MemoryViewScopeType `json:"scopeType"`
+	SourceTrace string              `json:"sourceTrace"`
+}
+
+// MemoryViewScopeType defines model for MemoryView.ScopeType.
+type MemoryViewScopeType string
 
 // PageMeta defines model for PageMeta.
 type PageMeta struct {
@@ -406,6 +480,16 @@ type ListGrantsParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListMemoriesParams defines parameters for ListMemories.
+type ListMemoriesParams struct {
+	ScopeType ListMemoriesParamsScopeType `form:"scopeType" json:"scopeType"`
+	ScopeId   string                      `form:"scopeId" json:"scopeId"`
+	Limit     *LimitParam                 `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListMemoriesParamsScopeType defines parameters for ListMemories.
+type ListMemoriesParamsScopeType string
+
 // ListResourcesParams defines parameters for ListResources.
 type ListResourcesParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -441,6 +525,9 @@ type CreateGrantJSONRequestBody = GrantCreate
 
 // ResolveInvocationJSONRequestBody defines body for ResolveInvocation for application/json ContentType.
 type ResolveInvocationJSONRequestBody = InvocationResolve
+
+// CreateMemoryJSONRequestBody defines body for CreateMemory for application/json ContentType.
+type CreateMemoryJSONRequestBody = MemoryCreate
 
 // CreateResourceJSONRequestBody defines body for CreateResource for application/json ContentType.
 type CreateResourceJSONRequestBody = ResourceInput
@@ -495,6 +582,12 @@ type ServerInterface interface {
 	// Approve or deny a tool invocation parked pending approval (AP-2; ADR-0057 §4)
 	// (POST /v1/invocations/{id}/resolve)
 	ResolveInvocation(w http.ResponseWriter, r *http.Request, id string)
+	// List the caller's memories for one scope (owner-scoped; ADR-0064 §7)
+	// (GET /v1/memories)
+	ListMemories(w http.ResponseWriter, r *http.Request, params ListMemoriesParams)
+	// Author a free-text memory (sealed at rest; ADR-0064 §2 secondary path)
+	// (POST /v1/memories)
+	CreateMemory(w http.ResponseWriter, r *http.Request)
 	// List resources
 	// (GET /v1/resources)
 	ListResources(w http.ResponseWriter, r *http.Request, params ListResourcesParams)
@@ -624,6 +717,18 @@ func (_ Unimplemented) ListInvocations(w http.ResponseWriter, r *http.Request) {
 // Approve or deny a tool invocation parked pending approval (AP-2; ADR-0057 §4)
 // (POST /v1/invocations/{id}/resolve)
 func (_ Unimplemented) ResolveInvocation(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List the caller's memories for one scope (owner-scoped; ADR-0064 §7)
+// (GET /v1/memories)
+func (_ Unimplemented) ListMemories(w http.ResponseWriter, r *http.Request, params ListMemoriesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Author a free-text memory (sealed at rest; ADR-0064 §2 secondary path)
+// (POST /v1/memories)
+func (_ Unimplemented) CreateMemory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1030,6 +1135,89 @@ func (siw *ServerInterfaceWrapper) ResolveInvocation(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ResolveInvocation(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMemories operation middleware
+func (siw *ServerInterfaceWrapper) ListMemories(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMemoriesParams
+
+	// ------------- Required query parameter "scopeType" -------------
+
+	if paramValue := r.URL.Query().Get("scopeType"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scopeType"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "scopeType", r.URL.Query(), &params.ScopeType)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scopeType", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "scopeId" -------------
+
+	if paramValue := r.URL.Query().Get("scopeId"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scopeId"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "scopeId", r.URL.Query(), &params.ScopeId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scopeId", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMemories(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMemory operation middleware
+func (siw *ServerInterfaceWrapper) CreateMemory(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMemory(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1800,6 +1988,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/invocations/{id}/resolve", wrapper.ResolveInvocation)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/memories", wrapper.ListMemories)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories", wrapper.CreateMemory)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources", wrapper.ListResources)

@@ -45,6 +45,7 @@ import (
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/gateway"
 	"aireos.local/services/api/internal/grant"
+	"aireos.local/services/api/internal/memory"
 	"aireos.local/services/api/internal/policy"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/run"
@@ -155,6 +156,10 @@ type apiHandlers struct {
 	// floor in seconds (defaulted in New; env-overridden at wiring).
 	workstreams           workstreamStore
 	workstreamMinInterval int
+	// memories is the Persistent Scoped Memory store (ADR-0064 / T-080); nil → the
+	// /v1/memories routes answer 503. Accrual (AccrueRunTerminal) is wired directly into
+	// the run store (main.go) — the routes here only ever call List/CreateAuthored.
+	memories memoryStore
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -228,6 +233,24 @@ func WithWorkstreamStore(ws workstreamStore, minIntervalSeconds int) Option {
 			h.workstreamMinInterval = minIntervalSeconds
 		}
 	}
+}
+
+// memoryStore is the slice of the Persistent Scoped Memory store the memory routes
+// need (ADR-0064, T-080). nil → the /v1/memories routes answer 503. Accrual
+// (AccrueRunTerminal) rides the Run engine's terminal flip directly (T-079) — it is not
+// reachable through this narrow interface, by design (the routes are operator-plane
+// read/author only).
+type memoryStore interface {
+	List(ctx context.Context, owner, scopeType, scopeID string, limit int) ([]memory.Memory, error)
+	CreateAuthored(ctx context.Context, in memory.CreateInput) (memory.Memory, error)
+}
+
+// WithMemoryStore wires the Persistent Scoped Memory store (ADR-0064, T-080): the
+// operator list (GET /v1/memories) / authored-write (POST /v1/memories) routes.
+// nil/absent → those routes answer 503. Memory is api-local (no gateway needed), so
+// like grants/workstreams it is wired unconditionally.
+func WithMemoryStore(ms memoryStore) Option {
+	return func(h *apiHandlers) { h.memories = ms }
 }
 
 // WithGatewayVerifier wires the route-scoped verifier for the inbound delegated-launch

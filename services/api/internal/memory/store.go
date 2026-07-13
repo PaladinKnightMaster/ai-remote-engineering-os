@@ -51,14 +51,22 @@ func NewStore(pool *pgxpool.Pool, sealer CommandSealer, outboxTable string) *Sto
 	return &Store{pool: pool, sealer: sealer, writer: outbox.Writer{Table: outboxTable}}
 }
 
-// open is nil-safe (see CommandSealer): a nil sealer is the plaintext fallback. There
-// is no seal counterpart yet — no authored-write path exists until T-080 adds
-// POST /v1/memories; content only ever arrives via a direct row (tests) until then.
+// open is nil-safe (see CommandSealer): a nil sealer is the plaintext fallback.
 func (s *Store) open(b []byte) (string, error) {
 	if s.sealer == nil {
 		return string(b), nil
 	}
 	return s.sealer.Open(b)
+}
+
+// seal is open's symmetric counterpart (the workstream/run store's shape): a nil
+// sealer is the plaintext dev/transition fallback, so authored content round-trips
+// even before the command-at-rest key is provisioned.
+func (s *Store) seal(plaintext string) ([]byte, error) {
+	if s.sealer == nil {
+		return []byte(plaintext), nil
+	}
+	return s.sealer.Seal(plaintext)
 }
 
 // eventActor picks a memory event's actor from (operator, actor): the accruing Run's
@@ -119,14 +127,86 @@ func (s *Store) AccrueRunTerminal(ctx context.Context, tx pgx.Tx, runID, status,
 	return nil
 }
 
-// List returns owner-scoped memories for one scope in id (≈ creation) order.
-// Non-owner rows never appear — the caller's owner param IS the filter (no separate
-// authorization check needed; a foreign scope simply returns no rows).
-func (s *Store) List(ctx context.Context, owner, scopeType, scopeID string) ([]Memory, error) {
+// CreateAuthored writes ONE operator-authored memory (ADR-0064 §2 secondary path;
+// T-080, POST /v1/memories), its OWN transaction (no terminal flip to ride, unlike
+// AccrueRunTerminal). Content is sealed at rest via seal (F3 parity); the row has no
+// run anchor, so ref stays "" (authored rows are named by key, not a pointer).
+// memory.written enqueues in the SAME transaction — content-free (ADR-0049): actor =
+// the authoring operator (in.Owner), edge human-agent, target memory:<id>.
+// EvidencePacketID carries the scope anchor ("<scopeType>:<scopeId>", the
+// house-consistent non-empty-pointer choice AccrueRunTerminal also makes with
+// "run:<id>") rather than "" — an authored note's evidence trail is the scope it was
+// written against.
+func (s *Store) CreateAuthored(ctx context.Context, in CreateInput) (Memory, error) {
+	if in.Owner == "" || in.ScopeType == "" || in.ScopeID == "" || in.Content == "" {
+		return Memory{}, errors.New("memory requires an owner, scope, and content")
+	}
+	id := uuid.Must(uuid.NewV7())
+	sealed, err := s.seal(in.Content)
+	if err != nil {
+		return Memory{}, fmt.Errorf("seal memory content: %w", err)
+	}
+	confidence := float32(1.0)
+	if in.Confidence != nil {
+		confidence = *in.Confidence
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Memory{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	row := tx.QueryRow(ctx, `
+		INSERT INTO memories (id, scope_type, scope_id, key, content, source_trace, confidence, expires_at, permission_scope)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING `+selectCols,
+		id.String(), in.ScopeType, in.ScopeID, in.Key, sealed, in.SourceTrace, confidence, in.ExpiresAt, in.Owner)
+	m, err := s.scan(row)
+	if err != nil {
+		return Memory{}, fmt.Errorf("insert authored memory: %w", err)
+	}
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: in.Owner, Edge: memoryEdge,
+		Target: "memory:" + id.String(), Outcome: "memory.written",
+		EvidencePacketID: in.ScopeType + ":" + in.ScopeID,
+	}); err != nil {
+		return Memory{}, fmt.Errorf("enqueue memory.written: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Memory{}, fmt.Errorf("commit: %w", err)
+	}
+	return m, nil
+}
+
+// defaultListLimit/maxListLimit bound List's pushed-down limit (PERF-9/D3): default
+// 50 when the caller passes 0, clamped to [1, 200] otherwise — the same bounds the
+// workstream/grant/run list routes enforce at the handler; here it lives in the store
+// so every caller (the route, tests, future callers) gets the clamp for free.
+const (
+	defaultListLimit = 50
+	maxListLimit     = 200
+)
+
+// List returns owner-scoped memories for one scope in id (≈ creation) order, bounded
+// to limit rows (clamped to [1, maxListLimit]; 0 or an out-of-range value defaults to
+// defaultListLimit — D3's pushed-down limit). Non-owner rows never appear — the
+// caller's owner param IS the filter (no separate authorization check needed; a
+// foreign scope simply returns no rows).
+func (s *Store) List(ctx context.Context, owner, scopeType, scopeID string, limit int) ([]Memory, error) {
+	switch {
+	case limit <= 0:
+		limit = defaultListLimit
+	case limit > maxListLimit:
+		limit = maxListLimit
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+selectCols+` FROM memories
 		 WHERE permission_scope = $1 AND scope_type = $2 AND scope_id = $3
-		 ORDER BY id ASC`, owner, scopeType, scopeID)
+		 ORDER BY id ASC
+		 LIMIT $4`, owner, scopeType, scopeID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list memories: %w", err)
 	}

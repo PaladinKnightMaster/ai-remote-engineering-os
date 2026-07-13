@@ -10,6 +10,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -64,7 +65,7 @@ func TestAccrueRunTerminal(t *testing.T) {
 				t.Fatalf("commit: %v", err)
 			}
 
-			rows, err := s.List(ctx, "operator:alice", ScopeRun, runID)
+			rows, err := s.List(ctx, "operator:alice", ScopeRun, runID, 0)
 			if err != nil {
 				t.Fatalf("list: %v", err)
 			}
@@ -116,7 +117,7 @@ func TestAccrueScopeDerivation(t *testing.T) {
 			t.Fatalf("commit: %v", err)
 		}
 
-		rows, err := s.List(ctx, "operator:bob", ScopeWorkstream, wsID)
+		rows, err := s.List(ctx, "operator:bob", ScopeWorkstream, wsID, 0)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -141,7 +142,7 @@ func TestAccrueScopeDerivation(t *testing.T) {
 			t.Fatalf("commit: %v", err)
 		}
 
-		rows, err := s.List(ctx, "operator:carol", ScopeRun, runID)
+		rows, err := s.List(ctx, "operator:carol", ScopeRun, runID, 0)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -172,7 +173,7 @@ func TestOwnerScopedReads(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	rows, err := s.List(ctx, "operator:owner", ScopeRun, runID)
+	rows, err := s.List(ctx, "operator:owner", ScopeRun, runID, 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("owner list: rows=%d err=%v, want 1", len(rows), err)
 	}
@@ -184,7 +185,7 @@ func TestOwnerScopedReads(t *testing.T) {
 	if _, err := s.Get(ctx, "operator:stranger", id); err != ErrNotFound {
 		t.Fatalf("stranger get: got %v, want ErrNotFound", err)
 	}
-	if others, err := s.List(ctx, "operator:stranger", ScopeRun, runID); err != nil || len(others) != 0 {
+	if others, err := s.List(ctx, "operator:stranger", ScopeRun, runID, 0); err != nil || len(others) != 0 {
 		t.Fatalf("stranger list: rows=%d err=%v, want 0", len(others), err)
 	}
 	if _, err := s.Get(ctx, "operator:owner", "00000000-0000-0000-0000-000000000000"); err != ErrNotFound {
@@ -228,6 +229,100 @@ func TestSealedContentRoundTrip(t *testing.T) {
 	// an accident of nil-safety).
 	if plain, err := s.Get(ctx, "operator:author", id); err != nil || plain.Content == plaintext {
 		t.Fatalf("plaintext-mode store unexpectedly round-tripped sealed content: %q (err %v)", plain.Content, err)
+	}
+}
+
+// TestCreateAuthoredSealedRoundTrip — T-080 G1: CreateAuthored seals content via the
+// store's own seal/open pair (not a direct insert), enqueues memory.written in the SAME
+// transaction (actor = the authoring operator, content-free), and mints a fresh uuid v7
+// id every call (dirty-DB re-run safety, the T-073 lesson).
+func TestCreateAuthoredSealedRoundTrip(t *testing.T) {
+	_, pool := testStore(t)
+	sealedStore := NewStore(pool, stubSealer{}, "api_outbox")
+	scopeID := freshID(t)
+	const plaintext = "operator note: the nightly job flakes on Tuesdays"
+
+	created, err := sealedStore.CreateAuthored(context.Background(), CreateInput{
+		Owner: "operator:author", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Key: "note", Content: plaintext, SourceTrace: "operator",
+	})
+	if err != nil {
+		t.Fatalf("create authored: %v", err)
+	}
+	if !created.HasContent || created.Content != plaintext {
+		t.Fatalf("sealed round-trip on create: HasContent=%v Content=%q, want %q", created.HasContent, created.Content, plaintext)
+	}
+	if created.Ref != "" {
+		t.Fatalf("authored row must carry no run anchor, got ref=%q", created.Ref)
+	}
+	if created.Confidence != 1.0 {
+		t.Fatalf("confidence default = %v, want 1.0 (omitted Confidence)", created.Confidence)
+	}
+
+	// Re-fetch through the same store to prove the persisted bytes (not just the
+	// in-memory return value) are sealed and open back correctly.
+	got, err := sealedStore.Get(context.Background(), "operator:author", created.ID)
+	if err != nil || got.Content != plaintext {
+		t.Fatalf("get after create: content=%q err=%v, want %q", got.Content, err, plaintext)
+	}
+
+	if n := countOutcome(t, pool, ScopeOperator+":"+scopeID, "memory.written"); n != 1 {
+		t.Fatalf("memory.written count = %d, want 1", n)
+	}
+	if n := countActor(t, pool, "memory:"+created.ID, "operator:author"); n != 1 {
+		t.Fatalf("memory.written actor mismatch (count=%d)", n)
+	}
+
+	// A second CreateAuthored call (even with the same scope) mints a distinct id.
+	again, err := sealedStore.CreateAuthored(context.Background(), CreateInput{
+		Owner: "operator:author", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "a second, unrelated note",
+	})
+	if err != nil {
+		t.Fatalf("create authored (second): %v", err)
+	}
+	if again.ID == created.ID {
+		t.Fatalf("CreateAuthored must mint a fresh id per call, got a repeat: %s", again.ID)
+	}
+}
+
+// TestListLimitClamping — D3/PERF-9: List's pushed-down limit clamps to [1, 200],
+// defaulting to 50 when the caller passes 0; a limit smaller than the row count
+// truncates the (id-ASC-ordered) result.
+func TestListLimitClamping(t *testing.T) {
+	s, _ := testStore(t)
+	ctx := context.Background()
+	scopeID := freshID(t)
+
+	for i := 0; i < 4; i++ {
+		if _, err := s.CreateAuthored(ctx, CreateInput{
+			Owner: "operator:limiter", ScopeType: ScopeOperator, ScopeID: scopeID,
+			Content: fmt.Sprintf("note %d", i),
+		}); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+	}
+
+	all, err := s.List(ctx, "operator:limiter", ScopeOperator, scopeID, 0)
+	if err != nil || len(all) != 4 {
+		t.Fatalf("default limit: rows=%d err=%v, want 4", len(all), err)
+	}
+
+	limited, err := s.List(ctx, "operator:limiter", ScopeOperator, scopeID, 2)
+	if err != nil || len(limited) != 2 {
+		t.Fatalf("limit=2: rows=%d err=%v, want 2", len(limited), err)
+	}
+	// id-ASC: the first 2 of the 4 seeded rows (uuid v7 ids are time-ordered).
+	if limited[0].ID != all[0].ID || limited[1].ID != all[1].ID {
+		t.Fatalf("limit=2 did not return the first 2 id-ASC rows")
+	}
+
+	// Out-of-range values clamp rather than error.
+	if over, err := s.List(ctx, "operator:limiter", ScopeOperator, scopeID, 500); err != nil || len(over) != 4 {
+		t.Fatalf("limit=500 (clamped to 200, still only 4 rows exist): rows=%d err=%v", len(over), err)
+	}
+	if neg, err := s.List(ctx, "operator:limiter", ScopeOperator, scopeID, -1); err != nil || len(neg) != 4 {
+		t.Fatalf("limit=-1 (defaults to 50): rows=%d err=%v", len(neg), err)
 	}
 }
 

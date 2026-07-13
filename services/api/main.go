@@ -144,12 +144,14 @@ func serve(dsn string) error {
 	wsStore := workstream.NewStore(pool, nil, grantStore, store.OutboxTable)
 	opts = append(opts, server.WithWorkstreamStore(wsStore, wsMinInterval))
 
-	// Persistent Scoped Memory (ADR-0064, T-079): api-local like grants/workstreams →
-	// wired unconditionally. The sealer is nil — the same plaintext dev/transition
+	// Persistent Scoped Memory (ADR-0064, T-079/T-080): api-local like grants/workstreams
+	// → wired unconditionally. The sealer is nil — the same plaintext dev/transition
 	// wiring as the run/workstream stores above, so all three flip together when the
-	// command-at-rest key is provisioned. No routes yet (T-080); handed to the run
-	// store below so a terminal Run accrues a memory pointer in-tx (F-a).
+	// command-at-rest key is provisioned. Handed to the run store below so a terminal Run
+	// accrues a memory pointer in-tx (F-a), AND wired as the /v1/memories* routes' store
+	// (T-080): one store, two consumers (accrual in-process, the routes over HTTP).
 	memStore := memory.NewStore(pool, nil, store.OutboxTable)
+	opts = append(opts, server.WithMemoryStore(memStore))
 
 	// The delegated-launch forward verifier (ADR-0062, T-065a): route-scoped to the gateway's
 	// v4.public token so the operator routes stay symmetric-only (SEC-20). nil (no gateway
