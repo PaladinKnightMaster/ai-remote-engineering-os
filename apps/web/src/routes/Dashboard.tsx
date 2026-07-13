@@ -64,6 +64,13 @@ export function Dashboard() {
             charter standing objectives that fire governed runs on a schedule, bounded by their own grant.
           </p>
           <p className="mt-2 text-sm">
+            <Link to="/memories" className="font-medium text-primary hover:underline">
+              Memory →
+            </Link>{" "}
+            read, author, redact, pin, and export the operator's scoped, forgettable memory —
+            the mutable projection beside the immutable audit chain.
+          </p>
+          <p className="mt-2 text-sm">
             <Link to="/audit" className="font-medium text-primary hover:underline">
               Audit timeline →
             </Link>{" "}

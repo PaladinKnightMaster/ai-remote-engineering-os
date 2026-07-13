@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
+import { MemoryRow, type MemoryView } from "./Memories";
 
 type Workstream = components["schemas"]["Workstream"];
 type Grant = components["schemas"]["Grant"];
@@ -48,6 +49,7 @@ export function Workstreams() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<Workstream | null>(null);
+  const [memories, setMemories] = useState<MemoryView[]>([]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -89,6 +91,22 @@ export function Workstreams() {
     void (async () => {
       const { data } = await apiClient.GET("/v1/workstreams/{id}", { params: { path: { id: selected } } });
       if (data) setDetail(data);
+    })();
+  }, [selected]);
+
+  // FE-22: the charter's scoped memory (accrued pointers + any authored notes) — the
+  // v0.7 EVD-1 read-time slice promoted to read the persisted store, fetched once when
+  // the detail opens (no auto-poll; visit /memories for the full operator surface).
+  useEffect(() => {
+    if (!selected) {
+      setMemories([]);
+      return;
+    }
+    void (async () => {
+      const { data } = await apiClient.GET("/v1/memories", {
+        params: { query: { scopeType: "workstream", scopeId: selected } },
+      });
+      setMemories(data ?? []);
     })();
   }, [selected]);
 
@@ -438,6 +456,26 @@ export function Workstreams() {
                                   <span>{r.status}</span>
                                 </li>
                               ))}
+                          </ul>
+                        )}
+                      </div>
+
+                      {/* FE-22: the persisted-store promotion of the EVD-1 slice —
+                          accrued pointers beside any authored notes, read-only here. */}
+                      <div aria-label="scoped memory" className="space-y-1">
+                        <p className="text-xs font-medium">
+                          Scoped memory{" "}
+                          <Link to="/memories" className="font-normal text-primary hover:underline">
+                            (view on Memory →)
+                          </Link>
+                        </p>
+                        {memories.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No memory recorded yet.</p>
+                        ) : (
+                          <ul className="divide-y divide-border rounded-md border border-border">
+                            {memories.map((m) => (
+                              <MemoryRow key={m.id} m={m} />
+                            ))}
                           </ul>
                         )}
                       </div>

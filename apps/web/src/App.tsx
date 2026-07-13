@@ -10,6 +10,7 @@ import { Invocations } from "./routes/Invocations";
 import { Runs } from "./routes/Runs";
 import { Grants } from "./routes/Grants";
 import { Workstreams } from "./routes/Workstreams";
+import { Memories } from "./routes/Memories";
 import { Audit } from "./routes/Audit";
 
 /**
@@ -85,6 +86,14 @@ export function App() {
             element={
               <RequireAuth>
                 <Workstreams />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/memories"
+            element={
+              <RequireAuth>
+                <Memories />
               </RequireAuth>
             }
           />

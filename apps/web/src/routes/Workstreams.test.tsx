@@ -19,13 +19,23 @@ afterEach(() => {
 });
 
 // The route fetches /v1/workstreams (list) + /v1/grants + /v1/runs (client-side joins) +
-// /v1/resources (the picker), and /v1/workstreams/{id} for the detail template.
-function mockGET(opts: { workstreams?: unknown[]; grants?: unknown[]; runs?: unknown[]; resources?: unknown[]; detail?: unknown; wsErr?: unknown }) {
+// /v1/resources (the picker), and /v1/workstreams/{id} + /v1/memories for the detail
+// (the immutable template and the FE-22 scoped-memory promotion, respectively).
+function mockGET(opts: {
+  workstreams?: unknown[];
+  grants?: unknown[];
+  runs?: unknown[];
+  resources?: unknown[];
+  detail?: unknown;
+  memories?: unknown[];
+  wsErr?: unknown;
+}) {
   vi.mocked(apiClient.GET).mockImplementation(((path: string) => {
     if (path === "/v1/resources") return Promise.resolve({ data: { items: opts.resources ?? [], page: {} }, error: undefined });
     if (path === "/v1/grants") return Promise.resolve({ data: { items: opts.grants ?? [], page: {} }, error: undefined });
     if (path === "/v1/runs") return Promise.resolve({ data: { items: opts.runs ?? [], page: {} }, error: undefined });
     if (path === "/v1/workstreams/{id}") return Promise.resolve({ data: opts.detail, error: undefined });
+    if (path === "/v1/memories") return Promise.resolve({ data: opts.memories ?? [], error: undefined });
     if (opts.wsErr) return Promise.resolve({ data: undefined, error: opts.wsErr });
     return Promise.resolve({ data: { items: opts.workstreams ?? [], page: {} }, error: undefined });
   }) as never);
@@ -161,6 +171,37 @@ describe("Workstreams route", () => {
     await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
     expect(screen.getByRole("button", { name: /^resume$/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^pause$/i })).toBeNull();
+  });
+
+  it("shows the charter's scoped memory (FE-22: an accrued content-free pointer, read-only)", async () => {
+    mockGET({
+      workstreams: [sampleWS],
+      grants: [sampleGrant],
+      detail: { ...sampleWS, steps: [] },
+      memories: [
+        {
+          id: "mem-1",
+          scopeType: "workstream",
+          scopeId: "ws-1",
+          ref: "run:run-1/step:0",
+          hasContent: false,
+          sourceTrace: "run:run-1",
+          confidence: 1,
+          pinned: false,
+          createdAt: "2026-07-06T00:00:00Z",
+        },
+      ],
+    });
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
+    fireEvent.click(screen.getByText("nightly health"));
+
+    expect(await screen.findByText(/scoped memory/i)).toBeTruthy();
+    // The accrued pointer renders as ref + sourceTrace (content-free) — never as empty
+    // content, and with NO verb buttons (read-only here; verbs live on /memories).
+    expect(await screen.findByText(/run:run-1\/step:0/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^redact$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^pin$/i })).toBeNull();
   });
 
   it("shows an error when listing fails", async () => {
