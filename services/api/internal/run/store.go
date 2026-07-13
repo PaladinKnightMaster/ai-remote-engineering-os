@@ -54,20 +54,34 @@ type CommandSealer interface {
 	Open(b []byte) (string, error)
 }
 
+// MemoryAccruer is the seam T-079 hooks into the shared once-only terminal flip
+// (ADR-0064 §2/MEM-2): a terminal Run writes ONE content-free memory pointer in the
+// SAME transaction as its terminal event. Deliberately PRIMITIVE-typed (no
+// internal/memory type crosses this boundary) so internal/run never imports
+// internal/memory — the Run engine must not depend on the P2 memory module (ADR-0064).
+// *memory.Store satisfies this structurally. A nil accruer means no accrual — the
+// CommandSealer nil-pattern — so existing wiring/tests are unaffected until a real
+// accruer is wired.
+type MemoryAccruer interface {
+	AccrueRunTerminal(ctx context.Context, tx pgx.Tx, runID, status, operator, actor, grantID string) error
+}
+
 // Store persists runs + run_steps for the Run engine. It takes the pgx pool directly
 // (the gateway-store pattern) so the package stays extraction-ready (RUN-1).
 type Store struct {
-	pool   *pgxpool.Pool
-	sealer CommandSealer
-	writer outbox.Writer
+	pool    *pgxpool.Pool
+	sealer  CommandSealer
+	writer  outbox.Writer
+	accruer MemoryAccruer
 }
 
 // NewStore builds the Run store. sealer may be nil (plaintext fallback — see
 // CommandSealer). outboxTable is the api outbox table (e.g. "api_outbox") into which
 // Create enqueues run.launched in the same transaction (AUD-9); the caller passes the
 // table name so this package stays free of api-internal imports (the extraction seam).
-func NewStore(pool *pgxpool.Pool, sealer CommandSealer, outboxTable string) *Store {
-	return &Store{pool: pool, sealer: sealer, writer: outbox.Writer{Table: outboxTable}}
+// accruer may be nil (no memory accrual — see MemoryAccruer).
+func NewStore(pool *pgxpool.Pool, sealer CommandSealer, outboxTable string, accruer MemoryAccruer) *Store {
+	return &Store{pool: pool, sealer: sealer, writer: outbox.Writer{Table: outboxTable}, accruer: accruer}
 }
 
 func (s *Store) seal(cmd string) ([]byte, error) {
@@ -441,7 +455,11 @@ func (s *Store) CancelRun(ctx context.Context, id string) (bool, error) {
 // run.* lifecycle event in the SAME transaction (AUD-9/14): actor=operator, anchored
 // run:<id>, content-free. ok=false (no-op) if the row already left fromStatuses — the
 // shared guard behind FinishRun (from running) and CancelRun (from pending|running) that
-// makes a cancel/finish race safe.
+// makes a cancel/finish race safe. This is also the F-a memory-accrual seam (ADR-0064
+// §2/MEM-2): AFTER the terminal event enqueues, on the SAME actually-flipped path, it
+// calls the wired accruer so a content-free memory pointer commits atomically with the
+// terminal flip — and, because the pgx.ErrNoRows no-op path above returns before this
+// point, a no-op flip NEVER accrues (criteria N4).
 func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromStatuses ...string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -449,11 +467,12 @@ func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromSta
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var operator, actor string
+	var operator, actor, grantID string
 	err = tx.QueryRow(ctx, `
 		UPDATE runs SET status = $2, updated_at = now()
-		 WHERE id = $1 AND status = ANY($3) RETURNING operator, COALESCE(actor, '')`,
-		id, toStatus, fromStatuses).Scan(&operator, &actor)
+		 WHERE id = $1 AND status = ANY($3)
+		 RETURNING operator, COALESCE(actor, ''), COALESCE(grant_id::text, '')`,
+		id, toStatus, fromStatuses).Scan(&operator, &actor, &grantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -466,6 +485,11 @@ func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromSta
 			Target: "run:" + id, Outcome: outcome, EvidencePacketID: "run:" + id,
 		}); err != nil {
 			return false, fmt.Errorf("enqueue %s: %w", outcome, err)
+		}
+		if s.accruer != nil {
+			if err := s.accruer.AccrueRunTerminal(ctx, tx, id, toStatus, operator, actor, grantID); err != nil {
+				return false, fmt.Errorf("accrue memory for %s: %w", outcome, err)
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

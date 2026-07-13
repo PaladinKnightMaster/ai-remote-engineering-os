@@ -35,6 +35,7 @@ import (
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/account"
 	"aireos.local/services/api/internal/grant"
+	"aireos.local/services/api/internal/memory"
 	runengine "aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/server"
 	"aireos.local/services/api/internal/store"
@@ -143,6 +144,13 @@ func serve(dsn string) error {
 	wsStore := workstream.NewStore(pool, nil, grantStore, store.OutboxTable)
 	opts = append(opts, server.WithWorkstreamStore(wsStore, wsMinInterval))
 
+	// Persistent Scoped Memory (ADR-0064, T-079): api-local like grants/workstreams →
+	// wired unconditionally. The sealer is nil — the same plaintext dev/transition
+	// wiring as the run/workstream stores above, so all three flip together when the
+	// command-at-rest key is provisioned. No routes yet (T-080); handed to the run
+	// store below so a terminal Run accrues a memory pointer in-tx (F-a).
+	memStore := memory.NewStore(pool, nil, store.OutboxTable)
+
 	// The delegated-launch forward verifier (ADR-0062, T-065a): route-scoped to the gateway's
 	// v4.public token so the operator routes stay symmetric-only (SEC-20). nil (no gateway
 	// public key) → the forward route is not mounted (delegation disabled).
@@ -155,7 +163,7 @@ func serve(dsn string) error {
 	}
 
 	if gwURL := os.Getenv("GATEWAY_URL"); gwURL != "" {
-		runStore := runengine.NewStore(pool, nil, store.OutboxTable)
+		runStore := runengine.NewStore(pool, nil, store.OutboxTable, memStore)
 		var stepIssuer runengine.ServiceIssuer
 		if sg := agentPlaneSigner(); sg != nil {
 			stepIssuer = sg

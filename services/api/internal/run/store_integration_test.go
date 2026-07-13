@@ -19,9 +19,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/services/api/internal/grant"
+	"aireos.local/services/api/internal/memory"
 )
 
 func testStore(t *testing.T) *Store {
+	t.Helper()
+	pool := testPool(t)
+	return NewStore(pool, nil, "api_outbox", nil) // nil sealer → plaintext; nil accruer → no memory accrual
+}
+
+// testPool opens the shared test-DB pool (extracted so testStoreWithAccruer, T-079,
+// can share a connection lifecycle with testStore without duplicating the skip/connect
+// boilerplate).
+func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("API_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -32,7 +42,17 @@ func testStore(t *testing.T) *Store {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return NewStore(pool, nil, "api_outbox") // nil sealer → plaintext; Create enqueues run.launched into api_outbox
+	return pool
+}
+
+// testStoreWithAccruer builds a Run store wired to a real *memory.Store (T-079's F-a
+// hook) sharing pool — the accrual-integration proof needs both stores to see the
+// same transaction's committed rows.
+func testStoreWithAccruer(t *testing.T) (*Store, *memory.Store, *pgxpool.Pool) {
+	t.Helper()
+	pool := testPool(t)
+	mem := memory.NewStore(pool, nil, "api_outbox")
+	return NewStore(pool, nil, "api_outbox", mem), mem, pool
 }
 
 // TestRunStoreCreateGetList — the T-054 G1 live-PG proof: a Run + its ordered steps
@@ -571,5 +591,125 @@ func TestCountStepsForGrantWindowed(t *testing.T) {
 	}
 	if n, _ := s.CountStepsForGrant(ctx, grantID, 3*3600); n != 5 {
 		t.Fatalf("wide-window count = %d, want 5", n)
+	}
+}
+
+// TestTerminalFlipAccruesMemory — the T-079 G1 live-PG proof of the F-a hook: a Run
+// reaching terminal via FinishRun or CancelRun accrues exactly ONE memory row through
+// the wired accruer, scoped by the Run's actor; a losing (no-op) flip — the row already
+// left the guarded fromStatuses, the pgx.ErrNoRows early-return — accrues NOTHING
+// (criteria N4: a re-driven terminal flip never double-accrues).
+func TestTerminalFlipAccruesMemory(t *testing.T) {
+	s, mem, pool := testStoreWithAccruer(t)
+	ctx := context.Background()
+
+	countMemories := func(runID string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE ref = $1`, "run:"+runID).Scan(&n); err != nil {
+			t.Fatalf("count memories: %v", err)
+		}
+		return n
+	}
+
+	t.Run("FinishRun accrues once, scoped to the run", func(t *testing.T) {
+		created, err := s.Create(ctx, Input{Operator: "operator:mem", Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}}})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if ok, err := s.ClaimRun(ctx, created.ID, 1200); err != nil || !ok {
+			t.Fatalf("claim: ok=%v err=%v", ok, err)
+		}
+		if err := s.FinishRun(ctx, created.ID, StatusCompleted); err != nil {
+			t.Fatalf("finish: %v", err)
+		}
+		if n := countMemories(created.ID); n != 1 {
+			t.Fatalf("memory rows after finish = %d, want 1", n)
+		}
+		rows, err := mem.List(ctx, "operator:mem", memory.ScopeRun, created.ID)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("list via memory store: rows=%d err=%v", len(rows), err)
+		}
+		if rows[0].HasContent {
+			t.Fatal("accrued memory must be content-free")
+		}
+
+		// A no-op FinishRun over an already-terminal run must not accrue again (N4).
+		if err := s.FinishRun(ctx, created.ID, StatusCompleted); err != nil {
+			t.Fatalf("second finish (no-op): %v", err)
+		}
+		if n := countMemories(created.ID); n != 1 {
+			t.Fatalf("memory rows after a no-op re-finish = %d, want 1 (no double-accrual)", n)
+		}
+	})
+
+	t.Run("CancelRun accrues once, and a losing cancel accrues nothing", func(t *testing.T) {
+		created, err := s.Create(ctx, Input{Operator: "operator:mem", Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}}})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if ok, err := s.CancelRun(ctx, created.ID); err != nil || !ok {
+			t.Fatalf("cancel: ok=%v err=%v", ok, err)
+		}
+		if n := countMemories(created.ID); n != 1 {
+			t.Fatalf("memory rows after cancel = %d, want 1", n)
+		}
+		// A second cancel is the guarded no-op path (already terminal) — no double-accrual.
+		if ok, err := s.CancelRun(ctx, created.ID); err != nil || ok {
+			t.Fatalf("second cancel: ok=%v err=%v, want ok=false", ok, err)
+		}
+		if n := countMemories(created.ID); n != 1 {
+			t.Fatalf("memory rows after a losing cancel = %d, want 1 (no double-accrual)", n)
+		}
+	})
+
+	t.Run("workstream-actor Run accrues to the charter scope", func(t *testing.T) {
+		wsUUID, err := uuid.NewV7() // fresh per run — keeps the test re-runnable against a dirty DB
+		if err != nil {
+			t.Fatalf("mint workstream id: %v", err)
+		}
+		wsID := wsUUID.String()
+		created, err := s.Create(ctx, Input{
+			Operator: "operator:mem", Actor: "workstream:" + wsID,
+			Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}},
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if ok, err := s.ClaimRun(ctx, created.ID, 1200); err != nil || !ok {
+			t.Fatalf("claim: ok=%v err=%v", ok, err)
+		}
+		if err := s.FinishRun(ctx, created.ID, StatusFailed); err != nil {
+			t.Fatalf("finish failed: %v", err)
+		}
+		rows, err := mem.List(ctx, "operator:mem", memory.ScopeWorkstream, wsID)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("workstream-scoped list: rows=%d err=%v", len(rows), err)
+		}
+		if want := "run:" + created.ID + ":failed"; rows[0].SourceTrace != want {
+			t.Fatalf("source_trace = %q, want %q", rows[0].SourceTrace, want)
+		}
+	})
+}
+
+// TestNilAccruerNoAccrual — nil accruer (the plain testStore, used by every other test
+// in this file) means zero behavior change: FinishRun/CancelRun still work and no
+// memories table row is ever written.
+func TestNilAccruerNoAccrual(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	created, err := s.Create(ctx, Input{Operator: "operator:noaccrual", Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.FinishRun(ctx, created.ID, StatusCompleted); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE ref = $1`, "run:"+created.ID).Scan(&n); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("nil-accruer store wrote %d memory rows, want 0", n)
 	}
 }
