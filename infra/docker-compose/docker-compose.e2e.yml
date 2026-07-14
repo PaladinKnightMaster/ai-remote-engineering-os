@@ -144,6 +144,10 @@ services:
       # minimum interval a charter may request — no charter exists unless a WD-7 test makes
       # one, and each retires it, so the rest of the suite is unaffected.
       AIREOS_WORKSTREAM_MIN_INTERVAL_SECONDS: "5"
+      # ADR-0064 (T-081/T-083): lower the memory expiry sweep cadence so the WD-8
+      # capstone's expiry leg proves in seconds instead of the 2-minute production
+      # default. e2e-only override — the installed stack keeps the default (OI-15).
+      AIREOS_MEMORY_SWEEP_SECONDS: "2"
     command: ["bash", "-c", "go run ./services/api serve"]
 
   # connector-service: sole credential custodian + egress chokepoint (ADR-0053).
