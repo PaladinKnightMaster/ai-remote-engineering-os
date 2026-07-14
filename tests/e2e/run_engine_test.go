@@ -56,20 +56,8 @@ func hasEventTarget(events []auditEvent, outcome, target string) bool {
 	return false
 }
 
-// cancelRun cancels a Run via the operator route (POST /v1/runs/{id}/cancel, T-059a)
-// and returns the HTTP status.
-func cancelRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string) int {
-	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/runs/"+id+"/cancel", nil)
-	req.Header.Set("Cookie", cookieHeader(session, csrf))
-	req.Header.Set("X-CSRF-Token", csrf)
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("cancel run: %v", err)
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode
-}
+// cancelRun moved to run_driver.go (tag e2e || wd1) at T-084 so the installed-stack
+// WD-8 N4 leg (wd1_test.go) can drive the same operator cancel path.
 
 // TestRunEngineCancel — T-059a (DUR-5): the operator cancels a Run whose current step is
 // parked. Cancel stops future steps (run.canceled); the parked step is then denied via

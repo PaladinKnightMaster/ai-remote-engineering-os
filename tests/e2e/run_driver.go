@@ -68,6 +68,22 @@ type runStatusView struct {
 	} `json:"steps"`
 }
 
+// cancelRun cancels a Run via the operator route (POST /v1/runs/{id}/cancel, T-059a)
+// and returns the HTTP status. Moved here from run_engine_test.go at T-084 so the
+// installed-stack WD-8 N4 leg (tag wd1) shares the same operator cancel path.
+func cancelRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/runs/"+id+"/cancel", nil)
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
 // getRun reads a Run's status via the operator route (GET /v1/runs/{id}, T-057).
 func getRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string) runStatusView {
 	t.Helper()

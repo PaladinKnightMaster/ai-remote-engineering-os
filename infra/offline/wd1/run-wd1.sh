@@ -134,7 +134,7 @@ docker exec "$HOST" bash -c '
 log "run the WD-1 walkthrough driver (Caddy HTTPS)"
 docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod \
   -e WD1_BASE_URL="https://$HOST" \
-  golang:1.23 bash -c 'go test -tags wd1 -count=1 -v -timeout 600s ./tests/e2e/...' 2>&1 | tail -18
+  golang:1.23 bash -c 'go test -tags wd1 -count=1 -v -timeout 900s ./tests/e2e/...' 2>&1 | tail -18
 
 # 11. assert the audit chain host-internally (WD-2.4: integrity + the governed
 #     wedge events in one chain). Retry: policy/connector relays deliver via
@@ -150,7 +150,12 @@ docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env |
 # ONE consent act, actor=operator) + workstream.retired (the operator kill switch) — the
 # AUD-18 events, delivered via the same api relay. The tick's own run.launched/completed
 # are already in WANTS; the schedule-fired run's workstream:<id> actor is asserted below.
-WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired"
+# v0.8 (OI-15, T-084) adds the Persistent Scoped Memory governance acts (AUD-19, all
+# content-free, same api relay): memory.written (accrual on the terminal flip + the
+# authored write), memory.redacted (the tombstone flip), memory.expired (the sweep at
+# the production 2-min reaper cadence — no AIREOS_MEMORY_SWEEP_SECONDS on the install).
+# Per-id actor/exactly-once precision is asserted in-test via the audit read-proxy.
+WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired memory.written memory.redacted memory.expired"
 for attempt in 1 2 3 4 5 6; do
   OUTCOMES="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT outcome FROM audit_events ORDER BY seq\"")"
   MISSING=""
@@ -183,4 +188,4 @@ for attempt in 1 2 3; do
   sleep 5
 done
 
-log "T-053a/T-061/T-069/T-077 PASS — WD-4 + WD-5 + WD-6 + WD-7 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), AND the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched)."
+log "T-053a/T-061/T-069/T-077/T-084 PASS — WD-4 + WD-5 + WD-6 + WD-7 + WD-8 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop)), AND the WD-8 Persistent Scoped Memory plane (OI-15: the completed tick ACCRUES a content-free pointer with nobody writing it → author/scoped-read/redact + the N1 idempotent no-op → the agent plane is rejected on /v1/memories* (SEC-31) → unknown-id 404s → the sweep at the PRODUCTION 2-min reaper cadence expires the unpinned row exactly once and spares the pinned one → an operator-canceled Run accrues exactly one :canceled pointer; migration 0012 rides the migrate loop, the sweep rides the unconditional reaper goroutine — NO new unit/route/key/env); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched + memory.written/memory.redacted/memory.expired)."

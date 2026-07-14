@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -350,6 +351,314 @@ func TestWD7InstalledStack(t *testing.T) {
 		t.Fatalf("charter status after retire = %q, want retired", got.Status)
 	}
 	t.Logf("PASS installed WD-7 — charter %s fired a governed Run on the schedule (unattended launch), the flagged tick parked with workstream context, live approve → completed, retire stopped the schedule", ws.ID)
+}
+
+// TestWD8InstalledStack — OI-15 (T-084): the FULL WD-8 Persistent Scoped Memory gate on
+// the INSTALLED stack through Caddy HTTPS (C4 — release-criteria §9). Everything memory
+// ships inside services/api: migration 0012 rides install.sh's existing migrate loop and
+// the expiry sweep rides the in-process reaper goroutine that starts unconditionally at
+// api boot — NO new unit, Caddy route, key material, or required env. The installed
+// stack asserts the DEFAULT posture (no AIREOS_MEMORY_SWEEP_SECONDS written by
+// install.sh), so the expiry leg runs at the production ~2-minute reaper cadence — the
+// v0.7 60s-schedule-floor precedent applied to the sweep.
+//
+// Legs (the full WD-8 scope, C4): (a) accrual with nobody present — a chartered
+// Workstream's approved tick completes and accrues a content-free pointer with
+// actor=workstream; (b) author → scoped read round-trip → redact, + N1 (a second redact
+// is a silent 200 no-op, exactly ONE memory.redacted); (c) N2/SEC-31 — a VALID agent
+// token is rejected on /v1/memories* (wrong plane, not a signature failure); (d) N3 —
+// redact/pin/unpin on a well-formed unknown id 404; (e) expiry AND pinning in ONE
+// bounded wait at the production sweep default — the unpinned row tombstones exactly
+// once, the pinned row is spared at the same pass; (f) N4 lean — an operator-CANCELED
+// Run accrues exactly one pointer with the :canceled trace (the failed-Run terminal leg
+// stays compose-proven — wd8_negatives_test.go). Chain presence of
+// memory.written/redacted/expired is ALSO asserted host-internally by run-wd1.sh
+// (WANTS); per-id actor + exactly-once counts are asserted here through the operator
+// audit read-proxy (the T-024 wire the cockpit timeline uses — the wd1 driver has no
+// host-internal audit reach). Runs AFTER TestWD7InstalledStack (source order): the
+// install has ONE flagged resource, so parked invocations stay one-at-a-time per test;
+// time-derived keys keep a dirty stack re-runnable.
+func TestWD8InstalledStack(t *testing.T) {
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
+	client := &http.Client{Timeout: 90 * time.Second}
+
+	sess, csrf, status, err := doLogin(client, base)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+
+	// --- Leg a: governed work accrues memory with nobody writing it ---------------
+	// Charter a single flagged-step objective at the 60s production floor (the
+	// TestWD7InstalledStack pattern, same seeded flagged resource).
+	ws := charterWorkstream(t, client, base, sess, csrf, charterOpts{
+		objective:       "wd8 installed accrual",
+		resources:       []string{resourceID},
+		steps:           []charterStep{{resourceID, "echo WD8-INSTALLED"}},
+		intervalSeconds: 60,
+		stepBudget:      100,
+	})
+	t.Cleanup(func() { retireWorkstream(t, client, base, sess, csrf, ws.ID) })
+	t.Logf("chartered workstream %s on the installed stack; awaiting the tick (~60s floor)", ws.ID)
+
+	inv := pollPendingInvocation(t, client, base, sess, csrf, resourceID, 120*time.Second)
+	if inv.Agent != "workstream:"+ws.ID || inv.RunID == "" {
+		t.Fatalf("parked tick = {agent:%q run:%q}, want {workstream:%s <run>}", inv.Agent, inv.RunID, ws.ID)
+	}
+	runID := inv.RunID
+	resolveInvocation(t, client, base, inv.ID, sess, csrf, "approve")
+	waitRunStatusHTTP(t, client, base, sess, csrf, runID, "completed", 120*time.Second)
+	// Retire NOW (the compose WD-8 pattern): the later legs run on this same scope and
+	// must not race further ticks — a second parked invocation at ~+120s would collide
+	// with leg f's pending-invocation poll on the single installed resource.
+	retireWorkstream(t, client, base, sess, csrf, ws.ID)
+
+	accrued := waitForMemory(t, client, base, sess, csrf, "workstream", ws.ID, 30*time.Second, func(m memoryView) bool {
+		return m.Ref == "run:"+runID
+	})
+	if accrued.HasContent {
+		t.Fatalf("accrued memory %s hasContent=true, want false (content-free pointer)", accrued.ID)
+	}
+	if want := "run:" + runID + ":completed"; accrued.SourceTrace != want {
+		t.Fatalf("accrued memory sourceTrace = %q, want %q", accrued.SourceTrace, want)
+	}
+	written := pollProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+accrued.ID, "memory.written", 60*time.Second)
+	if written.Actor != "workstream:"+ws.ID {
+		t.Fatalf("memory.written actor = %q, want workstream:%s", written.Actor, ws.ID)
+	}
+	t.Logf("PASS installed WD-8 leg a — the completed tick accrued exactly the content-free pointer %s (actor=workstream, nobody wrote it)", accrued.ID)
+
+	// --- Leg b: author → scoped read → redact (+ N1 idempotency) ------------------
+	authored := createMemory(t, client, base, sess, csrf, memoryCreateInput{
+		ScopeType: "workstream", ScopeID: ws.ID, Key: "wd8-inst-" + wd1MemSuffix(), Content: "wd8 installed note",
+	})
+	roundTrip := waitForMemory(t, client, base, sess, csrf, "workstream", ws.ID, 15*time.Second, func(m memoryView) bool {
+		return m.ID == authored.ID
+	})
+	if !roundTrip.HasContent || roundTrip.Content == nil || *roundTrip.Content != "wd8 installed note" {
+		t.Fatalf("scoped read of authored memory = %+v, want the sealed content to round-trip", roundTrip)
+	}
+	redacted, code := redactMemory(t, client, base, sess, csrf, authored.ID)
+	if code != http.StatusOK {
+		t.Fatalf("redact: status %d, want 200", code)
+	}
+	if redacted.RedactedAt == nil || redacted.Content != nil {
+		t.Fatalf("redacted memory = %+v, want redactedAt set + content erased", redacted)
+	}
+	// N1: the second redact is a silent no-op — still 200, tombstone unchanged.
+	second, code2 := redactMemory(t, client, base, sess, csrf, authored.ID)
+	if code2 != http.StatusOK {
+		t.Fatalf("second redact: status %d, want 200 (idempotent)", code2)
+	}
+	if second.RedactedAt == nil || !second.RedactedAt.Equal(*redacted.RedactedAt) {
+		t.Fatalf("redactedAt changed across the no-op redact: first=%v second=%v", redacted.RedactedAt, second.RedactedAt)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+authored.ID, "memory.redacted", 60*time.Second)
+	if n := countProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+authored.ID, "memory.redacted"); n != 1 {
+		t.Fatalf("memory.redacted count for %s = %d, want exactly 1 across two redacts (N1)", authored.ID, n)
+	}
+	t.Log("PASS installed WD-8 leg b — author round-tripped, redact tombstoned (content gone), second redact a silent no-op with ONE memory.redacted")
+
+	// --- Leg c: N2/SEC-31 — the agent plane cannot touch memory -------------------
+	agentTok := mintAgentTokenViaAPI(t, client, base, sess, csrf, "wd8", resourceID)
+	getReq, _ := http.NewRequest(http.MethodGet, base+"/v1/memories?scopeType=workstream&scopeId="+ws.ID, nil)
+	getReq.Header.Set("Authorization", "Bearer "+agentTok)
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatalf("agent-token GET /v1/memories: %v", err)
+	}
+	_ = getResp.Body.Close()
+	if getResp.StatusCode != http.StatusUnauthorized && getResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("agent-token GET /v1/memories: status %d, want 401/403 (SEC-31)", getResp.StatusCode)
+	}
+	postReq, _ := http.NewRequest(http.MethodPost, base+"/v1/memories",
+		strings.NewReader(`{"scopeType":"operator","scopeId":"admin","content":"should never land"}`))
+	postReq.Header.Set("Authorization", "Bearer "+agentTok)
+	postReq.Header.Set("Content-Type", "application/json")
+	postResp, err := client.Do(postReq)
+	if err != nil {
+		t.Fatalf("agent-token POST /v1/memories: %v", err)
+	}
+	_ = postResp.Body.Close()
+	if postResp.StatusCode != http.StatusUnauthorized && postResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("agent-token POST /v1/memories: status %d, want 401/403 (SEC-31)", postResp.StatusCode)
+	}
+	t.Logf("PASS installed WD-8 leg c — a VALID agent token is rejected on the memory plane (GET %d / POST %d, SEC-31)", getResp.StatusCode, postResp.StatusCode)
+
+	// --- Leg d: N3 — forgetting verbs on a well-formed unknown id 404 -------------
+	const unknownID = "01900000-0000-7000-8000-0000000000ff" // well-formed, never seeded
+	for _, verb := range []string{"redact", "pin", "unpin"} {
+		if _, vcode := memoryVerb(t, client, base, sess, csrf, unknownID, verb); vcode != http.StatusNotFound {
+			t.Fatalf("%s on an unknown memory id: status %d, want 404", verb, vcode)
+		}
+	}
+	t.Log("PASS installed WD-8 leg d — redact/pin/unpin on an unknown id all answer 404")
+
+	// --- Leg e: expiry + pinning at the PRODUCTION sweep default ------------------
+	// No AIREOS_MEMORY_SWEEP_SECONDS on the install → the sweep ticks at the 2-minute
+	// reaper cadence. ONE bounded wait: the unpinned row (expires_at ≈ now+5s)
+	// tombstones within ≤150s (worst case one full tick after expiry), and at that
+	// SAME pass the pinned row must be untouched.
+	pinned := createMemory(t, client, base, sess, csrf, memoryCreateInput{
+		ScopeType: "workstream", ScopeID: ws.ID, Key: "wd8-inst-pin-" + wd1MemSuffix(), Content: "pin me",
+	})
+	pinMemory(t, client, base, sess, csrf, pinned.ID)
+	expiresAt := time.Now().Add(5 * time.Second)
+	expiring := createMemory(t, client, base, sess, csrf, memoryCreateInput{
+		ScopeType: "workstream", ScopeID: ws.ID, Key: "wd8-inst-exp-" + wd1MemSuffix(), Content: "expire me", ExpiresAt: &expiresAt,
+	})
+	sweepDeadline := time.Now().Add(150 * time.Second)
+	var expired memoryView
+	for {
+		var pinnedNow memoryView
+		sweptThisPass := false
+		for _, m := range listMemories(t, client, base, sess, csrf, "workstream", ws.ID) {
+			switch m.ID {
+			case expiring.ID:
+				if m.RedactedAt != nil {
+					expired, sweptThisPass = m, true
+				}
+			case pinned.ID:
+				pinnedNow = m
+			}
+		}
+		if sweptThisPass {
+			if pinnedNow.ID == "" || pinnedNow.RedactedAt != nil {
+				t.Fatalf("pinned memory %s not spared at the expiry pass: %+v", pinned.ID, pinnedNow)
+			}
+			break
+		}
+		if time.Now().After(sweepDeadline) {
+			t.Fatalf("unpinned memory %s never expired within 150s at the production sweep cadence (DUR-9)", expiring.ID)
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if expired.Content != nil {
+		t.Fatalf("expired memory still carries content: %+v", expired)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+expiring.ID, "memory.expired", 60*time.Second)
+	if n := countProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+expiring.ID, "memory.expired"); n != 1 {
+		t.Fatalf("memory.expired count for %s = %d, want exactly 1", expiring.ID, n)
+	}
+	if n := countProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+pinned.ID, "memory.expired"); n != 0 {
+		t.Fatalf("pinned memory %s has %d memory.expired event(s) — pin did not exempt it from the sweep", pinned.ID, n)
+	}
+	t.Log("PASS installed WD-8 leg e — the production-cadence sweep expired the unpinned row exactly once and spared the pinned row at the same pass")
+
+	// --- Leg f: N4 lean — an operator-CANCELED Run accrues exactly one pointer ----
+	// Cancel mid-flight while the flagged first step is parked (the setRunTerminal
+	// path, NOT FinishRun). The failed-Run terminal leg stays compose-proven
+	// (wd8_negatives_test.go TestWD8TerminalCompleteness).
+	runF, st := launchRun(t, client, base, sess, csrf, []stepSeed{
+		{resourceID, "echo WD8-INSTALLED-CANCEL-1"},
+		{resourceID, "echo WD8-INSTALLED-CANCEL-2"},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("launch cancel-leg run: status %d, want 201", st)
+	}
+	invF := pollPendingInvocation(t, client, base, sess, csrf, resourceID, 90*time.Second)
+	if invF.RunID != runF {
+		t.Fatalf("parked step belongs to run %q, want %q", invF.RunID, runF)
+	}
+	if ccode := cancelRun(t, client, base, sess, csrf, runF); ccode != http.StatusOK {
+		t.Fatalf("cancel: status %d, want 200", ccode)
+	}
+	// Release the parked step so the held call returns; the Run stays canceled.
+	resolveInvocation(t, client, base, invF.ID, sess, csrf, "deny")
+	waitRunStatusHTTP(t, client, base, sess, csrf, runF, "canceled", 60*time.Second)
+	memF := waitForMemory(t, client, base, sess, csrf, "run", runF, 30*time.Second, func(m memoryView) bool {
+		return m.Ref == "run:"+runF
+	})
+	if want := "run:" + runF + ":canceled"; memF.SourceTrace != want {
+		t.Fatalf("canceled run accrual sourceTrace = %q, want %q", memF.SourceTrace, want)
+	}
+	var accrualCount int
+	for _, m := range listMemories(t, client, base, sess, csrf, "run", runF) {
+		if m.Ref == "run:"+runF {
+			accrualCount++
+		}
+	}
+	if accrualCount != 1 {
+		t.Fatalf("canceled run %s: %d accrued memory rows, want exactly 1 (N4)", runF, accrualCount)
+	}
+	t.Logf("PASS installed WD-8 — accrue(actor=workstream) → author/read → redact(+N1) → agent-plane 401/403(N2) → unknown-id 404(N3) → production-cadence expire+pin(one wait) → canceled-Run accrual ×1(N4 lean). memory.* chain presence is asserted by run-wd1.sh")
+}
+
+// listAllEventsViaProxy pages the operator audit read-proxy (GET /v1/audit/events,
+// T-024) through Caddy: the external wd1 driver has no host-internal audit-service
+// reach, so per-id actor + exactly-once assertions ride the same wire the cockpit
+// timeline uses (chain INTEGRITY stays host-internal in run-wd1.sh).
+func listAllEventsViaProxy(t *testing.T, client *http.Client, base, sess, csrf string) []auditEvent {
+	t.Helper()
+	var out []auditEvent
+	cursor := ""
+	for {
+		u := base + "/v1/audit/events?limit=200"
+		if cursor != "" {
+			u += "&cursor=" + url.QueryEscape(cursor)
+		}
+		req, _ := http.NewRequest(http.MethodGet, u, nil)
+		req.Header.Set("Cookie", cookieHeader(sess, csrf))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("list audit events via proxy: %v", err)
+		}
+		var page eventPage
+		derr := json.NewDecoder(resp.Body).Decode(&page)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("list audit events via proxy: status %d", resp.StatusCode)
+		}
+		if derr != nil {
+			t.Fatalf("decode audit events via proxy: %v", derr)
+		}
+		out = append(out, page.Items...)
+		if page.Page.NextCursor == "" {
+			return out
+		}
+		cursor = page.Page.NextCursor
+	}
+}
+
+// pollProxyTargetOutcome waits for an event with the given target + outcome to surface
+// on the operator audit timeline — api's outbox relay drains asynchronously, so chain
+// assertions poll before counting (the house pattern).
+func pollProxyTargetOutcome(t *testing.T, client *http.Client, base, sess, csrf, target, outcome string, within time.Duration) auditEvent {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		for _, e := range listAllEventsViaProxy(t, client, base, sess, csrf) {
+			if e.Target == target && e.Outcome == outcome {
+				return e
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("event %q on %q never surfaced on the audit timeline within %s", outcome, target, within)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// countProxyTargetOutcome counts target+outcome events on the timeline — the
+// exactly-once assertions (N1 redact, the expiry flip) after the poll has proven
+// delivery.
+func countProxyTargetOutcome(t *testing.T, client *http.Client, base, sess, csrf, target, outcome string) int {
+	t.Helper()
+	n := 0
+	for _, e := range listAllEventsViaProxy(t, client, base, sess, csrf) {
+		if e.Target == target && e.Outcome == outcome {
+			n++
+		}
+	}
+	return n
+}
+
+// wd1MemSuffix returns a time-derived suffix so re-runs against a dirty installed
+// stack never collide on an authored memory key (the T-073 fresh-key lesson). Named
+// distinctly from the compose suite's m8suffix so a combined `e2e wd1` tag set
+// still compiles.
+func wd1MemSuffix() string {
+	return time.Now().UTC().Format("150405.000000000")
 }
 
 func assertResourceVisible(t *testing.T, client *http.Client, base, sess, csrf string) {
