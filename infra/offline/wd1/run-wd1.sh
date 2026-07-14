@@ -35,6 +35,7 @@ cleanup() {
   docker rm -f "$HOST" "$SSHD" >/dev/null 2>&1 || true
   docker volume rm "$KEYVOL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
+  rm -f "$OUT/wd1-caddy-ca.pem" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -130,10 +131,29 @@ docker exec "$HOST" bash -c '
   echo "SEC-20 OK — gateway keyless: own sign + F3 command + api-public; no cluster key; loads gateway.env only"
 '
 
+# 9c. HYGIENE (T-084 security-hook flag): export Caddy's own local CA (`tls
+#     internal`, persisted under XDG_DATA_HOME=/var/lib/aireos/caddy per the
+#     aireos-caddy unit) so the go-test harness can REAL-verify the HTTPS
+#     handshake instead of InsecureSkipVerify. Discover the root cert path
+#     rather than hardcoding it — fail loud if it can't be found.
+log "export Caddy's local CA root so the harness can verify (not skip) TLS"
+CA_PATH="$(docker exec "$HOST" find / -xdev -name root.crt -path '*caddy*pki*' 2>/dev/null | head -1)"
+if [ -z "$CA_PATH" ]; then
+  echo "could not locate Caddy's local CA root.crt on $HOST (tls internal storage under /var/lib/aireos/caddy) — refusing to fall back to InsecureSkipVerify"
+  exit 1
+fi
+log "found Caddy local CA at $HOST:$CA_PATH"
+CA_FILE="$OUT/wd1-caddy-ca.pem"
+docker exec "$HOST" cat "$CA_PATH" > "$CA_FILE"
+[ -s "$CA_FILE" ] || { echo "exported Caddy CA file is empty ($CA_FILE)"; exit 1; }
+
 # 10. WD-1 walkthrough driver, through Caddy HTTPS, on the network by host name.
-log "run the WD-1 walkthrough driver (Caddy HTTPS)"
+#     WD1_CA_FILE points the harness at the exported CA so it trusts (rather
+#     than skips) Caddy's self-signed cert — no InsecureSkipVerify anywhere.
+log "run the WD-1 walkthrough driver (Caddy HTTPS, verified)"
 docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod \
-  -e WD1_BASE_URL="https://$HOST" \
+  -v "$CA_FILE":/wd1ca/root.crt:ro \
+  -e WD1_BASE_URL="https://$HOST" -e WD1_CA_FILE=/wd1ca/root.crt \
   golang:1.23 bash -c 'go test -tags wd1 -count=1 -v -timeout 900s ./tests/e2e/...' 2>&1 | tail -18
 
 # 11. assert the audit chain host-internally (WD-2.4: integrity + the governed

@@ -6,8 +6,12 @@
 //	tag e2e  → e2e_test.go  TestSSHCockpitEndToEnd        (T-020b: go-run stack, plain http)
 //	tag wd1  → wd1_test.go  TestWedgeDemoInstalledStack   (T-021d-b: installed stack via Caddy HTTPS)
 //
-// The wd1 driver sets http.DefaultTransport's TLSClientConfig to trust the
-// self-signed local CA, so these default-client helpers work over https unchanged.
+// Each wd1-tagged test builds its OWN http.Client via newWD1TLSClient below,
+// which trusts Caddy's local CA (exported by run-wd1.sh, WD1_CA_FILE) — no
+// http.DefaultTransport mutation anywhere. Shared helpers that don't take a
+// caller-supplied client (dialWS, assertWSRejectsWithoutAuth, fireHeldInvoke)
+// consult wd1CATransport() themselves so they work unchanged over the plain
+// http/ws compose e2e (WD1_CA_FILE unset) and the installed wss driver alike.
 package e2e
 
 import (
@@ -15,6 +19,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -30,6 +36,45 @@ import (
 
 	"aireos.local/packages/go/auth"
 )
+
+// wd1CATransport returns an *http.Transport that trusts Caddy's local CA
+// (`tls internal`) when WD1_CA_FILE is set — the installed wd1 driver
+// (run-wd1.sh) exports Caddy's root cert and mounts it read-only into the
+// tester container. Returns (nil, nil) when WD1_CA_FILE is unset so shared
+// helpers used by BOTH the plain-http compose e2e and the installed wd1
+// driver fall back to Go's normal default-transport behavior unchanged.
+func wd1CATransport() (*http.Transport, error) {
+	caFile := os.Getenv("WD1_CA_FILE")
+	if caFile == "" {
+		return nil, nil
+	}
+	pemBytes, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read WD1_CA_FILE %q: %w", caFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("WD1_CA_FILE %q contains no usable PEM certificates", caFile)
+	}
+	return &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}, nil
+}
+
+// newWD1TLSClient builds a per-test http.Client that trusts Caddy's local CA
+// instead of mutating the shared http.DefaultTransport — each wd1-tagged
+// installed-stack test gets its OWN client/transport. WD1_CA_FILE must be set
+// (run-wd1.sh always sets it for the wd1 driver container); fail loud rather
+// than silently falling back to an unverified transport (CLAUDE.md rule 12).
+func newWD1TLSClient(t *testing.T, timeout time.Duration) *http.Client {
+	t.Helper()
+	if os.Getenv("WD1_CA_FILE") == "" {
+		t.Fatal("WD1_CA_FILE is not set — cannot trust Caddy's local CA (see run-wd1.sh's CA export step)")
+	}
+	tr, err := wd1CATransport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{Timeout: timeout, Transport: tr}
+}
 
 // Must match tests/e2e/cmd/seed/main.go (resourceID / flaggedResourceID) and the
 // harness env (operator credentials). sessionCookieName mirrors
@@ -297,10 +342,18 @@ func endSession(t *testing.T, client *http.Client, apiURL, id, session, csrf str
 
 func dialWS(t *testing.T, wsURL string, header http.Header) *websocket.Conn {
 	t.Helper()
+	tr, err := wd1CATransport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var httpClient *http.Client
+	if tr != nil {
+		httpClient = &http.Client{Transport: tr}
+	}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		c, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
+		c, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: httpClient, HTTPHeader: header})
 		cancel()
 		if err == nil {
 			return c
@@ -327,9 +380,17 @@ func dialWS(t *testing.T, wsURL string, header http.Header) *websocket.Conn {
 // ADR-0050 §2 auth contract, so a future change cannot silently disable WS auth.
 func assertWSRejectsWithoutAuth(t *testing.T, wsURL string) {
 	t.Helper()
+	tr, err := wd1CATransport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var httpClient *http.Client
+	if tr != nil {
+		httpClient = &http.Client{Transport: tr}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, resp, err := websocket.Dial(ctx, wsURL, nil) // no Cookie header
+	c, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: httpClient}) // no Cookie header
 	if err == nil {
 		_ = c.CloseNow()
 		t.Fatal("unauthenticated WS upgrade succeeded — broker capability gate is NOT enforcing")
@@ -523,13 +584,19 @@ type mcpToolResult struct {
 // parked invocation BLOCKS the call (block-and-wait) until the operator resolves it;
 // a fail-closed JSON-RPC error means a downstream service is still cold-compiling, so
 // it retries. It delivers the first real tool result (success OR a tool-error such as
-// a deny) to out. No t.Fatalf here — it runs off the test goroutine. Shared by the
-// compose-e2e (T-041) and the installed wd1 WD-3 driver (T-043a); the client uses the
-// default transport, so the wd1 driver's CA-trust mutation applies to it too.
+// a deny) to out. No t.Fatalf here — it runs off the test goroutine, so a bad
+// WD1_CA_FILE is reported via errc instead. Shared by the compose-e2e (T-041, plain
+// http — wd1CATransport is a no-op there) and the installed wd1 WD-3 driver (T-043a,
+// wss — trusts Caddy's exported CA via wd1CATransport, no DefaultTransport mutation).
 func fireHeldInvoke(mcpURL, tok, resID, command string, out chan<- mcpToolResult, errc chan<- error) {
 	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.exec",` +
 		`"arguments":{"resourceId":"` + resID + `","command":"` + command + `"}}}`
-	client := &http.Client{Timeout: 150 * time.Second} // > the gateway block-and-wait deadline (125s)
+	tr, err := wd1CATransport()
+	if err != nil {
+		errc <- err
+		return
+	}
+	client := &http.Client{Timeout: 150 * time.Second, Transport: tr} // > the gateway block-and-wait deadline (125s)
 	deadline := time.Now().Add(240 * time.Second)
 	for {
 		req, _ := http.NewRequest(http.MethodPost, mcpURL+"/mcp", strings.NewReader(reqBody))

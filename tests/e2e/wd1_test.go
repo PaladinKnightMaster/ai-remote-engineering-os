@@ -19,7 +19,6 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -33,13 +32,11 @@ import (
 )
 
 func TestWedgeDemoInstalledStack(t *testing.T) {
-	// Trust the self-signed local CA (Caddy `tls internal`) for the whole driver.
-	// One test per binary (tag wd1), so mutating the default transport is safe.
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-
+	// Trust Caddy's local CA (`tls internal`) via a per-test client (newWD1TLSClient,
+	// harness_test.go) instead of mutating the shared http.DefaultTransport.
 	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
 	wsBase := strings.Replace(base, "https://", "wss://", 1)
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := newWD1TLSClient(t, 20*time.Second)
 
 	// 1. login over Caddy HTTPS (retry while the stack settles). Secure cookies
 	//    work normally here (real HTTPS) — no plaintext cookie workaround.
@@ -123,9 +120,8 @@ func TestWedgeDemoInstalledStack(t *testing.T) {
 // negative matrix (denied-abort/cancel/crash-resume) is compose-proven by T-060; HTTP-only
 // here (the external driver has no DB, only Caddy HTTPS).
 func TestWD5InstalledStack(t *testing.T) {
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newWD1TLSClient(t, 30*time.Second)
 
 	// login over Caddy HTTPS (retry while the stack settles).
 	var sess, csrf string
@@ -197,9 +193,8 @@ func TestWD5InstalledStack(t *testing.T) {
 // agent-reachable on the deployed topology). Chain presence (grant.issued/revoked,
 // run.canceled, agent-actor run.launched) is asserted host-internally by run-wd1.sh.
 func TestWD6InstalledStack(t *testing.T) {
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := newWD1TLSClient(t, 60*time.Second)
 	const agentSubject = "agent:wd6"
 
 	sess, csrf, status, err := doLogin(client, base)
@@ -299,9 +294,8 @@ func TestWD6InstalledStack(t *testing.T) {
 // Reuses workstream_driver.go (tagged e2e||wd1). Chain presence (workstream.chartered/
 // retired + workstream-actor run.launched) is asserted host-internally by run-wd1.sh.
 func TestWD7InstalledStack(t *testing.T) {
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := newWD1TLSClient(t, 90*time.Second)
 
 	sess, csrf, status, err := doLogin(client, base)
 	if err != nil || status != http.StatusOK {
@@ -379,9 +373,8 @@ func TestWD7InstalledStack(t *testing.T) {
 // install has ONE flagged resource, so parked invocations stay one-at-a-time per test;
 // time-derived keys keep a dirty stack re-runnable.
 func TestWD8InstalledStack(t *testing.T) {
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := newWD1TLSClient(t, 90*time.Second)
 
 	sess, csrf, status, err := doLogin(client, base)
 	if err != nil || status != http.StatusOK {

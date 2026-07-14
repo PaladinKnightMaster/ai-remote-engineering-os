@@ -14,7 +14,6 @@
 package e2e
 
 import (
-	"crypto/tls"
 	"net/http"
 	"strings"
 	"testing"
@@ -22,13 +21,11 @@ import (
 )
 
 func TestInstalledInvocationApprovalWD3(t *testing.T) {
-	// Trust the self-signed local CA (Caddy `tls internal`) on the shared default
-	// transport so fireHeldInvoke's client trusts it too. Idempotent with the other
-	// wd1 test, so it is safe regardless of which runs first.
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-
+	// Trust Caddy's local CA (`tls internal`) via a per-test client (newWD1TLSClient,
+	// harness_test.go); fireHeldInvoke independently consults wd1CATransport() so its
+	// own background client trusts it too — no shared-transport mutation either way.
 	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := newWD1TLSClient(t, 20*time.Second)
 
 	// 1. operator login over Caddy HTTPS (retry while the stack settles).
 	var sess, csrf string
