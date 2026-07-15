@@ -23,7 +23,7 @@ the eighth, infra-level edge ADR-0046 added to the seven above.
 
 | Edge | Decision enforced | Handler |
 |---|---|---|
-| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)**; **charter/pause/resume/retire a Workstream (v0.7.0)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`, `CreateWorkstream`, `PauseWorkstream`, `ResumeWorkstream`, `RetireWorkstream`) |
+| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)**; **charter/pause/resume/retire a Workstream (v0.7.0)**; **list/author/redact/pin a scoped memory (v0.8.0 — memory is operator-plane ONLY, SEC-31)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`, `CreateWorkstream`, `PauseWorkstream`, `ResumeWorkstream`, `RetireWorkstream`, `ListMemories`, `CreateMemory`, `RedactMemory`, `PinMemory`, `UnpinMemory`) |
 | `agent-tool` | An agent's MCP `tools/call` on the gateway (the `remote.exec` tool) — scoped (SEC-16) to the agent token's resource; drives a governed invocation | `services/mcp-gateway/internal/server` (`/mcp`; audience `mcp-gateway`) |
 | `agent-tool` (**`run.launch`**, v0.6.0) | An agent launches a grant-bounded Run — a **control-plane** tool (no single-resource target, so the per-call SEC-16 resource check is N/A; the api-validated **grant** is the scope, SEC-29); mints no egress; idempotency-keyed (a retry re-attaches, never double-launches) | `services/mcp-gateway/internal/catalog` (`run.launch` branch before the target resolver) |
 | `service-service` (mcp-gateway → api, **launch forward**, v0.6.0) | The keyless gateway forwards {agent-subject, grant-id, plan} for plan-vs-grant validation + Run creation; **subject-pinned `subject=="mcp-gateway"`** on a route-scoped asymmetric-only verifier (SEC-27) | `services/api/internal/server` (internal `POST /v1/internal/delegated-runs`; api holds the gateway's PUBLIC key only — a verify key, not a mint key) |
@@ -231,3 +231,50 @@ existing `GATEWAY_URL` on the installed api, migration 0011 rides `install.sh`'s
 migrate loop, and the schedule floor is the 60s default — **no new unit, no new Caddy
 route, no new env, no new key material** (the leanest install leg since the module
 line began).
+
+## Persistent Scoped Memory (v0.8.0; ADR-0064)
+
+v0.8.0 is **not a fourth initiator** — it is the platform's first governance/
+data-plane module: a durable, scoped, **forgettable** memory projection beside the
+immutable audit chain (the chain cannot redact, expire, or permission-scope what it
+records — by design; memory is where governed forgetting lives). It adds **no new
+capability edge, no new plane, and zero gateway change**.
+
+- **SEC-31 — the memory invariant (the release's named invariant).** Memory is
+  **operator-plane only**: every verb (list / author / redact / pin) is a typed,
+  CSRF-gated `human-agent` route on `services/api` (`/v1/memories*`, owner-scoped —
+  a foreign or unknown id is a 404); **no agent path to memory exists** — no gateway
+  tool (`tools/list` = `remote.exec` + `run.launch` only), no agent-audience route,
+  no service-service route into the memory store; memory content **never** appears in
+  any audit event (content-free tombstones, ADR-0049); authored content is
+  **secret-class at rest** (sealed via the shared `CommandSealer`, operator-only
+  read — the ADR-0059 persisted-command posture); and memory **feeds no execution**
+  (no template, plan, policy input, or agent context reads from the store). Proven
+  live by the WD-8 N2 negative on both stacks: a **valid** `agent-tool` Bearer is
+  rejected 401 at `/v1/memories*` (compose e2e + installed wd1).
+- **The `agent-memory` edge stays reserved-UNENFORCED — a recorded decision, not an
+  omission.** The canonical seven-edge set has named `agent-memory` since v3.0.1;
+  v0.8.0 deliberately does not light it up. The moment memory content feeds an
+  agent's context it becomes a **cross-grant prompt-injection and secret-exfiltration
+  channel** — so enforcing `agent-memory` requires its own consent + containment ADR,
+  and it shares that trigger with adaptive/agent-composed Workstreams (they land
+  together or not at all). The edge set is unchanged.
+- **Accrual is attributed, not anonymous.** The core write path is machine accrual:
+  a terminal Run (operator-direct, agent-delegated, or workstream-fired; completed,
+  failed, or canceled alike) writes ONE **content-free evidence pointer** in the same
+  transaction as its once-only terminal flip — so a no-op flip can never
+  double-accrue, and the pointer commits or rolls back with the Run's terminal event.
+  The `memory.written` event carries the Run's actor (`workstream:<id>` / the agent /
+  the operator) with the operator as `permission_scope` owner.
+
+Event vocabulary added (AUD-19; content-free, ADR-0049): `memory.written` (accrual —
+actor = the Run's actor; authored — actor = operator), `memory.redacted` (the
+tombstone flip; exactly once — a re-redact is a silent no-op), `memory.expired` (the
+sweep; actor = the row's owner, whose retention instruction fired), `memory.pinned` /
+`memory.unpinned` (operator verbs). Reads are not individually chained at v0.8 (the
+ADR-0059 read-path precedent; per-read audit is the named multi-operator escalation
+lever). **Offline (OI-15):** migration 0012 rides `install.sh`'s migrate loop and the
+expiry sweep rides the api reaper goroutine that starts unconditionally — **the first
+release with zero install-wiring diff of any kind** (no new unit, route, env, or key;
+`AIREOS_MEMORY_SWEEP_SECONDS` is an optional e2e-only override, not written by the
+installer).
