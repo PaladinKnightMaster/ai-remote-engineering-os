@@ -16,10 +16,12 @@ durable, governed, evidence-bound Run. **§11 is the v0.6 extension** (agent-ini
 via operator-issued delegation grants; **ADR-0062**), reusing the §§1–10 engine unchanged.
 **§12 is the v0.7 extension** (the chartered **Workstream** module — schedule-fired,
 grant-bounded Runs; **ADR-0063**), reusing the §§1–11 engine + grant machinery unchanged.
-Parallel/branching plans remain out of scope.
+**§13 is the v0.9 extension** (the **adaptive** charter kind — agent-composed per-tick
+plans + governed agent memory access; **ADR-0065**), reusing the §§1–12 engine, grant
+machinery, and ticker unchanged. Parallel/branching plans remain out of scope.
 
 Conforms to ADR-0054/0056/0057/0058/0059/0060/0061; §11 conforms to ADR-0062; §12 conforms
-to ADR-0063; edits no Accepted ADR.
+to ADR-0063; §13 conforms to ADR-0065 (and ADR-0064's memory store); edits no Accepted ADR.
 
 ---
 
@@ -422,3 +424,87 @@ ADR-0063 (Accepted) → v0.7 criteria → workstream schema/store + charter-issu
 verbs + retire-cascade → `/workstreams` UI + codegen → WD-7 live capstone (charter → tick
 fires unattended → flagged parks→approve→continue → evidence accrues → retire cancels
 in-flight + stops ticks) → offline/installed → release closure. Each rung its own consult.
+
+## 13. v0.9 extension — the adaptive charter kind (ADR-0065)
+
+Status: **DRAFT** (companion to **ADR-0065**, Accepted 2026-07-16). v0.9 adds the
+**adaptive** charter kind — the charter's per-tick plan is **agent-composed** instead of
+template-instantiated, grounded in the charter's own scoped memory (ADR-0064's store,
+read over a newly enforced `agent-memory` edge) — and closes the platform's loop:
+remember → plan → govern → act → accrue. The Run engine, sequencer, grant machinery,
+ticker, policy/connector/broker, and the audit chain are reused unchanged; the gateway
+gains three **control-plane tools** (forwards on the `run.launch` pattern — it stays
+keyless, ADR-0060) and **zero key/egress change**.
+
+### 13.1 The privilege delta (composition authority + memory access)
+
+v0.7's schedule fired an **immutable, pre-reviewed** template — consent bound to the
+artifact. An adaptive charter has no template: authority splits into **composition**
+(a named external agent authors each tick's plan, reading the charter's scoped memory)
+and **execution consent** (the operator reviews each composed plan before it runs). The
+charter names the composer at consent time and its auto-issued grant's **grantee = that
+agent subject** (ADR-0065 R2) — one audited consent act covering objective + scope +
+schedule + bounds + *who composes*. The successor invariant: **consent binds to each
+tick's reviewed plan**, inside the standing grant's bounds; at v0.9 a composed plan
+**always parks** (unattended-adaptive deferred).
+
+### 13.2 The inbound plan channel (the tick publishes, the agent answers)
+
+The platform never dials out (ADR-0056: agents are inbound MCP clients), so "the charter
+invokes an agent" compiles to an inversion:
+
+```text
+ticker (adaptive branch) ──> plan_request row {workstream, tick launch key, TTL}   plan.requested
+        │                          ▲
+        │            agent ──(gateway `workstream.poll` — own charters only)──┘
+        │            agent ──(gateway `plan.submit`, idempotency-keyed on the tick key)
+        │                          │  Bearer subject pinned to the grant's grantee
+        ▼                          ▼
+   TTL expiry → plan.expired   run.LaunchBounded (plan ⊆ grant, SEC-29 — one validator, 3 callers)
+   (never wedges; next tick        ▼
+    opens a fresh request)     runs row **`proposed`** {actor = composer agent, principal = operator}
+                                   ▼  operator informed plan-preview (approval console)
+                          approve → `pending` → EXISTING sequencer   |   deny → terminal, audited, accrues
+```
+
+### 13.3 The memory-read plane (`agent-memory` enforced)
+
+`memory.read` (gateway tool → pinned api forward) is **read-only** and **same-grant
+scoped by construction**: the readable set derives from the caller's grant — its
+charter's `workstream:<id>` scope + that grant's Runs (`runs.grant_id`) — never
+`operator` scope, never a foreign charter. Accrued reference rows (content-free) are
+readable by default; **operator-authored content requires the audited share flip**
+(`agent_visible`, default false; `memory.shared`/`memory.unshared` — migration 0013).
+Every agent-plane read is chained (`memory.read`, content-free row ids); the operator
+`/v1/memories*` surface (ADR-0064) is byte-identical — the path lights the reserved
+`agent-memory` edge as its typed edge (the set unchanged; ADR-0046 preserved).
+
+### 13.4 Identity, policy & audit
+
+Actor = **the composing agent**, principal = the chartering operator (the §11.4 split —
+honest attribution: the agent authored the plan, the schedule only asked). Policy subject
+= the agent → self-approve stays defeated; flagged resources park per step **in addition
+to** the plan-level park. New content-free events: `plan.requested`/`plan.submitted`/
+`plan.expired`, `memory.read`, `memory.shared`/`memory.unshared`, + the `proposed`-Run
+resolution (exact vocabulary + the new SEC code pinned at the v0.9 criteria consult).
+
+### 13.5 Lifecycle & containment
+
+Pause/retire carry from §12.5; the revocation cascade is **re-aimed at the new
+surfaces**: a revoked/expired grant closes its open plan requests, refuses
+`plan.submit` and `memory.read`, and a `proposed` Run of a dead grant cannot be
+approved. Runaway containment (interval floor, windowed budget, concurrency, ceiling)
+carries unchanged; an unanswered plan request expires audited and never wedges the
+charter. Template charters (§12) are structurally untouched — WD-5/6/7/8 stay elevated
+regression guards.
+
+### 13.6 Indicative v0.9 ladder
+
+ADR-0065 (Accepted) → v0.9 criteria (WD-9 = the closed-loop wedge: request → memory-read
+→ composed plan → park → approve → drive → accrue → next tick sees it; negatives:
+cross-grant read denied+chained / unshared content invisible / revoked-grant kills all
+three surfaces / expiry never wedges / SEC-29 refusal unchanged) → migration 0013 +
+adaptive charter schema/store → plan-request store + ticker branch → gateway tools +
+forwards + `agent-memory` edge → the `proposed` Run + preview UI → share flip + consent
+copy → WD-9 e2e capstone → offline/installed → release closure. Each rung its own
+consult.
