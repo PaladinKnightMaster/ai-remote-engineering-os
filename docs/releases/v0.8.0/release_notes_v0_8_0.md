@@ -1,14 +1,18 @@
 # AI Remote Engineering OS — v0.8.0 release notes
 
-**Status: release-candidate** — every build and verification rung is green (WD-8 live
-on the compose e2e stack, chain 434; on the real installed stack, `task wd1`, chain
-103, at the full production posture; browser smoke 9/9 incl. the new `/memories` leg).
-Remaining before the tag: the CEO §human WD-8 walkthrough + release closure (T-086;
-this document flips to **released** at that commit). v0.8.0 — **"Persistent Scoped
-Memory"** — is the P2 tier opener and the platform's first **governance/data-plane**
-release (per `docs/releases/v0.8.0/v0.8.0-release-criteria.md`; machine-readable
-coverage in `release_manifest_v0_8_0.json`; how-to-verify in
-`verification_runbook.md`).
+**Status: released** — local annotated tag `v0.8.0` (no remote, per repo doctrine);
+the CEO §human WD-8 walkthrough was captured + signed off (evidence retained at
+`tests/smoke/test-results/wd8/` — charter with the GOV-8 consent copy → the tick
+fires with nobody present → **the accrued content-free memory nobody wrote** on the
+charter detail → author with the GOV-9/R2 consent copy in frame → the Redacted
+tombstone → **Expired-vs-pinned after a real sweep** → the manifest export → the
+content-free `memory.*` events on `/audit`; 10/10 smoke specs green alongside the
+capture). WD-8 is green on the compose e2e stack (`task e2e`, chain 434), on the real
+installed stack (`task wd1`, chain 103, at the full production posture — 60s schedule
+floor + 2-minute sweep), and in the browser. v0.8.0 — **"Persistent Scoped Memory"**
+— is the P2 tier opener and the platform's first **governance/data-plane** release
+(per `docs/releases/v0.8.0/v0.8.0-release-criteria.md`; machine-readable coverage in
+`release_manifest_v0_8_0.json`; how-to-verify in `verification_runbook.md`).
 
 Baseline: **v0.7.0** (tag `47622d7`) on v3.0.1.
 
@@ -124,6 +128,16 @@ in the browser (FE-22/23 DoD). `task wd1` green on the real privileged-systemd
 install — `TestWD8InstalledStack` at the full production posture (accrual off a 60s
 schedule tick, the expiry leg at the real 2-minute sweep), chain intact + complete
 incl. `memory.written`/`memory.redacted`/`memory.expired`.
+
+**Sign-off:** the CEO §human WD-8 walkthrough was captured through the rendered
+cockpit on the smoke stack (a throwaway walkthrough spec, deleted after; screenshots
+retained on disk, not git-archived — the v0.5–v0.7 precedent) and signed off. No
+product bug surfaced during capture; two honest UX observations were recorded for a
+future ergonomics pass, neither release-blocking: the expiry picker is
+minute-granularity against a strictly-future server check (a manual walkthrough
+should pick an expiry ≥2 minutes out), and `/audit` paginates oldest-first with no
+server-side filter (the `memory.*` events need several "Load more" pages on a busy
+stack).
 
 **Process note:** v0.8.0 is the first release built on the Commander–Implementer
 model split — consults, audits, and reviews in the war-room Commander seat; each
