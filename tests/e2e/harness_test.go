@@ -596,7 +596,10 @@ func fireHeldInvoke(mcpURL, tok, resID, command string, out chan<- mcpToolResult
 		errc <- err
 		return
 	}
-	client := &http.Client{Timeout: 150 * time.Second, Transport: tr} // > the gateway block-and-wait deadline (125s)
+	client := &http.Client{Timeout: 150 * time.Second} // > the gateway block-and-wait deadline (125s)
+	if tr != nil {
+		client.Transport = tr
+	}
 	deadline := time.Now().Add(240 * time.Second)
 	for {
 		req, _ := http.NewRequest(http.MethodPost, mcpURL+"/mcp", strings.NewReader(reqBody))
