@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/packages/go/outbox"
@@ -16,6 +17,9 @@ import (
 
 // ErrNotFound is returned when no workstream has the given id.
 var ErrNotFound = errors.New("workstream not found")
+
+// ErrPlanRequestNotFound is returned when no plan request matches (PLAN-1, T-087).
+var ErrPlanRequestNotFound = errors.New("plan request not found")
 
 // charterEdge is the bracket edge for workstream lifecycle events — chartering (and
 // pausing/retiring, T-074) is a human-agent authorization act (ADR-0063 §2: the ONE
@@ -42,9 +46,10 @@ type GrantWriter interface {
 }
 
 // selectCols is the shared column list for Get/List (kept in one place so the scan
-// order matches).
+// order matches). kind/composer (T-087, WS-5) are appended at the end so every existing
+// Scan call site keeps its original column positions.
 const selectCols = `id, principal, label, objective, grant_id, interval_seconds,
-	next_fire_at, status, created_at, updated_at`
+	next_fire_at, status, created_at, updated_at, kind, composer`
 
 // Store persists workstreams + workstream_steps. It takes the pgx pool directly (the
 // internal/run pattern) so the package stays extraction-ready.
@@ -90,8 +95,31 @@ func (s *Store) Create(ctx context.Context, in Input) (Workstream, error) {
 	if in.IntervalSeconds <= 0 {
 		return Workstream{}, errors.New("workstream interval must be positive")
 	}
-	if len(in.Steps) == 0 {
-		return Workstream{}, errors.New("workstream requires at least one template step")
+	// The kind matrix (WS-5, ADR-0065 §4): "" defaults to KindTemplate so every
+	// pre-v0.9 caller is behavior-preserved. KindTemplate requires no composer and
+	// >=1 step; KindAdaptive requires a named composer and zero steps — Create
+	// rejects any other combination (the DB CHECK backstops it structurally).
+	kind := in.Kind
+	if kind == "" {
+		kind = KindTemplate
+	}
+	switch kind {
+	case KindTemplate:
+		if in.Composer != "" {
+			return Workstream{}, errors.New("a template charter must not name a composer")
+		}
+		if len(in.Steps) == 0 {
+			return Workstream{}, errors.New("workstream requires at least one template step")
+		}
+	case KindAdaptive:
+		if in.Composer == "" {
+			return Workstream{}, errors.New("an adaptive charter requires a named composer")
+		}
+		if len(in.Steps) != 0 {
+			return Workstream{}, errors.New("an adaptive charter must carry zero template steps")
+		}
+	default:
+		return Workstream{}, fmt.Errorf("unknown workstream kind %q", kind)
 	}
 	for i, st := range in.Steps {
 		if st.ResourceID == "" || st.Command == "" {
@@ -114,9 +142,15 @@ func (s *Store) Create(ctx context.Context, in Input) (Workstream, error) {
 
 	// The charter's grant, in the SAME tx (WS-2). Grantee/principal are bound here —
 	// never caller-supplied (the SEC-26 posture: the grant is server-side authority).
+	// An adaptive charter's grantee is the NAMED COMPOSER (R2, ADR-0065 §4) — the one
+	// behavior change Create makes; a template charter's grantee stays
+	// workstream:<id>, exactly as before v0.9 (byte-behavior-preserved).
 	gin := in.Grant
 	gin.Principal = in.Principal
 	gin.Agent = "workstream:" + id.String()
+	if kind == KindAdaptive {
+		gin.Agent = in.Composer
+	}
 	g, err := s.grants.CreateInTx(ctx, tx, gin)
 	if err != nil {
 		return Workstream{}, fmt.Errorf("issue charter grant: %w", err)
@@ -125,10 +159,10 @@ func (s *Store) Create(ctx context.Context, in Input) (Workstream, error) {
 	var nextFireAt time.Time
 	var createdAt, updatedAt time.Time
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO workstreams (id, principal, label, objective, grant_id, interval_seconds, next_fire_at)
-		VALUES ($1, $2, $3, $4, $5, $6::int, now() + $6::int * interval '1 second')
+		INSERT INTO workstreams (id, principal, label, objective, grant_id, interval_seconds, next_fire_at, kind, composer)
+		VALUES ($1, $2, $3, $4, $5, $6::int, now() + $6::int * interval '1 second', $7, $8)
 		RETURNING next_fire_at, created_at, updated_at`,
-		id.String(), in.Principal, in.Label, in.Objective, g.ID, in.IntervalSeconds).
+		id.String(), in.Principal, in.Label, in.Objective, g.ID, in.IntervalSeconds, kind, in.Composer).
 		Scan(&nextFireAt, &createdAt, &updatedAt); err != nil {
 		return Workstream{}, fmt.Errorf("insert workstream: %w", err)
 	}
@@ -166,6 +200,7 @@ func (s *Store) Create(ctx context.Context, in Input) (Workstream, error) {
 		ID: id.String(), Principal: in.Principal, Label: in.Label, Objective: in.Objective,
 		GrantID: g.ID, IntervalSeconds: in.IntervalSeconds, NextFireAt: nextFireAt,
 		Status: StatusActive, CreatedAt: createdAt, UpdatedAt: updatedAt, Steps: steps,
+		Kind: kind, Composer: in.Composer,
 	}, nil
 }
 
@@ -174,7 +209,7 @@ func (s *Store) Get(ctx context.Context, id string) (Workstream, error) {
 	var w Workstream
 	err := s.pool.QueryRow(ctx, `SELECT `+selectCols+` FROM workstreams WHERE id = $1`, id).
 		Scan(&w.ID, &w.Principal, &w.Label, &w.Objective, &w.GrantID, &w.IntervalSeconds,
-			&w.NextFireAt, &w.Status, &w.CreatedAt, &w.UpdatedAt)
+			&w.NextFireAt, &w.Status, &w.CreatedAt, &w.UpdatedAt, &w.Kind, &w.Composer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Workstream{}, ErrNotFound
 	}
@@ -407,11 +442,176 @@ func (s *Store) ListForOperator(ctx context.Context, principal, after string, li
 	for rows.Next() {
 		var w Workstream
 		if err := rows.Scan(&w.ID, &w.Principal, &w.Label, &w.Objective, &w.GrantID, &w.IntervalSeconds,
-			&w.NextFireAt, &w.Status, &w.CreatedAt, &w.UpdatedAt); err != nil {
+			&w.NextFireAt, &w.Status, &w.CreatedAt, &w.UpdatedAt, &w.Kind, &w.Composer); err != nil {
 			return nil, "", err
 		}
 		out = append(out, w)
 		last = w.ID
 	}
 	return out, last, rows.Err()
+}
+
+// --- Plan requests (PLAN-1, ADR-0065 §5, T-087) -----------------------------------
+//
+// The inbound plan channel's store primitives: no routes, no ticker branch, no audit
+// events here — T-088 creates the `proposed` Run plan.submit produces, T-089 wires the
+// ticker's adaptive branch (open) + the expiry sweep + the revocation cascade (close),
+// and T-090 wires workstream.poll/plan.submit's outbox events around these calls. These
+// methods deliberately run outside any caller-supplied transaction (unlike
+// AccrueRunTerminal's tx-param shape) because no consuming caller composes them with
+// another write yet; a *InTx variant is the natural T-089 seam if the ticker needs to
+// pair an open/expire with its own outbox enqueue atomically — noted, not preempted.
+
+// planRequestSelectCols is the shared column list for plan-request reads. run_id is
+// NULL until MarkPlanRequestSubmitted sets it (COALESCE to "" — the run/grant store's
+// nullable-FK-as-string convention).
+const planRequestSelectCols = `id, workstream_id, launch_key, status, COALESCE(run_id::text, ''), expires_at, created_at, updated_at`
+
+// rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows (Query, via
+// rows.Next()+scan), so every plan-request read shares one scan body (the
+// internal/memory Store.scan precedent).
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanPlanRequest(row rowScanner) (PlanRequest, error) {
+	var pr PlanRequest
+	if err := row.Scan(&pr.ID, &pr.WorkstreamID, &pr.LaunchKey, &pr.Status, &pr.RunID,
+		&pr.ExpiresAt, &pr.CreatedAt, &pr.UpdatedAt); err != nil {
+		return PlanRequest{}, err
+	}
+	return pr, nil
+}
+
+// OpenPlanRequest opens a durable, TTL-bounded plan request for an adaptive charter's
+// tick (PLAN-1) — the inbound-channel counterpart to the template branch's
+// LaunchBounded call. Idempotent, the house flip-guard style: a duplicate open — the
+// same launch_key retried, or a second open attempt while the charter already has one
+// OPEN (both collide on a unique constraint: launch_key UNIQUE, or the partial
+// plan_requests_one_open_idx, C2) — is a NO-OP that returns the charter's current open
+// request rather than erroring or minting a second row.
+func (s *Store) OpenPlanRequest(ctx context.Context, workstreamID, launchKey string, expiresAt time.Time) (PlanRequest, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return PlanRequest{}, fmt.Errorf("mint plan request id: %w", err)
+	}
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO plan_requests (id, workstream_id, launch_key, expires_at)
+		VALUES ($1, $2, $3, $4)
+		RETURNING `+planRequestSelectCols,
+		id.String(), workstreamID, launchKey, expiresAt)
+	pr, err := scanPlanRequest(row)
+	if err == nil {
+		return pr, nil
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return PlanRequest{}, fmt.Errorf("open plan request: %w", err)
+	}
+	existing, gerr := s.openPlanRequestForWorkstream(ctx, workstreamID)
+	if gerr != nil {
+		return PlanRequest{}, fmt.Errorf("re-fetch after duplicate open: %w", gerr)
+	}
+	return existing, nil
+}
+
+// openPlanRequestForWorkstream returns a charter's current OPEN request — the row
+// OpenPlanRequest's duplicate-open path re-fetches (at most one exists, by
+// construction: plan_requests_one_open_idx).
+func (s *Store) openPlanRequestForWorkstream(ctx context.Context, workstreamID string) (PlanRequest, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT `+planRequestSelectCols+` FROM plan_requests
+		 WHERE workstream_id = $1 AND status = 'open'`, workstreamID)
+	pr, err := scanPlanRequest(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PlanRequest{}, ErrPlanRequestNotFound
+	}
+	if err != nil {
+		return PlanRequest{}, fmt.Errorf("get open plan request: %w", err)
+	}
+	return pr, nil
+}
+
+// GetPlanRequest returns one plan request, or ErrPlanRequestNotFound.
+func (s *Store) GetPlanRequest(ctx context.Context, id string) (PlanRequest, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+planRequestSelectCols+` FROM plan_requests WHERE id = $1`, id)
+	pr, err := scanPlanRequest(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PlanRequest{}, ErrPlanRequestNotFound
+	}
+	if err != nil {
+		return PlanRequest{}, fmt.Errorf("get plan request: %w", err)
+	}
+	return pr, nil
+}
+
+// MarkPlanRequestSubmitted flips one OPEN request to submitted, recording the `proposed`
+// Run it produced (ADR-0065 §5/§6; plan.submit, T-090 wires the caller). Flip-guarded:
+// ok=false when the request is no longer open (already submitted/expired/closed — a
+// stale double-submit, or a race with expiry/revocation) so a caller never double-
+// attaches a second Run to one request.
+func (s *Store) MarkPlanRequestSubmitted(ctx context.Context, id, runID string) (bool, error) {
+	if runID == "" {
+		return false, errors.New("mark plan request submitted requires a run id")
+	}
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE plan_requests SET status = 'submitted', run_id = $2, updated_at = now()
+		 WHERE id = $1 AND status = 'open'`, id, runID)
+	if err != nil {
+		return false, fmt.Errorf("mark plan request submitted: %w", err)
+	}
+	return ct.RowsAffected() == 1, nil
+}
+
+// ExpirePlanRequestsDue tombstones up to batch OPEN requests whose expires_at has
+// passed (DUR-10, PLAN-1: the charter never wedges — the next tick opens a fresh
+// request). The FOR UPDATE SKIP LOCKED sub-query claims a bounded batch (the memory
+// ExpireDue precedent) so overlapping sweeps never double-claim a row; the guarded
+// predicate (status = 'open') is the exactly-once guard — a re-run touches nothing
+// already expired/submitted/closed. No events emitted here — T-089's sweep owns
+// plan.expired, wired around this call. Returns the count expired this pass.
+func (s *Store) ExpirePlanRequestsDue(ctx context.Context, batch int) (int, error) {
+	if batch <= 0 || batch > 100 {
+		batch = 100
+	}
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE plan_requests SET status = 'expired', updated_at = now()
+		 WHERE id IN (
+		     SELECT id FROM plan_requests
+		      WHERE status = 'open' AND expires_at <= now()
+		      ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)`, batch)
+	if err != nil {
+		return 0, fmt.Errorf("expire plan requests due: %w", err)
+	}
+	return int(ct.RowsAffected()), nil
+}
+
+// ClosePlanRequestsForWorkstream closes a charter's open plan request (DUR-10 §7: the
+// revocation cascade re-aimed at the new surface) — the T-089 retire/self-retire hook.
+// Returns the count closed (0 or 1: at most one is ever open).
+func (s *Store) ClosePlanRequestsForWorkstream(ctx context.Context, workstreamID string) (int, error) {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE plan_requests SET status = 'closed', updated_at = now()
+		 WHERE workstream_id = $1 AND status = 'open'`, workstreamID)
+	if err != nil {
+		return 0, fmt.Errorf("close plan requests for workstream: %w", err)
+	}
+	return int(ct.RowsAffected()), nil
+}
+
+// ClosePlanRequestsForGrant closes the open plan request of the charter bound to a
+// revoked/expired grant (DUR-10 §7) — the grant-revoke cascade's plan-request leg,
+// alongside run.CancelRunsForGrant (T-089 wires the call). A grant binds at most one
+// charter (1:1, WS-2), so this closes at most one row, but is grant-scoped (not
+// workstream-scoped) to match the cascade's existing entry point (grant id, not
+// workstream id, is what a revoke knows).
+func (s *Store) ClosePlanRequestsForGrant(ctx context.Context, grantID string) (int, error) {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE plan_requests SET status = 'closed', updated_at = now()
+		 WHERE status = 'open' AND workstream_id IN (
+		     SELECT id FROM workstreams WHERE grant_id = $1)`, grantID)
+	if err != nil {
+		return 0, fmt.Errorf("close plan requests for grant: %w", err)
+	}
+	return int(ct.RowsAffected()), nil
 }

@@ -530,6 +530,76 @@ func TestExpireDue(t *testing.T) {
 	}
 }
 
+// TestAgentVisibleDefaultAndRoundTrip — T-087 (MEM-6 schema half; migration 0013):
+// every row (accrued or authored) defaults agent_visible=false — the share flip's
+// invisible-by-default posture (ADR-0065 §3) — and the column round-trips through
+// Get/List. This ticket lands the column + the struct field ONLY: no verb/route sets
+// it, so the flip here goes straight at the DB (T-091 lands memory.shared/unshared).
+func TestAgentVisibleDefaultAndRoundTrip(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	scopeID := freshID(t)
+
+	// Authored row: default false.
+	authored, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:share", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "not yet shared with any agent",
+	})
+	if err != nil {
+		t.Fatalf("create authored: %v", err)
+	}
+	if authored.AgentVisible {
+		t.Fatalf("authored row must default agent_visible=false, got true")
+	}
+
+	// Accrued row: default false too (the column applies uniformly, T-087's "harmless
+	// default" note in migration 0013).
+	runID := freshID(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := s.AccrueRunTerminal(ctx, tx, runID, "completed", "operator:share", "", ""); err != nil {
+		t.Fatalf("accrue: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	accruedRows, err := s.List(ctx, "operator:share", ScopeRun, runID, 0)
+	if err != nil || len(accruedRows) != 1 {
+		t.Fatalf("list accrued: rows=%d err=%v", len(accruedRows), err)
+	}
+	if accruedRows[0].AgentVisible {
+		t.Fatalf("accrued row must default agent_visible=false, got true")
+	}
+
+	// Flip it directly at the DB (no verb exists yet at T-087) and prove Get/List
+	// round-trip the new value — the column, not just the default, is wired end to end.
+	if _, err := pool.Exec(ctx, `UPDATE memories SET agent_visible = true WHERE id = $1`, authored.ID); err != nil {
+		t.Fatalf("flip agent_visible: %v", err)
+	}
+	got, err := s.Get(ctx, "operator:share", authored.ID)
+	if err != nil || !got.AgentVisible {
+		t.Fatalf("get after flip: AgentVisible=%v err=%v, want true", got.AgentVisible, err)
+	}
+	listed, err := s.List(ctx, "operator:share", ScopeOperator, scopeID, 0)
+	if err != nil {
+		t.Fatalf("list after flip: %v", err)
+	}
+	found := false
+	for _, m := range listed {
+		if m.ID == authored.ID {
+			found = true
+			if !m.AgentVisible {
+				t.Fatalf("list did not round-trip agent_visible=true")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("flipped row missing from list")
+	}
+}
+
 // stubSealer is a reversible test fixture (NOT real encryption) — it only needs to
 // prove the store calls Seal/Open, not that a specific cipher is used (the real
 // AES-256-GCM sealer is exercised by packages/go/auth's own tests).

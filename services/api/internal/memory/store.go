@@ -32,9 +32,11 @@ type CommandSealer interface {
 }
 
 // selectCols is the shared column list for Get/List (kept in one place so the scan
-// order matches).
+// order matches). agent_visible (T-087, migration 0013) is appended at the end so
+// every existing Scan call site keeps its original column positions.
 const selectCols = `id, scope_type, scope_id, key, ref, content, source_trace,
-	confidence, pinned, expires_at, redacted_at, permission_scope, created_at, updated_at`
+	confidence, pinned, expires_at, redacted_at, permission_scope, created_at, updated_at,
+	agent_visible`
 
 // Store persists memories. It takes the pgx pool directly (the internal/run /
 // internal/workstream pattern) so the package stays extraction-ready.
@@ -392,7 +394,7 @@ func (s *Store) scan(row rowScanner) (Memory, error) {
 	var content []byte
 	if err := row.Scan(&m.ID, &m.ScopeType, &m.ScopeID, &m.Key, &m.Ref, &content,
 		&m.SourceTrace, &m.Confidence, &m.Pinned, &m.ExpiresAt, &m.RedactedAt,
-		&m.PermissionScope, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		&m.PermissionScope, &m.CreatedAt, &m.UpdatedAt, &m.AgentVisible); err != nil {
 		return Memory{}, err
 	}
 	if content != nil {

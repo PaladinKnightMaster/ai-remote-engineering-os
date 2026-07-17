@@ -54,6 +54,12 @@ type Memory struct {
 	PermissionScope string // the owning operator (owner-scoped reads)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	// AgentVisible is the share flip (MEM-6, ADR-0065 §3; migration 0013): default
+	// false — an operator-authored row is invisible to the agent-plane read (memory.read,
+	// T-090) until an operator explicitly flips it via memory.shared (T-091). This
+	// ticket (T-087) lands the column + this field ONLY — no verb, no route, no
+	// agent-plane read exists yet.
+	AgentVisible bool
 }
 
 // CreateInput is the operator-authored write's input (ADR-0064 §2 secondary path;

@@ -15,8 +15,18 @@ package run
 
 import "time"
 
-// Run lifecycle statuses (ADR-0061).
+// Run lifecycle statuses (ADR-0061). StatusProposed (RUN-6, ADR-0065 §6; migration
+// 0013, F-a) is a PRE-'pending' park: plan.submit (T-088/T-090) creates a `proposed`
+// Run for a submitted adaptive plan, visible to the operator for informed full-plan
+// review before any step executes — the consent successor invariant. It is deliberately
+// INERT at T-087: no production path inserts a 'proposed' row yet (that is T-088's
+// LaunchBounded disposition split), and every existing status consumer's positive-list
+// predicate already excludes it by construction (proven by this package's integration
+// tests) — NextClaimable/ClaimRun never claim it, CancelRun's fromStatuses (pending,
+// running) never matches it. approve (→pending) / deny (→canceled + run.denied) land at
+// T-088.
 const (
+	StatusProposed  = "proposed"  // a submitted adaptive plan, parked for informed review (RUN-6)
 	StatusPending   = "pending"   // authored, not yet driven
 	StatusRunning   = "running"   // claimed and being driven by the sequencer
 	StatusCompleted = "completed" // every step completed

@@ -279,6 +279,43 @@ func TestCancelRun(t *testing.T) {
 	}
 }
 
+// TestProposedRunInertness — T-087 (RUN-6, F-a): a 'proposed' Run (seeded directly —
+// no production insert path exists yet; that split is T-088's LaunchBounded
+// disposition) is INERT under every existing status consumer. NextClaimable/ClaimRun
+// never select it because their positive-list predicates name only
+// 'pending'/'running' — 'proposed' is excluded BY CONSTRUCTION, not a special-cased
+// skip added for this ticket. CancelRun's fromStatuses (pending, running) never matches
+// it either, so it is left completely untouched (no status flip, no run.canceled).
+func TestProposedRunInertness(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	id := uuid.Must(uuid.NewV7()).String()
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO runs (id, operator, status) VALUES ($1, $2, $3)`,
+		id, "operator:proposed-seed", StatusProposed); err != nil {
+		t.Fatalf("seed proposed run: %v", err)
+	}
+
+	if inClaimable(t, s, id) {
+		t.Fatal("a 'proposed' run must never be claimable (NextClaimable)")
+	}
+	if ok, err := s.ClaimRun(ctx, id, 1200); err != nil || ok {
+		t.Fatalf("ClaimRun on a proposed run: ok=%v err=%v, want ok=false", ok, err)
+	}
+	if ok, err := s.CancelRun(ctx, id); err != nil || ok {
+		t.Fatalf("CancelRun on a proposed run: ok=%v err=%v, want ok=false (no-op)", ok, err)
+	}
+	// The row is untouched: still 'proposed', no run.canceled ever chained.
+	st, err := s.RunStatus(ctx, id)
+	if err != nil || st != StatusProposed {
+		t.Fatalf("status after inert paths = %q err=%v, want proposed (untouched)", st, err)
+	}
+	if n := countRunOutcome(t, s, "run:"+id, "run.canceled"); n != 0 {
+		t.Fatalf("run.canceled must not chain over an inert proposed run, got %d", n)
+	}
+}
+
 // TestRunActorGrantRoundTrip — T-064 (ADR-0062, the actor/principal split): a delegated
 // Run records operator=principal + actor=agent + grant_id; Get reads them back; the
 // run.launched actor = the agent. An operator-direct Run keeps actor/grant empty and
