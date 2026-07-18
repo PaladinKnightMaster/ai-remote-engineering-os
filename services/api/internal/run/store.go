@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/api/internal/grant"
 )
 
 // ErrNotFound is returned when no run has the given id.
@@ -99,10 +100,11 @@ func (s *Store) open(b []byte) (string, error) {
 }
 
 // Create inserts a new Run and its ordered steps in one transaction. The run starts
-// 'pending' (the sequencer claims + drives it later, T-055b); each step starts
-// 'pending' with its command sealed at rest. It validates the plan is non-empty and
-// every step carries a resource + command; the bounded-plan-size cap (PERF-6) is a
-// launch-time check that lands with the launch route (T-057).
+// 'pending' (the sequencer claims + drives it later, T-055b) unless in.Disposition names
+// StatusProposed (RUN-6, ADR-0065 §6/D1, T-088); each step starts 'pending' with its
+// command sealed at rest. It validates the plan is non-empty and every step carries a
+// resource + command; the bounded-plan-size cap (PERF-6) is a launch-time check that
+// lands with the launch route (T-057).
 func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 	if len(in.Steps) == 0 {
 		return Run{}, errors.New("run requires at least one step")
@@ -111,6 +113,10 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 		if st.ResourceID == "" || st.Command == "" {
 			return Run{}, fmt.Errorf("step %d requires resourceId and command", i)
 		}
+	}
+	status := in.Disposition
+	if status == "" {
+		status = StatusPending
 	}
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -126,9 +132,9 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 	// grant_id/actor are NULL for an operator-direct Run (NULLIF on ""), set for a
 	// delegated Run (T-065). The owner/principal is always operator.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO runs (id, operator, grant_id, actor, launch_key)
-		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, ''), $5)`,
-		id.String(), in.Operator, in.GrantID, in.Actor, in.LaunchKey); err != nil {
+		INSERT INTO runs (id, operator, grant_id, actor, launch_key, status)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, ''), $5, $6)`,
+		id.String(), in.Operator, in.GrantID, in.Actor, in.LaunchKey, status); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique (grant_id, launch_key)
 			return Run{}, ErrDuplicateLaunch
@@ -151,23 +157,28 @@ func (s *Store) Create(ctx context.Context, in Input) (Run, error) {
 		steps[i] = Step{Index: i, ResourceID: st.ResourceID, Command: st.Command, Status: StepPending}
 	}
 
-	// run.launched in the SAME transaction as the Run insert (AUD-9): a launched Run
-	// always has its launch audited. Content-free — the actor + the run:<id> correlation
-	// anchor, never the commands (ADR-0049/0061 GOV-1). The actor is the agent for a
-	// delegated Run, else the launching operator (behavior-preserving); the principal is
-	// the owner (in.Operator), queryable for the evidence packet (AUD-17, ADR-0062).
-	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
-		Timestamp: time.Now(), Actor: launchActor(in), Edge: launchEdge,
-		Target: "run:" + id.String(), Outcome: "run.launched",
-		EvidencePacketID: "run:" + id.String(),
-	}); err != nil {
-		return Run{}, fmt.Errorf("enqueue run.launched: %w", err)
+	// run.launched in the SAME transaction as the Run insert (AUD-9) — but ONLY for a
+	// 'pending' disposition: a launched Run always has its launch audited, while a
+	// 'proposed' Run defers that event to ApproveProposed (D1) — the submission moment's
+	// event is plan.submitted (T-090), not this one. Content-free — the actor + the
+	// run:<id> correlation anchor, never the commands (ADR-0049/0061 GOV-1). The actor is
+	// the agent for a delegated Run, else the launching operator (behavior-preserving);
+	// the principal is the owner (in.Operator), queryable for the evidence packet
+	// (AUD-17, ADR-0062).
+	if status != StatusProposed {
+		if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+			Timestamp: time.Now(), Actor: launchActor(in), Edge: launchEdge,
+			Target: "run:" + id.String(), Outcome: "run.launched",
+			EvidencePacketID: "run:" + id.String(),
+		}); err != nil {
+			return Run{}, fmt.Errorf("enqueue run.launched: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return Run{}, fmt.Errorf("commit run: %w", err)
 	}
-	return Run{ID: id.String(), Operator: in.Operator, Actor: in.Actor, GrantID: in.GrantID, Status: StatusPending, Steps: steps}, nil
+	return Run{ID: id.String(), Operator: in.Operator, Actor: in.Actor, GrantID: in.GrantID, Status: status, Steps: steps}, nil
 }
 
 // GetByLaunchKey returns the Run a prior delegated launch created for (grantID, launchKey),
@@ -186,23 +197,28 @@ func (s *Store) GetByLaunchKey(ctx context.Context, grantID, launchKey string) (
 	return s.Get(ctx, id)
 }
 
-// CountActiveForOperator counts an operator's not-yet-terminal Runs (pending or
-// running) — the per-operator concurrency cap input at launch (PERF-6).
+// CountActiveForOperator counts an operator's not-yet-terminal Runs (proposed, pending,
+// or running) — the per-operator concurrency cap input at launch (PERF-6). 'proposed' is
+// included (PERF-10(4), ADR-0065 §6/T-088): a parked plan holds its concurrency/budget
+// slot exactly as a launched Run does, so a pile of unreviewed proposals cannot bypass
+// the ceiling.
 func (s *Store) CountActiveForOperator(ctx context.Context, operator string) (int, error) {
 	var n int
 	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM runs WHERE operator = $1 AND status IN ('pending', 'running')`, operator).Scan(&n); err != nil {
+		SELECT count(*) FROM runs WHERE operator = $1 AND status IN ('proposed', 'pending', 'running')`, operator).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count active runs: %w", err)
 	}
 	return n, nil
 }
 
 // CountActiveForGrant counts a grant's not-yet-terminal Runs — the per-grant concurrency
-// input at delegated launch (PERF-7, ADR-0062).
+// input at delegated launch (PERF-7, ADR-0062). 'proposed' is included (PERF-10(4),
+// ADR-0065 §6/T-088): a parked plan holds its concurrency/budget slot exactly as a
+// launched Run does.
 func (s *Store) CountActiveForGrant(ctx context.Context, grantID string) (int, error) {
 	var n int
 	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM runs WHERE grant_id = $1::uuid AND status IN ('pending', 'running')`, grantID).Scan(&n); err != nil {
+		SELECT count(*) FROM runs WHERE grant_id = $1::uuid AND status IN ('proposed', 'pending', 'running')`, grantID).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count active grant runs: %w", err)
 	}
 	return n, nil
@@ -440,27 +456,116 @@ func (s *Store) RunStatus(ctx context.Context, id string) (string, error) {
 // already left running (an operator cancel won the race) — the sequencer ignores the
 // result, so a no-op is silent (no spurious run.completed over a canceled Run).
 func (s *Store) FinishRun(ctx context.Context, id, status string) error {
-	_, err := s.setRunTerminal(ctx, id, status, "running")
+	_, err := s.setRunTerminal(ctx, id, status, "", "running")
 	return err
 }
 
 // CancelRun cancels a Run mid-flight (DUR-5): pending|running → canceled + run.canceled
 // in-tx. ok=false when the Run is no longer cancelable (already terminal) — the handler
-// maps that to 409.
+// maps that to 409. Deliberately excludes 'proposed' — a proposed Run is denied, not
+// canceled (DenyProposed is its own method, RUN-6/ADR-0065 §6/T-088); widening this
+// fromStatuses list is out of scope here.
 func (s *Store) CancelRun(ctx context.Context, id string) (bool, error) {
-	return s.setRunTerminal(ctx, id, StatusCanceled, "pending", "running")
+	return s.setRunTerminal(ctx, id, StatusCanceled, "", "pending", "running")
+}
+
+// DenyProposed denies a submitted adaptive plan (RUN-6/C1, ADR-0065 §6, T-088):
+// 'proposed' → 'canceled' through the SAME shared terminal flip CancelRun uses
+// (setRunTerminal) — its OWN fromStatuses list ('proposed' only; CancelRun's own list is
+// untouched) — which gives the standard run.canceled terminal event + the v0.8
+// memory-accrual hook for free, so a denied plan accrues exactly one content-free
+// pointer, same as any other canceled Run (C1). It additionally chains a distinct
+// run.denied event in the SAME transaction, beside run.canceled (AUD-20) — the net-new
+// audit vocabulary this ticket adds. ok=false (no error) means the Run was not
+// 'proposed' — the cancel-handler's failed-flip convention (the handler maps that to
+// 409, matching CancelRun's own already-terminal response).
+func (s *Store) DenyProposed(ctx context.Context, id string) (bool, error) {
+	return s.setRunTerminal(ctx, id, StatusCanceled, "run.denied", StatusProposed)
+}
+
+// ApproveProposed flips a submitted adaptive plan from 'proposed' to 'pending' (RUN-6,
+// ADR-0065 §6, T-088): the reviewed plan is now authorized to run, and the existing
+// sequencer picks it up unchanged (NextClaimable already selects 'pending'). It FIRST
+// re-validates the bounding grant's liveness (N3, DUR-10) — a missing/revoked/expired
+// grant refuses with NO flip, typed exactly like LaunchBounded's grant-dead refusal
+// (Refusal{RefusalGrantDead, ...}) so approve-time and launch-time death share one
+// vocabulary. Only on a grant-alive path does it flip-guard proposed→pending and, ONLY
+// on the actually-flipped path, chain run.launched in the SAME transaction — the event
+// Create withheld at plan.submit time (D1, ADR-0065 §6) — with the SAME shape Create
+// emits (actor = the composing agent if delegated else the operator, edge=human-agent,
+// target=run:<id>). ok=false (no refusal, no error) means the Run was not 'proposed' —
+// the cancel-handler's failed-flip convention (the handler maps that to 409).
+func (s *Store) ApproveProposed(ctx context.Context, grants GrantSource, id string) (Run, bool, *Refusal, error) {
+	rn, err := s.Get(ctx, id)
+	if err != nil {
+		return Run{}, false, nil, err // ErrNotFound propagates for the handler's 404
+	}
+	if rn.GrantID != "" {
+		g, gerr := grants.Get(ctx, rn.GrantID)
+		switch {
+		case errors.Is(gerr, grant.ErrNotFound):
+			return Run{}, false, &Refusal{RefusalGrantDead, "the grant no longer exists"}, nil
+		case gerr != nil:
+			return Run{}, false, nil, fmt.Errorf("load grant: %w", gerr)
+		case g.Status != grant.StatusActive:
+			return Run{}, false, &Refusal{RefusalGrantDead, "the grant is not active"}, nil
+		case !time.Now().Before(g.ExpiresAt):
+			return Run{}, false, &Refusal{RefusalGrantDead, "the grant has expired"}, nil
+		}
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Run{}, false, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var operator, actor string
+	err = tx.QueryRow(ctx, `
+		UPDATE runs SET status = $2, updated_at = now()
+		 WHERE id = $1 AND status = $3
+		 RETURNING operator, COALESCE(actor, '')`,
+		id, StatusPending, StatusProposed).Scan(&operator, &actor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Run{}, false, nil, nil // not 'proposed' — the cancel-handler-style no-op
+	}
+	if err != nil {
+		return Run{}, false, nil, fmt.Errorf("approve run: %w", err)
+	}
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: eventActor(operator, actor), Edge: launchEdge,
+		Target: "run:" + id, Outcome: "run.launched",
+		EvidencePacketID: "run:" + id,
+	}); err != nil {
+		return Run{}, false, nil, fmt.Errorf("enqueue run.launched: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Run{}, false, nil, fmt.Errorf("commit approve run: %w", err)
+	}
+	updated, err := s.Get(ctx, id)
+	if err != nil {
+		return Run{}, true, nil, err
+	}
+	return updated, true, nil, nil
 }
 
 // setRunTerminal moves a Run to toStatus, guarded to fromStatuses, and emits the mapped
 // run.* lifecycle event in the SAME transaction (AUD-9/14): actor=operator, anchored
 // run:<id>, content-free. ok=false (no-op) if the row already left fromStatuses — the
-// shared guard behind FinishRun (from running) and CancelRun (from pending|running) that
-// makes a cancel/finish race safe. This is also the F-a memory-accrual seam (ADR-0064
-// §2/MEM-2): AFTER the terminal event enqueues, on the SAME actually-flipped path, it
-// calls the wired accruer so a content-free memory pointer commits atomically with the
-// terminal flip — and, because the pgx.ErrNoRows no-op path above returns before this
-// point, a no-op flip NEVER accrues (criteria N4).
-func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromStatuses ...string) (bool, error) {
+// shared guard behind FinishRun (from running), CancelRun (from pending|running), and
+// DenyProposed (from proposed) that makes a race safe. extraOutcome, when non-empty,
+// chains ONE additional content-free event in the SAME transaction, beside the terminal
+// event — e.g. run.denied beside run.canceled (C1, AUD-20, T-088) — sharing the terminal
+// event's actor/edge/target convention; "" = no extra event (every pre-T-088 caller,
+// byte-behavior-preserved). This is also the F-a memory-accrual seam (ADR-0064
+// §2/MEM-2): AFTER the terminal (+ extra) event enqueues, on the SAME actually-flipped
+// path, it calls the wired accruer so a content-free memory pointer commits atomically
+// with the terminal flip — and, because the pgx.ErrNoRows no-op path above returns
+// before this point, a no-op flip NEVER accrues (criteria N4) and a denied plan accrues
+// exactly once (C1).
+func (s *Store) setRunTerminal(ctx context.Context, id, toStatus, extraOutcome string, fromStatuses ...string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -485,6 +590,14 @@ func (s *Store) setRunTerminal(ctx context.Context, id, toStatus string, fromSta
 			Target: "run:" + id, Outcome: outcome, EvidencePacketID: "run:" + id,
 		}); err != nil {
 			return false, fmt.Errorf("enqueue %s: %w", outcome, err)
+		}
+		if extraOutcome != "" {
+			if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+				Timestamp: time.Now(), Actor: eventActor(operator, actor), Edge: launchEdge,
+				Target: "run:" + id, Outcome: extraOutcome, EvidencePacketID: "run:" + id,
+			}); err != nil {
+				return false, fmt.Errorf("enqueue %s: %w", extraOutcome, err)
+			}
 		}
 		if s.accruer != nil {
 			if err := s.accruer.AccrueRunTerminal(ctx, tx, id, toStatus, operator, actor, grantID); err != nil {

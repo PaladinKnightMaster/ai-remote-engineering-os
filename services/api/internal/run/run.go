@@ -16,15 +16,17 @@ package run
 import "time"
 
 // Run lifecycle statuses (ADR-0061). StatusProposed (RUN-6, ADR-0065 §6; migration
-// 0013, F-a) is a PRE-'pending' park: plan.submit (T-088/T-090) creates a `proposed`
-// Run for a submitted adaptive plan, visible to the operator for informed full-plan
-// review before any step executes — the consent successor invariant. It is deliberately
-// INERT at T-087: no production path inserts a 'proposed' row yet (that is T-088's
-// LaunchBounded disposition split), and every existing status consumer's positive-list
-// predicate already excludes it by construction (proven by this package's integration
-// tests) — NextClaimable/ClaimRun never claim it, CancelRun's fromStatuses (pending,
-// running) never matches it. approve (→pending) / deny (→canceled + run.denied) land at
-// T-088.
+// 0013, F-a) is a PRE-'pending' park: LaunchBoundedProposed (T-088; T-090's plan.submit
+// forward is its production caller) creates a `proposed` Run for a submitted adaptive
+// plan, visible to the operator for informed full-plan review before any step executes
+// — the consent successor invariant. It stayed deliberately INERT through T-087 (no
+// production insert path existed yet); T-088 lands the ONLY production insert path
+// (LaunchBoundedProposed) plus its two resolutions — ApproveProposed (→pending, chains
+// the deferred run.launched) and DenyProposed (→canceled + the distinct run.denied,
+// beside the standard terminal event + memory accrual) — while every OTHER existing
+// status consumer's positive-list predicate still excludes 'proposed' by construction
+// (proven by this package's integration tests): NextClaimable/ClaimRun never claim it,
+// CancelRun's fromStatuses (pending, running) never matches it.
 const (
 	StatusProposed  = "proposed"  // a submitted adaptive plan, parked for informed review (RUN-6)
 	StatusPending   = "pending"   // authored, not yet driven
@@ -78,6 +80,13 @@ type Input struct {
 	GrantID   string
 	LaunchKey string // delegated-launch idempotency key (ADR-0062, T-065a); "" disables dedup (operator-direct)
 	Steps     []StepInput
+	// Disposition is the Run's starting status (RUN-6, ADR-0065 §6/D1, T-088): "" (the
+	// zero value) = StatusPending, today's behavior byte-identical for every existing
+	// caller (insert 'pending' + chain run.launched in the SAME transaction, AUD-9).
+	// StatusProposed inserts 'proposed' and chains NO run.* event at creation — the
+	// submission moment's event is plan.submitted (T-090), not this one; the deferred
+	// run.launched fires later, at ApproveProposed. No other value is valid.
+	Disposition string
 }
 
 // StepInput is one step of a new plan.

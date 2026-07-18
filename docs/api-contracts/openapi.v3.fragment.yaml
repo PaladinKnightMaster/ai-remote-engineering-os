@@ -674,6 +674,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # /v1/runs/{id}/approve + /v1/runs/{id}/deny — the plan-preview park's resolution
+  # (RUN-6, ADR-0065 §6; T-088). A submitted adaptive plan parks as a `proposed` Run
+  # (Run.status is a FREE string — no enum added here or on Run); approve flips it to
+  # pending and the existing sequencer drives it unchanged (the deferred run.launched
+  # fires here, D1); deny is terminal (canceled + the distinct run.denied, C1). Both
+  # inherit the global bearerAuth + double-submit CSRF, same posture as cancel above.
+  /v1/runs/{id}/approve:
+    post:
+      tags: [runs]
+      operationId: approveRun
+      summary: Approve a proposed Run's reviewed plan (RUN-6; proposed -> pending)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The Run was approved (now pending; the sequencer drives it).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The Run is not approvable (not in status 'proposed').
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/runs/{id}/deny:
+    post:
+      tags: [runs]
+      operationId: denyRun
+      summary: Deny a proposed Run's reviewed plan (RUN-6/C1; proposed -> canceled)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The Run was denied (terminal canceled; run.denied chained beside run.canceled).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The Run is not deniable (not in status 'proposed').
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   # /v1/grants — operator-issued delegation grants (ADR-0062; v0.6 agent-initiated Runs).
   # human-agent + double-submit CSRF; principal-owner-scoped. grant.issued / grant.revoked
   # are audited in the same transaction as the write (AUD-16). The grant is a SERVER-SIDE

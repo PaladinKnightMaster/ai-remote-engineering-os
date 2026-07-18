@@ -581,6 +581,213 @@ func TestLaunchBounded(t *testing.T) {
 	}
 }
 
+// TestLaunchBoundedProposedLifecycle — the T-088 G1 live-PG proof of the disposition
+// split's proposed sibling (RUN-6, ADR-0065 §6, F-c): LaunchBoundedProposed creates a
+// 'proposed' Run through the SAME shared core (plan-vs-grant, deny-audit, early
+// re-attach, PERF-7 bounds) but chains NO run.* event at create (D1 — the event is
+// deferred to ApproveProposed); a same-key retry re-attaches to the SAME proposed row
+// (never double-creates, the ADR-0065 §6 red-team #6 closure); a proposed Run counts
+// against both PERF-7 bounds exactly as a pending/running Run does (PERF-10(4)); and
+// ApproveProposed flips proposed->pending, chaining run.launched EXACTLY ONCE at approve
+// time (not at create) with the composing agent as its actor — a second approve is the
+// failed-flip no-op convention (ok=false, no error, no re-flip, no second event).
+func TestLaunchBoundedProposedLifecycle(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	dsn := os.Getenv("API_TEST_DATABASE_URL")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	grants := grant.NewStore(pool, "api_outbox")
+
+	g, err := grants.Create(ctx, grant.Input{
+		Principal: "operator:prop", Agent: "agent:prop", Label: "t088",
+		Resources: []string{"res-a"}, Verbs: []string{"exec"},
+		ExpiresAt: time.Now().Add(time.Hour), MaxStepsPerRun: 2, MaxConcurrentRuns: 4, StepBudget: 10,
+	})
+	if err != nil {
+		t.Fatalf("issue grant: %v", err)
+	}
+	oneStep := []StepInput{{ResourceID: "res-a", Command: "uptime"}}
+
+	// Proposed create: parks 'proposed', chains NO run.* event (D1).
+	created, reattached, refusal, err := s.LaunchBoundedProposed(ctx, grants, "agent:prop", g.ID, "prop-key-1", oneStep)
+	if err != nil || refusal != nil || reattached {
+		t.Fatalf("proposed launch: run=%+v reattached=%v refusal=%+v err=%v", created, reattached, refusal, err)
+	}
+	if created.Status != StatusProposed {
+		t.Fatalf("status = %q, want proposed", created.Status)
+	}
+	for _, outcome := range []string{"run.launched", "run.canceled", "run.completed", "run.denied"} {
+		if n := countRunOutcome(t, s, "run:"+created.ID, outcome); n != 0 {
+			t.Fatalf("proposed create chained %s (count=%d), want 0 (D1: deferred to approve)", outcome, n)
+		}
+	}
+
+	// Same-key retry re-attaches to the SAME proposed row — never double-creates.
+	again, reattached, refusal, err := s.LaunchBoundedProposed(ctx, grants, "agent:prop", g.ID, "prop-key-1", oneStep)
+	if err != nil || refusal != nil || !reattached || again.ID != created.ID {
+		t.Fatalf("proposed re-attach: run=%+v reattached=%v refusal=%+v err=%v", again, reattached, refusal, err)
+	}
+
+	// PERF-10(4): a proposed Run holds a concurrency/budget slot exactly as pending does.
+	if n, _ := s.CountActiveForGrant(ctx, g.ID); n != 1 {
+		t.Fatalf("CountActiveForGrant = %d, want 1 (a proposed Run must hold a slot)", n)
+	}
+	if n, _ := s.CountActiveForOperator(ctx, "operator:prop"); n != 1 {
+		t.Fatalf("CountActiveForOperator = %d, want 1 (a proposed Run must hold a slot)", n)
+	}
+
+	// Approve: flips proposed->pending, chains run.launched exactly once — at approve
+	// time, not at create — with the composing agent as its actor.
+	approved, flipped, refusal, err := s.ApproveProposed(ctx, grants, created.ID)
+	if err != nil || refusal != nil || !flipped {
+		t.Fatalf("approve: run=%+v flipped=%v refusal=%+v err=%v", approved, flipped, refusal, err)
+	}
+	if approved.Status != StatusPending {
+		t.Fatalf("status after approve = %q, want pending", approved.Status)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.launched"); n != 1 {
+		t.Fatalf("run.launched count after approve = %d, want 1", n)
+	}
+	if n := countRunActor(t, s, "run:"+created.ID, "run.launched", "agent:prop"); n != 1 {
+		t.Fatalf("run.launched actor != the composing agent (count=%d)", n)
+	}
+
+	// A second approve is the failed-flip no-op convention: ok=false, no error, no
+	// re-flip, no second run.launched.
+	_, flipped, refusal, err = s.ApproveProposed(ctx, grants, created.ID)
+	if err != nil || refusal != nil || flipped {
+		t.Fatalf("second approve: flipped=%v refusal=%+v err=%v, want flipped=false, no refusal, no error", flipped, refusal, err)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.launched"); n != 1 {
+		t.Fatalf("run.launched count after second approve = %d, want 1 (no double-fire)", n)
+	}
+}
+
+// TestApproveProposedDeadGrantRefused — N3/DUR-10 (T-088): ApproveProposed re-validates
+// the bounding grant's liveness BEFORE flipping. A revoked grant refuses with a typed
+// GrantDead refusal and NO flip — the Run stays 'proposed' (so it remains denyable) and
+// no run.launched is ever chained.
+func TestApproveProposedDeadGrantRefused(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	dsn := os.Getenv("API_TEST_DATABASE_URL")
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	grants := grant.NewStore(pool, "api_outbox")
+
+	g, err := grants.Create(ctx, grant.Input{
+		Principal: "operator:deadgrant", Agent: "agent:deadgrant", Label: "t088-dead",
+		Resources: []string{"res-a"}, Verbs: []string{"exec"},
+		ExpiresAt: time.Now().Add(time.Hour), MaxStepsPerRun: 2, MaxConcurrentRuns: 4, StepBudget: 10,
+	})
+	if err != nil {
+		t.Fatalf("issue grant: %v", err)
+	}
+	oneStep := []StepInput{{ResourceID: "res-a", Command: "uptime"}}
+
+	created, _, refusal, err := s.LaunchBoundedProposed(ctx, grants, "agent:deadgrant", g.ID, "dead-key-1", oneStep)
+	if err != nil || refusal != nil {
+		t.Fatalf("proposed launch: run=%+v refusal=%+v err=%v", created, refusal, err)
+	}
+
+	if ok, err := grants.Revoke(ctx, g.ID); err != nil || !ok {
+		t.Fatalf("revoke: ok=%v err=%v", ok, err)
+	}
+
+	_, flipped, refusal, err := s.ApproveProposed(ctx, grants, created.ID)
+	if err != nil || refusal == nil || refusal.Kind != RefusalGrantDead || flipped {
+		t.Fatalf("approve over revoked grant: flipped=%v refusal=%+v err=%v, want GrantDead refusal, no flip", flipped, refusal, err)
+	}
+	if st, _ := s.RunStatus(ctx, created.ID); st != StatusProposed {
+		t.Fatalf("status after refused approve = %q, want proposed (untouched)", st)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.launched"); n != 0 {
+		t.Fatalf("run.launched must not chain over a grant-dead approve refusal, got %d", n)
+	}
+}
+
+// TestDenyProposed — C1 (RUN-6, ADR-0065 §6, T-088): DenyProposed flips proposed to the
+// terminal 'canceled' status through the SAME shared once-only flip CancelRun uses,
+// chaining the distinct run.denied event beside the standard run.canceled terminal event
+// in the SAME transaction (AUD-20), and — because it rides the F-a memory-accrual seam —
+// accrues EXACTLY ONE content-free memory pointer, same as any other canceled Run (C1).
+// A second deny is the guarded no-op (already terminal): ok=false, no double-accrual.
+func TestDenyProposed(t *testing.T) {
+	s, mem, pool := testStoreWithAccruer(t)
+	ctx := context.Background()
+	grants := grant.NewStore(pool, "api_outbox")
+
+	g, err := grants.Create(ctx, grant.Input{
+		Principal: "operator:deny", Agent: "agent:deny", Label: "t088-deny",
+		Resources: []string{"res-a"}, Verbs: []string{"exec"},
+		ExpiresAt: time.Now().Add(time.Hour), MaxStepsPerRun: 2, MaxConcurrentRuns: 4, StepBudget: 10,
+	})
+	if err != nil {
+		t.Fatalf("issue grant: %v", err)
+	}
+	oneStep := []StepInput{{ResourceID: "res-a", Command: "uptime"}}
+
+	created, _, refusal, err := s.LaunchBoundedProposed(ctx, grants, "agent:deny", g.ID, "deny-key-1", oneStep)
+	if err != nil || refusal != nil {
+		t.Fatalf("proposed launch: run=%+v refusal=%+v err=%v", created, refusal, err)
+	}
+
+	countMemories := func(runID string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM memories WHERE ref = $1`, "run:"+runID).Scan(&n); err != nil {
+			t.Fatalf("count memories: %v", err)
+		}
+		return n
+	}
+
+	denied, err := s.DenyProposed(ctx, created.ID)
+	if err != nil || !denied {
+		t.Fatalf("deny: denied=%v err=%v", denied, err)
+	}
+	if st, _ := s.RunStatus(ctx, created.ID); st != StatusCanceled {
+		t.Fatalf("status after deny = %q, want canceled", st)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.canceled"); n != 1 {
+		t.Fatalf("run.canceled count after deny = %d, want 1", n)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.denied"); n != 1 {
+		t.Fatalf("run.denied count after deny = %d, want 1", n)
+	}
+	if n := countMemories(created.ID); n != 1 {
+		t.Fatalf("memory rows after deny = %d, want 1 (C1: exactly one accrued pointer)", n)
+	}
+	rows, err := mem.List(ctx, "operator:deny", memory.ScopeRun, created.ID, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list via memory store: rows=%d err=%v", len(rows), err)
+	}
+	if rows[0].HasContent {
+		t.Fatal("accrued memory must be content-free")
+	}
+
+	// A second deny is the guarded no-op (already terminal): ok=false, no error, no
+	// double-fired events, no double-accrual.
+	denied, err = s.DenyProposed(ctx, created.ID)
+	if err != nil || denied {
+		t.Fatalf("second deny: denied=%v err=%v, want denied=false", denied, err)
+	}
+	if n := countRunOutcome(t, s, "run:"+created.ID, "run.denied"); n != 1 {
+		t.Fatalf("run.denied count after second deny = %d, want 1 (no double-fire)", n)
+	}
+	if n := countMemories(created.ID); n != 1 {
+		t.Fatalf("memory rows after a losing deny = %d, want 1 (no double-accrual)", n)
+	}
+}
+
 // TestCountStepsForGrantWindowed — WS-4 (ADR-0063 §3): a windowed count includes only
 // Runs created within the rolling window (STRICT inequality), while windowSeconds=0
 // keeps the v0.6 cumulative-forever semantics — behavior-preserving for NULL-window

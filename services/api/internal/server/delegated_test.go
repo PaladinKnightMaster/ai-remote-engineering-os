@@ -57,6 +57,12 @@ func (f *fakeLaunchRunStore) CancelRunsForGrant(_ context.Context, grantID strin
 	f.canceledGrants = append(f.canceledGrants, grantID)
 	return 1, nil
 }
+func (f *fakeLaunchRunStore) ApproveProposed(_ context.Context, _ run.GrantSource, _ string) (run.Run, bool, *run.Refusal, error) {
+	return run.Run{}, false, nil, nil
+}
+func (f *fakeLaunchRunStore) DenyProposed(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 
 // fakeGrantStore satisfies grantStore; the handler passes it through to the core as the
 // GrantSource (unused by the fake core).

@@ -621,9 +621,15 @@ type ServerInterface interface {
 	// Fetch a Run's status + per-step status (the caller must own it)
 	// (GET /v1/runs/{id})
 	GetRun(w http.ResponseWriter, r *http.Request, id string)
+	// Approve a proposed Run's reviewed plan (RUN-6; proposed -> pending)
+	// (POST /v1/runs/{id}/approve)
+	ApproveRun(w http.ResponseWriter, r *http.Request, id string)
 	// Cancel a pending/running Run the caller owns (DUR-5; stop-future-steps)
 	// (POST /v1/runs/{id}/cancel)
 	CancelRun(w http.ResponseWriter, r *http.Request, id string)
+	// Deny a proposed Run's reviewed plan (RUN-6/C1; proposed -> canceled)
+	// (POST /v1/runs/{id}/deny)
+	DenyRun(w http.ResponseWriter, r *http.Request, id string)
 	// List the caller's sessions (operator-scoped; no cross-operator scope at v0.1.0)
 	// (GET /v1/sessions)
 	ListSessions(w http.ResponseWriter, r *http.Request, params ListSessionsParams)
@@ -807,9 +813,21 @@ func (_ Unimplemented) GetRun(w http.ResponseWriter, r *http.Request, id string)
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Approve a proposed Run's reviewed plan (RUN-6; proposed -> pending)
+// (POST /v1/runs/{id}/approve)
+func (_ Unimplemented) ApproveRun(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Cancel a pending/running Run the caller owns (DUR-5; stop-future-steps)
 // (POST /v1/runs/{id}/cancel)
 func (_ Unimplemented) CancelRun(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Deny a proposed Run's reviewed plan (RUN-6/C1; proposed -> canceled)
+// (POST /v1/runs/{id}/deny)
+func (_ Unimplemented) DenyRun(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1593,6 +1611,37 @@ func (siw *ServerInterfaceWrapper) GetRun(w http.ResponseWriter, r *http.Request
 	handler.ServeHTTP(w, r)
 }
 
+// ApproveRun operation middleware
+func (siw *ServerInterfaceWrapper) ApproveRun(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApproveRun(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CancelRun operation middleware
 func (siw *ServerInterfaceWrapper) CancelRun(w http.ResponseWriter, r *http.Request) {
 
@@ -1615,6 +1664,37 @@ func (siw *ServerInterfaceWrapper) CancelRun(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CancelRun(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DenyRun operation middleware
+func (siw *ServerInterfaceWrapper) DenyRun(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DenyRun(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2149,7 +2229,13 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/v1/runs/{id}", wrapper.GetRun)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/runs/{id}/approve", wrapper.ApproveRun)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/runs/{id}/cancel", wrapper.CancelRun)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/runs/{id}/deny", wrapper.DenyRun)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/sessions", wrapper.ListSessions)

@@ -191,6 +191,100 @@ func (a *apiHandlers) CancelRun(w http.ResponseWriter, r *http.Request, id strin
 	writeJSON(w, http.StatusOK, map[string]string{"status": run.StatusCanceled})
 }
 
+// ApproveRun (POST /v1/runs/{id}/approve) approves a submitted adaptive plan's parked
+// Run (RUN-6, ADR-0065 §6, T-088): 'proposed' → 'pending'; the existing sequencer then
+// drives it unchanged (NextClaimable already selects 'pending') — the plan-preview park's
+// consent successor invariant discharged (§6). Owner-scoped like CancelRun/GetRun: 404
+// for an unknown/cross-operator id (existence-hiding). A dead bounding grant (N3) refuses
+// 403 — the SAME convention LaunchDelegatedRun maps a typed grant-dead Refusal to
+// (delegated.go); an already-resolved (non-'proposed') Run answers 409 — the SAME
+// convention CancelRun maps a failed flip to (already-terminal → conflict).
+func (a *apiHandlers) ApproveRun(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.runs == nil || a.grants == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the run engine is not configured")
+		return
+	}
+	rn, err := a.runs.Get(r.Context(), id)
+	if errors.Is(err, run.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "approve run failed")
+		return
+	}
+	if rn.Operator != operator {
+		writeError(w, http.StatusNotFound, "not_found", "run not found") // owner-scoped existence-hiding
+		return
+	}
+	approved, flipped, refusal, err := a.runs.ApproveProposed(r.Context(), a.grants, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "approve run failed")
+		return
+	}
+	if refusal != nil {
+		writeError(w, http.StatusForbidden, "forbidden", refusal.Reason) // the LaunchBounded grant-dead convention
+		return
+	}
+	if !flipped {
+		writeError(w, http.StatusConflict, "conflict", "run is not approvable (not proposed)")
+		return
+	}
+	writeJSON(w, http.StatusOK, toRunView(approved))
+}
+
+// DenyRun (POST /v1/runs/{id}/deny) denies a submitted adaptive plan's parked Run
+// (RUN-6/C1, ADR-0065 §6, T-088): 'proposed' → terminal 'canceled', with the distinct
+// run.denied event chained beside the standard run.canceled terminal event (AUD-20) and
+// the v0.8 memory-accrual hook firing exactly once, same as any other canceled Run (C1).
+// Owner-scoped like CancelRun/GetRun: 404 for an unknown/cross-operator id
+// (existence-hiding). An already-resolved (non-'proposed') Run answers 409 — the SAME
+// convention CancelRun maps a failed flip to (already-terminal → conflict).
+func (a *apiHandlers) DenyRun(w http.ResponseWriter, r *http.Request, id string) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	if a.runs == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the run engine is not configured")
+		return
+	}
+	rn, err := a.runs.Get(r.Context(), id)
+	if errors.Is(err, run.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "run not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "deny run failed")
+		return
+	}
+	if rn.Operator != operator {
+		writeError(w, http.StatusNotFound, "not_found", "run not found") // owner-scoped existence-hiding
+		return
+	}
+	denied, err := a.runs.DenyProposed(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "deny run failed")
+		return
+	}
+	if !denied {
+		writeError(w, http.StatusConflict, "conflict", "run is not deniable (not proposed)")
+		return
+	}
+	updated, err := a.runs.Get(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "deny run failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, toRunView(updated))
+}
+
 // GetRun (GET /v1/runs/{id}) returns a Run's status + per-step status. Owner-scoped:
 // a cross-operator id answers 404 (existence-hiding, the session pattern).
 func (a *apiHandlers) GetRun(w http.ResponseWriter, r *http.Request, id string) {

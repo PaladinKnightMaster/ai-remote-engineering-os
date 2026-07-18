@@ -2,8 +2,14 @@
 // validation (SEC-29) + the PERF-7 bounds + the idempotent create/re-attach, extracted
 // behavior-preservingly from the gateway-forward handler (server.LaunchDelegatedRun) so
 // its second caller — the T-073 workstream ticker — enforces IDENTICAL checks by
-// construction. One validator, two callers; a second diverging launch path is a release
-// blocker (the v0.7 criteria).
+// construction. A diverging launch path is a release blocker (the v0.7 criteria).
+//
+// T-088 (F-c, ADR-0065 §6) split the core into the private launchBounded(disposition)
+// behind two exported dispositions — LaunchBounded (StatusPending, the two callers
+// above, byte-behavior-preserved) and LaunchBoundedProposed (StatusProposed, T-090's
+// plan.submit forward) — so the third caller enforces the SAME checks by the same
+// construction. One validator, three callers; a fourth diverging launch path is equally
+// a release blocker.
 //
 // The refusal REASON strings are wire contract: the gateway surfaces them to the agent
 // ("run launch refused: <reason>") and the live e2e asserts their substrings — change one
@@ -94,12 +100,44 @@ func validatePlanAgainstGrant(g grant.Grant, agentSubject string, resourceIDs []
 // identical prior launch was found), a *Refusal, or an error (infra — the caller answers
 // 500 / logs and retries next tick).
 //
+// This is the StatusPending caller of the shared launchBounded core (F-c, ADR-0065 §6,
+// T-088): its signature and behavior are UNCHANGED from before the disposition split —
+// both existing callers (the gateway-forwarded delegated launch, server.LaunchDelegatedRun,
+// and the T-073 workstream ticker) are byte-behavior-preserved by construction. See
+// launchBounded for the shared discipline and LaunchBoundedProposed for the
+// StatusProposed sibling (T-090's plan.submit caller).
+func (s *Store) LaunchBounded(ctx context.Context, grants GrantSource, agentSubject, grantID, launchKey string, steps []StepInput) (Run, bool, *Refusal, error) {
+	return s.launchBounded(ctx, grants, agentSubject, grantID, launchKey, steps, StatusPending)
+}
+
+// LaunchBoundedProposed is the StatusProposed sibling of LaunchBounded (RUN-6, ADR-0065
+// §6, T-088): identical params and identical discipline (grant fetch + plan-vs-grant
+// SEC-29 + deny-audit + early launch-key re-attach + PERF-7 bounds + idempotent create),
+// but the Run it creates parks 'proposed' instead of 'pending' — the consent successor
+// invariant (a submitted adaptive plan waits for informed review before any step
+// executes). A retry re-attaches to the same 'proposed' (or already-approved/denied) row
+// via the SAME (grant_id, launch_key) dedup — it never double-creates. T-090's
+// plan.submit forward is the caller.
+func (s *Store) LaunchBoundedProposed(ctx context.Context, grants GrantSource, agentSubject, grantID, launchKey string, steps []StepInput) (Run, bool, *Refusal, error) {
+	return s.launchBounded(ctx, grants, agentSubject, grantID, launchKey, steps, StatusProposed)
+}
+
+// launchBounded is the SHARED bounded-launch core (F-c, ADR-0065 §6, T-088): the ONE
+// validator behind three callers (LaunchBounded/StatusPending, LaunchBoundedProposed/
+// StatusProposed, and — pre-T-088 — this file's original LaunchBounded body, moved here
+// verbatim with disposition threaded through to Create). Every check — plan-vs-grant
+// (SEC-29), the deny-audit, the early launch-key re-attach, the PERF-7 bounds, the
+// idempotent create/re-attach — runs IDENTICALLY regardless of disposition; only the
+// Run's starting status differs (Create's Input.Disposition, D1).
+//
 // Ordering (the T-072 audit's F3): the launch-key re-attach sits AFTER plan-vs-grant —
 // a retry under a dead grant still refuses (and self-retires a charter) — but BEFORE the
 // bounds, so a retry re-attaches to the Run it already created even when that Run
 // exhausted the budget (the ratified early-re-attach delta; the unique
-// (grant_id, launch_key) index stays the backstop for concurrent same-key races).
-func (s *Store) LaunchBounded(ctx context.Context, grants GrantSource, agentSubject, grantID, launchKey string, steps []StepInput) (Run, bool, *Refusal, error) {
+// (grant_id, launch_key) index stays the backstop for concurrent same-key races). This
+// re-attach works identically for a 'proposed' row: a plan.submit retry re-attaches,
+// never double-creates (the ADR-0065 §6 red-team #6 closure).
+func (s *Store) launchBounded(ctx context.Context, grants GrantSource, agentSubject, grantID, launchKey string, steps []StepInput, disposition string) (Run, bool, *Refusal, error) {
 	g, err := grants.Get(ctx, grantID)
 	if errors.Is(err, grant.ErrNotFound) {
 		return Run{}, false, denyAudited(ctx, grants, agentSubject, grantID,
@@ -128,7 +166,9 @@ func (s *Store) LaunchBounded(ctx context.Context, grants GrantSource, agentSubj
 		}
 	}
 
-	// PERF-7 bounds — non-atomic soft ceilings (the documented v0.6 semantics).
+	// PERF-7 bounds — non-atomic soft ceilings (the documented v0.6 semantics). A
+	// 'proposed' Run counts against both counts exactly as a launched Run does
+	// (PERF-10(4), T-088) — the counting queries widened, this core untouched.
 	active, err := s.CountActiveForGrant(ctx, g.ID)
 	if err != nil {
 		return Run{}, false, nil, err
@@ -160,7 +200,7 @@ func (s *Store) LaunchBounded(ctx context.Context, grants GrantSource, agentSubj
 
 	created, err := s.Create(ctx, Input{
 		Operator: g.Principal, Actor: agentSubject, GrantID: g.ID,
-		LaunchKey: launchKey, Steps: steps,
+		LaunchKey: launchKey, Steps: steps, Disposition: disposition,
 	})
 	if errors.Is(err, ErrDuplicateLaunch) {
 		// A concurrent same-key launch won the unique index — re-attach (the race

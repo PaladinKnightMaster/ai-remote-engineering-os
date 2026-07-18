@@ -125,6 +125,12 @@ type runStore interface {
 	ListForOperator(ctx context.Context, operator, after string, limit int) ([]run.Run, string, error)
 	CancelRun(ctx context.Context, id string) (bool, error)
 	CancelRunsForGrant(ctx context.Context, grantID string) (int, error)
+	// ApproveProposed/DenyProposed resolve a 'proposed' Run (RUN-6, ADR-0065 §6, T-088):
+	// the operator's approve/deny routes on the plan-preview park. ApproveProposed takes
+	// a run.GrantSource (the same slice LaunchBounded reads) to re-validate the bounding
+	// grant's liveness before flipping (N3).
+	ApproveProposed(ctx context.Context, grants run.GrantSource, id string) (run.Run, bool, *run.Refusal, error)
+	DenyProposed(ctx context.Context, id string) (bool, error)
 }
 
 // Authenticator verifies operator credentials (services/api/internal/account).
