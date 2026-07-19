@@ -241,5 +241,16 @@ func (a *apiHandlers) RevokeGrant(w http.ResponseWriter, r *http.Request, id str
 			log.Printf("revoke grant %s: canceled %d in-flight run(s)", id, n)
 		}
 	}
+	// DUR-10 §7/R3 (T-089): the cascade re-aim extends to the plan-request channel — an
+	// adaptive charter's open request dies too, not just its Runs. Best-effort, same
+	// shape as the CancelRunsForGrant cascade above (event-silent by design, see
+	// workstream.closePlanRequestsInTx).
+	if a.workstreams != nil {
+		if n, cerr := a.workstreams.ClosePlanRequestsForGrant(r.Context(), id); cerr != nil {
+			log.Printf("revoke grant %s: close open plan requests: %v", id, cerr)
+		} else if n > 0 {
+			log.Printf("revoke grant %s: closed %d open plan request(s)", id, n)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": grant.StatusRevoked})
 }

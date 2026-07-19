@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"aireos.local/packages/go/auth"
+	"aireos.local/services/api/internal/grant"
 	"aireos.local/services/api/internal/workstream"
 )
 
@@ -17,10 +18,17 @@ import (
 // binds (the window default, the grant scope) without Postgres. The lifecycle verbs
 // return the scripted verbOK (ok=false → the handler's 409).
 type fakeWorkstreamStore struct {
-	lastCreate *workstream.Input
-	byID       map[string]workstream.Workstream
-	verbOK     bool
-	verbCalls  []string
+	lastCreate    *workstream.Input
+	byID          map[string]workstream.Workstream
+	verbOK        bool
+	verbCalls     []string
+	closedGrants  []string // ClosePlanRequestsForGrant calls (T-089, the RevokeGrant cascade)
+	closedGrantsN int      // the scripted return count
+}
+
+func (f *fakeWorkstreamStore) ClosePlanRequestsForGrant(_ context.Context, grantID string) (int, error) {
+	f.closedGrants = append(f.closedGrants, grantID)
+	return f.closedGrantsN, nil
 }
 
 func (f *fakeWorkstreamStore) Pause(_ context.Context, id string) (bool, error) {
@@ -304,6 +312,56 @@ func TestWorkstreamLifecycleVerbHandlers(t *testing.T) {
 			t.Fatalf("retire sans runs: status=%d", rec.Code)
 		}
 	})
+}
+
+// fakeRevokableGrantStore is a minimal grantStore whose Get/Revoke succeed for one
+// fixed grant id — the RevokeGrant cascade-wiring test below (T-089 R3 point 1) needs
+// a HAPPY-PATH revoke, unlike the shared fakeGrantStore (delegated_test.go), which is
+// deliberately scripted to always fail (its own caller, TestLaunchDelegatedRun, needs
+// the opposite: an out-of-grant refusal).
+type fakeRevokableGrantStore struct{ id, principal string }
+
+func (f fakeRevokableGrantStore) Create(context.Context, grant.Input) (grant.Grant, error) {
+	return grant.Grant{}, nil
+}
+func (f fakeRevokableGrantStore) Get(_ context.Context, id string) (grant.Grant, error) {
+	if id != f.id {
+		return grant.Grant{}, grant.ErrNotFound
+	}
+	return grant.Grant{ID: f.id, Principal: f.principal, Status: grant.StatusActive}, nil
+}
+func (f fakeRevokableGrantStore) ListForOperator(context.Context, string, string, int) ([]grant.Grant, string, error) {
+	return nil, "", nil
+}
+func (f fakeRevokableGrantStore) Revoke(context.Context, string) (bool, error) { return true, nil }
+func (f fakeRevokableGrantStore) AuditLaunchDenied(context.Context, string, string) error {
+	return nil
+}
+
+// TestRevokeGrantCascadesToPlanRequests — DUR-10 §7/R3 point 1 (T-089): RevokeGrant's
+// handler reaches BOTH cascade legs on a successful revoke — runStore.CancelRunsForGrant
+// (DUR-7, unchanged) AND workstreamStore.ClosePlanRequestsForGrant (the new leg this
+// ticket wires) — each called exactly once with the revoked grant's id.
+func TestRevokeGrantCascadesToPlanRequests(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	gs := fakeRevokableGrantStore{id: "grant-9", principal: "operator"}
+	rs := &fakeLaunchRunStore{}
+	ws := &fakeWorkstreamStore{closedGrantsN: 1}
+	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "",
+		WithGrantStore(gs), WithRunStore(rs), WithWorkstreamStore(ws, 60))
+	r := httptest.NewRequest(http.MethodPost, "/v1/grants/grant-9/revoke", nil)
+	r.Header.Set("Authorization", "Bearer x")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(rs.canceledGrants) != 1 || rs.canceledGrants[0] != "grant-9" {
+		t.Fatalf("CancelRunsForGrant cascade: %v, want exactly [grant-9]", rs.canceledGrants)
+	}
+	if len(ws.closedGrants) != 1 || ws.closedGrants[0] != "grant-9" {
+		t.Fatalf("ClosePlanRequestsForGrant cascade: %v, want exactly [grant-9]", ws.closedGrants)
+	}
 }
 
 // TestWorkstreamRoutesUnconfigured — no WithWorkstreamStore → the routes exist but

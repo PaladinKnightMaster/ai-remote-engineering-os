@@ -310,13 +310,16 @@ func (s *Store) Resume(ctx context.Context, id string) (bool, error) {
 }
 
 // Retire terminally ends a charter (WS-5, the operator kill switch): ONE transaction
-// flips the charter retired (from active OR paused — pause is not a shield) AND revokes
-// its grant via the shared RevokeInTx, chaining workstream.retired (+ the grant's own
-// grant.revoked) from the same tx. RevokeInTx tolerates an already-dead grant (a direct
-// revoke raced the retire — ok=false there, no duplicate grant.revoked, the charter flip
-// still commits). The in-flight-Run cascade runs in the HANDLER post-tx, best-effort
-// (the RevokeGrant mirror; the documented v0.6 non-atomic residual carries). ok=false →
-// already retired (409).
+// flips the charter retired (from active OR paused — pause is not a shield), revokes
+// its grant via the shared RevokeInTx, AND closes its open plan request if any (DUR-10
+// §7/R3, T-089 — closePlanRequestsInTx, event-silent, folded into this SAME tx so the
+// request dies atomically with the charter), chaining workstream.retired (+ the
+// grant's own grant.revoked) from the same tx. RevokeInTx tolerates an already-dead
+// grant (a direct revoke raced the retire — ok=false there, no duplicate
+// grant.revoked, the charter flip still commits). The in-flight-Run cascade runs in
+// the HANDLER post-tx, best-effort (the RevokeGrant mirror; the documented v0.6
+// non-atomic residual carries — Runs are NOT atomic with the flip, only the plan
+// request is). ok=false → already retired (409).
 func (s *Store) Retire(ctx context.Context, id string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -337,6 +340,9 @@ func (s *Store) Retire(ctx context.Context, id string) (bool, error) {
 	}
 	if _, err := s.grants.RevokeInTx(ctx, tx, grantID); err != nil {
 		return false, fmt.Errorf("revoke charter grant: %w", err)
+	}
+	if _, err := closePlanRequestsInTx(ctx, tx, id); err != nil {
+		return false, err
 	}
 	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
 		Timestamp: time.Now(), Actor: principal, Edge: charterEdge,
@@ -382,13 +388,17 @@ func (s *Store) flipWithEvent(ctx context.Context, updateSQL, id, outcome string
 }
 
 // SelfRetire retires an ACTIVE charter whose grant is dead — revoked or expired (the F1
-// self-retire, WS-3): without it, every charter outliving its grant TTL would spin
-// eternal run.launch.denied every interval. Status → retired with
-// workstream.retired:grant-dead chained in the same tx (the approval.denied:timeout
-// outcome-qualifier pattern; actor = the workstream — the machine transition; T-074's
-// operator verb emits the plain workstream.retired with actor = operator). The charter's
-// grant needs no action here: a revoked grant's cascade already canceled its Runs, and an
-// expired grant's Runs complete on their own. ok=false → not active (already retired, or
+// self-retire, WS-3, both the template ticker branch AND the adaptive branch's direct
+// grant-liveness check, T-089): without it, every charter outliving its grant TTL would
+// spin eternal denials every interval. Status → retired, its open plan request (if any)
+// closed atomically in the SAME tx (DUR-10 §7/R3, T-089 — closePlanRequestsInTx,
+// event-silent; this is R3's point (3): the adaptive ticker's dead-grant path reaches
+// this method too, so it needs no separate close-wiring of its own), with
+// workstream.retired:grant-dead chained (the approval.denied:timeout outcome-qualifier
+// pattern; actor = the workstream — the machine transition; T-074's operator verb emits
+// the plain workstream.retired with actor = operator). The charter's grant needs no
+// action here: a revoked grant's cascade already canceled its Runs, and an expired
+// grant's Runs complete on their own. ok=false → not active (already retired, or
 // paused — invisible to the claim predicate anyway).
 func (s *Store) SelfRetire(ctx context.Context, id string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -405,6 +415,9 @@ func (s *Store) SelfRetire(ctx context.Context, id string) (bool, error) {
 	}
 	if ct.RowsAffected() == 0 {
 		return false, nil
+	}
+	if _, err := closePlanRequestsInTx(ctx, tx, id); err != nil {
+		return false, err
 	}
 	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
 		Timestamp: time.Now(), Actor: "workstream:" + id, Edge: charterEdge,
@@ -451,16 +464,18 @@ func (s *Store) ListForOperator(ctx context.Context, principal, after string, li
 	return out, last, rows.Err()
 }
 
-// --- Plan requests (PLAN-1, ADR-0065 §5, T-087) -----------------------------------
+// --- Plan requests (PLAN-1, ADR-0065 §5, T-087/T-089) -----------------------------
 //
-// The inbound plan channel's store primitives: no routes, no ticker branch, no audit
-// events here — T-088 creates the `proposed` Run plan.submit produces, T-089 wires the
-// ticker's adaptive branch (open) + the expiry sweep + the revocation cascade (close),
-// and T-090 wires workstream.poll/plan.submit's outbox events around these calls. These
-// methods deliberately run outside any caller-supplied transaction (unlike
-// AccrueRunTerminal's tx-param shape) because no consuming caller composes them with
-// another write yet; a *InTx variant is the natural T-089 seam if the ticker needs to
-// pair an open/expire with its own outbox enqueue atomically — noted, not preempted.
+// The inbound plan channel's store primitives. T-087 landed the schema-adjacent shape
+// with no routes/ticker branch/audit events. T-089 (D2) wires the ticker's adaptive
+// branch (OpenPlanRequest, now in-tx with plan.requested), the expiry sweep
+// (ExpirePlanRequestsDue, now in-tx with plan.expired per row), and the revocation
+// cascade (the Close* family, deliberately EVENT-SILENT — see closePlanRequestsInTx).
+// T-090 still owns workstream.poll/plan.submit and their own outbox events (this
+// package emits nothing for those verbs). OpenPlanRequest/ExpirePlanRequestsDue now
+// run in their OWN transaction (they own the atomicity of their insert/flip + event);
+// Retire/SelfRetire instead call the private closePlanRequestsInTx helper directly so
+// a charter's death and its open request's death commit together.
 
 // planRequestSelectCols is the shared column list for plan-request reads. run_id is
 // NULL until MarkPlanRequestSubmitted sets it (COALESCE to "" — the run/grant store's
@@ -484,35 +499,63 @@ func scanPlanRequest(row rowScanner) (PlanRequest, error) {
 }
 
 // OpenPlanRequest opens a durable, TTL-bounded plan request for an adaptive charter's
-// tick (PLAN-1) — the inbound-channel counterpart to the template branch's
-// LaunchBounded call. Idempotent, the house flip-guard style: a duplicate open — the
-// same launch_key retried, or a second open attempt while the charter already has one
-// OPEN (both collide on a unique constraint: launch_key UNIQUE, or the partial
-// plan_requests_one_open_idx, C2) — is a NO-OP that returns the charter's current open
-// request rather than erroring or minting a second row.
-func (s *Store) OpenPlanRequest(ctx context.Context, workstreamID, launchKey string, expiresAt time.Time) (PlanRequest, error) {
+// tick (PLAN-1, T-089) — the inbound-channel counterpart to the template branch's
+// LaunchBounded call: insert + enqueue plan.requested in ONE transaction (D2; the
+// Create/workstream.chartered precedent). Idempotent, the house flip-guard style: a
+// duplicate open — the same launch_key retried, or a second open attempt while the
+// charter already has one OPEN (both collide on a unique constraint: launch_key
+// UNIQUE, or the partial plan_requests_one_open_idx, C2) — is a NO-OP that returns the
+// charter's current open request rather than erroring or minting a second row, AND
+// EMITS NOTHING (no duplicate plan.requested). reattached=true on that no-op path
+// (the LaunchBounded reattach-bool convention), false when a fresh row + event
+// committed. The event's actor is the charter itself ("workstream:<id>" — the schedule
+// is the acting authority for a tick-opened request, mirroring SelfRetire's machine
+// actor), self-anchored to the request (Target), scope-anchored to the charter
+// (EvidencePacketID) — the T-081 accrual-event convention.
+func (s *Store) OpenPlanRequest(ctx context.Context, workstreamID, launchKey string, expiresAt time.Time) (PlanRequest, bool, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return PlanRequest{}, fmt.Errorf("mint plan request id: %w", err)
+		return PlanRequest{}, false, fmt.Errorf("mint plan request id: %w", err)
 	}
-	row := s.pool.QueryRow(ctx, `
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return PlanRequest{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO plan_requests (id, workstream_id, launch_key, expires_at)
 		VALUES ($1, $2, $3, $4)
 		RETURNING `+planRequestSelectCols,
 		id.String(), workstreamID, launchKey, expiresAt)
 	pr, err := scanPlanRequest(row)
-	if err == nil {
-		return pr, nil
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+			return PlanRequest{}, false, fmt.Errorf("open plan request: %w", err)
+		}
+		// Duplicate open: the insert aborted this tx (rolled back by the deferred
+		// call above); re-fetch the charter's current open row on a FRESH connection
+		// (s.pool, not the dead tx) and emit nothing.
+		existing, gerr := s.openPlanRequestForWorkstream(ctx, workstreamID)
+		if gerr != nil {
+			return PlanRequest{}, false, fmt.Errorf("re-fetch after duplicate open: %w", gerr)
+		}
+		return existing, true, nil
 	}
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
-		return PlanRequest{}, fmt.Errorf("open plan request: %w", err)
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: "workstream:" + workstreamID, Edge: charterEdge,
+		Target: "plan-request:" + pr.ID, Outcome: "plan.requested",
+		EvidencePacketID: "workstream:" + workstreamID,
+	}); err != nil {
+		return PlanRequest{}, false, fmt.Errorf("enqueue plan.requested: %w", err)
 	}
-	existing, gerr := s.openPlanRequestForWorkstream(ctx, workstreamID)
-	if gerr != nil {
-		return PlanRequest{}, fmt.Errorf("re-fetch after duplicate open: %w", gerr)
+	if err := tx.Commit(ctx); err != nil {
+		return PlanRequest{}, false, fmt.Errorf("commit open plan request: %w", err)
 	}
-	return existing, nil
+	return pr, false, nil
 }
 
 // openPlanRequestForWorkstream returns a charter's current OPEN request — the row
@@ -564,33 +607,79 @@ func (s *Store) MarkPlanRequestSubmitted(ctx context.Context, id, runID string) 
 }
 
 // ExpirePlanRequestsDue tombstones up to batch OPEN requests whose expires_at has
-// passed (DUR-10, PLAN-1: the charter never wedges — the next tick opens a fresh
-// request). The FOR UPDATE SKIP LOCKED sub-query claims a bounded batch (the memory
-// ExpireDue precedent) so overlapping sweeps never double-claim a row; the guarded
-// predicate (status = 'open') is the exactly-once guard — a re-run touches nothing
-// already expired/submitted/closed. No events emitted here — T-089's sweep owns
-// plan.expired, wired around this call. Returns the count expired this pass.
+// passed (DUR-10, PLAN-1, T-089: the charter never wedges — the next tick opens a
+// fresh request), chaining ONE plan.expired per actually-expired row in the SAME
+// transaction as the batch flip (the memory ExpireDue shape, T-081). The FOR UPDATE
+// SKIP LOCKED sub-query claims a bounded batch so overlapping sweeps never
+// double-claim a row; the guarded predicate (status = 'open') is the exactly-once
+// guard — a re-run touches nothing already expired/submitted/closed, so a re-run
+// chains nothing further. Each event's actor is the row's own charter
+// ("workstream:<id>", read off the claimed row — the sweep has no operator caller of
+// its own), self-anchored to the request (Target), scope-anchored to the charter
+// (EvidencePacketID) — the same convention OpenPlanRequest's event uses. Returns the
+// count expired this pass.
 func (s *Store) ExpirePlanRequestsDue(ctx context.Context, batch int) (int, error) {
 	if batch <= 0 || batch > 100 {
 		batch = 100
 	}
-	ct, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	rows, err := tx.Query(ctx, `
 		UPDATE plan_requests SET status = 'expired', updated_at = now()
 		 WHERE id IN (
 		     SELECT id FROM plan_requests
 		      WHERE status = 'open' AND expires_at <= now()
-		      ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)`, batch)
+		      ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)
+		 RETURNING id, workstream_id`, batch)
 	if err != nil {
 		return 0, fmt.Errorf("expire plan requests due: %w", err)
 	}
-	return int(ct.RowsAffected()), nil
+	type expiredRow struct{ id, workstreamID string }
+	var due []expiredRow
+	for rows.Next() {
+		var e expiredRow
+		if err := rows.Scan(&e.id, &e.workstreamID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired plan request: %w", err)
+		}
+		due = append(due, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("expire plan requests due rows: %w", err)
+	}
+
+	for _, e := range due {
+		if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+			Timestamp: time.Now(), Actor: "workstream:" + e.workstreamID, Edge: charterEdge,
+			Target: "plan-request:" + e.id, Outcome: "plan.expired",
+			EvidencePacketID: "workstream:" + e.workstreamID,
+		}); err != nil {
+			return 0, fmt.Errorf("enqueue plan.expired: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit expire plan requests due: %w", err)
+	}
+	return len(due), nil
 }
 
-// ClosePlanRequestsForWorkstream closes a charter's open plan request (DUR-10 §7: the
-// revocation cascade re-aimed at the new surface) — the T-089 retire/self-retire hook.
-// Returns the count closed (0 or 1: at most one is ever open).
-func (s *Store) ClosePlanRequestsForWorkstream(ctx context.Context, workstreamID string) (int, error) {
-	ct, err := s.pool.Exec(ctx, `
+// closePlanRequestsInTx is the shared close-UPDATE (DUR-10 §7, T-089 R3): folded
+// directly into the SAME transaction as a charter's terminal flip (Retire/SelfRetire)
+// so the charter's death and its open request's death commit atomically, or run
+// standalone (via ClosePlanRequestsForWorkstream's own tx) when no flip is in
+// progress. EVENT-SILENT BY DESIGN: AUD-20's pinned vocabulary has no plan.closed —
+// the chained workstream.retired / workstream.retired:grant-dead / grant.revoked
+// events ARE the audited authority record of why the request died; a redundant
+// plan.closed would only restate that. Returns the count closed (0 or 1: at most one
+// is ever open, C2).
+func closePlanRequestsInTx(ctx context.Context, tx pgx.Tx, workstreamID string) (int, error) {
+	ct, err := tx.Exec(ctx, `
 		UPDATE plan_requests SET status = 'closed', updated_at = now()
 		 WHERE workstream_id = $1 AND status = 'open'`, workstreamID)
 	if err != nil {
@@ -599,12 +688,38 @@ func (s *Store) ClosePlanRequestsForWorkstream(ctx context.Context, workstreamID
 	return int(ct.RowsAffected()), nil
 }
 
+// ClosePlanRequestsForWorkstream closes a charter's open plan request in its OWN
+// transaction — the standalone entry point for a caller that is not already inside a
+// charter-flip tx (kept exported per the T-087 seam note; Retire/SelfRetire below fold
+// the SAME UPDATE into their own tx instead of calling this, so the request's death is
+// atomic with the flip). EVENT-SILENT (see closePlanRequestsInTx). Returns the count
+// closed (0 or 1).
+func (s *Store) ClosePlanRequestsForWorkstream(ctx context.Context, workstreamID string) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	n, err := closePlanRequestsInTx(ctx, tx, workstreamID)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit close plan requests for workstream: %w", err)
+	}
+	return n, nil
+}
+
 // ClosePlanRequestsForGrant closes the open plan request of the charter bound to a
 // revoked/expired grant (DUR-10 §7) — the grant-revoke cascade's plan-request leg,
-// alongside run.CancelRunsForGrant (T-089 wires the call). A grant binds at most one
-// charter (1:1, WS-2), so this closes at most one row, but is grant-scoped (not
-// workstream-scoped) to match the cascade's existing entry point (grant id, not
-// workstream id, is what a revoke knows).
+// alongside run.CancelRunsForGrant (T-089 wires the call, server.RevokeGrant). A grant
+// binds at most one charter (1:1, WS-2), so this closes at most one row, but is
+// grant-scoped (not workstream-scoped) to match the cascade's existing entry point
+// (grant id, not workstream id, is what a revoke knows) — it runs in its OWN
+// transaction (the revoke that triggered it already committed; this is the same
+// best-effort post-commit cascade shape as run.CancelRunsForGrant). EVENT-SILENT (see
+// closePlanRequestsInTx) — grant.revoked is that revoke's own audited record.
 func (s *Store) ClosePlanRequestsForGrant(ctx context.Context, grantID string) (int, error) {
 	ct, err := s.pool.Exec(ctx, `
 		UPDATE plan_requests SET status = 'closed', updated_at = now()

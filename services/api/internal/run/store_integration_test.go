@@ -446,6 +446,64 @@ func TestGrantBoundsAndCascade(t *testing.T) {
 	}
 }
 
+// TestGrantCascadeIncludesProposed — DUR-10 §7/D3 (T-089): CancelRunsForGrant's widened
+// scan reaches a parked 'proposed' Run too, not just pending/running — a revoked grant
+// stops everything it was authorizing, including an unreviewed plan. The cascade-killed
+// proposed row chains run.canceled ONLY: NO run.denied (D3 — run.denied is exclusively
+// DenyProposed's human-review verdict; revocation is a different fact, authority
+// withdrawal). pending/running are still canceled exactly as TestGrantBoundsAndCascade
+// already proves — this test's own pending/running legs re-confirm that under the
+// widened scan. A fresh grant id (not the fixed constant TestGrantBoundsAndCascade
+// uses) per the T-073 dirty-DB lesson: fixed ids are not safely re-runnable.
+func TestGrantCascadeIncludesProposed(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	grantID := uuid.Must(uuid.NewV7()).String()
+
+	mk := func(key string, disposition string) Run {
+		r, err := s.Create(ctx, Input{
+			Operator: "operator:grantor2", Actor: "agent:bot2", GrantID: grantID,
+			LaunchKey: key, Steps: []StepInput{{ResourceID: "r-a", Command: "echo hi"}},
+			Disposition: disposition,
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", key, err)
+		}
+		return r
+	}
+	proposed := mk("pk1", StatusProposed)
+	pending := mk("pk2", "") // "" = StatusPending, the Input.Disposition zero value
+	running := mk("pk3", "")
+	if ok, err := s.ClaimRun(ctx, running.ID, 300); err != nil || !ok {
+		t.Fatalf("claim running leg: ok=%v err=%v", ok, err)
+	}
+
+	if n, _ := s.CountActiveForGrant(ctx, grantID); n != 3 {
+		t.Fatalf("CountActiveForGrant = %d, want 3 (proposed counts too, PERF-10(4))", n)
+	}
+
+	n, err := s.CancelRunsForGrant(ctx, grantID)
+	if err != nil || n != 3 {
+		t.Fatalf("CancelRunsForGrant = %d (err %v), want 3", n, err)
+	}
+	for _, r := range []Run{proposed, pending, running} {
+		if st, _ := s.RunStatus(ctx, r.ID); st != StatusCanceled {
+			t.Fatalf("run %s status = %q, want canceled", r.ID, st)
+		}
+		if c := countRunOutcome(t, s, "run:"+r.ID, "run.canceled"); c != 1 {
+			t.Fatalf("run.canceled count for %s = %d, want 1", r.ID, c)
+		}
+	}
+	// D3: the cascade-killed proposed row chains NO run.denied — that outcome is
+	// exclusively DenyProposed's human-review verdict.
+	if c := countRunOutcome(t, s, "run:"+proposed.ID, "run.denied"); c != 0 {
+		t.Fatalf("run.denied count for the cascade-canceled proposed run = %d, want 0 (D3)", c)
+	}
+	if n, _ := s.CancelRunsForGrant(ctx, grantID); n != 0 {
+		t.Fatalf("second cascade canceled %d, want 0 (all terminal)", n)
+	}
+}
+
 func countRunActor(t *testing.T, s *Store, evidence, outcome, actor string) int {
 	t.Helper()
 	var n int

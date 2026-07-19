@@ -246,13 +246,19 @@ func (s *Store) CountStepsForGrant(ctx context.Context, grantID string, windowSe
 	return n, nil
 }
 
-// CancelRunsForGrant cancels every not-yet-terminal Run bound to a grant (DUR-7, ADR-0062):
-// when an operator revokes a grant, its in-flight Runs stop. Each is moved to canceled with a
-// run.canceled event (reusing CancelRun/setRunTerminal); the sequencer's between-step
-// RunStatus check then halts further dispatch. Returns the number canceled.
+// CancelRunsForGrant cancels every not-yet-terminal Run bound to a grant — including a
+// parked 'proposed' one (DUR-7/DUR-10 §7, ADR-0062/ADR-0065 §7, T-089/D3): when an
+// operator revokes a grant, everything the grant was authorizing stops, not just what
+// already reached 'pending'. Each is moved to canceled through the shared setRunTerminal
+// (not the operator-facing CancelRun, which deliberately excludes 'proposed' — that
+// exclusion is for the OPERATOR cancel route only, untouched); the sequencer's
+// between-step RunStatus check then halts further dispatch for anything already
+// running. A cascade-canceled 'proposed' row chains run.canceled ONLY — NO run.denied
+// (D3: run.denied is exclusively the human review verdict via DenyProposed; revocation
+// is authority withdrawal, a different fact). Returns the number canceled.
 func (s *Store) CancelRunsForGrant(ctx context.Context, grantID string) (int, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id FROM runs WHERE grant_id = $1::uuid AND status IN ('pending', 'running')`, grantID)
+		SELECT id FROM runs WHERE grant_id = $1::uuid AND status IN ('proposed', 'pending', 'running')`, grantID)
 	if err != nil {
 		return 0, fmt.Errorf("scan grant runs: %w", err)
 	}
@@ -271,7 +277,8 @@ func (s *Store) CancelRunsForGrant(ctx context.Context, grantID string) (int, er
 	}
 	n := 0
 	for _, id := range ids {
-		ok, err := s.CancelRun(ctx, id) // setRunTerminal(canceled) + run.canceled in-tx
+		// setRunTerminal(canceled, extraOutcome="") + run.canceled in-tx — no run.denied.
+		ok, err := s.setRunTerminal(ctx, id, StatusCanceled, "", StatusProposed, StatusPending, StatusRunning)
 		if err != nil {
 			return n, err
 		}

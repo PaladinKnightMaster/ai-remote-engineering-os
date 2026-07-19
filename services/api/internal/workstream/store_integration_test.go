@@ -214,6 +214,34 @@ func countOutcome(t *testing.T, pool *pgxpool.Pool, evidence, outcome string) in
 	return n
 }
 
+// countTargetOutcome counts events by (target, outcome) — the plan-request tests use
+// this instead of countOutcome (evidencePacketId-scoped, which is the CHARTER and so
+// accumulates across every tick a charter ever fires) when they need an exactly-once
+// assertion scoped to ONE plan-request row (Target = "plan-request:<id>", unique per row).
+func countTargetOutcome(t *testing.T, pool *pgxpool.Pool, target, outcome string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM api_outbox WHERE payload->>'target' = $1 AND payload->>'outcome' = $2`,
+		target, outcome).Scan(&n); err != nil {
+		t.Fatalf("count target outcome: %v", err)
+	}
+	return n
+}
+
+// countTargetOutcomeActor narrows countTargetOutcome to one actor (the memory
+// countActorForOutcome precedent) — asserts the event's actor without a separate query.
+func countTargetOutcomeActor(t *testing.T, pool *pgxpool.Pool, target, outcome, actor string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM api_outbox WHERE payload->>'target' = $1 AND payload->>'outcome' = $2 AND payload->>'actor' = $3`,
+		target, outcome, actor).Scan(&n); err != nil {
+		t.Fatalf("count target outcome actor: %v", err)
+	}
+	return n
+}
+
 func containsWorkstream(items []Workstream, id string) bool {
 	for _, w := range items {
 		if w.ID == id {
@@ -553,14 +581,17 @@ func TestWorkstreamKindMatrix(t *testing.T) {
 	}
 }
 
-// TestPlanRequestLifecycle — T-087 (PLAN-1): OpenPlanRequest is idempotent — a retried
-// launch_key, or a second open attempt while the charter already has one open, both
-// return the SAME row rather than minting a second one (launch_key UNIQUE backstopped
-// by the structural plan_requests_one_open_idx, C2); MarkPlanRequestSubmitted flips
+// TestPlanRequestLifecycle — T-087/T-089 (PLAN-1, D2): OpenPlanRequest is idempotent —
+// a retried launch_key, or a second open attempt while the charter already has one
+// open, both return the SAME row rather than minting a second one (launch_key UNIQUE
+// backstopped by the structural plan_requests_one_open_idx, C2) AND chain NO duplicate
+// plan.requested (reattached=true on both no-op paths); a genuine open chains EXACTLY
+// ONE plan.requested, actor = the charter itself; MarkPlanRequestSubmitted flips
 // open→submitted exactly once (a second call is ok=false); GetPlanRequest round-trips;
-// and a fresh open is a genuine new row once the prior request left 'open'.
+// and a fresh open (after the prior request left 'open') is a genuine new row + a
+// second plan.requested.
 func TestPlanRequestLifecycle(t *testing.T) {
-	s, _ := testStore(t)
+	s, pool := testStore(t)
 	ctx := context.Background()
 
 	ws, err := s.Create(ctx, sampleAdaptiveInput("operator:plan", "agent:composer-plan"))
@@ -568,32 +599,44 @@ func TestPlanRequestLifecycle(t *testing.T) {
 		t.Fatalf("create adaptive charter: %v", err)
 	}
 	expiresAt := time.Now().Add(time.Hour)
+	wsActor := "workstream:" + ws.ID
 
-	first, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:1", expiresAt)
-	if err != nil {
-		t.Fatalf("open: %v", err)
+	first, reattached, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:1", expiresAt)
+	if err != nil || reattached {
+		t.Fatalf("open: reattached=%v err=%v", reattached, err)
 	}
 	if first.Status != PlanRequestOpen || first.WorkstreamID != ws.ID || first.RunID != "" {
 		t.Fatalf("unexpected opened request: %+v", first)
 	}
+	if n := countTargetOutcome(t, pool, "plan-request:"+first.ID, "plan.requested"); n != 1 {
+		t.Fatalf("plan.requested count = %d, want 1", n)
+	}
+	if n := countTargetOutcomeActor(t, pool, "plan-request:"+first.ID, "plan.requested", wsActor); n != 1 {
+		t.Fatalf("plan.requested actor should be the charter itself (count=%d)", n)
+	}
 
-	// A retry of the SAME launch_key is a no-op re-attach (launch_key UNIQUE).
-	retry, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:1", expiresAt)
-	if err != nil {
-		t.Fatalf("retry open: %v", err)
+	// A retry of the SAME launch_key is a no-op re-attach (launch_key UNIQUE) — emits
+	// NOTHING (no duplicate plan.requested).
+	retry, reattached, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:1", expiresAt)
+	if err != nil || !reattached {
+		t.Fatalf("retry open: reattached=%v err=%v, want reattached=true", reattached, err)
 	}
 	if retry.ID != first.ID {
 		t.Fatalf("retry minted a second row: %q != %q", retry.ID, first.ID)
 	}
 
 	// A DIFFERENT launch_key while one is still open hits the structural
-	// one-open-per-charter index — also a no-op re-attach to the SAME open row.
-	again, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:2", expiresAt)
-	if err != nil {
-		t.Fatalf("second-key open: %v", err)
+	// one-open-per-charter index — also a no-op re-attach to the SAME open row, also
+	// event-silent.
+	again, reattached, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:2", expiresAt)
+	if err != nil || !reattached {
+		t.Fatalf("second-key open: reattached=%v err=%v, want reattached=true", reattached, err)
 	}
 	if again.ID != first.ID {
 		t.Fatalf("a second open-tick minted a new row while one was open: %q != %q", again.ID, first.ID)
+	}
+	if n := countTargetOutcome(t, pool, "plan-request:"+first.ID, "plan.requested"); n != 1 {
+		t.Fatalf("plan.requested count after two duplicate opens = %d, want still 1 (no dup events)", n)
 	}
 
 	got, err := s.GetPlanRequest(ctx, first.ID)
@@ -619,19 +662,29 @@ func TestPlanRequestLifecycle(t *testing.T) {
 
 	// Now that the prior request is terminal, a fresh open is a genuine new row (the
 	// one-open invariant only blocks a SECOND open one, not a new one after the first
-	// left 'open').
-	fresh, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:3", expiresAt)
-	if err != nil {
-		t.Fatalf("open after submit: %v", err)
+	// left 'open') — and chains its OWN plan.requested.
+	fresh, reattached, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:3", expiresAt)
+	if err != nil || reattached {
+		t.Fatalf("open after submit: reattached=%v err=%v", reattached, err)
 	}
 	if fresh.ID == first.ID {
 		t.Fatal("expected a fresh row once the prior request left open")
 	}
+	if n := countTargetOutcome(t, pool, "plan-request:"+fresh.ID, "plan.requested"); n != 1 {
+		t.Fatalf("fresh request's plan.requested count = %d, want 1", n)
+	}
+	// The charter-scoped total is now 2 (first's genuine open + fresh's) — the
+	// duplicate-open retries above contributed nothing.
+	if n := countOutcome(t, pool, wsActor, "plan.requested"); n != 2 {
+		t.Fatalf("charter-scoped plan.requested total = %d, want 2 (2 genuine opens, 0 from duplicates)", n)
+	}
 }
 
-// TestExpirePlanRequestsDue — T-087 (DUR-10/PLAN-1): a past-due OPEN request expires
-// exactly once (bounded batch, FOR UPDATE SKIP LOCKED); a second sweep touches nothing
-// already expired; a request within its TTL is untouched — the charter never wedges.
+// TestExpirePlanRequestsDue — T-087/T-089 (DUR-10/PLAN-1, D2): a past-due OPEN request
+// expires exactly once (bounded batch, FOR UPDATE SKIP LOCKED), chaining ONE
+// plan.expired (actor = the row's own charter) in the SAME transaction as the flip; a
+// second sweep touches nothing already expired (chains no second event, N4); a request
+// within its TTL is untouched — the charter never wedges.
 func TestExpirePlanRequestsDue(t *testing.T) {
 	s, pool := testStore(t)
 	ctx := context.Background()
@@ -640,7 +693,7 @@ func TestExpirePlanRequestsDue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create adaptive charter: %v", err)
 	}
-	pr, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:expire", time.Now().Add(time.Hour))
+	pr, _, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:expire", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -660,15 +713,25 @@ func TestExpirePlanRequestsDue(t *testing.T) {
 	if err != nil || got.Status != PlanRequestExpired {
 		t.Fatalf("after expire: %+v err=%v", got, err)
 	}
+	if n := countTargetOutcome(t, pool, "plan-request:"+pr.ID, "plan.expired"); n != 1 {
+		t.Fatalf("plan.expired count = %d, want 1", n)
+	}
+	if n := countTargetOutcomeActor(t, pool, "plan-request:"+pr.ID, "plan.expired", "workstream:"+ws.ID); n != 1 {
+		t.Fatalf("plan.expired actor should be the row's own charter (count=%d)", n)
+	}
 
-	// A second sweep expires nothing more (exactly-once, by the flip).
+	// A second sweep expires nothing more (exactly-once, by the flip) — and chains no
+	// second plan.expired.
 	if n, err := s.ExpirePlanRequestsDue(ctx, 100); err != nil || n != 0 {
 		t.Fatalf("second sweep: n=%d err=%v, want 0", n, err)
+	}
+	if n := countTargetOutcome(t, pool, "plan-request:"+pr.ID, "plan.expired"); n != 1 {
+		t.Fatalf("plan.expired count after second sweep = %d, want still 1", n)
 	}
 
 	// A fresh request opens fine now that the charter's slot is free again — and a
 	// not-yet-due request is untouched by a sweep.
-	fresh, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:notdue", time.Now().Add(time.Hour))
+	fresh, _, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:notdue", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("open fresh: %v", err)
 	}
@@ -680,23 +743,25 @@ func TestExpirePlanRequestsDue(t *testing.T) {
 	}
 }
 
-// TestClosePlanRequests — T-087 (DUR-10 §7, the cascade hook T-089 will call):
-// ClosePlanRequestsForWorkstream and ClosePlanRequestsForGrant each close a charter's
-// open request (open→closed), are no-ops when nothing is open, and ClosePlanRequestsForGrant
-// reaches its charter via the grant_id join (a plan_requests row carries no grant_id of
-// its own).
+// TestClosePlanRequests — T-087/T-089 (DUR-10 §7, R3): ClosePlanRequestsForWorkstream
+// and ClosePlanRequestsForGrant each close a charter's open request (open→closed), are
+// no-ops when nothing is open, ClosePlanRequestsForGrant reaches its charter via the
+// grant_id join (a plan_requests row carries no grant_id of its own), and BOTH are
+// event-silent (D2: no plan.closed — the pinned AUD-20 vocabulary has none; only the
+// row's status changes, no new api_outbox row appears for its target).
 func TestClosePlanRequests(t *testing.T) {
-	s, _ := testStore(t)
+	s, pool := testStore(t)
 	ctx := context.Background()
 
 	ws, err := s.Create(ctx, sampleAdaptiveInput("operator:close", "agent:composer-close"))
 	if err != nil {
 		t.Fatalf("create adaptive charter: %v", err)
 	}
-	pr, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:close", time.Now().Add(time.Hour))
+	pr, _, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:close", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	beforeClose := countOutcome(t, pool, "workstream:"+ws.ID, "plan.requested") // baseline: 1
 
 	if n, err := s.ClosePlanRequestsForWorkstream(ctx, ws.ID); err != nil || n != 1 {
 		t.Fatalf("close for workstream: n=%d err=%v, want 1", n, err)
@@ -705,17 +770,23 @@ func TestClosePlanRequests(t *testing.T) {
 	if err != nil || got.Status != PlanRequestClosed {
 		t.Fatalf("after close: %+v err=%v", got, err)
 	}
+	// Event-silent: closing minted no new api_outbox row for this charter (the
+	// plan.requested baseline count is unchanged — no plan.closed, no anything else).
+	if n := countOutcome(t, pool, "workstream:"+ws.ID, "plan.requested"); n != beforeClose {
+		t.Fatalf("close must not chain any event: plan.requested count changed %d -> %d", beforeClose, n)
+	}
 	// No-op when nothing is open.
 	if n, err := s.ClosePlanRequestsForWorkstream(ctx, ws.ID); err != nil || n != 0 {
 		t.Fatalf("re-close: n=%d err=%v, want 0", n, err)
 	}
 
-	// ClosePlanRequestsForGrant closes via the workstream's grant_id join.
+	// ClosePlanRequestsForGrant closes via the workstream's grant_id join — also
+	// event-silent.
 	ws2, err := s.Create(ctx, sampleAdaptiveInput("operator:closegrant", "agent:composer-closegrant"))
 	if err != nil {
 		t.Fatalf("create adaptive charter 2: %v", err)
 	}
-	pr2, err := s.OpenPlanRequest(ctx, ws2.ID, "workstream:"+ws2.ID+":tick:closegrant", time.Now().Add(time.Hour))
+	pr2, _, err := s.OpenPlanRequest(ctx, ws2.ID, "workstream:"+ws2.ID+":tick:closegrant", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("open 2: %v", err)
 	}
@@ -725,5 +796,78 @@ func TestClosePlanRequests(t *testing.T) {
 	got2, err := s.GetPlanRequest(ctx, pr2.ID)
 	if err != nil || got2.Status != PlanRequestClosed {
 		t.Fatalf("after close-for-grant: %+v err=%v", got2, err)
+	}
+	if n := countOutcome(t, pool, "workstream:"+ws2.ID, "plan.requested"); n != 1 {
+		t.Fatalf("close-for-grant must not chain any event: plan.requested count = %d, want still 1", n)
+	}
+}
+
+// TestRetireClosesOpenPlanRequestAtomically — DUR-10 §7/R3 point 2 (T-089): Retire
+// folds the plan-request close into its OWN transaction alongside the charter flip and
+// the grant revoke — the same-tx proof is that all THREE post-conditions (charter
+// retired, grant revoked, request closed) are visible together once Retire returns
+// ok=true, with NO plan.closed event (event-silent by design).
+func TestRetireClosesOpenPlanRequestAtomically(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+
+	ws, err := s.Create(ctx, sampleAdaptiveInput("operator:retire-plan", "agent:composer-retire-plan"))
+	if err != nil {
+		t.Fatalf("create adaptive charter: %v", err)
+	}
+	pr, _, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:retire", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if ok, err := s.Retire(ctx, ws.ID); err != nil || !ok {
+		t.Fatalf("retire: ok=%v err=%v", ok, err)
+	}
+
+	wsGot, err := s.Get(ctx, ws.ID)
+	if err != nil || wsGot.Status != StatusRetired {
+		t.Fatalf("charter status after retire: %+v err=%v, want retired", wsGot, err)
+	}
+	g, err := grant.NewStore(pool, "api_outbox").Get(ctx, ws.GrantID)
+	if err != nil || g.Status != grant.StatusRevoked {
+		t.Fatalf("charter grant after retire: status=%q err=%v, want revoked", g.Status, err)
+	}
+	prGot, err := s.GetPlanRequest(ctx, pr.ID)
+	if err != nil || prGot.Status != PlanRequestClosed {
+		t.Fatalf("plan request after retire: %+v err=%v, want closed", prGot, err)
+	}
+	if n := countTargetOutcome(t, pool, "plan-request:"+pr.ID, "plan.closed"); n != 0 {
+		t.Fatalf("plan.closed must never be chained (event-silent), got %d", n)
+	}
+}
+
+// TestSelfRetireClosesOpenPlanRequestAtomically — DUR-10 §7/R3 point 3 (T-089): the
+// adaptive ticker's dead-grant path reaches SelfRetire, which now folds the
+// plan-request close into its OWN tx too — proven directly at the store level (no
+// separate close-wiring exists in the ticker; SelfRetire covers it).
+func TestSelfRetireClosesOpenPlanRequestAtomically(t *testing.T) {
+	s, _ := testStore(t)
+	ctx := context.Background()
+
+	ws, err := s.Create(ctx, sampleAdaptiveInput("operator:selfretire-plan", "agent:composer-selfretire-plan"))
+	if err != nil {
+		t.Fatalf("create adaptive charter: %v", err)
+	}
+	pr, _, err := s.OpenPlanRequest(ctx, ws.ID, "workstream:"+ws.ID+":tick:selfretire", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if ok, err := s.SelfRetire(ctx, ws.ID); err != nil || !ok {
+		t.Fatalf("self-retire: ok=%v err=%v", ok, err)
+	}
+
+	wsGot, err := s.Get(ctx, ws.ID)
+	if err != nil || wsGot.Status != StatusRetired {
+		t.Fatalf("charter status after self-retire: %+v err=%v, want retired", wsGot, err)
+	}
+	prGot, err := s.GetPlanRequest(ctx, pr.ID)
+	if err != nil || prGot.Status != PlanRequestClosed {
+		t.Fatalf("plan request after self-retire: %+v err=%v, want closed", prGot, err)
 	}
 }

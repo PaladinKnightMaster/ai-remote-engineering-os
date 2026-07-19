@@ -225,6 +225,10 @@ type workstreamStore interface {
 	Pause(ctx context.Context, id string) (bool, error)
 	Resume(ctx context.Context, id string) (bool, error)
 	Retire(ctx context.Context, id string) (bool, error)
+	// ClosePlanRequestsForGrant is the grant-revoke cascade's plan-request leg (DUR-10
+	// §7/R3, T-089): RevokeGrant calls it alongside runStore.CancelRunsForGrant. Retire's
+	// OWN cascade needs no separate call — Retire folds the close into its own tx.
+	ClosePlanRequestsForGrant(ctx context.Context, grantID string) (int, error)
 }
 
 // WithWorkstreamStore wires the chartered-Workstream store (ADR-0063, T-071): the
