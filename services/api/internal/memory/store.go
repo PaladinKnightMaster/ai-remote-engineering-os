@@ -383,6 +383,112 @@ func (s *Store) ExpireDue(ctx context.Context, batch int) (int, error) {
 	return len(due), nil
 }
 
+// agentMemoryEdge is the ONE lit agent-memory path (SEC-32, ADR-0065 §2/§3, T-090):
+// the sole edge value memory.read's event carries — distinct from memoryEdge
+// (human-agent) above, which every operator-plane memory verb still rides. Lighting
+// this is deliberate enforcement of the reserved seventh edge (ADR-0046), not an
+// eighth edge invented.
+const agentMemoryEdge = "agent-memory"
+
+// ReadForAgent is the agent-plane read (MEM-5, SEC-32, ADR-0065 §3, T-090's
+// memory.read forward) — a SEPARATE, grant-scoped, visibility-filtered read; List/Get
+// above (owner-keyed) are BYTE-UNTOUCHED (WD-8 proves it). The readable set is derived
+// ENTIRELY server-side from the caller's own ACTIVE, unexpired grants (grant.agent ==
+// agentSubject — never a caller-supplied scope, SEC-32 containment BY CONSTRUCTION):
+// the union of (a) the grant's own charter (a workstream-scoped row, reached via
+// workstreams.grant_id) and (b) that grant's own Runs (a run-scoped row, via
+// runs.grant_id). workstreamID narrows the union to the ONE charter it names; a value
+// outside the caller's own derived set (unknown, foreign, or a charter this agent does
+// not compose for) matches nothing in the CTE below and answers an EMPTY slice — never
+// an error (no oracle, N1). Rows are filtered to redacted_at IS NULL (R2: a
+// tombstoned row is gone from the agent-feeding surface even if it would otherwise be
+// in scope) AND (content IS NULL — an accrued reference row, always readable) OR
+// (content IS NOT NULL AND agent_visible — an authored row, readable only once shared,
+// R3/N2). Clamped id-ASC (C5, the v0.8 List clamp reused verbatim).
+//
+// R4/fail-loud: chains EXACTLY ONE memory.read event PER CALL, enqueued INSIDE the
+// SAME transaction as the read itself, committed only once the enqueue succeeds — if
+// the enqueue fails, the whole call fails (no event, no data reaches the caller). The
+// event is content-free: Target lists the returned row ids (the "memory:<id>"
+// single-row convention extended to the plural read; "memory:" with no ids when the
+// result is empty), Actor is the reading agent, Edge is agent-memory (SEC-32),
+// EvidencePacketID is the workstreamId filter's scope anchor when one was given (the
+// OpenPlanRequest scope-anchor convention), else "" (an unfiltered read of the
+// caller's WHOLE readable set carries no single scope to anchor to).
+func (s *Store) ReadForAgent(ctx context.Context, agentSubject, workstreamID string, limit int) ([]Memory, error) {
+	switch {
+	case limit <= 0:
+		limit = defaultListLimit
+	case limit > maxListLimit:
+		limit = maxListLimit
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	rows, err := tx.Query(ctx, `
+		WITH live_grants AS (
+			SELECT id FROM delegation_grants
+			 WHERE agent = $1 AND status = 'active' AND expires_at > now()
+		),
+		scoped_grants AS (
+			SELECT g.id FROM live_grants g
+			 WHERE $2 = '' OR g.id IN (SELECT grant_id FROM workstreams WHERE id::text = $2)
+		),
+		ws_scope AS (
+			SELECT id::text AS scope_id FROM workstreams WHERE grant_id IN (SELECT id FROM scoped_grants)
+		),
+		run_scope AS (
+			SELECT id::text AS scope_id FROM runs WHERE grant_id IN (SELECT id FROM scoped_grants)
+		)
+		SELECT `+selectCols+` FROM memories m
+		 WHERE redacted_at IS NULL
+		   AND (content IS NULL OR agent_visible)
+		   AND (
+		       (scope_type = 'workstream' AND scope_id IN (SELECT scope_id FROM ws_scope))
+		    OR (scope_type = 'run' AND scope_id IN (SELECT scope_id FROM run_scope))
+		   )
+		 ORDER BY id ASC
+		 LIMIT $3`, agentSubject, workstreamID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read for agent: %w", err)
+	}
+	var out []Memory
+	var ids []string
+	for rows.Next() {
+		m, serr := s.scan(rows)
+		if serr != nil {
+			rows.Close()
+			return nil, serr
+		}
+		out = append(out, m)
+		ids = append(ids, m.ID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read for agent rows: %w", err)
+	}
+
+	evidence := ""
+	if workstreamID != "" {
+		evidence = "workstream:" + workstreamID
+	}
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: agentSubject, Edge: agentMemoryEdge,
+		Target: "memory:" + strings.Join(ids, ","), Outcome: "memory.read",
+		EvidencePacketID: evidence,
+	}); err != nil {
+		return nil, fmt.Errorf("enqueue memory.read: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit read for agent: %w", err)
+	}
+	return out, nil
+}
+
 // rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows (Query, via
 // rows.Next()+scan), so Get and List share one scan body.
 type rowScanner interface {

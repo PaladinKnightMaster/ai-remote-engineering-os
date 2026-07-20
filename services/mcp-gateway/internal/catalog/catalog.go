@@ -56,11 +56,12 @@ type Registry struct {
 	list []mcp.Tool // stable order for tools/list
 }
 
-// NewRegistry builds the v0.3.0 registry: exactly one tool, remote.exec (the WD-3
-// wedge). The multi-tool catalog is v0.4.0.
+// NewRegistry builds the registry. v0.9 (ADR-0065, T-090) adds three control-plane
+// tools on the run.launch pattern (workstream.poll / plan.submit / memory.read) — the
+// exact set the F-b WD-8 amendment now asserts.
 func NewRegistry() *Registry {
 	r := &Registry{defs: map[string]ToolDef{}}
-	for _, d := range []ToolDef{remoteExec(), runLaunch()} {
+	for _, d := range []ToolDef{remoteExec(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead()} {
 		r.defs[d.Name] = d
 		r.list = append(r.list, d.Tool())
 	}
@@ -170,6 +171,112 @@ func runLaunch() ToolDef {
 	}
 }
 
+// workstreamPollTool is the v0.9 plan-discovery control-plane tool name (ADR-0065 §5,
+// T-090).
+const workstreamPollTool = "workstream.poll"
+
+// workstream.poll — the composer discovers the open plan requests its charters have
+// published (ADR-0065 §5). Like run.launch it resolves NO target and mints NO egress:
+// the gateway forwards {agent, optional workstream filter} to services/api, which
+// derives the readable set from the caller's own LIVE grants — so it carries no
+// Edge/Action/Operation and no target resolver; Invoke dispatches it BEFORE the
+// remote.exec target + SEC-16 path, exactly like run.launch. It rides the existing
+// agent-tool transport edge (ADR-0065 §2) — no per-tool edge metadata of its own.
+func workstreamPoll() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "workstreamId": {
+      "type": "string",
+      "description": "Optional: narrow to one of your charters. Omit to see open plan requests across every charter you compose for."
+    }
+  }
+}`
+	return ToolDef{
+		Name: workstreamPollTool,
+		Description: "Discover the plan requests your charters have open — each adaptive Workstream " +
+			"you compose for publishes one when its schedule ticks, with the objective and the " +
+			"resource/verb bounds you must plan within. Answer one with plan.submit.",
+		InputSchema: json.RawMessage(inputSchema),
+	}
+}
+
+// planSubmitTool is the v0.9 plan-answer control-plane tool name (ADR-0065 §6, T-090).
+const planSubmitTool = "plan.submit"
+
+// plan.submit — the composer answers an open plan request with an ordered plan
+// (ADR-0065 §6). Like run.launch it resolves NO target and mints NO egress: the
+// gateway forwards {agent, requestId, plan} to services/api, which validates the
+// impersonation pin + plan ⊆ grant (SEC-29) and creates a `proposed` Run parked for
+// human review — no step ever runs unattended from this call. No Edge/Action/Operation,
+// no target resolver; dispatched BEFORE the remote.exec path.
+func planSubmit() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "required": ["requestId", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "The plan request id from workstream.poll you are answering."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The ordered plan: each step runs one non-interactive command on a resource within your charter's grant.",
+      "items": {
+        "type": "object",
+        "required": ["resourceId", "command"],
+        "additionalProperties": false,
+        "properties": {
+          "resourceId": { "type": "string" },
+          "command": { "type": "string" }
+        }
+      }
+    }
+  }
+}`
+	return ToolDef{
+		Name: planSubmitTool,
+		Description: "Answer an open plan request with an ordered plan — it parks for human review " +
+			"before anything runs; nothing you submit here executes unattended.",
+		InputSchema: json.RawMessage(inputSchema),
+	}
+}
+
+// memoryReadTool is the v0.9 agent-memory-read control-plane tool name (ADR-0065 §3,
+// T-090) — the ONE path the reserved agent-memory edge is enforced on (SEC-32).
+const memoryReadTool = "memory.read"
+
+// memory.read — the ONE lit agent-memory path (ADR-0065 §2/§3, SEC-32): unlike its two
+// control-plane siblings it DOES carry a governance Edge (the reserved seventh edge,
+// documenting the enforcement even though this control-plane dispatch, like run.launch,
+// bypasses the target-resolution/policy path that would otherwise consult it). No
+// target resolver, no egress minted: the gateway forwards {agent, optional workstream
+// filter} to services/api, which derives the readable set from the caller's own LIVE
+// grants and chains one memory.read event per call.
+func memoryRead() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "workstreamId": {
+      "type": "string",
+      "description": "Optional: narrow the read to one of your charters. Omit to read everything your grants entitle you to."
+    }
+  }
+}`
+	return ToolDef{
+		Name: memoryReadTool,
+		Description: "Read the scoped memory your grant entitles you to — accrued evidence pointers " +
+			"from past runs, plus any operator-authored content explicitly shared with you. Every " +
+			"read is audited.",
+		InputSchema: json.RawMessage(inputSchema),
+		Edge:        "agent-memory",
+	}
+}
+
 // ErrUnknownTool is returned for a tools/call against an unregistered tool.
 var ErrUnknownTool = errors.New("unknown tool")
 
@@ -208,6 +315,11 @@ type Service struct {
 	runWaitTimeout time.Duration       // operator Run-step block-and-wait deadline (T-055b)
 	pollInterval   time.Duration       // how often the wait re-reads the invocation row
 	forwarder      mcp.LaunchForwarder // run.launch forward to services/api (ADR-0062, T-065b); nil → run.launch is unavailable
+	// The three v0.9 forwards (ADR-0065, T-090): each nil independently answers a tool
+	// error for its own tool, mirroring forwarder above.
+	pollForwarder   mcp.PollForwarder
+	submitForwarder mcp.SubmitForwarder
+	readForwarder   mcp.ReadForwarder
 }
 
 // Config wires the governed tool service. Zero values get safe defaults.
@@ -220,6 +332,10 @@ type Config struct {
 	RunWaitTimeout time.Duration       // operator Run-step block-and-wait; ≤ 0 → 10m (Run approval window ≫ 125s)
 	PollInterval   time.Duration       // approval poll cadence; ≤ 0 → 1s
 	Forwarder      mcp.LaunchForwarder // run.launch forward to services/api (ADR-0062, T-065b); nil → run.launch answers a tool error
+	// The three v0.9 forwards (ADR-0065, T-090), each independently nil-able.
+	PollForwarder   mcp.PollForwarder   // workstream.poll forward; nil → tool error
+	SubmitForwarder mcp.SubmitForwarder // plan.submit forward; nil → tool error
+	ReadForwarder   mcp.ReadForwarder   // memory.read forward; nil → tool error
 }
 
 // New builds the governed tool service.
@@ -240,6 +356,7 @@ func New(cfg Config) *Service {
 		registry: NewRegistry(), store: cfg.Store, policy: cfg.Policy, broker: cfg.Broker,
 		maxInFlight: cfg.MaxInFlight, waitTimeout: cfg.WaitTimeout, pollInterval: cfg.PollInterval,
 		runWaitTimeout: cfg.RunWaitTimeout, forwarder: cfg.Forwarder,
+		pollForwarder: cfg.PollForwarder, submitForwarder: cfg.SubmitForwarder, readForwarder: cfg.ReadForwarder,
 	}
 }
 
@@ -261,12 +378,20 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		return mcp.ToolResult{}, errors.New("no agent capability on the invocation")
 	}
 
-	// run.launch is a CONTROL-PLANE tool (ADR-0062, T-065b): it has no resource target, so it
-	// is dispatched BEFORE the remote.exec target resolution + the SEC-16 scope check (which
-	// would otherwise reject it). Its authority is the delegation grant — validated by
-	// services/api — not the agent token's resource/operation scope.
-	if name == runLaunchTool {
+	// Four CONTROL-PLANE tools (run.launch, ADR-0062 T-065b; workstream.poll/plan.submit/
+	// memory.read, ADR-0065 T-090): none resolve a resource target, so all are dispatched
+	// BEFORE the remote.exec target resolution + the SEC-16 scope check (which would
+	// otherwise reject them). Their authority is the delegation grant / api's own
+	// derivation — never the agent token's resource/operation scope.
+	switch name {
+	case runLaunchTool:
 		return s.launchRun(ctx, capb.Subject, args)
+	case workstreamPollTool:
+		return s.pollWorkstream(ctx, capb.Subject, args)
+	case planSubmitTool:
+		return s.submitPlan(ctx, capb.Subject, args)
+	case memoryReadTool:
+		return s.readMemory(ctx, capb.Subject, args)
 	}
 
 	// Validate + resolve the governance target (resource:<id>) from the args.
@@ -348,6 +473,114 @@ func (s *Service) launchRun(ctx context.Context, agentSubject string, args json.
 		return toolError("run launch refused: " + refusal), nil
 	}
 	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: fmt.Sprintf("launched run %s (%s)", runID, status)}}}, nil
+}
+
+// pollWorkstream handles the workstream.poll control-plane tool (ADR-0065 §5, T-090):
+// it forwards {agent, optional workstream filter} to services/api, which derives the
+// caller's own open plan requests from its LIVE grants (SEC-32 containment). Like
+// run.launch it mints no egress and stays OUTSIDE the maxInFlight cap (dispatched here,
+// never reaching runGovernedStep where CountInFlight lives) — PERF-10(5) makes
+// memory.read alone participate, below. The composition-context list is returned as one
+// JSON text block (MCP has no structured-content type on this wire; the agent's
+// interface is the tool description, not the payload shape).
+func (s *Service) pollWorkstream(ctx context.Context, agentSubject string, args json.RawMessage) (mcp.ToolResult, error) {
+	if s.pollForwarder == nil {
+		return toolError("plan polling is not available on this gateway"), nil
+	}
+	var a struct {
+		WorkstreamID string `json:"workstreamId"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolError("invalid workstream.poll arguments: " + err.Error()), nil
+	}
+	reqs, err := s.pollForwarder.Poll(ctx, agentSubject, a.WorkstreamID)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("forward workstream poll: %w", err)
+	}
+	body, merr := json.Marshal(struct {
+		Requests []mcp.PlanRequestView `json:"requests"`
+	}{reqs})
+	if merr != nil {
+		return mcp.ToolResult{}, fmt.Errorf("marshal poll result: %w", merr)
+	}
+	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: string(body)}}}, nil
+}
+
+// submitPlan handles the plan.submit control-plane tool (ADR-0065 §6, T-090): it
+// forwards {agent, requestId, plan} to services/api, which validates the impersonation
+// pin + plan ⊆ grant (SEC-29, the shared LaunchBounded core) and creates a `proposed`
+// Run. A non-empty refusal is api's refusal (a tool error, the run.launch mapping — an
+// unknown request and a foreign agent's request read identically, no oracle). Stays
+// OUTSIDE the maxInFlight cap, like run.launch/workstream.poll (D5/R1 — only
+// memory.read participates).
+func (s *Service) submitPlan(ctx context.Context, agentSubject string, args json.RawMessage) (mcp.ToolResult, error) {
+	if s.submitForwarder == nil {
+		return toolError("plan submission is not available on this gateway"), nil
+	}
+	var a struct {
+		RequestID string `json:"requestId"`
+		Steps     []struct {
+			ResourceID string `json:"resourceId"`
+			Command    string `json:"command"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolError("invalid plan.submit arguments: " + err.Error()), nil
+	}
+	if a.RequestID == "" || len(a.Steps) == 0 {
+		return toolError("plan.submit requires requestId and at least one step"), nil
+	}
+	steps := make([]mcp.LaunchStep, len(a.Steps))
+	for i, st := range a.Steps {
+		if st.ResourceID == "" || st.Command == "" {
+			return toolError("each plan.submit step requires resourceId and command"), nil
+		}
+		steps[i] = mcp.LaunchStep{ResourceID: st.ResourceID, Command: st.Command}
+	}
+	runID, status, refusal, err := s.submitForwarder.Submit(ctx, agentSubject, a.RequestID, steps)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("forward plan submit: %w", err)
+	}
+	if refusal != "" {
+		return toolError("plan submit refused: " + refusal), nil
+	}
+	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: fmt.Sprintf("submitted plan; run %s (%s)", runID, status)}}}, nil
+}
+
+// readMemory handles the memory.read control-plane tool (ADR-0065 §3, T-090): the ONE
+// lit agent-memory path (SEC-32). PERF-10(5)/D5/R1: reads have no grant-budget bound,
+// so the gateway's existing per-agent maxInFlight cap (PERF-3) is their only brake — the
+// SAME counter run.launch/workstream.poll/plan.submit bypass entirely (they are
+// dispatched before runGovernedStep, the only other place CountInFlight is consulted).
+// memory.read alone checks it here, reusing the counter as-is (no new limiter).
+func (s *Service) readMemory(ctx context.Context, agentSubject string, args json.RawMessage) (mcp.ToolResult, error) {
+	if s.readForwarder == nil {
+		return toolError("memory reading is not available on this gateway"), nil
+	}
+	inFlight, err := s.store.CountInFlight(ctx, agentSubject)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("concurrency check: %w", err)
+	}
+	if inFlight >= s.maxInFlight {
+		return toolError("too many concurrent invocations for this agent; retry shortly"), nil
+	}
+	var a struct {
+		WorkstreamID string `json:"workstreamId"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolError("invalid memory.read arguments: " + err.Error()), nil
+	}
+	items, err := s.readForwarder.Read(ctx, agentSubject, a.WorkstreamID)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("forward memory read: %w", err)
+	}
+	body, merr := json.Marshal(struct {
+		Items []mcp.MemoryRowView `json:"items"`
+	}{items})
+	if merr != nil {
+		return mcp.ToolResult{}, fmt.Errorf("marshal read result: %w", merr)
+	}
+	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: string(body)}}}, nil
 }
 
 // remoteExecTool is the wedge tool the operator Run engine drives (ADR-0061): a Run

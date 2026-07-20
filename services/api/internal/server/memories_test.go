@@ -29,6 +29,17 @@ type fakeMemoryStore struct {
 	lastGetOwner, lastGetID       string
 	redactCalls, pinCalls         int // counts events would-be-enqueued (idempotency assertions)
 	lastSetPinnedOwner, lastSetID string
+
+	// T-090 fixtures: memory.read's store-side need (ReadMemory, adaptive_internal.go).
+	readItems                         []memory.Memory
+	readErr                           error
+	lastReadAgent, lastReadWorkstream string
+	lastReadLimit                     int
+}
+
+func (f *fakeMemoryStore) ReadForAgent(_ context.Context, agentSubject, workstreamID string, limit int) ([]memory.Memory, error) {
+	f.lastReadAgent, f.lastReadWorkstream, f.lastReadLimit = agentSubject, workstreamID, limit
+	return f.readItems, f.readErr
 }
 
 func (f *fakeMemoryStore) List(_ context.Context, owner, scopeType, scopeID string, limit int) ([]memory.Memory, error) {

@@ -110,18 +110,29 @@ func serve() error {
 	// agent-initiated Run launch; api validates plan-vs-grant and creates the Run. Signed with
 	// the gateway's OWN asymmetric service token (api's route-scoped verifier accepts it). Unset
 	// API_URL → nil → run.launch answers a tool error (agent-initiated Runs disabled).
-	var forwarder mcp.LaunchForwarder
+	// The v0.9 forwards (ADR-0065, T-090: workstream.poll/plan.submit/memory.read) share the
+	// SAME client — one baseURL, one signer, no new key, no new minting workload.
+	var (
+		forwarder       mcp.LaunchForwarder
+		pollForwarder   mcp.PollForwarder
+		submitForwarder mcp.SubmitForwarder
+		readForwarder   mcp.ReadForwarder
+	)
 	if apiURL := os.Getenv("API_URL"); apiURL != "" {
-		forwarder = apiforward.New(apiURL, signer)
+		fwd := apiforward.New(apiURL, signer)
+		forwarder, pollForwarder, submitForwarder, readForwarder = fwd, fwd, fwd, fwd
 	}
 	cat := catalog.New(catalog.Config{
-		Store:          gw,
-		Policy:         pol,
-		Broker:         brokerexec.New(os.Getenv("BROKER_URL"), signer),
-		MaxInFlight:    maxInFlight(),
-		WaitTimeout:    durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
-		RunWaitTimeout: durationEnvSeconds("MCP_RUN_WAIT_SECONDS", 600*time.Second),
-		Forwarder:      forwarder,
+		Store:           gw,
+		Policy:          pol,
+		Broker:          brokerexec.New(os.Getenv("BROKER_URL"), signer),
+		MaxInFlight:     maxInFlight(),
+		WaitTimeout:     durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
+		RunWaitTimeout:  durationEnvSeconds("MCP_RUN_WAIT_SECONDS", 600*time.Second),
+		Forwarder:       forwarder,
+		PollForwarder:   pollForwarder,
+		SubmitForwarder: submitForwarder,
+		ReadForwarder:   readForwarder,
 	})
 	// Operator-plane resolver (ADR-0057 §4): the internal resolve/list routes, gated
 	// service-service, that services/api proxies the operator's approve/deny to.

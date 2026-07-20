@@ -647,17 +647,30 @@ func TestPlanRequestLifecycle(t *testing.T) {
 		t.Fatalf("get unknown: want ErrPlanRequestNotFound, got %v", err)
 	}
 
-	// MarkPlanRequestSubmitted flips exactly once.
+	// MarkPlanRequestSubmitted flips exactly once and chains ONE plan.submitted, actor
+	// = the composing agent (R2) — not the charter.
 	runID := uuid.Must(uuid.NewV7()).String()
-	if ok, err := s.MarkPlanRequestSubmitted(ctx, first.ID, runID); err != nil || !ok {
+	composer := "agent:composer-plan"
+	if ok, err := s.MarkPlanRequestSubmitted(ctx, first.ID, runID, composer); err != nil || !ok {
 		t.Fatalf("mark submitted: ok=%v err=%v", ok, err)
 	}
 	got, err = s.GetPlanRequest(ctx, first.ID)
 	if err != nil || got.Status != PlanRequestSubmitted || got.RunID != runID {
 		t.Fatalf("after submit: %+v err=%v", got, err)
 	}
-	if ok, err := s.MarkPlanRequestSubmitted(ctx, first.ID, runID); err != nil || ok {
+	if n := countTargetOutcome(t, pool, "plan-request:"+first.ID, "plan.submitted"); n != 1 {
+		t.Fatalf("plan.submitted count = %d, want 1", n)
+	}
+	if n := countTargetOutcomeActor(t, pool, "plan-request:"+first.ID, "plan.submitted", composer); n != 1 {
+		t.Fatalf("plan.submitted actor should be the composing agent (count=%d)", n)
+	}
+
+	// A double-submit is a no-op AND emits nothing further (no duplicate plan.submitted).
+	if ok, err := s.MarkPlanRequestSubmitted(ctx, first.ID, runID, composer); err != nil || ok {
 		t.Fatalf("double-submit must be a no-op: ok=%v err=%v", ok, err)
+	}
+	if n := countTargetOutcome(t, pool, "plan-request:"+first.ID, "plan.submitted"); n != 1 {
+		t.Fatalf("plan.submitted count after double-submit = %d, want still 1 (no dup event)", n)
 	}
 
 	// Now that the prior request is terminal, a fresh open is a genuine new row (the
@@ -677,6 +690,98 @@ func TestPlanRequestLifecycle(t *testing.T) {
 	// duplicate-open retries above contributed nothing.
 	if n := countOutcome(t, pool, wsActor, "plan.requested"); n != 2 {
 		t.Fatalf("charter-scoped plan.requested total = %d, want 2 (2 genuine opens, 0 from duplicates)", n)
+	}
+}
+
+// TestPollOpenPlanRequests — D1/SEC-32 (ADR-0065 §5, T-090): the composer's poll sees
+// exactly its OWN charter's open request, with the composition context (objective +
+// the bounding grant's resource/verb scope + step bound + TTL); a SECOND composer with
+// its own charter+grant sees NOTHING of the first's (cross-grant containment, the N1
+// live negative); an unknown/foreign workstreamId filter answers empty, not an error
+// (no oracle); after the charter's grant is revoked, poll answers empty too (N3).
+func TestPollOpenPlanRequests(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	gs := grant.NewStore(pool, "api_outbox")
+
+	// Unique-suffix composer subjects (the T-073 dirty-DB lesson): a fixed literal
+	// subject would accumulate rows across re-runs against an already-migrated,
+	// never-truncated DB.
+	suffix := uuid.Must(uuid.NewV7()).String()
+	composerA, composerB := "agent:poll-composer-a-"+suffix, "agent:poll-composer-b-"+suffix
+
+	wsA, err := s.Create(ctx, sampleAdaptiveInput("operator:poll-a-"+suffix, composerA))
+	if err != nil {
+		t.Fatalf("create charter A: %v", err)
+	}
+	wsB, err := s.Create(ctx, sampleAdaptiveInput("operator:poll-b-"+suffix, composerB))
+	if err != nil {
+		t.Fatalf("create charter B: %v", err)
+	}
+	expiresAt := time.Now().Add(time.Hour)
+	reqA, _, err := s.OpenPlanRequest(ctx, wsA.ID, "workstream:"+wsA.ID+":tick:1", expiresAt)
+	if err != nil {
+		t.Fatalf("open A: %v", err)
+	}
+	if _, _, err := s.OpenPlanRequest(ctx, wsB.ID, "workstream:"+wsB.ID+":tick:1", expiresAt); err != nil {
+		t.Fatalf("open B: %v", err)
+	}
+
+	// Composer A sees exactly its own request, with composition context.
+	gotA, err := s.PollOpenPlanRequests(ctx, composerA, "")
+	if err != nil {
+		t.Fatalf("poll A: %v", err)
+	}
+	if len(gotA) != 1 || gotA[0].RequestID != reqA.ID {
+		t.Fatalf("poll A = %+v, want exactly [reqA]", gotA)
+	}
+	if gotA[0].WorkstreamID != wsA.ID || gotA[0].Objective != "adapt to whatever the memory teaches" {
+		t.Fatalf("poll A composition context wrong: %+v", gotA[0])
+	}
+	if len(gotA[0].Resources) != 2 || len(gotA[0].Verbs) != 1 || gotA[0].MaxStepsPerRun != 5 {
+		t.Fatalf("poll A grant-scope context wrong: %+v", gotA[0])
+	}
+
+	// Cross-grant containment (N1, SEC-32): composer A never sees B's open request, and
+	// vice versa.
+	for _, r := range gotA {
+		if r.WorkstreamID == wsB.ID {
+			t.Fatal("composer A's poll leaked charter B's request")
+		}
+	}
+	gotB, err := s.PollOpenPlanRequests(ctx, composerB, "")
+	if err != nil {
+		t.Fatalf("poll B: %v", err)
+	}
+	if len(gotB) != 1 || gotB[0].WorkstreamID != wsB.ID {
+		t.Fatalf("poll B = %+v, want exactly charter B's request", gotB)
+	}
+
+	// A foreign workstreamId filter (A polling scoped to B's charter) answers empty —
+	// no oracle, never an error.
+	filtered, err := s.PollOpenPlanRequests(ctx, composerA, wsB.ID)
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("poll A filtered to B's charter: rows=%d err=%v, want 0 rows no error", len(filtered), err)
+	}
+	// An unknown workstreamId likewise answers empty.
+	unknown, err := s.PollOpenPlanRequests(ctx, composerA, "00000000-0000-0000-0000-000000000000")
+	if err != nil || len(unknown) != 0 {
+		t.Fatalf("poll A filtered to an unknown id: rows=%d err=%v, want 0 rows no error", len(unknown), err)
+	}
+	// The matching filter still returns the row.
+	same, err := s.PollOpenPlanRequests(ctx, composerA, wsA.ID)
+	if err != nil || len(same) != 1 {
+		t.Fatalf("poll A filtered to its own charter: rows=%d err=%v, want 1", len(same), err)
+	}
+
+	// N3: once the charter's grant is revoked, poll answers empty (the composer's
+	// standing authority is gone — DUR-10 §7 cascade).
+	if _, err := gs.Revoke(ctx, wsA.GrantID); err != nil {
+		t.Fatalf("revoke grant A: %v", err)
+	}
+	afterRevoke, err := s.PollOpenPlanRequests(ctx, composerA, "")
+	if err != nil || len(afterRevoke) != 0 {
+		t.Fatalf("poll A after grant revoke: rows=%d err=%v, want 0", len(afterRevoke), err)
 	}
 }
 

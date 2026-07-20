@@ -690,3 +690,143 @@ func TestInvokeExecFailClosed(t *testing.T) {
 		t.Fatalf("finish = %v, want [failed:tool.result:error]", st.finished)
 	}
 }
+
+// --- v0.9 control-plane tools (T-090, ADR-0065 §1) --------------------------------
+// workstream.poll/plan.submit/memory.read follow the run.launch pattern: no target
+// resolver, dispatched before remote.exec's SEC-16 path, driven through fakeStore/
+// fakePolicy/fakeBroker plus a fake per-verb forwarder (mcp.PollForwarder/
+// SubmitForwarder/ReadForwarder).
+
+type fakePollForwarder struct {
+	requests []mcp.PlanRequestView
+	err      error
+}
+
+func (f *fakePollForwarder) Poll(context.Context, string, string) ([]mcp.PlanRequestView, error) {
+	return f.requests, f.err
+}
+
+type fakeSubmitForwarder struct {
+	runID, status, refusal string
+	err                    error
+}
+
+func (f *fakeSubmitForwarder) Submit(context.Context, string, string, []mcp.LaunchStep) (string, string, string, error) {
+	return f.runID, f.status, f.refusal, f.err
+}
+
+type fakeReadForwarder struct {
+	items []mcp.MemoryRowView
+	err   error
+}
+
+func (f *fakeReadForwarder) Read(context.Context, string, string) ([]mcp.MemoryRowView, error) {
+	return f.items, f.err
+}
+
+// controlPlaneHandler mirrors governedHandler but additionally wires the three v0.9
+// forwarders (any of which may be nil — the T-090 "answers a tool error" posture).
+func controlPlaneHandler(t *testing.T, st catalog.Store, poll mcp.PollForwarder, submit mcp.SubmitForwarder, read mcp.ReadForwarder) (http.Handler, *auth.Signer) {
+	t.Helper()
+	key, _ := auth.GenerateKey()
+	v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "", "mcp-gateway"))
+	cat := catalog.New(catalog.Config{
+		Store: st, Policy: &fakePolicy{decision: "allow"}, Broker: &fakeBroker{},
+		MaxInFlight: 4, WaitTimeout: 200 * time.Millisecond, PollInterval: 5 * time.Millisecond,
+		PollForwarder: poll, SubmitForwarder: submit, ReadForwarder: read,
+	})
+	return New(Config{Verifier: v, Catalog: cat}), auth.NewSigner(key, "")
+}
+
+func callTool(t *testing.T, h http.Handler, tok, name, argsJSON string) rpcResponse {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":` + argsJSON + `}}`
+	return decodeRPC(t, postMCP(t, h, body, tok))
+}
+
+// TestControlPlaneToolsNilForwarderErrors — T-090: with no forwarder wired (the
+// unset-API_URL posture, main.go — mirrors run.launch's own nil-forwarder answer,
+// ADR-0062 §3), all three v0.9 control-plane tools answer a TOOL error (never an
+// rpc-level error, never a panic).
+func TestControlPlaneToolsNilForwarderErrors(t *testing.T) {
+	h, s := controlPlaneHandler(t, &fakeStore{}, nil, nil, nil)
+	tok := agentToken(t, s)
+	for _, tc := range []struct{ name, args string }{
+		{"workstream.poll", `{}`},
+		{"plan.submit", `{}`},
+		{"memory.read", `{}`},
+	} {
+		resp := callTool(t, h, tok, tc.name, tc.args)
+		isErr, text := toolResult(t, resp)
+		if !isErr || text == "" {
+			t.Fatalf("%s with nil forwarder: isError=%v text=%q, want a tool error", tc.name, isErr, text)
+		}
+	}
+}
+
+// TestMemoryReadConcurrencyCap — D5/PERF-10(5): memory.read participates in the
+// gateway's per-agent maxInFlight cap, the SAME seam TestInvokeConcurrencyCap exercises
+// for remote.exec — reads carry no grant-budget bound, so this cap is their only brake.
+func TestMemoryReadConcurrencyCap(t *testing.T) {
+	st := &fakeStore{inFlight: 4} // == controlPlaneHandler's MaxInFlight: at the cap
+	h, s := controlPlaneHandler(t, st, nil, nil, &fakeReadForwarder{})
+	resp := callTool(t, h, agentToken(t, s), "memory.read", `{}`)
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "concurrent") {
+		t.Fatalf("memory.read at the concurrency cap: isError=%v text=%q, want a concurrency refusal", isErr, text)
+	}
+}
+
+// TestPollSubmitBypassConcurrencyCap — D5/R1: workstream.poll and plan.submit do NOT
+// consult the per-agent cap (dispatched before runGovernedStep, the only other
+// CountInFlight call site — exactly like run.launch). Proven by wiring a Store whose
+// CountInFlight already reports at-cap and showing both tools still reach their
+// forwarder rather than being refused.
+func TestPollSubmitBypassConcurrencyCap(t *testing.T) {
+	st := &fakeStore{inFlight: 4} // at controlPlaneHandler's cap — would refuse memory.read
+	poll := &fakePollForwarder{requests: []mcp.PlanRequestView{{RequestID: "req-1"}}}
+	submit := &fakeSubmitForwarder{runID: "run-1", status: "proposed"}
+	h, s := controlPlaneHandler(t, st, poll, submit, nil)
+	tok := agentToken(t, s)
+
+	if isErr, text := toolResult(t, callTool(t, h, tok, "workstream.poll", `{}`)); isErr {
+		t.Fatalf("workstream.poll must bypass the concurrency cap: isError=%v text=%q", isErr, text)
+	}
+	submitArgs := `{"requestId":"req-1","steps":[{"resourceId":"r1","command":"echo hi"}]}`
+	if isErr, text := toolResult(t, callTool(t, h, tok, "plan.submit", submitArgs)); isErr {
+		t.Fatalf("plan.submit must bypass the concurrency cap: isError=%v text=%q", isErr, text)
+	}
+}
+
+// TestPollSubmitReadHappyPath — the forwarder's answer rides back as the tool result
+// text (no target resolution, no policy/broker involvement — the run.launch shape).
+func TestPollSubmitReadHappyPath(t *testing.T) {
+	poll := &fakePollForwarder{requests: []mcp.PlanRequestView{{RequestID: "req-1", Objective: "keep it healthy"}}}
+	submit := &fakeSubmitForwarder{runID: "run-9", status: "proposed"}
+	read := &fakeReadForwarder{items: []mcp.MemoryRowView{{ID: "mem-1"}}}
+	h, s := controlPlaneHandler(t, &fakeStore{}, poll, submit, read)
+	tok := agentToken(t, s)
+
+	if isErr, text := toolResult(t, callTool(t, h, tok, "workstream.poll", `{}`)); isErr || !strings.Contains(text, "req-1") {
+		t.Fatalf("workstream.poll happy path: isError=%v text=%q", isErr, text)
+	}
+	submitArgs := `{"requestId":"req-1","steps":[{"resourceId":"r1","command":"echo hi"}]}`
+	if isErr, text := toolResult(t, callTool(t, h, tok, "plan.submit", submitArgs)); isErr || !strings.Contains(text, "run-9") {
+		t.Fatalf("plan.submit happy path: isError=%v text=%q", isErr, text)
+	}
+	if isErr, text := toolResult(t, callTool(t, h, tok, "memory.read", `{}`)); isErr || !strings.Contains(text, "mem-1") {
+		t.Fatalf("memory.read happy path: isError=%v text=%q", isErr, text)
+	}
+}
+
+// TestSubmitPlanRefusalIsToolError — plan.submit's SEC-29 refusal shape (the
+// run.launch mapping): a non-empty forwarder refusal is a TOOL error, not an rpc error.
+func TestSubmitPlanRefusalIsToolError(t *testing.T) {
+	submit := &fakeSubmitForwarder{refusal: "the grant does not authorize this agent"}
+	h, s := controlPlaneHandler(t, &fakeStore{}, nil, submit, nil)
+	args := `{"requestId":"req-1","steps":[{"resourceId":"r1","command":"echo hi"}]}`
+	isErr, text := toolResult(t, callTool(t, h, agentToken(t, s), "plan.submit", args))
+	if !isErr || !strings.Contains(text, "does not authorize") {
+		t.Fatalf("plan.submit refusal: isError=%v text=%q", isErr, text)
+	}
+}

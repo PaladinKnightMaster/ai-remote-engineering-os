@@ -66,8 +66,11 @@ func TestWD8RedactIdempotent(t *testing.T) {
 // TestWD8AgentPlaneRejected — N2 (SEC-31): a VALID agent-tool token (aud=mcp-gateway)
 // against services/api's operator-plane /v1/memories* routes is rejected — the wrong
 // edge/wrong plane, not a signature failure (the WD-4 forge-test precedent applied to
-// the memory boundary). The gateway's tools/list exposes no memory tool: only
-// remote.exec and run.launch.
+// the memory boundary). The gateway's tools/list exposes exactly the five control-plane
+// tools (F-b, T-090 amendment): remote.exec, run.launch, workstream.poll, plan.submit,
+// memory.read — and, memory.read's own governance carve-out aside, NO memory-WRITE
+// tool of any kind (no author/redact/share/pin verb reaches the agent plane; the read
+// plane is memory.read alone, chained per ADR-0065 §3/R4).
 func TestWD8AgentPlaneRejected(t *testing.T) {
 	apiURL := env("E2E_API_URL", "http://api:8080")
 	mcpURL := env("E2E_MCP_URL", "http://mcp-gateway:8085")
@@ -105,8 +108,10 @@ func TestWD8AgentPlaneRejected(t *testing.T) {
 		t.Fatalf("agent-token POST /v1/memories: status %d, want 401 or 403", postResp.StatusCode)
 	}
 
-	// The gateway's tool catalog carries no memory tool — only the two governed-step
-	// tools (remote.exec, run.launch).
+	// The gateway's tool catalog carries no memory-WRITE tool of any kind — only the
+	// two governed-step control-plane tools (remote.exec, run.launch) plus the three
+	// v0.9 adaptive-workstream control-plane tools (workstream.poll, plan.submit, and
+	// memory.read — the ONE lit agent-memory READ path, F-b/T-090).
 	toolsBody := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
 	var tools []string
 	deadline := time.Now().Add(30 * time.Second)
@@ -145,16 +150,25 @@ func TestWD8AgentPlaneRejected(t *testing.T) {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	want := map[string]bool{"remote.exec": true, "run.launch": true}
+	// F-b (T-090 amendment): the exact tool surface is five, not two — the v0.9
+	// adaptive-workstream control-plane tools ride alongside remote.exec/run.launch.
+	// The set-equality check below still enforces the N2 spirit intact: no memory tool
+	// OTHER THAN memory.read reaches the agent plane — no write/author/redact/share/pin
+	// verb of any kind, because any such tool would inflate len(tools) or introduce a
+	// name outside `want` and fail this assertion.
+	want := map[string]bool{
+		"remote.exec": true, "run.launch": true,
+		"workstream.poll": true, "plan.submit": true, "memory.read": true,
+	}
 	if len(tools) != len(want) {
-		t.Fatalf("gateway tools/list = %v, want exactly %v (no memory tool)", tools, want)
+		t.Fatalf("gateway tools/list = %v, want exactly %v (no memory-write tool)", tools, want)
 	}
 	for _, name := range tools {
 		if !want[name] {
-			t.Fatalf("gateway tools/list exposes %q — the agent plane must carry NO memory tool", name)
+			t.Fatalf("gateway tools/list exposes %q — the agent plane must carry no memory tool other than memory.read", name)
 		}
 	}
-	t.Logf("PASS WD-8 N2 — a valid agent-tool token is rejected on /v1/memories* (%d/%d) and the gateway catalog carries no memory tool (only %v)", getResp.StatusCode, postResp.StatusCode, tools)
+	t.Logf("PASS WD-8 N2 — a valid agent-tool token is rejected on /v1/memories* (%d/%d) and the gateway catalog carries no memory-write tool (only %v)", getResp.StatusCode, postResp.StatusCode, tools)
 }
 
 // TestWD8OwnerScope404 — N3 (D2, honest scoping): redact/pin/unpin on a well-formed

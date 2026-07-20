@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 // Protocol identity advertised in the MCP `initialize` response. ProtocolVersion
@@ -115,6 +116,67 @@ type LaunchStep struct {
 // is not configured.
 type LaunchForwarder interface {
 	Launch(ctx context.Context, agentSubject, grantID, idempotencyKey string, steps []LaunchStep) (runID, status, refusal string, err error)
+}
+
+// PlanRequestView is one open plan request the composer's workstream.poll call sees
+// (ADR-0065 §5, T-090): composition context — objective + the bounding grant's
+// resource/verb scope + step bound + the request's TTL — everything the agent needs to
+// compose a plan without a second round trip.
+type PlanRequestView struct {
+	RequestID      string    `json:"requestId"`
+	WorkstreamID   string    `json:"workstreamId"`
+	Objective      string    `json:"objective"`
+	Resources      []string  `json:"resources"`
+	Verbs          []string  `json:"verbs"`
+	MaxStepsPerRun int       `json:"maxStepsPerRun"`
+	ExpiresAt      time.Time `json:"expiresAt"`
+}
+
+// PollForwarder forwards workstream.poll to services/api (ADR-0065 §5, T-090): the
+// keyless gateway relays {agent, optional workstream filter} to api's subject-pinned
+// internal route, which derives the caller's own open plan requests from its LIVE
+// grants only — never a foreign charter (SEC-32 containment). A workstreamID outside
+// the caller's own scope answers an empty slice, never an error (no oracle). nil →
+// workstream.poll answers a tool error.
+type PollForwarder interface {
+	Poll(ctx context.Context, agentSubject, workstreamID string) ([]PlanRequestView, error)
+}
+
+// SubmitForwarder forwards plan.submit to services/api (ADR-0065 §6, T-090): the
+// keyless gateway relays {agent, requestId, plan} to api's subject-pinned internal
+// route, which validates the impersonation pin + plan ⊆ grant (SEC-29, the shared
+// LaunchBounded core) and creates a `proposed` Run. A non-empty refusal is api's
+// refusal (a tool error for the agent — an unknown request and a foreign agent's
+// request read IDENTICALLY, no oracle, §6); err is an infrastructure failure
+// (fail-closed). nil → plan.submit answers a tool error.
+type SubmitForwarder interface {
+	Submit(ctx context.Context, agentSubject, requestID string, steps []LaunchStep) (runID, status, refusal string, err error)
+}
+
+// MemoryRowView is one memory row on the agent-plane read (ADR-0065 §3, T-090):
+// content-free for an accrued reference row; opened content for a shared authored row
+// (an unshared authored row or a redacted row never reaches this view — SEC-32).
+type MemoryRowView struct {
+	ID          string    `json:"id"`
+	ScopeType   string    `json:"scopeType"`
+	ScopeID     string    `json:"scopeId"`
+	Key         string    `json:"key,omitempty"`
+	Ref         string    `json:"ref,omitempty"`
+	Content     string    `json:"content,omitempty"`
+	SourceTrace string    `json:"sourceTrace,omitempty"`
+	Confidence  float32   `json:"confidence"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// ReadForwarder forwards memory.read to services/api (ADR-0065 §3, T-090): the keyless
+// gateway relays {agent, optional workstream filter} to api's subject-pinned internal
+// route, which derives the caller's readable set from its own LIVE grants (SEC-32
+// containment BY CONSTRUCTION) and chains ONE memory.read event per call (R4). err is
+// an infrastructure failure (fail-closed); a revoked/expired grant or an out-of-scope
+// filter answers an EMPTY slice, never an error (no oracle). nil → memory.read answers
+// a tool error.
+type ReadForwarder interface {
+	Read(ctx context.Context, agentSubject, workstreamID string) ([]MemoryRowView, error)
 }
 
 // Operator-plane sentinels the resolve handler maps to HTTP status (404 / 409).

@@ -589,21 +589,86 @@ func (s *Store) GetPlanRequest(ctx context.Context, id string) (PlanRequest, err
 }
 
 // MarkPlanRequestSubmitted flips one OPEN request to submitted, recording the `proposed`
-// Run it produced (ADR-0065 §5/§6; plan.submit, T-090 wires the caller). Flip-guarded:
+// Run it produced, AND chains plan.submitted in the SAME transaction as the flip
+// (ADR-0065 §5/§6; plan.submit, T-090's SubmitPlan handler is the caller — the
+// OpenPlanRequest/ExpirePlanRequestsDue own-transaction precedent). Flip-guarded:
 // ok=false when the request is no longer open (already submitted/expired/closed — a
 // stale double-submit, or a race with expiry/revocation) so a caller never double-
-// attaches a second Run to one request.
-func (s *Store) MarkPlanRequestSubmitted(ctx context.Context, id, runID string) (bool, error) {
+// attaches a second Run to one request, AND EMITS NOTHING on that no-op path (no
+// duplicate plan.submitted — the T-089 OpenPlanRequest precedent; SubmitPlan's launch-
+// key re-attach means a retried submit safely calls this again, and the guard makes the
+// re-mark a silent no-op). actor is the COMPOSING AGENT subject (R2: honest
+// attribution — the agent submitted the plan, not the charter/schedule that opened the
+// request), self-anchored to the request (Target), scope-anchored to the charter
+// (EvidencePacketID) — the OpenPlanRequest event convention.
+func (s *Store) MarkPlanRequestSubmitted(ctx context.Context, id, runID, actor string) (bool, error) {
 	if runID == "" {
 		return false, errors.New("mark plan request submitted requires a run id")
 	}
-	ct, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	var workstreamID string
+	err = tx.QueryRow(ctx, `
 		UPDATE plan_requests SET status = 'submitted', run_id = $2, updated_at = now()
-		 WHERE id = $1 AND status = 'open'`, id, runID)
+		 WHERE id = $1 AND status = 'open' RETURNING workstream_id`, id, runID).Scan(&workstreamID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("mark plan request submitted: %w", err)
 	}
-	return ct.RowsAffected() == 1, nil
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: actor, Edge: charterEdge,
+		Target: "plan-request:" + id, Outcome: "plan.submitted",
+		EvidencePacketID: "workstream:" + workstreamID,
+	}); err != nil {
+		return false, fmt.Errorf("enqueue plan.submitted: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit mark plan request submitted: %w", err)
+	}
+	return true, nil
+}
+
+// PollOpenPlanRequests is the workstream.poll store primitive (D1, ADR-0065 §5, T-090):
+// the composer's own open plan requests across every charter it composes for — derived
+// ENTIRELY from the caller's own LIVE grants (SEC-32 containment BY CONSTRUCTION): a
+// plan_requests row surfaces here only when its charter's auto-issued grant's grantee
+// equals agentSubject AND that grant is active + unexpired; a foreign charter's open
+// request is structurally unreachable, not filtered out. workstreamID narrows to one
+// charter; a value that does not name a charter this agent composes for answers EMPTY —
+// never an error (no oracle, N1: the JOIN simply matches nothing). Composition context
+// (the charter's objective + the bounding grant's resource/verb scope + step bound +
+// the request's TTL) rides alongside so plan.submit needs no second round trip.
+func (s *Store) PollOpenPlanRequests(ctx context.Context, agentSubject, workstreamID string) ([]PlanRequestComposition, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT pr.id, pr.workstream_id, w.objective, g.resources, g.verbs, g.max_steps_per_run, pr.expires_at
+		  FROM plan_requests pr
+		  JOIN workstreams w ON w.id = pr.workstream_id
+		  JOIN delegation_grants g ON g.id = w.grant_id
+		 WHERE pr.status = 'open'
+		   AND g.agent = $1 AND g.status = $3 AND g.expires_at > now()
+		   AND ($2 = '' OR w.id::text = $2)
+		 ORDER BY pr.id ASC`, agentSubject, workstreamID, grant.StatusActive)
+	if err != nil {
+		return nil, fmt.Errorf("poll open plan requests: %w", err)
+	}
+	defer rows.Close()
+	var out []PlanRequestComposition
+	for rows.Next() {
+		var c PlanRequestComposition
+		if err := rows.Scan(&c.RequestID, &c.WorkstreamID, &c.Objective, &c.Resources,
+			&c.Verbs, &c.MaxStepsPerRun, &c.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // ExpirePlanRequestsDue tombstones up to batch OPEN requests whose expires_at has

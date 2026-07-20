@@ -12,11 +12,16 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aireos.local/services/api/internal/grant"
+	"aireos.local/services/api/internal/run"
+	"aireos.local/services/api/internal/workstream"
 )
 
 func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
@@ -598,6 +603,193 @@ func TestAgentVisibleDefaultAndRoundTrip(t *testing.T) {
 	if !found {
 		t.Fatal("flipped row missing from list")
 	}
+}
+
+// TestReadForAgent — MEM-5/SEC-32/R4 (ADR-0065 §3, T-090), the live-PG proof of the
+// agent-memory read plane: an accrued (content-free) row is ALWAYS readable; an
+// authored row is readable ONLY once agent_visible is flipped (N2, the share gate); a
+// tombstoned (redacted) row is EXCLUDED even though it would otherwise be in scope
+// (R2); a SECOND composer's charter+grant is completely unreachable (N1, cross-grant
+// containment — no filtering, structural); a workstreamId filter narrows to that one
+// charter's grant (still including its Runs) and an unrelated/unknown id answers empty
+// (no oracle); the result clamps; and after the grant is revoked, the read answers
+// empty (N3). Exactly ONE memory.read event chains per call, content-free (row ids
+// only), actor = the reading agent, edge = agent-memory.
+func TestReadForAgent(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	gs := grant.NewStore(pool, "api_outbox")
+	wsStore := workstream.NewStore(pool, nil, gs, "api_outbox")
+	runStore := run.NewStore(pool, nil, "api_outbox", nil)
+
+	composer := "agent:mem-composer-" + freshID(t)
+	ws, err := wsStore.Create(ctx, workstream.Input{
+		Principal: "operator:mem-read", Label: "adaptive", Objective: "learn and adapt",
+		IntervalSeconds: 3600, Kind: workstream.KindAdaptive, Composer: composer,
+		Grant: grant.Input{
+			Resources: []string{"res-a"}, Verbs: []string{"exec"},
+			ExpiresAt: time.Now().Add(24 * time.Hour), MaxStepsPerRun: 5,
+			MaxConcurrentRuns: 2, StepBudget: 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create adaptive charter: %v", err)
+	}
+
+	launchedRun, err := runStore.Create(ctx, run.Input{
+		Operator: "operator:mem-read", Actor: composer, GrantID: ws.GrantID,
+		Steps: []run.StepInput{{ResourceID: "res-a", Command: "uptime"}},
+	})
+	if err != nil {
+		t.Fatalf("create bound run: %v", err)
+	}
+
+	// A second, UNRELATED composer + charter — the cross-grant containment fixture
+	// (N1): none of this must ever surface in composer's read.
+	otherComposer := "agent:mem-composer-other-" + freshID(t)
+	otherWS, err := wsStore.Create(ctx, workstream.Input{
+		Principal: "operator:mem-read-2", Label: "adaptive-2", Objective: "a foreign charter",
+		IntervalSeconds: 3600, Kind: workstream.KindAdaptive, Composer: otherComposer,
+		Grant: grant.Input{
+			Resources: []string{"res-b"}, Verbs: []string{"exec"},
+			ExpiresAt: time.Now().Add(24 * time.Hour), MaxStepsPerRun: 5,
+			MaxConcurrentRuns: 2, StepBudget: 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create foreign charter: %v", err)
+	}
+
+	insertAccrued := func(scopeType, scopeID string) string {
+		id := freshID(t)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO memories (id, scope_type, scope_id, ref, source_trace, permission_scope)
+			VALUES ($1, $2, $3, 'run:x', 'run:x:completed', 'operator:mem-read')`,
+			id, scopeType, scopeID); err != nil {
+			t.Fatalf("insert accrued fixture: %v", err)
+		}
+		return id
+	}
+	wsAccrued := insertAccrued(ScopeWorkstream, ws.ID)
+	runAccrued := insertAccrued(ScopeRun, launchedRun.ID)
+	foreignAccrued := insertAccrued(ScopeWorkstream, otherWS.ID)
+
+	unshared, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:mem-read", ScopeType: ScopeWorkstream, ScopeID: ws.ID,
+		Content: "not yet shared with the composer",
+	})
+	if err != nil {
+		t.Fatalf("create unshared authored: %v", err)
+	}
+	shared, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:mem-read", ScopeType: ScopeRun, ScopeID: launchedRun.ID,
+		Content: "shared with the composer",
+	})
+	if err != nil {
+		t.Fatalf("create shared authored: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE memories SET agent_visible = true WHERE id = $1`, shared.ID); err != nil {
+		t.Fatalf("flip agent_visible (no verb exists yet, T-091): %v", err)
+	}
+
+	// A tombstoned accrued row: in scope by scope_type/scope_id, but redacted — must be
+	// EXCLUDED (R2).
+	tombstoned := insertAccrued(ScopeWorkstream, ws.ID)
+	if _, err := pool.Exec(ctx, `UPDATE memories SET redacted_at = now() WHERE id = $1`, tombstoned); err != nil {
+		t.Fatalf("tombstone fixture: %v", err)
+	}
+
+	got, err := s.ReadForAgent(ctx, composer, "", 0)
+	if err != nil {
+		t.Fatalf("read for agent: %v", err)
+	}
+	byID := map[string]Memory{}
+	for _, m := range got {
+		byID[m.ID] = m
+	}
+	if _, ok := byID[wsAccrued]; !ok {
+		t.Fatal("workstream-scoped accrued row missing (always-readable)")
+	}
+	if _, ok := byID[runAccrued]; !ok {
+		t.Fatal("run-scoped accrued row missing (always-readable, via runs.grant_id)")
+	}
+	if _, ok := byID[shared.ID]; !ok || byID[shared.ID].Content != "shared with the composer" {
+		t.Fatalf("shared authored row missing or content not opened: %+v", byID[shared.ID])
+	}
+	if _, ok := byID[unshared.ID]; ok {
+		t.Fatal("unshared authored row must be invisible (N2, the share gate)")
+	}
+	if _, ok := byID[tombstoned]; ok {
+		t.Fatal("tombstoned row must be excluded even though otherwise in scope (R2)")
+	}
+	if _, ok := byID[foreignAccrued]; ok {
+		t.Fatal("a foreign charter's row must be structurally unreachable (N1)")
+	}
+	if len(got) != 3 {
+		t.Fatalf("read for agent = %d rows, want exactly 3 (ws-accrued, run-accrued, shared-authored): %+v", len(got), got)
+	}
+
+	// Exactly ONE memory.read event, content-free (no row's content appears in the
+	// target), actor = the composer, edge = agent-memory.
+	if n := countOutcomeByActor(t, pool, composer, "memory.read"); n != 1 {
+		t.Fatalf("memory.read count for composer = %d, want 1", n)
+	}
+	tgt := eventTarget(t, pool, composer, "memory.read")
+	if !strings.Contains(tgt, wsAccrued) || !strings.Contains(tgt, runAccrued) || !strings.Contains(tgt, shared.ID) {
+		t.Fatalf("memory.read target = %q, want it to list all 3 returned row ids", tgt)
+	}
+	if strings.Contains(tgt, "shared with the composer") {
+		t.Fatal("memory.read event leaked content — must be content-free")
+	}
+
+	// workstreamId filter: narrowed to ws.ID still includes its Runs (same grant).
+	filtered, err := s.ReadForAgent(ctx, composer, ws.ID, 0)
+	if err != nil || len(filtered) != 3 {
+		t.Fatalf("read filtered to own charter: rows=%d err=%v, want 3", len(filtered), err)
+	}
+	// Filtered to the foreign charter, or an unknown id: empty, never an error (no
+	// oracle).
+	if rows, err := s.ReadForAgent(ctx, composer, otherWS.ID, 0); err != nil || len(rows) != 0 {
+		t.Fatalf("read filtered to a foreign charter: rows=%d err=%v, want 0", len(rows), err)
+	}
+	if rows, err := s.ReadForAgent(ctx, composer, "00000000-0000-0000-0000-000000000000", 0); err != nil || len(rows) != 0 {
+		t.Fatalf("read filtered to an unknown id: rows=%d err=%v, want 0", len(rows), err)
+	}
+
+	// Clamp: limit=1 truncates id-ASC.
+	if clamped, err := s.ReadForAgent(ctx, composer, "", 1); err != nil || len(clamped) != 1 {
+		t.Fatalf("read clamped to 1: rows=%d err=%v, want 1", len(clamped), err)
+	}
+
+	// N3: after the grant is revoked, the composer's read answers empty.
+	if _, err := gs.Revoke(ctx, ws.GrantID); err != nil {
+		t.Fatalf("revoke grant: %v", err)
+	}
+	if rows, err := s.ReadForAgent(ctx, composer, "", 0); err != nil || len(rows) != 0 {
+		t.Fatalf("read after grant revoke: rows=%d err=%v, want 0", len(rows), err)
+	}
+}
+
+func countOutcomeByActor(t *testing.T, pool *pgxpool.Pool, actor, outcome string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM api_outbox WHERE payload->>'actor' = $1 AND payload->>'outcome' = $2`,
+		actor, outcome).Scan(&n); err != nil {
+		t.Fatalf("count outcome by actor: %v", err)
+	}
+	return n
+}
+
+func eventTarget(t *testing.T, pool *pgxpool.Pool, actor, outcome string) string {
+	t.Helper()
+	var target string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT payload->>'target' FROM api_outbox WHERE payload->>'actor' = $1 AND payload->>'outcome' = $2`,
+		actor, outcome).Scan(&target); err != nil {
+		t.Fatalf("event target: %v", err)
+	}
+	return target
 }
 
 // stubSealer is a reversible test fixture (NOT real encryption) — it only needs to

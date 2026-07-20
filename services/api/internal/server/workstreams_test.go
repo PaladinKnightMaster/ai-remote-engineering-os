@@ -24,11 +24,36 @@ type fakeWorkstreamStore struct {
 	verbCalls     []string
 	closedGrants  []string // ClosePlanRequestsForGrant calls (T-089, the RevokeGrant cascade)
 	closedGrantsN int      // the scripted return count
+
+	// T-090 fixtures: workstream.poll / plan.submit's store-side needs.
+	pollResults      []workstream.PlanRequestComposition
+	pollErr          error
+	planRequests     map[string]workstream.PlanRequest
+	markSubmittedOK  bool
+	markSubmittedErr error
+	lastMarkRunID    string
+	lastMarkActor    string
 }
 
 func (f *fakeWorkstreamStore) ClosePlanRequestsForGrant(_ context.Context, grantID string) (int, error) {
 	f.closedGrants = append(f.closedGrants, grantID)
 	return f.closedGrantsN, nil
+}
+
+func (f *fakeWorkstreamStore) PollOpenPlanRequests(_ context.Context, _, _ string) ([]workstream.PlanRequestComposition, error) {
+	return f.pollResults, f.pollErr
+}
+
+func (f *fakeWorkstreamStore) GetPlanRequest(_ context.Context, id string) (workstream.PlanRequest, error) {
+	if pr, ok := f.planRequests[id]; ok {
+		return pr, nil
+	}
+	return workstream.PlanRequest{}, workstream.ErrPlanRequestNotFound
+}
+
+func (f *fakeWorkstreamStore) MarkPlanRequestSubmitted(_ context.Context, _, runID, actor string) (bool, error) {
+	f.lastMarkRunID, f.lastMarkActor = runID, actor
+	return f.markSubmittedOK, f.markSubmittedErr
 }
 
 func (f *fakeWorkstreamStore) Pause(_ context.Context, id string) (bool, error) {

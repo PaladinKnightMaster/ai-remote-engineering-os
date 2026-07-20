@@ -12,10 +12,12 @@ var _ mcp.Catalog = (*Service)(nil)
 
 func TestRegistryListsRemoteExec(t *testing.T) {
 	tools := NewRegistry().List()
-	// v0.6 (ADR-0062, T-065b): the registry advertises remote.exec + the control-plane
-	// run.launch (agent-initiated Runs).
-	if len(tools) != 2 || tools[0].Name != "remote.exec" || tools[1].Name != "run.launch" {
-		t.Fatalf("List() = %+v, want [remote.exec run.launch]", tools)
+	// v0.9 (ADR-0065, T-090): the registry advertises remote.exec, the control-plane
+	// run.launch (agent-initiated Runs), and the three new control-plane tools
+	// (workstream.poll/plan.submit/memory.read) — the exact set the F-b WD-8
+	// amendment now asserts.
+	if len(tools) != 5 || tools[0].Name != "remote.exec" || tools[1].Name != "run.launch" {
+		t.Fatalf("List() = %+v, want [remote.exec run.launch workstream.poll plan.submit memory.read]", tools)
 	}
 	// The advertised inputSchema is a valid JSON Schema object requiring the
 	// two typed args — this is the agent's interface (ADR-0057 / UX).
@@ -57,6 +59,37 @@ func TestLookupGovernanceMetadata(t *testing.T) {
 	}
 	if _, ok := r.Lookup("nope"); ok {
 		t.Fatal("Lookup(nope) returned ok")
+	}
+}
+
+// TestControlPlaneToolsMetadata — ADR-0065 §1/§2, T-090: all four control-plane tools
+// (run.launch + the three v0.9 additions) carry no Edge/Action/Operation EXCEPT
+// memory.read, which alone carries the reserved agent-memory edge (SEC-32) — the ONE
+// lit path. workstream.poll/plan.submit ride the existing agent-tool transport reading,
+// same as run.launch.
+func TestControlPlaneToolsMetadata(t *testing.T) {
+	r := NewRegistry()
+	for _, name := range []string{"run.launch", "workstream.poll", "plan.submit"} {
+		def, ok := r.Lookup(name)
+		if !ok {
+			t.Fatalf("%s not found", name)
+		}
+		if def.Edge != "" || def.Action != "" || def.Operation != "" {
+			t.Fatalf("%s must carry no governance metadata (control-plane), got %+v", name, def)
+		}
+	}
+	def, ok := r.Lookup("memory.read")
+	if !ok {
+		t.Fatal("memory.read not found")
+	}
+	if def.Edge != "agent-memory" {
+		t.Fatalf("memory.read edge = %q, want agent-memory (SEC-32, the sole lit path)", def.Edge)
+	}
+	if def.Action != "" || def.Operation != "" {
+		t.Fatalf("memory.read must carry no Action/Operation (control-plane dispatch), got %+v", def)
+	}
+	if def.Description == "" {
+		t.Fatal("memory.read must carry a description (the agent's UX)")
 	}
 }
 

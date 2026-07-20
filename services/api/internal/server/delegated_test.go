@@ -64,6 +64,12 @@ func (f *fakeLaunchRunStore) DenyProposed(_ context.Context, _ string) (bool, er
 	return false, nil
 }
 
+// LaunchBoundedProposed (F-c, T-090) shares the same fixture fields as LaunchBounded —
+// SubmitPlan's tests (adaptive_internal_test.go) drive it identically.
+func (f *fakeLaunchRunStore) LaunchBoundedProposed(_ context.Context, _ run.GrantSource, _, _, _ string, _ []run.StepInput) (run.Run, bool, *run.Refusal, error) {
+	return f.launched, f.reattached, f.refusal, nil
+}
+
 // fakeGrantStore satisfies grantStore; the handler passes it through to the core as the
 // GrantSource (unused by the fake core).
 type fakeGrantStore struct{}

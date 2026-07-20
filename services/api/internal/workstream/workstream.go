@@ -133,3 +133,19 @@ type PlanRequest struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
+
+// PlanRequestComposition is one open plan request as seen by the composer's
+// workstream.poll (D1, ADR-0065 §5, T-090): the request plus the composition context
+// the answering agent needs WITHOUT a second round trip — the objective (the charter's
+// consented-to text, plaintext-safe per its own consent act) and the bounding grant's
+// resource/verb scope + step bound + TTL. Derived ENTIRELY from the caller's own LIVE
+// grants (PollOpenPlanRequests) — never a caller-supplied scope (SEC-32 containment).
+type PlanRequestComposition struct {
+	RequestID      string
+	WorkstreamID   string
+	Objective      string
+	Resources      []string
+	Verbs          []string
+	MaxStepsPerRun int
+	ExpiresAt      time.Time
+}

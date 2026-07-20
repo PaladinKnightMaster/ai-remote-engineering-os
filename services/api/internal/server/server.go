@@ -131,6 +131,11 @@ type runStore interface {
 	// grant's liveness before flipping (N3).
 	ApproveProposed(ctx context.Context, grants run.GrantSource, id string) (run.Run, bool, *run.Refusal, error)
 	DenyProposed(ctx context.Context, id string) (bool, error)
+	// LaunchBoundedProposed (F-c, ADR-0065 §6, T-090) is plan.submit's forward target
+	// (SubmitPlan, adaptive_internal.go): the SAME shared bounded-launch core as
+	// LaunchBounded, disposition 'proposed' — the third caller enforces plan-vs-grant
+	// (SEC-29) and the impersonation pin identically by construction.
+	LaunchBoundedProposed(ctx context.Context, grants run.GrantSource, agentSubject, grantID, launchKey string, steps []run.StepInput) (run.Run, bool, *run.Refusal, error)
 }
 
 // Authenticator verifies operator credentials (services/api/internal/account).
@@ -229,6 +234,14 @@ type workstreamStore interface {
 	// §7/R3, T-089): RevokeGrant calls it alongside runStore.CancelRunsForGrant. Retire's
 	// OWN cascade needs no separate call — Retire folds the close into its own tx.
 	ClosePlanRequestsForGrant(ctx context.Context, grantID string) (int, error)
+	// PollOpenPlanRequests/GetPlanRequest/MarkPlanRequestSubmitted (D1/D3, ADR-0065
+	// §5/§6, T-090) back the three-verb inbound plan channel's gateway forwards
+	// (PollWorkstream/SubmitPlan, adaptive_internal.go): the composer's own open
+	// requests derived from its live grants, the single-request lookup SubmitPlan
+	// validates against, and the submit-time flip + plan.submitted chain.
+	PollOpenPlanRequests(ctx context.Context, agentSubject, workstreamID string) ([]workstream.PlanRequestComposition, error)
+	GetPlanRequest(ctx context.Context, id string) (workstream.PlanRequest, error)
+	MarkPlanRequestSubmitted(ctx context.Context, id, runID, actor string) (bool, error)
 }
 
 // WithWorkstreamStore wires the chartered-Workstream store (ADR-0063, T-071): the
@@ -258,6 +271,10 @@ type memoryStore interface {
 	Get(ctx context.Context, owner, id string) (memory.Memory, error)
 	Redact(ctx context.Context, owner, id string) (memory.Memory, error)
 	SetPinned(ctx context.Context, owner, id string, pinned bool) (memory.Memory, error)
+	// ReadForAgent (MEM-5, SEC-32, ADR-0065 §3, T-090) is memory.read's forward target
+	// (ReadMemory, adaptive_internal.go): a SEPARATE, grant-scoped, visibility-filtered
+	// read — List/Get above (owner-keyed) are untouched by this addition.
+	ReadForAgent(ctx context.Context, agentSubject, workstreamID string, limit int) ([]memory.Memory, error)
 }
 
 // WithMemoryStore wires the Persistent Scoped Memory store (ADR-0064, T-080/T-081): the
@@ -350,6 +367,27 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 		base.Group(func(ir chi.Router) {
 			ir.Use(mw.RequireCapability(h.gatewayVerifier, "service-service"))
 			ir.Post("/v1/internal/delegated-runs", h.LaunchDelegatedRun)
+		})
+	}
+	// The three v0.9 control-plane forwards (ADR-0065, T-090): workstream.poll /
+	// plan.submit / memory.read. Same route-scoped verifier + the SAME manual-mount
+	// posture as delegated-runs above (an internal RPC, not in the OpenAPI fragment);
+	// each handler additionally pins subject == "mcp-gateway" itself
+	// (onlyGatewaySubject, adaptive_internal.go) — the mirror of LaunchDelegatedRun's
+	// own pin. Mounted independently per the store each needs, so a partially-wired
+	// api (e.g. memory configured without the run engine) still exposes what it can.
+	if h.gatewayVerifier != nil {
+		base.Group(func(ir chi.Router) {
+			ir.Use(mw.RequireCapability(h.gatewayVerifier, "service-service"))
+			if h.workstreams != nil {
+				ir.Post("/v1/internal/plan-polls", h.PollWorkstream)
+			}
+			if h.workstreams != nil && h.grants != nil && h.runs != nil {
+				ir.Post("/v1/internal/plan-submissions", h.SubmitPlan)
+			}
+			if h.memories != nil {
+				ir.Post("/v1/internal/memory-reads", h.ReadMemory)
+			}
 		})
 	}
 	return HandlerWithOptions(h, ChiServerOptions{
