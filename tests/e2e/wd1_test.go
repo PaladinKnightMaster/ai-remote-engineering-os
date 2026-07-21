@@ -577,6 +577,352 @@ func TestWD8InstalledStack(t *testing.T) {
 	t.Logf("PASS installed WD-8 — accrue(actor=workstream) → author/read → redact(+N1) → agent-plane 401/403(N2) → unknown-id 404(N3) → production-cadence expire+pin(one wait) → canceled-Run accrual ×1(N4 lean). memory.* chain presence is asserted by run-wd1.sh")
 }
 
+// TestWD9InstalledStack — OI-16 (T-093): the FULL WD-9 Adaptive-Workstreams gate on the
+// INSTALLED stack through Caddy HTTPS, at the REAL production posture — the 60s schedule
+// floor (defaultWorkstreamMinInterval, no env override), no InsecureSkipVerify anywhere.
+// Everything WD-9 ships free on the install: migration 0013 rides install.sh's existing
+// migrate loop, and the three v0.9 control-plane MCP tools (workstream.poll / plan.submit
+// / memory.read) ride the existing gateway binary + the existing Caddy /mcp route — NO
+// new unit, key, or env (C5, docs/releases/v0.9.0 §9).
+//
+// Three adaptive charters, one composer each, so a 60s-floor tick wait for one overlaps
+// real wall-clock with work on another:
+//
+//	A — the loop-closure happy path (charter -> tick1 -> read#1 -> submit -> preview ->
+//	    approve -> the flagged resource's SECOND, invocation-level, park+approve ->
+//	    completed -> exactly one accrual -> tick2's FRESH request -> read#2 returns the
+//	    just-accrued pointer, the loop closes) + the deny cycle on tick2 (submit -> deny
+//	    -> canceled, run.denied exactly once, one accrual) + N2 (author -> invisible ->
+//	    share -> visible -> unshare -> invisible, cheap, A's scope).
+//	B — charter'd right after A so its own tick1 is already open while A's happy path
+//	    plays out; N1 cross-grant containment (A never sees B's still-open charter or
+//	    request) captured BEFORE B's request is consumed, then N3 revocation: drive B to
+//	    'proposed', wait for a FRESH open request (the cascade's second victim), revoke —
+//	    the proposed run cascade-cancels with ZERO run.denied, the open request closes,
+//	    B's poll/submit/read all go dead, approve is refused.
+//	D — a self-contained N4 cycle (C5's expiry-never-wedges leg, budgeted separately at
+//	    ~2.5-3 min): charter, grab whatever request is open, deliberately ignore it,
+//	    watch it expire (plan.expired chained) at its own ~60s TTL, then watch the next
+//	    tick open a fresh one — the charter never wedges on a composer that never
+//	    answers.
+//
+// Only the resource the install seeds (resourceID) exists here, and it is
+// requires_approval-flagged — unlike the compose WD-9 suite's ungated
+// workstreamResourceID — so leg A's approved plan parks a SECOND time at the invocation
+// level (the WD-5/7/8 installed precedent) before the sequencer can complete it.
+//
+// Both A's and B's initial requests are SUBMITTED promptly (before either's ~120s TTL:
+// claimed-fire-time + interval, R1) — the N1 containment read happens first (while B's
+// request is still genuinely open), then both plans submit back to back, so nothing here
+// races an expiry that isn't the deliberate N4 leg.
+//
+// Chain assertions ride the operator audit read-proxy (listAllEventsViaProxy,
+// pollProxyTargetOutcome/countProxyTargetOutcome — the wd1 driver has no host-internal
+// audit reach); pollProxyActorOutcomeCount (below) is this test's actor-scoped analogue
+// for the composer's memory.read count. Per-leg exact counts are asserted here; chain
+// INTEGRITY + presence of the new outcome vocabulary (plan.requested/submitted/expired,
+// memory.read/shared/unshared, run.denied) is asserted host-internally by run-wd1.sh
+// (WANTS) — NOT a global exact chain length, since tick timing makes that
+// non-deterministic across re-runs (the T-093 report records the observed count for one
+// run instead).
+//
+// Token TTL sizing (T-093): auth.AgentTTL is 5 minutes; a full pass at the 60s
+// production floor spans several ticks and can outlive one mint. wd9TokenSource
+// (wd9_driver.go) re-mints ahead of any call that might land past it — the TTL itself is
+// untouched (no widening).
+func TestWD9InstalledStack(t *testing.T) {
+	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
+	client := newWD1TLSClient(t, 90*time.Second)
+
+	sess, csrf, status, err := doLogin(client, base)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+	suffix := wd1MemSuffix()
+
+	// --- Charter A + Charter B, staggered: B's own tick is already cooking while A's -
+	// happy path plays out below.
+	agentA := "wd9-inst-a-" + suffix
+	tsA := newWD9TokenSource(t, client, base, sess, csrf, agentA, resourceID)
+	composerA := "agent:" + agentA
+	wsA := charterWorkstream(t, client, base, sess, csrf, charterOpts{
+		objective: "wd9 installed a " + suffix, resources: []string{resourceID},
+		intervalSeconds: 60, stepBudget: 100, kind: "adaptive", composer: composerA,
+	})
+	t.Cleanup(func() { retireWorkstream(t, client, base, sess, csrf, wsA.ID) })
+
+	agentB := "wd9-inst-b-" + suffix
+	tsB := newWD9TokenSource(t, client, base, sess, csrf, agentB, resourceID)
+	composerB := "agent:" + agentB
+	wsB := charterWorkstream(t, client, base, sess, csrf, charterOpts{
+		objective: "wd9 installed b " + suffix, resources: []string{resourceID},
+		intervalSeconds: 60, stepBudget: 100, kind: "adaptive", composer: composerB,
+	})
+	t.Cleanup(func() { retireWorkstream(t, client, base, sess, csrf, wsB.ID) })
+	t.Logf("chartered A (%s, composer %s) and B (%s, composer %s) at the 60s production floor", wsA.ID, composerA, wsB.ID, composerB)
+
+	// --- tick1 for both, read#1 for A, N1 containment (B's request still genuinely open) -
+	req1 := waitForPlanRequest(t, client, base, tsA.token(), wsA.ID, 150*time.Second)
+	if req1.WorkstreamID != wsA.ID {
+		t.Fatalf("A's plan request workstreamId = %q, want %s", req1.WorkstreamID, wsA.ID)
+	}
+	reqB := waitForPlanRequest(t, client, base, tsB.token(), wsB.ID, 150*time.Second)
+	if reqB.WorkstreamID != wsB.ID {
+		t.Fatalf("B's plan request workstreamId = %q, want %s", reqB.WorkstreamID, wsB.ID)
+	}
+
+	readMemoryMCP(t, client, base, tsA.token(), wsA.ID) // baseline read#1, chained below
+	read1 := pollProxyActorOutcomeCount(t, client, base, sess, csrf, composerA, "memory.read", 1, 30*time.Second)
+	if len(read1) != 1 || read1[0].Edge != "agent-memory" {
+		t.Fatalf("composer A memory.read #1 = %+v, want exactly one with edge=agent-memory", read1)
+	}
+	t.Logf("PASS leg A1 — tick1 opened %s; baseline memory.read #1 chained (edge=agent-memory)", req1.RequestID)
+
+	for _, r := range pollWorkstreamMCP(t, client, base, tsA.token(), "") {
+		if r.WorkstreamID == wsB.ID {
+			t.Fatalf("A's unfiltered poll leaked B's charter's request: %+v", r)
+		}
+	}
+	if scoped := pollWorkstreamMCP(t, client, base, tsA.token(), wsB.ID); len(scoped) != 0 {
+		t.Fatalf("A's poll filtered to B's workstreamId = %+v, want empty (no oracle)", scoped)
+	}
+	if items := readMemoryMCP(t, client, base, tsA.token(), wsB.ID); len(items) != 0 {
+		t.Fatalf("A's read scoped to B's workstreamId = %+v, want empty (no oracle)", items)
+	}
+	t.Log("PASS leg B N1 — cross-grant containment holds installed: A's poll/read never surface B's still-open charter or request")
+
+	// --- submit both plans promptly (inside each request's ~120s TTL) ----------------
+	stepA := map[string]string{"resourceId": resourceID, "command": "echo WD9-INSTALLED-A1"}
+	runA1, planStatusA, isErrA, textA := submitPlanMCP(t, client, base, tsA.token(), req1.RequestID, []map[string]string{stepA})
+	if isErrA || planStatusA != "proposed" {
+		t.Fatalf("A's plan.submit failed: isErr=%v status=%q text=%q", isErrA, planStatusA, textA)
+	}
+	stepB := map[string]string{"resourceId": resourceID, "command": "echo WD9-INSTALLED-B1"}
+	runB, planStatusB, isErrB, textB := submitPlanMCP(t, client, base, tsB.token(), reqB.RequestID, []map[string]string{stepB})
+	if isErrB || planStatusB != "proposed" {
+		t.Fatalf("B's plan.submit failed: isErr=%v status=%q text=%q", isErrB, planStatusB, textB)
+	}
+
+	// --- leg A: preview -> approve -> the flagged resource's invocation-level park+ ---
+	// approve -> completed -> exactly one accrual.
+	preview := getRun(t, client, base, sess, csrf, runA1)
+	if preview.Status != "proposed" || len(preview.Steps) != 1 || preview.Steps[0].Command != "echo WD9-INSTALLED-A1" || preview.Steps[0].ResourceID != resourceID {
+		t.Fatalf("preview run %+v, want proposed with the sealed command+resource visible (T-091 preview gate, installed)", preview)
+	}
+	t.Log("PASS leg A2 — the operator's GET on the proposed run carries the exact sealed command (preview gate holds installed)")
+
+	approved, acode := approveRun(t, client, base, sess, csrf, runA1)
+	if acode != http.StatusOK || approved.Status != "pending" {
+		t.Fatalf("approve A's run: status %d, view %+v, want 200/pending", acode, approved)
+	}
+	inv := pollPendingInvocation(t, client, base, sess, csrf, resourceID, 90*time.Second)
+	if inv.RunID != runA1 {
+		t.Fatalf("parked invocation belongs to run %q, want %q", inv.RunID, runA1)
+	}
+	resolveInvocation(t, client, base, inv.ID, sess, csrf, "approve")
+	final := waitRunStatusHTTP(t, client, base, sess, csrf, runA1, "completed", 60*time.Second)
+	if final.Actor != composerA {
+		t.Fatalf("completed run actor = %q, want %s", final.Actor, composerA)
+	}
+	accrued := waitForMemory(t, client, base, sess, csrf, "run", runA1, 15*time.Second, func(m memoryView) bool {
+		return m.Ref == "run:"+runA1
+	})
+	if accrued.HasContent {
+		t.Fatalf("accrued memory %s hasContent=true, want false", accrued.ID)
+	}
+	var accrualCount int
+	for _, m := range listMemories(t, client, base, sess, csrf, "run", runA1) {
+		if m.Ref == "run:"+runA1 {
+			accrualCount++
+		}
+	}
+	if accrualCount != 1 {
+		t.Fatalf("run %s: %d accrued memory rows, want exactly 1", runA1, accrualCount)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+accrued.ID, "memory.written", 30*time.Second)
+	t.Logf("PASS leg A3 — the invocation-level park+approve drove the plan to completed (actor=%s); exactly one content-free accrual %s", composerA, accrued.ID)
+
+	// --- leg B: N3 — wait for B's FRESH open request (the cascade's second victim), --
+	// then revoke.
+	reqB2 := waitForFreshPlanRequest(t, client, base, tsB.token(), wsB.ID, reqB.RequestID, 150*time.Second)
+	revokeGrantHTTP(t, client, base, sess, csrf, wsB.GrantID)
+
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "run:"+runB, "run.canceled", 30*time.Second)
+	if n := countProxyTargetOutcome(t, client, base, sess, csrf, "run:"+runB, "run.denied"); n != 0 {
+		t.Fatalf("run.denied count for a cascade-canceled run = %d, want ZERO (revocation is not a human deny)", n)
+	}
+	if v := getRun(t, client, base, sess, csrf, runB); v.Status != "canceled" {
+		t.Fatalf("B's run status after revoke = %q, want canceled", v.Status)
+	}
+	wsBDetail := getWorkstream(t, client, base, sess, csrf, wsB.ID)
+	var req2Closed bool
+	for _, pr := range wsBDetail.PlanRequests {
+		if pr.ID == reqB2.RequestID {
+			req2Closed = true
+			if pr.Status != "closed" {
+				t.Fatalf("B's open request after revoke = %+v, want status=closed", pr)
+			}
+		}
+	}
+	if !req2Closed {
+		t.Fatalf("plan request %s missing from B's detail history after revoke", reqB2.RequestID)
+	}
+	if reqs := pollWorkstreamMCP(t, client, base, tsB.token(), ""); len(reqs) != 0 {
+		t.Fatalf("B's poll after grant revoke = %+v, want empty", reqs)
+	}
+	if _, _, isErrSubmit, textSubmit := submitPlanMCP(t, client, base, tsB.token(), reqB2.RequestID, []map[string]string{stepB}); !isErrSubmit {
+		t.Fatalf("B's plan.submit after grant revoke succeeded (want refused): %q", textSubmit)
+	}
+	if items := readMemoryMCP(t, client, base, tsB.token(), ""); len(items) != 0 {
+		t.Fatalf("B's read after grant revoke = %+v, want empty", items)
+	}
+	if _, rcode := approveRun(t, client, base, sess, csrf, runB); rcode != http.StatusForbidden {
+		t.Fatalf("approve on B's cascade-canceled/dead-grant run: status %d, want 403", rcode)
+	}
+	t.Log("PASS leg B N3 — grant revocation killed all three agent-plane surfaces installed: the proposed run canceled (ZERO run.denied), the open request closed, poll/read empty, submit refused, approve forbidden")
+
+	// --- N2 (cheap): the share flip on A's scope --------------------------------------
+	m := createMemory(t, client, base, sess, csrf, memoryCreateInput{
+		ScopeType: "workstream", ScopeID: wsA.ID, Key: "wd9-inst-sg-" + suffix, Content: "wd9 installed shared " + suffix,
+	})
+	for _, it := range readMemoryMCP(t, client, base, tsA.token(), wsA.ID) {
+		if it.ID == m.ID {
+			t.Fatalf("unshared authored row visible before the share flip: %+v", it)
+		}
+	}
+	shared, scode := shareMemory(t, client, base, sess, csrf, m.ID)
+	if scode != http.StatusOK || !shared.AgentVisible {
+		t.Fatalf("share memory: status %d view %+v, want 200/agentVisible=true", scode, shared)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+m.ID, "memory.shared", 30*time.Second)
+	var foundShared bool
+	for _, it := range readMemoryMCP(t, client, base, tsA.token(), wsA.ID) {
+		if it.ID == m.ID {
+			foundShared = true
+			if it.Content != "wd9 installed shared "+suffix {
+				t.Fatalf("shared row content = %q, want the authored content", it.Content)
+			}
+		}
+	}
+	if !foundShared {
+		t.Fatalf("shared row %s not visible to memory.read after the share flip", m.ID)
+	}
+	unshared, ucode := unshareMemory(t, client, base, sess, csrf, m.ID)
+	if ucode != http.StatusOK || unshared.AgentVisible {
+		t.Fatalf("unshare memory: status %d view %+v, want 200/agentVisible=false", ucode, unshared)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+m.ID, "memory.unshared", 30*time.Second)
+	for _, it := range readMemoryMCP(t, client, base, tsA.token(), wsA.ID) {
+		if it.ID == m.ID {
+			t.Fatalf("shared-then-unshared row still visible: %+v", it)
+		}
+	}
+	t.Log("PASS N2 — the share flip gates agent-plane visibility installed: invisible -> shared+content -> unshared+invisible")
+
+	// --- leg A: tick2's FRESH request -> read#2 sees the accrued pointer -> the loop --
+	// closes -> the deny cycle.
+	req2 := waitForFreshPlanRequest(t, client, base, tsA.token(), wsA.ID, req1.RequestID, 150*time.Second)
+	items2 := readMemoryMCP(t, client, base, tsA.token(), wsA.ID)
+	var sawAccrued bool
+	for _, it := range items2 {
+		if it.ID == accrued.ID {
+			sawAccrued = true
+			if it.Content != "" || it.Ref != "run:"+runA1 {
+				t.Fatalf("accrued row read back = %+v, want content-free with ref=run:%s", it, runA1)
+			}
+		}
+	}
+	if !sawAccrued {
+		t.Fatalf("memory.read #2 (items=%+v) never returned the just-accrued pointer %s — the loop did not close installed", items2, accrued.ID)
+	}
+	// NOT an exact-2 count here (unlike the compose TestWD9HappyPath, which isolates one
+	// composer to exactly its own two happy-path reads): this installed test PACKS N1's
+	// out-of-scope read and N2's three share-gate reads onto the SAME composer A token
+	// for the wd1 time budget (T-093's ratified shape), so composer A's total
+	// memory.read count is a superset of "just the loop-closure beats" and is not a
+	// meaningful per-leg signal on its own — the content check above (accrued.ID present,
+	// content-free, correct ref) IS the loop-closure proof. Assert only the lower bound
+	// (>=2: baseline + this call) and record the observed total for the report.
+	read2 := pollProxyActorOutcomeCount(t, client, base, sess, csrf, composerA, "memory.read", 2, 30*time.Second)
+	t.Logf("PASS leg A4 — the loop closed installed: tick2's memory.read #2 returned tick1's accrued pointer %s (composer A's cumulative memory.read count across all packed legs so far: %d)", accrued.ID, len(read2))
+
+	stepA2 := map[string]string{"resourceId": resourceID, "command": "echo WD9-INSTALLED-A2"}
+	runA2, planStatusA2, isErrA2, textA2 := submitPlanMCP(t, client, base, tsA.token(), req2.RequestID, []map[string]string{stepA2})
+	if isErrA2 || planStatusA2 != "proposed" {
+		t.Fatalf("A's second plan.submit failed: isErr=%v status=%q text=%q", isErrA2, planStatusA2, textA2)
+	}
+	denied, dcode := denyRun(t, client, base, sess, csrf, runA2)
+	if dcode != http.StatusOK || denied.Status != "canceled" {
+		t.Fatalf("deny A's second run: status %d view %+v, want 200/canceled", dcode, denied)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "run:"+runA2, "run.canceled", 30*time.Second)
+	if n := countProxyTargetOutcome(t, client, base, sess, csrf, "run:"+runA2, "run.denied"); n != 1 {
+		t.Fatalf("run.denied count for %s = %d, want exactly 1", runA2, n)
+	}
+	accrued2 := waitForMemory(t, client, base, sess, csrf, "run", runA2, 15*time.Second, func(m memoryView) bool {
+		return m.Ref == "run:"+runA2
+	})
+	if accrued2.HasContent {
+		t.Fatalf("denied-run accrual %s hasContent=true, want false", accrued2.ID)
+	}
+	var accrual2Count int
+	for _, m := range listMemories(t, client, base, sess, csrf, "run", runA2) {
+		if m.Ref == "run:"+runA2 {
+			accrual2Count++
+		}
+	}
+	if accrual2Count != 1 {
+		t.Fatalf("denied run %s: %d accrued memory rows, want exactly 1", runA2, accrual2Count)
+	}
+	t.Logf("PASS leg A5 — the deny cycle installed: proposed->canceled with a distinct run.denied (exactly once) beside run.canceled; the denied plan still accrued exactly one content-free pointer")
+
+	// --- leg D: N4 — an unanswered request expires and the charter never wedges ------
+	agentD := "wd9-inst-d-" + suffix
+	tsD := newWD9TokenSource(t, client, base, sess, csrf, agentD, resourceID)
+	wsD := charterWorkstream(t, client, base, sess, csrf, charterOpts{
+		objective: "wd9 installed d " + suffix, resources: []string{resourceID},
+		intervalSeconds: 60, stepBudget: 100, kind: "adaptive", composer: "agent:" + agentD,
+	})
+	t.Cleanup(func() { retireWorkstream(t, client, base, sess, csrf, wsD.ID) })
+	reqD1 := waitForPlanRequest(t, client, base, tsD.token(), wsD.ID, 150*time.Second)
+	// Ignore it deliberately — it must expire on its own rather than wedge the charter.
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "plan-request:"+reqD1.RequestID, "plan.expired", 90*time.Second)
+	reqD2 := waitForFreshPlanRequest(t, client, base, tsD.token(), wsD.ID, reqD1.RequestID, 90*time.Second)
+	if !reqD2.ExpiresAt.After(reqD1.ExpiresAt) {
+		t.Fatalf("D's fresh request expiresAt = %s, want it after the expired request's %s", reqD2.ExpiresAt, reqD1.ExpiresAt)
+	}
+	if wsDAfter := getWorkstream(t, client, base, sess, csrf, wsD.ID); wsDAfter.Status != "active" {
+		t.Fatalf("charter D status after an expired request = %q, want active", wsDAfter.Status)
+	}
+	t.Logf("PASS leg D N4 — an unanswered plan request expired (plan.expired chained) and the next tick opened a fresh, later-expiring request; charter %s never wedged", wsD.ID)
+
+	t.Logf("PASS WD-9 INSTALLED — charter->tick->read->compose/submit->preview->approve->(flagged park)->complete->accrue->the next tick's read closes the loop (A); cross-grant containment + revoke-kills-all (B, N1+N3); the share flip (N2); the deny cycle (A tick2); expiry never wedges (D, N4) — all through Caddy HTTPS at the 60s production floor")
+}
+
+// pollProxyActorOutcomeCount waits until at least `want` events matching (actor,
+// outcome) have reached the chain as read back through the operator audit proxy — the
+// installed-stack analogue of wd9_driver.go's pollActorOutcomeCount (which reads
+// audit-service directly; the external wd1 driver has no host-internal audit reach).
+func pollProxyActorOutcomeCount(t *testing.T, client *http.Client, base, sess, csrf, actor, outcome string, want int, within time.Duration) []auditEvent {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		var matched []auditEvent
+		for _, e := range listAllEventsViaProxy(t, client, base, sess, csrf) {
+			if e.Actor == actor && e.Outcome == outcome {
+				matched = append(matched, e)
+			}
+		}
+		if len(matched) >= want {
+			return matched
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("actor %q outcome %q: got %d event(s) via the audit proxy, want >=%d within %s", actor, outcome, len(matched), want, within)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // listAllEventsViaProxy pages the operator audit read-proxy (GET /v1/audit/events,
 // T-024) through Caddy: the external wd1 driver has no host-internal audit-service
 // reach, so per-id actor + exactly-once assertions ride the same wire the cockpit

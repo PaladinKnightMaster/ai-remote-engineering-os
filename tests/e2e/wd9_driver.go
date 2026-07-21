@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"aireos.local/packages/go/auth"
 )
 
 // planRequestView mirrors services/mcp-gateway/internal/mcp.PlanRequestView field-for-
@@ -240,4 +242,43 @@ func pollActorOutcomeCount(t *testing.T, auditURL, token, actor, outcome string,
 // lesson applied to WD-9's agent subjects).
 func w9suffix() string {
 	return time.Now().UTC().Format("150405.000000000")
+}
+
+// wd9TokenSource re-mints a composer's agent-tool token ahead of any MCP call that might
+// land past auth.AgentTTL (5 minutes) — the installed-stack WD-9 legs (T-093, tag wd1)
+// drive at the 60s production schedule floor and can span several ticks, easily
+// outliving one mint. It changes nothing about the TTL itself (no widening) — it just
+// keeps the caller from presenting an expired token. Unused by the compose e2e suite
+// (its 5s-interval charters finish well inside one token's life) but lives here since
+// it's the natural, generic home beside the other WD-9 driver helpers.
+type wd9TokenSource struct {
+	t                                     *testing.T
+	client                                *http.Client
+	apiURL, session, csrf, agentID, resID string
+	tok                                   string
+	mintedAt                              time.Time
+}
+
+// newWD9TokenSource mints the composer's first token and returns a source that keeps it
+// fresh via token().
+func newWD9TokenSource(t *testing.T, client *http.Client, apiURL, session, csrf, agentID, resID string) *wd9TokenSource {
+	t.Helper()
+	ts := &wd9TokenSource{t: t, client: client, apiURL: apiURL, session: session, csrf: csrf, agentID: agentID, resID: resID}
+	ts.remint()
+	return ts
+}
+
+func (ts *wd9TokenSource) remint() {
+	ts.t.Helper()
+	ts.tok = mintAgentTokenViaAPI(ts.t, ts.client, ts.apiURL, ts.session, ts.csrf, ts.agentID, ts.resID)
+	ts.mintedAt = time.Now()
+}
+
+// token returns a token with at least a 90s safety margin left on auth.AgentTTL,
+// re-minting first if the current one is already inside that margin.
+func (ts *wd9TokenSource) token() string {
+	if time.Since(ts.mintedAt) > auth.AgentTTL-90*time.Second {
+		ts.remint()
+	}
+	return ts.tok
 }
