@@ -32,6 +32,9 @@ type memoryView struct {
 	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
 	RedactedAt  *time.Time `json:"redactedAt,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
+	// AgentVisible is the v0.9 share flip's current state (MEM-6, ADR-0065 §3, T-091):
+	// true once an operator has shared this row into the agent-plane read (memory.read).
+	AgentVisible bool `json:"agentVisible"`
 }
 
 // memoryCreateInput is the operator-authored write's input (POST /v1/memories,
@@ -136,6 +139,21 @@ func pinMemory(t *testing.T, client *http.Client, apiURL, session, csrf, id stri
 		t.Fatalf("pin memory: status %d, want 200", code)
 	}
 	return v
+}
+
+// shareMemory flips a memory's agent_visible to true (POST /v1/memories/{id}/share,
+// MEM-6, ADR-0065 §3, T-091) — idempotent 200 when already shared (D1); returns the
+// raw status so the idempotent-double-share leg (N2) can assert both calls succeed.
+func shareMemory(t *testing.T, client *http.Client, apiURL, session, csrf, id string) (memoryView, int) {
+	t.Helper()
+	return memoryVerb(t, client, apiURL, session, csrf, id, "share")
+}
+
+// unshareMemory flips a memory's agent_visible back to false (POST
+// /v1/memories/{id}/unshare, MEM-6, ADR-0065 §3, T-091) — idempotent 200 (D1).
+func unshareMemory(t *testing.T, client *http.Client, apiURL, session, csrf, id string) (memoryView, int) {
+	t.Helper()
+	return memoryVerb(t, client, apiURL, session, csrf, id, "unshare")
 }
 
 // unpinMemory makes a memory eligible for the expiry sweep again

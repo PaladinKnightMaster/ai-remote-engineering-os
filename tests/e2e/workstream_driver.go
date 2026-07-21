@@ -24,23 +24,46 @@ type charterStep struct {
 
 // charterOpts parameterizes a charter (the fixed-bounds issueGrant shape won't do: the
 // recurrence test needs a generous budget, and N3 needs a tight budget + a window).
+// kind/composer are the v0.9 adaptive-charter fields (ADR-0065 §4, T-091's fragment
+// addition): kind "" (omitted) → the api defaults to "template" (byte-behavior-preserved
+// for every pre-v0.9 caller of this helper); kind "adaptive" requires composer set and
+// steps left empty (the store's kind matrix, WS-5).
 type charterOpts struct {
 	objective       string
 	resources       []string
 	steps           []charterStep
 	intervalSeconds int
 	stepBudget      int
-	budgetWindowSec int // 0 → omit (the api defaults it to the interval)
+	budgetWindowSec int    // 0 → omit (the api defaults it to the interval)
+	kind            string // "" | "template" | "adaptive" (WS-5, ADR-0065 §4); "" → the store defaults to template
+	composer        string // required for kind=adaptive (the auto-issued grant's grantee, R2); "" for template
 }
 
 // workstreamView is the operator-facing charter shape (GET /v1/workstreams/{id} + the
 // charter response); grantId is the auto-issued grant (revocable via /v1/grants for the
-// self-retire leg), status the lifecycle state.
+// self-retire leg), status the lifecycle state. Kind/Composer are the v0.9 adaptive
+// fields (WS-5, ADR-0065 §4) — Kind is always present ("template" | "adaptive"),
+// Composer only for an adaptive charter.
 type workstreamView struct {
 	ID         string `json:"id"`
 	GrantID    string `json:"grantId"`
 	Status     string `json:"status"`
 	NextFireAt string `json:"nextFireAt"`
+	Kind       string `json:"kind"`
+	Composer   string `json:"composer,omitempty"`
+	// PlanRequests is the charter's bounded plan-request history (D3, T-091) — set by
+	// GetWorkstream only (server.go's toWorkstreamView convention); absent on the
+	// charter POST response and on list items.
+	PlanRequests []planRequestHistoryView `json:"planRequests,omitempty"`
+}
+
+// planRequestHistoryView mirrors services/api's workstreamPlanRequestView (D3,
+// ADR-0065 §5, T-091) — the charter detail's bounded plan-request history entry.
+type planRequestHistoryView struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	ExpiresAt string `json:"expiresAt"`
+	RunID     string `json:"runId,omitempty"`
 }
 
 // charterWorkstream POSTs a charter (operator, POST /v1/workstreams) and returns it. The
@@ -58,6 +81,12 @@ func charterWorkstream(t *testing.T, client *http.Client, apiURL, session, csrf 
 	}
 	if o.budgetWindowSec > 0 {
 		payload["budgetWindowSeconds"] = o.budgetWindowSec
+	}
+	if o.kind != "" {
+		payload["kind"] = o.kind
+	}
+	if o.composer != "" {
+		payload["composer"] = o.composer
 	}
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/workstreams", bytes.NewReader(body))

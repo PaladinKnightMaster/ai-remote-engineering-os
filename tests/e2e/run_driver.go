@@ -63,8 +63,12 @@ type runStatusView struct {
 	GrantID string `json:"grantId,omitempty"`
 	Steps   []struct {
 		StepIndex    int    `json:"stepIndex"`
+		ResourceID   string `json:"resourceId"`
 		Status       string `json:"status"`
 		InvocationID string `json:"invocationId"`
+		// Command rides the wire ONLY when the parent Run is 'proposed' (D2, ADR-0065
+		// §6, T-091) — the plan-preview review gate; absent otherwise.
+		Command string `json:"command,omitempty"`
 	} `json:"steps"`
 }
 
@@ -82,6 +86,53 @@ func cancelRun(t *testing.T, client *http.Client, apiURL, session, csrf, id stri
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode
+}
+
+// approveRun approves a submitted adaptive plan's parked 'proposed' Run (POST
+// /v1/runs/{id}/approve, RUN-6, ADR-0065 §6, T-088/T-091) and returns the resulting
+// view + HTTP status WITHOUT asserting it — callers decide what counts as success (the
+// happy-path 200→pending leg and the N3 dead-grant 403 leg both need the raw status).
+func approveRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string) (runStatusView, int) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/runs/"+id+"/approve", nil)
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("approve run: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return runStatusView{}, resp.StatusCode
+	}
+	var v runStatusView
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		t.Fatalf("decode approved run: %v", err)
+	}
+	return v, resp.StatusCode
+}
+
+// denyRun denies a submitted adaptive plan's parked 'proposed' Run (POST
+// /v1/runs/{id}/deny, RUN-6/C1, ADR-0065 §6, T-088) and returns the resulting view +
+// HTTP status WITHOUT asserting it (the approveRun convention).
+func denyRun(t *testing.T, client *http.Client, apiURL, session, csrf, id string) (runStatusView, int) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/runs/"+id+"/deny", nil)
+	req.Header.Set("Cookie", cookieHeader(session, csrf))
+	req.Header.Set("X-CSRF-Token", csrf)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("deny run: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return runStatusView{}, resp.StatusCode
+	}
+	var v runStatusView
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		t.Fatalf("decode denied run: %v", err)
+	}
+	return v, resp.StatusCode
 }
 
 // getRun reads a Run's status via the operator route (GET /v1/runs/{id}, T-057).
