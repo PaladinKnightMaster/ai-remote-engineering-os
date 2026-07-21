@@ -23,9 +23,11 @@ the eighth, infra-level edge ADR-0046 added to the seven above.
 
 | Edge | Decision enforced | Handler |
 |---|---|---|
-| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)**; **charter/pause/resume/retire a Workstream (v0.7.0)**; **list/author/redact/pin a scoped memory (v0.8.0 — memory is operator-plane ONLY, SEC-31)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`, `CreateWorkstream`, `PauseWorkstream`, `ResumeWorkstream`, `RetireWorkstream`, `ListMemories`, `CreateMemory`, `RedactMemory`, `PinMemory`, `UnpinMemory`) |
+| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)**; **charter/pause/resume/retire a Workstream (v0.7.0)**; **list/author/redact/pin a scoped memory (v0.8.0 — the operator memory surface, SEC-31)**; **share/unshare a memory to the composer + approve/deny a `proposed` (agent-composed) Run (v0.9.0 — the two GOV-10 consent surfaces)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`, `CreateWorkstream`, `PauseWorkstream`, `ResumeWorkstream`, `RetireWorkstream`, `ListMemories`, `CreateMemory`, `RedactMemory`, `PinMemory`, `UnpinMemory`, `ShareMemory`, `UnshareMemory`, `ApproveRun`, `DenyRun`) |
 | `agent-tool` | An agent's MCP `tools/call` on the gateway (the `remote.exec` tool) — scoped (SEC-16) to the agent token's resource; drives a governed invocation | `services/mcp-gateway/internal/server` (`/mcp`; audience `mcp-gateway`) |
 | `agent-tool` (**`run.launch`**, v0.6.0) | An agent launches a grant-bounded Run — a **control-plane** tool (no single-resource target, so the per-call SEC-16 resource check is N/A; the api-validated **grant** is the scope, SEC-29); mints no egress; idempotency-keyed (a retry re-attaches, never double-launches) | `services/mcp-gateway/internal/catalog` (`run.launch` branch before the target resolver) |
+| `agent-tool` (**`workstream.poll`** / **`plan.submit`**, v0.9.0) | The composer discovers its charters' open plan requests (with composition context) and answers one with an ordered plan — control-plane forwards like `run.launch`; the api pins `plan.submit` to **the grant's grantee** (an unknown request and a foreign agent's answer the byte-identical refusal — no oracle); the submitted plan runs plan-vs-grant (SEC-29) and parks as a `proposed` Run (it executes NOTHING) | `services/mcp-gateway/internal/catalog` (control-plane branches) → pinned api internal routes (`/v1/internal/plan-polls`, `/v1/internal/plan-submissions`) |
+| **`agent-memory`** (**`memory.read`**, v0.9.0 — **the reserved edge's ONE enforced path**) | The composer reads the memory its own live grants entitle it to — **read-only**; the readable set is derived **entirely server-side** (charter scope + that grant's Runs — cross-grant impossible by construction); tombstoned rows excluded; authored content only when the operator's **share flip** set `agent_visible`; results clamped 50/200; **every read chains one `memory.read` event fail-loud in the read's own transaction** (no event, no data); rides the gateway's per-agent in-flight cap | `services/mcp-gateway/internal/catalog` (`memory.read`, `Edge: "agent-memory"`) → `services/api/internal/server` (`/v1/internal/memory-reads`) → `internal/memory.ReadForAgent` (the operator-keyed `List`/`Get` are a separate, untouched surface) |
 | `service-service` (mcp-gateway → api, **launch forward**, v0.6.0) | The keyless gateway forwards {agent-subject, grant-id, plan} for plan-vs-grant validation + Run creation; **subject-pinned `subject=="mcp-gateway"`** on a route-scoped asymmetric-only verifier (SEC-27) | `services/api/internal/server` (internal `POST /v1/internal/delegated-runs`; api holds the gateway's PUBLIC key only — a verify key, not a mint key) |
 | `agent-remote-session` | Cockpit WS attach only for a `pending` session — a parked `pending_approval` session is refused (the approval gate needs no broker code) | `services/session-broker/internal/server` (status guard) |
 | `service-service` (api → policy-service) | `requires_approval` decision at session-create + operator resolution relay | `services/policy-service/internal/server/server.go` (decide + resolve handlers; audience `policy-service`) |
@@ -258,7 +260,10 @@ capability edge, no new plane, and zero gateway change**.
   agent's context it becomes a **cross-grant prompt-injection and secret-exfiltration
   channel** — so enforcing `agent-memory` requires its own consent + containment ADR,
   and it shares that trigger with adaptive/agent-composed Workstreams (they land
-  together or not at all). The edge set is unchanged.
+  together or not at all). The edge set is unchanged. *(Superseded at v0.9.0: that
+  ADR now exists — ADR-0065 — and the edge is enforced on exactly one read-only path
+  under its containment model; see the v0.9.0 section below. The v0.8 posture above
+  stands as the historical record of why it waited.)*
 - **Accrual is attributed, not anonymous.** The core write path is machine accrual:
   a terminal Run (operator-direct, agent-delegated, or workstream-fired; completed,
   failed, or canceled alike) writes ONE **content-free evidence pointer** in the same
@@ -278,3 +283,52 @@ expiry sweep rides the api reaper goroutine that starts unconditionally — **th
 release with zero install-wiring diff of any kind** (no new unit, route, env, or key;
 `AIREOS_MEMORY_SWEEP_SECONDS` is an optional e2e-only override, not written by the
 installer).
+
+## Adaptive Workstreams — the lit `agent-memory` read path (v0.9.0; ADR-0065)
+
+v0.9.0 discharges the fused trigger the section above recorded: ADR-0065 is the
+consent + containment model, and the reserved `agent-memory` edge is **enforced on
+exactly one path** — read-only, through the gateway `memory.read` tool (see the
+enforcement table). The edge *set* is unchanged (ADR-0046 preserved); the operator
+memory surface of v0.8 is **byte-identical** (a separate store method serves the
+agent plane — WD-8 stays green as the proof). The plan author is the **customer's
+external agent, inbound over the ADR-0056 MCP surface**: zero model dependency, zero
+new egress, the L3 hard gate untouched.
+
+- **SEC-32 — the adaptive invariant (the release's named invariant).** Agent memory
+  access is **read-only** (accrual on the terminal flip remains the sole machine
+  write); the readable set derives from **the caller's own live grants by
+  construction** (its charter's `workstream:<id>` scope + that grant's Runs — never
+  `operator` scope, never a foreign charter; an out-of-set filter answers EMPTY, not
+  an error — no oracle); **tombstoned rows are excluded** (forgetting means gone
+  from the feeding surface); operator-authored content is **share-gated**
+  (`agent_visible`, default false — the audited `memory.shared`/`memory.unshared`
+  flip pair; a tombstoned row cannot be shared); **every agent-plane read is chained
+  fail-loud** (`memory.read`, one content-free event per call, edge `agent-memory`,
+  enqueued inside the read's transaction — no event, no data; the ADR-0064 §8
+  escalation fired for the non-owner plane only, operator reads stay unchained); and
+  **every agent-composed plan parks** as a `proposed` Run for informed full-plan
+  review before anything executes (unattended-adaptive does not exist at v0.9, not
+  even as configuration). Proven live by WD-9's negatives on both stacks.
+- **The consent-successor invariant.** The v0.7 immutable template bound consent to
+  the reviewed artifact; for an **adaptive** charter the reviewed artifact is **each
+  tick's composed plan** — its full step list (resource + verbatim command, unsealed
+  for the owner ONLY while the Run is `proposed`; the ADR-0059 operator-only
+  posture, deliberately inverted from "the operator submitted it" to "the operator
+  has never seen it") on the approve/deny surface. The charter's single consent act
+  additionally names **who composes**: the composer agent is the auto-issued grant's
+  grantee, so `plan.submit` is subject-pinned to it.
+- **Revocation reaches everything** (DUR-10): a revoked/expired grant closes its
+  open plan request (atomically with retire/self-retire), refuses poll/submit/read,
+  and its `proposed` Run is cascade-canceled with `run.canceled` — **never
+  `run.denied`**, which stays exclusively the human review verdict.
+
+Event vocabulary added (AUD-20; content-free, ADR-0049): `plan.requested` /
+`plan.expired` (the request's transaction; actor = the charter — the machine
+transition), `plan.submitted` (in-tx with the request flip; actor = the composer),
+`memory.read` (agent plane only; Target = `memory:<comma-joined row ids>`),
+`memory.shared` / `memory.unshared` (operator flips), `run.denied` (beside the
+terminal event; the deferred `run.launched` chains at approve, not at submit).
+**Offline (OI-16):** migration 0013 rides the migrate loop; the three tools ride the
+already-installed gateway binary + `/mcp` route — **zero install-wiring diff again**
+(no new unit, route, env, or key).
