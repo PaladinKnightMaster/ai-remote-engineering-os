@@ -1,8 +1,17 @@
 # AI Remote Engineering OS — v0.9.0 release notes
 
-**Status: release-candidate** — every code and verification rung (T-087..T-093) is
-green; the remaining gates are the CEO §human WD-9 walkthrough (runbook Step 6) and
-the closure commit + local tag (T-095). WD-9 is green on the compose e2e stack
+**Status: released** — local annotated tag `v0.9.0` (no remote, per repo doctrine);
+the CEO §human WD-9 walkthrough was driven **live and hands-on** (2026-07-21) and
+signed off — chartering an adaptive Workstream in the rendered cockpit, approving a
+real agent-composed plan in the informed preview, hitting double governance (the
+flagged resource's invocation-level park inside the approved plan), exercising all
+four terminal outcomes (completed / window-lapsed-failed / invocation-denied /
+plan-denied — each accruing exactly one content-free pointer), the share gate both
+directions, and the loop closure — with the pre-captured 8-frame evidence retained
+at `tests/smoke/test-results/wd9/` (not git-archived) and the full recorded result
+in `verification_runbook.md` Step 6, including the Windows-host browser-access
+guide recorded so no future tester re-derives it. WD-9 is green on the compose e2e
+stack
 (`task e2e`, 32 tests, chain intact) and on the real installed stack (`task wd1`, the
 full production posture — 60s schedule floor, fresh 0.9.0 bundle, zero install-wiring
 diff). v0.9.0 — **"Adaptive Workstreams"** — is the release where governed memory

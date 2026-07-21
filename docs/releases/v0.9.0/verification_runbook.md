@@ -132,11 +132,27 @@ accrued pointer's content check. Do not "fix" that back to an exact count.
 ## Step 6 — CEO §human WD-9 walkthrough  (the remaining gate)
 
 Through the rendered cockpit on a live stack (the smoke stack inherits the e2e env —
-5s interval floor — recommended for a human-paced session). The composer side needs
-agent machinery the browser cannot provide: T-095's capture provides a small
-**agent-driver helper** (minting a composer token and driving
-`workstream.poll`/`plan.submit`/`memory.read` against the stack's `/mcp`) — the
-human drives everything else in the browser:
+5s interval floor — recommended for a human-paced session; the recorded session
+chartered at a 60s interval for calmer pacing). The composer side needs agent
+machinery the browser cannot provide: a small **agent-driver helper** (minting a
+composer token and driving `workstream.poll`/`plan.submit`/`memory.read` against the
+stack's `/mcp`) — the human drives everything else in the browser.
+
+> **Windows-host browser access (recorded during the §human session — read BEFORE
+> exposing the smoke stack to a host browser).** Docker Desktop's Windows/WSL2 HTTPS
+> port-forwarding corrupted the TLS handshake for every OS-native client (Chrome,
+> Edge, `curl.exe`/schannel all failed with `ERR_SSL_PROTOCOL_ERROR`-class errors)
+> while in-network clients and minimal TLS stacks (`openssl s_client`, the Playwright
+> container) worked fine — the stack itself was healthy throughout. Also observed on
+> the same host: IPv6 loopback (`::1`) TCP connects fail generally, and a stale
+> `wslrelay.exe` can squat a published port on `[::1]`. **The working §human access
+> route** (no TLS on the host path at all): publish `api:8080` + `broker:8082`
+> plain-HTTP via a compose override, then run the SPA's own dev proxy natively on the
+> host — `pnpm exec vite --host 127.0.0.1` in `apps/web` (the ADR-0047 §10 dev
+> posture; bind IPv4 explicitly) — and browse `http://localhost:5173`. Two helper
+> pitfalls: `POST /v1/agent-tokens` auto-prefixes the subject as `agent:<agentId>` —
+> pass the BARE id when minting for a composer chartered as `agent:<name>`; and the
+> composer token's 5-minute TTL needs a re-mint before each human-paced step.
 
 1. `/workstreams` — charter an **adaptive** Workstream: the kind picker hides the
    step editor; name the composer; read the consent copy (this agent will author
@@ -148,7 +164,10 @@ human drives everything else in the browser:
 4. Open it — **the informed preview**: every step's resource + verbatim command,
    composed by the agent, readable before anything runs. **Approve** (the confirm
    restates whose plan this is) → watch the unchanged engine drive it.
-5. The charter detail's scoped memory — the accrued content-free pointer appears;
+5. The accrued content-free pointer appears on `/memories` scoped to **`run:<runID>`**
+   (an adaptive charter's Run accrues at `run` scope — its actor is the composer, not
+   `workstream:<id>`, so the charter detail's workstream-scoped widget shows authored
+   rows, not these accruals; the composer's read plane unions both scopes by design);
    the agent-driver's next read (visible in its output) **returns it — the loop**.
 6. `/memories` — author a note on the charter's scope → the agent-driver's read
    does NOT see it → **Share** (the confirm names the injection/exfiltration risk)
@@ -159,8 +178,25 @@ human drives everything else in the browser:
    `plan.requested` → `memory.read` → `plan.submitted` → `run.launched` (at
    approve) → `run.*` → `memory.written`.
 
-Sign-off → the T-095 closure commit flips the notes + manifest to **released** and
-applies the local annotated tag.
+**Recorded result (2026-07-21): SIGNED OFF.** The CEO drove the walkthrough LIVE and
+hands-on (browser via the dev-proxy route above; the composer driven on cue by the
+throwaway agent-driver script), beyond the pre-captured screenshots (which remain at
+`tests/smoke/test-results/wd9/`, 8 frames, not git-archived). Observed live: the
+unattended tick; the informed plan preview + approve; **double governance** (the
+flagged resource's invocation-level park firing INSIDE the approved plan — approved
+at `/invocations` as a second, separate consent); **four distinct terminal outcomes
+each accruing exactly one content-free pointer** — completed, failed (the
+invocation-approval window lapsed during human-paced review: fail-closed, by
+design), invocation-denied, and plan-denied (`run.denied` + `run.canceled` chained
+together, step never dispatched); the loop closure (the composer's next read
+returned the accrued pointers); the share gate both directions; the attributed,
+content-free audit trail incl. the unattended `plan.requested`/`plan.expired`
+cadence continuing safely after the session ended (N4 live). Honest UX observations
+recorded for a future ergonomics pass (none release-blocking): the memory page's
+scope fields need a manual **Refresh** to refetch (no auto-refetch on scope edit),
+and `/audit` still pages oldest-first with no jump-to-newest (the v0.8 observation
+carried). Sign-off → this closure commit flips the notes + manifest to **released**
+and applies the local annotated tag.
 
 ## Step 7 — tag (after sign-off)  ⚠ local only, no remote
 
