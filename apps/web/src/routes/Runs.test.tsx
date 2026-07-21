@@ -3,7 +3,7 @@
 // Playwright runs.smoke.spec.ts (CLAUDE.md DoD: jsdom unit tests do not satisfy it).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../api", () => ({
@@ -118,5 +118,89 @@ describe("Runs route", () => {
     renderRuns();
 
     await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/could not load/i));
+  });
+
+  // --- T-091: FE-24 (the plan-preview approve/deny for a 'proposed' Run) ---
+
+  it("renders the 'proposed' chip + full plan preview (command visible), and approves it after a confirm", async () => {
+    mockGET({
+      runs: { items: [{ id: "run-p", status: "proposed" }], page: {} },
+      detail: {
+        id: "run-p",
+        status: "proposed",
+        steps: [{ stepIndex: 0, resourceId: "res-1", status: "pending", command: "echo hi" }],
+      },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(apiClient.POST).mockResolvedValue({ data: { id: "run-p", status: "pending", steps: [] }, error: undefined } as never);
+
+    renderRuns();
+    await waitFor(() => expect(screen.getByText("run-p")).toBeTruthy());
+    expect(screen.getByText("proposed")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("run-p"));
+    const preview = await screen.findByRole("region", { name: "plan preview" });
+    expect(within(preview).getByLabelText("command").textContent).toBe("echo hi");
+
+    fireEvent.click(within(preview).getByRole("button", { name: /^approve$/i }));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/launches this agent-composed plan/i));
+    await waitFor(() =>
+      expect(apiClient.POST).toHaveBeenCalledWith("/v1/runs/{id}/approve", { params: { path: { id: "run-p" } } }),
+    );
+  });
+
+  it("does not approve when the confirm is dismissed", async () => {
+    mockGET({
+      runs: { items: [{ id: "run-p", status: "proposed" }], page: {} },
+      detail: { id: "run-p", status: "proposed", steps: [{ stepIndex: 0, resourceId: "res-1", status: "pending", command: "echo hi" }] },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    renderRuns();
+    await waitFor(() => expect(screen.getByText("run-p")).toBeTruthy());
+    fireEvent.click(screen.getByText("run-p"));
+    const preview = await screen.findByRole("region", { name: "plan preview" });
+    fireEvent.click(within(preview).getByRole("button", { name: /^approve$/i }));
+
+    expect(apiClient.POST).not.toHaveBeenCalled();
+  });
+
+  it("denies a 'proposed' Run WITHOUT a confirm — deny stays first-class, no extra friction (GOV-10)", async () => {
+    mockGET({
+      runs: { items: [{ id: "run-p", status: "proposed" }], page: {} },
+      detail: { id: "run-p", status: "proposed", steps: [{ stepIndex: 0, resourceId: "res-1", status: "pending", command: "echo hi" }] },
+    });
+    vi.mocked(apiClient.POST).mockResolvedValue({ data: { id: "run-p", status: "canceled", steps: [] }, error: undefined } as never);
+    const confirmSpy = vi.spyOn(window, "confirm");
+
+    renderRuns();
+    await waitFor(() => expect(screen.getByText("run-p")).toBeTruthy());
+    fireEvent.click(screen.getByText("run-p"));
+    const preview = await screen.findByRole("region", { name: "plan preview" });
+
+    fireEvent.click(within(preview).getByRole("button", { name: /^deny$/i }));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(apiClient.POST).toHaveBeenCalledWith("/v1/runs/{id}/deny", { params: { path: { id: "run-p" } } }),
+    );
+  });
+
+  it("renders the ordinary per-step status list (no preview, no command) for a non-proposed Run", async () => {
+    mockGET({
+      runs: { items: [{ id: "run-r", status: "running" }], page: {} },
+      detail: {
+        id: "run-r",
+        status: "running",
+        steps: [{ stepIndex: 0, resourceId: "res-1", status: "running" }],
+      },
+    });
+
+    renderRuns();
+    await waitFor(() => expect(screen.getByText("run-r")).toBeTruthy());
+    fireEvent.click(screen.getByText("run-r"));
+
+    expect(await screen.findByRole("list", { name: "run steps" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "plan preview" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
   });
 });

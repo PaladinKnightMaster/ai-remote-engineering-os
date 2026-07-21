@@ -436,6 +436,108 @@ func TestSetPinned(t *testing.T) {
 	}
 }
 
+// TestSetShared — MEM-6 (T-091, ADR-0065 §3, R3): the share flip is guarded exactly
+// like SetPinned (idempotent per direction, one event per actual flip) PLUS the
+// redacted_at IS NULL predicate (D1): a tombstoned row's flip is a silent no-op AT THE
+// STORE LAYER — no event fires either direction. (The 409 the operator actually sees is
+// the HANDLER's own pre-check on the fetched row's RedactedAt, proven at the unit-test
+// level, memories_test.go's TestShareMemoryTombstoned409 — this test proves the
+// store-level backstop underneath it.) R3: the flip works on ANY row type — proven here
+// for both an authored row and a content-free accrued row (UI scoping, R2, is a
+// client-side choice, not a store-level restriction).
+func TestSetShared(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	scopeID := freshID(t)
+
+	authored, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: "operator:sharer", ScopeType: ScopeOperator, ScopeID: scopeID,
+		Content: "a shareable note",
+	})
+	if err != nil {
+		t.Fatalf("create authored: %v", err)
+	}
+
+	shared, err := s.SetShared(ctx, "operator:sharer", authored.ID, true)
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if !shared.AgentVisible {
+		t.Fatal("agentVisible must be true after share")
+	}
+	if n := countOutcome(t, pool, "memory:"+authored.ID, "memory.shared"); n != 1 {
+		t.Fatalf("memory.shared count = %d, want 1", n)
+	}
+
+	// Idempotent re-share: no second event.
+	if _, err := s.SetShared(ctx, "operator:sharer", authored.ID, true); err != nil {
+		t.Fatalf("re-share: %v", err)
+	}
+	if n := countOutcome(t, pool, "memory:"+authored.ID, "memory.shared"); n != 1 {
+		t.Fatalf("memory.shared count after re-share = %d, want 1 (no duplicate)", n)
+	}
+
+	unshared, err := s.SetShared(ctx, "operator:sharer", authored.ID, false)
+	if err != nil {
+		t.Fatalf("unshare: %v", err)
+	}
+	if unshared.AgentVisible {
+		t.Fatal("agentVisible must be false after unshare")
+	}
+	if n := countOutcome(t, pool, "memory:"+authored.ID, "memory.unshared"); n != 1 {
+		t.Fatalf("memory.unshared count = %d, want 1", n)
+	}
+
+	// R3: an accrued (content-free) row can ALSO be shared at the store/API level.
+	runID := freshID(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := s.AccrueRunTerminal(ctx, tx, runID, "completed", "operator:sharer", "", ""); err != nil {
+		t.Fatalf("accrue: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	accruedRows, err := s.List(ctx, "operator:sharer", ScopeRun, runID, 0)
+	if err != nil || len(accruedRows) != 1 {
+		t.Fatalf("list accrued: rows=%d err=%v", len(accruedRows), err)
+	}
+	accruedShared, err := s.SetShared(ctx, "operator:sharer", accruedRows[0].ID, true)
+	if err != nil {
+		t.Fatalf("share accrued row: %v", err)
+	}
+	if !accruedShared.AgentVisible {
+		t.Fatal("an accrued row must be shareable too (R3)")
+	}
+
+	// D1: a tombstoned row's flip is a silent no-op — the predicate (redacted_at IS
+	// NULL) blocks the UPDATE regardless of direction; no NEW event fires.
+	redacted, err := s.Redact(ctx, "operator:sharer", authored.ID)
+	if err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+	if redacted.AgentVisible {
+		t.Fatal("precondition: the row must already be unshared going into the tombstone check")
+	}
+	stillUnshared, err := s.SetShared(ctx, "operator:sharer", authored.ID, true)
+	if err != nil {
+		t.Fatalf("share tombstoned row: %v", err)
+	}
+	if stillUnshared.AgentVisible {
+		t.Fatal("a tombstoned row must never end up shared, even via a direct SetShared call")
+	}
+	if n := countOutcome(t, pool, "memory:"+authored.ID, "memory.shared"); n != 1 {
+		t.Fatalf("memory.shared count after the tombstoned attempt = %d, want 1 (unchanged — no new event)", n)
+	}
+
+	// Foreign owner → ErrNotFound.
+	if _, err := s.SetShared(ctx, "operator:stranger", authored.ID, true); err != ErrNotFound {
+		t.Fatalf("stranger share: got %v, want ErrNotFound", err)
+	}
+}
+
 // TestExpireDue — T-081 G1/DUR-9: the sweep tombstones exactly the expired-and-unpinned
 // rows, spares pinned and unexpired rows, skips a row already redacted before its
 // expiry (the guard, not the timer, is what makes this exactly-once), and a second

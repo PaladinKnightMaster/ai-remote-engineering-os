@@ -13,13 +13,14 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
-import { MemoryRow, type MemoryView } from "./Memories";
+import { MemoryRow, SHARE_CONFIRM_COPY, type MemoryView } from "./Memories";
 
 type Workstream = components["schemas"]["Workstream"];
 type Grant = components["schemas"]["Grant"];
 type Run = components["schemas"]["Run"];
 type Resource = components["schemas"]["Resource"];
 type TemplateStep = { resourceId: string; resourceName: string; command: string };
+type WorkstreamKind = components["schemas"]["WorkstreamCreate"]["kind"] & string;
 
 export function Workstreams() {
   const [workstreams, setWorkstreams] = useState<Workstream[]>([]);
@@ -30,6 +31,8 @@ export function Workstreams() {
   // The charter form (the one consent act).
   const [label, setLabel] = useState("");
   const [objective, setObjective] = useState("");
+  const [kind, setKind] = useState<WorkstreamKind>("template");
+  const [composer, setComposer] = useState(""); // required for kind=adaptive (D4)
   const [scope, setScope] = useState<{ id: string; name: string; type?: string }[]>([]);
   const [scopeResourceId, setScopeResourceId] = useState("");
   const [steps, setSteps] = useState<TemplateStep[]>([]);
@@ -45,6 +48,7 @@ export function Workstreams() {
 
   const [chartering, setChartering] = useState(false);
   const [verbBusy, setVerbBusy] = useState<string | null>(null);
+  const [memVerbBusy, setMemVerbBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
@@ -134,14 +138,20 @@ export function Workstreams() {
     setCommand("");
   }
 
+  // D4 (ADR-0065 §4): a template charter needs >=1 step (the immutable plan); an
+  // adaptive charter needs a named composer instead and carries NO steps.
+  const charterReady =
+    Boolean(objective.trim()) && scope.length > 0 && (kind === "adaptive" ? Boolean(composer.trim()) : steps.length > 0);
+
   async function onCharter() {
-    if (!objective.trim() || scope.length === 0 || steps.length === 0) return;
+    if (!charterReady) return;
     setChartering(true);
     setError(null);
     try {
       const body: components["schemas"]["WorkstreamCreate"] = {
         label: label.trim(),
         objective: objective.trim(),
+        kind, // always explicit — "template" here is byte-identical to the pre-v0.9 implicit default
         resources: scope.map((r) => r.id),
         verbs: verbs.split(",").map((v) => v.trim()).filter(Boolean),
         ttlSeconds,
@@ -149,9 +159,13 @@ export function Workstreams() {
         maxStepsPerRun,
         maxConcurrentRuns,
         stepBudget,
-        steps: steps.map((s) => ({ resourceId: s.resourceId, command: s.command })),
       };
       if (budgetWindowSeconds > 0) body.budgetWindowSeconds = budgetWindowSeconds;
+      if (kind === "adaptive") {
+        body.composer = composer.trim();
+      } else {
+        body.steps = steps.map((s) => ({ resourceId: s.resourceId, command: s.command }));
+      }
       const { error: apiErr } = await apiClient.POST("/v1/workstreams", { body });
       if (apiErr) {
         setError(apiErr.message ? `Could not charter the workstream: ${apiErr.message}` : "Could not charter the workstream.");
@@ -159,11 +173,30 @@ export function Workstreams() {
       }
       setLabel("");
       setObjective("");
+      setComposer("");
       setScope([]);
       setSteps([]);
       await loadAll();
     } finally {
       setChartering(false);
+    }
+  }
+
+  // R2/GOV-10 (MEM-6, T-091): the read-only FE-22 scoped-memory promotion gains the
+  // share control (FE-25) — redact/pin stay off this surface (unchanged), but sharing/
+  // unsharing what the composer can read belongs exactly where the composer relationship
+  // is chartered. Same confirm copy as /memories.
+  async function onToggleShare(id: string, shared: boolean) {
+    if (!window.confirm(SHARE_CONFIRM_COPY)) return;
+    setMemVerbBusy(id);
+    setError(null);
+    try {
+      const path = shared ? "/v1/memories/{id}/unshare" : "/v1/memories/{id}/share";
+      const { data, error: apiErr } = await apiClient.POST(path, { params: { path: { id } } });
+      if (apiErr) setError(`Could not ${shared ? "unshare" : "share"} the memory. Refresh and try again.`);
+      else if (data) setMemories((m) => m.map((x) => (x.id === id ? data : x)));
+    } finally {
+      setMemVerbBusy(null);
     }
   }
 
@@ -258,6 +291,30 @@ export function Workstreams() {
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           />
 
+          {/* D4 (ADR-0065 §4): kind picker — template (default, byte-identical existing
+              flow) vs. adaptive (no step editor; a named composer authors each tick's
+              plan instead). */}
+          <div className="flex gap-2">
+            <select
+              aria-label="workstream kind"
+              value={kind}
+              onChange={(e) => setKind(e.target.value as WorkstreamKind)}
+              className="w-40 rounded-md border border-input bg-background px-3 py-2 text-sm"
+            >
+              <option value="template">Template</option>
+              <option value="adaptive">Adaptive</option>
+            </select>
+            {kind === "adaptive" && (
+              <input
+                aria-label="composer agent"
+                value={composer}
+                onChange={(e) => setComposer(e.target.value)}
+                placeholder="composer agent subject (e.g. agent:ops-planner)"
+                className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+              />
+            )}
+          </div>
+
           {/* The charter scope — becomes the auto-issued grant's resources. */}
           <div className="flex gap-2">
             {resourceSelect("scope resource", scopeResourceId, setScopeResourceId, resources)}
@@ -285,37 +342,44 @@ export function Workstreams() {
             </ul>
           )}
 
-          {/* The IMMUTABLE template. Step resources are limited to the scope, so
+          {/* The IMMUTABLE template — template charters only (D4); an adaptive charter
+              hides this entirely — the composer authors each tick's plan instead, and
+              zero template steps is a structural requirement (the store's kind matrix,
+              422 on a mismatch). Step resources are limited to the scope, so
               template ⊆ scope by construction (the api still 422s the invariant). */}
-          <div className="flex gap-2">
-            {resourceSelect("step resource", stepResourceId, setStepResourceId, scope)}
-            <input
-              aria-label="step command"
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              placeholder="command to run each tick"
-              className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-            />
-            <button type="button" onClick={addStep} disabled={!stepResourceId || !command.trim()} className="rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-60">
-              Add step
-            </button>
-          </div>
-          {steps.length > 0 && (
-            <ol aria-label="template steps" className="divide-y divide-border rounded-md border border-border">
-              {steps.map((s, i) => (
-                <li key={i} className="flex items-start justify-between gap-3 p-3 text-sm">
-                  <div className="min-w-0">
-                    <span className="text-muted-foreground">
-                      {i + 1}. {s.resourceName}
-                    </span>
-                    <pre className="mt-1 overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground">{s.command}</pre>
-                  </div>
-                  <button type="button" onClick={() => setSteps((p) => p.filter((_, idx) => idx !== i))} className="rounded-md border border-border px-2 py-1 text-xs">
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ol>
+          {kind === "template" && (
+            <>
+              <div className="flex gap-2">
+                {resourceSelect("step resource", stepResourceId, setStepResourceId, scope)}
+                <input
+                  aria-label="step command"
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  placeholder="command to run each tick"
+                  className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                />
+                <button type="button" onClick={addStep} disabled={!stepResourceId || !command.trim()} className="rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-60">
+                  Add step
+                </button>
+              </div>
+              {steps.length > 0 && (
+                <ol aria-label="template steps" className="divide-y divide-border rounded-md border border-border">
+                  {steps.map((s, i) => (
+                    <li key={i} className="flex items-start justify-between gap-3 p-3 text-sm">
+                      <div className="min-w-0">
+                        <span className="text-muted-foreground">
+                          {i + 1}. {s.resourceName}
+                        </span>
+                        <pre className="mt-1 overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground">{s.command}</pre>
+                      </div>
+                      <button type="button" onClick={() => setSteps((p) => p.filter((_, idx) => idx !== i))} className="rounded-md border border-border px-2 py-1 text-xs">
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </>
           )}
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -337,17 +401,27 @@ export function Workstreams() {
             {numberField("Budget window seconds", budgetWindowSeconds, setBudgetWindowSeconds, { min: 0, placeholder: "0 = the interval" })}
           </div>
 
-          {/* GOV-8: the consent copy — what chartering authorizes, stated at the act. */}
-          <p className="text-xs text-muted-foreground">
-            Chartering consents to <strong>unattended, scheduled execution</strong> of exactly this template within this
-            scope — every interval, with nobody present at launch — until you retire it or its TTL expires. The template
-            is immutable (to change it, retire and re-charter). Steps on approval-flagged resources still park for a
-            live approval each time.
-          </p>
+          {/* GOV-8 (template) / GOV-10 (adaptive): the consent copy — what chartering
+              authorizes, stated at the act. No dark patterns. */}
+          {kind === "template" ? (
+            <p className="text-xs text-muted-foreground">
+              Chartering consents to <strong>unattended, scheduled execution</strong> of exactly this template within this
+              scope — every interval, with nobody present at launch — until you retire it or its TTL expires. The template
+              is immutable (to change it, retire and re-charter). Steps on approval-flagged resources still park for a
+              live approval each time.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Chartering consents to letting <strong>{composer.trim() || "the named agent"}</strong> author each tick's
+              plan within this scope. That plan <strong>always parks for your review</strong> before anything runs —
+              nothing executes unattended. The agent can read this charter's accrued memory (content-free evidence
+              pointers) plus anything you explicitly share on <Link to="/memories" className="text-primary hover:underline">Memory</Link>.
+            </p>
+          )}
 
           <button
             type="submit"
-            disabled={chartering || !objective.trim() || scope.length === 0 || steps.length === 0}
+            disabled={chartering || !charterReady}
             className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
           >
             {chartering ? "Chartering…" : "Charter workstream"}
@@ -417,23 +491,68 @@ export function Workstreams() {
 
                   {selected === ws.id && (
                     <div className="space-y-2 rounded-md border border-border p-3">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-md border border-border px-2 py-0.5 text-xs font-medium">{detail?.kind ?? ws.kind ?? "template"}</span>
+                        {(detail?.kind ?? ws.kind) === "adaptive" && (detail?.composer ?? ws.composer) ? (
+                          <span className="text-xs text-muted-foreground">
+                            composer <span className="font-mono">{detail?.composer ?? ws.composer}</span>
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="text-xs text-muted-foreground">{detail?.objective ?? ws.objective}</p>
                       {g ? (
                         <p className="text-xs text-muted-foreground">
                           scope {g.resources.join(", ")} · verbs {g.verbs.join(", ")} · ≤{g.maxStepsPerRun} steps/run · ≤{g.maxConcurrentRuns} concurrent · budget {g.stepBudget}
                         </p>
                       ) : null}
-                      <ol aria-label="charter template" className="divide-y divide-border rounded-md border border-border">
-                        {(detail?.steps ?? []).map((s, i) => (
-                          <li key={i} className="p-2 text-xs">
-                            <span className="font-mono text-muted-foreground">
-                              {i + 1}. {s.resourceId}
-                            </span>
-                            <pre className="mt-1 overflow-x-auto rounded-md bg-muted px-2 py-1 font-mono text-foreground">{s.command}</pre>
-                          </li>
-                        ))}
-                        {(detail?.steps ?? []).length === 0 && <li className="p-2 text-xs text-muted-foreground">Loading template…</li>}
-                      </ol>
+                      {(detail?.kind ?? ws.kind) === "adaptive" ? (
+                        <p className="text-xs text-muted-foreground">Adaptive charter — no immutable template; the named composer authors each tick's plan.</p>
+                      ) : (
+                        <ol aria-label="charter template" className="divide-y divide-border rounded-md border border-border">
+                          {(detail?.steps ?? []).map((s, i) => (
+                            <li key={i} className="p-2 text-xs">
+                              <span className="font-mono text-muted-foreground">
+                                {i + 1}. {s.resourceId}
+                              </span>
+                              <pre className="mt-1 overflow-x-auto rounded-md bg-muted px-2 py-1 font-mono text-foreground">{s.command}</pre>
+                            </li>
+                          ))}
+                          {(detail?.steps ?? []).length === 0 && <li className="p-2 text-xs text-muted-foreground">Loading template…</li>}
+                        </ol>
+                      )}
+                      {/* D3 (ADR-0065 §5): the inbound plan-request channel's bounded history —
+                          open (with its TTL), submitted (its Run), or expired. Adaptive charters
+                          only (a template charter never opens one). */}
+                      {(detail?.kind ?? ws.kind) === "adaptive" && (
+                        <div aria-label="plan requests" className="space-y-1">
+                          <p className="text-xs font-medium">Plan requests</p>
+                          {(detail?.planRequests ?? []).length === 0 ? (
+                            <p className="text-xs text-muted-foreground">No plan requests yet.</p>
+                          ) : (
+                            <ul className="divide-y divide-border rounded-md border border-border">
+                              {(detail?.planRequests ?? []).map((pr) => (
+                                <li key={pr.id} className="flex items-center justify-between p-2 text-xs">
+                                  <span className="font-mono text-muted-foreground">{pr.id}</span>
+                                  {pr.status === "open" ? (
+                                    <span>
+                                      open · expires <span className="font-mono">{pr.expiresAt}</span>
+                                    </span>
+                                  ) : pr.status === "submitted" && pr.runId ? (
+                                    <span>
+                                      submitted ·{" "}
+                                      <Link to="/runs" className="text-primary hover:underline">
+                                        run <span className="font-mono">{pr.runId}</span>
+                                      </Link>
+                                    </span>
+                                  ) : (
+                                    <span>{pr.status}</span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
                       {/* EVD-4: the charter's run history (client-side join on grantId; first page). Each
                           run id is the evidence anchor — open it on /runs for per-step invocation ids. */}
                       <div aria-label="run history" className="space-y-1">
@@ -474,7 +593,7 @@ export function Workstreams() {
                         ) : (
                           <ul className="divide-y divide-border rounded-md border border-border">
                             {memories.map((m) => (
-                              <MemoryRow key={m.id} m={m} />
+                              <MemoryRow key={m.id} m={m} onToggleShare={onToggleShare} busy={memVerbBusy === m.id} />
                             ))}
                           </ul>
                         )}

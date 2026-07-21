@@ -26,9 +26,10 @@ type fakeMemoryStore struct {
 
 	lastCreate *memory.CreateInput
 
-	lastGetOwner, lastGetID       string
-	redactCalls, pinCalls         int // counts events would-be-enqueued (idempotency assertions)
-	lastSetPinnedOwner, lastSetID string
+	lastGetOwner, lastGetID             string
+	redactCalls, pinCalls, shareCalls   int // counts events would-be-enqueued (idempotency assertions)
+	lastSetPinnedOwner, lastSetID       string
+	lastSetSharedOwner, lastSetSharedID string
 
 	// T-090 fixtures: memory.read's store-side need (ReadMemory, adaptive_internal.go).
 	readItems                         []memory.Memory
@@ -111,6 +112,24 @@ func (f *fakeMemoryStore) SetPinned(_ context.Context, owner, id string, pinned 
 	if m.Pinned != pinned {
 		m.Pinned = pinned
 		f.pinCalls++
+	}
+	f.rows[id] = m
+	return m, nil
+}
+
+// SetShared mirrors the store's guarded, idempotent share/unshare flip (T-091), incl.
+// the redacted_at IS NULL predicate: a tombstoned row's flip is a no-op (shareCalls
+// does not increment) — the handler is expected to have already 409'd on RedactedAt
+// before ever calling this, so tests exercise that via the handler, not this fake.
+func (f *fakeMemoryStore) SetShared(_ context.Context, owner, id string, shared bool) (memory.Memory, error) {
+	f.lastSetSharedOwner, f.lastSetSharedID = owner, id
+	m, ok := f.rows[id]
+	if !ok || m.PermissionScope != owner {
+		return memory.Memory{}, memory.ErrNotFound
+	}
+	if m.RedactedAt == nil && m.AgentVisible != shared {
+		m.AgentVisible = shared
+		f.shareCalls++
 	}
 	f.rows[id] = m
 	return m, nil
@@ -319,11 +338,17 @@ func TestMemoryRoutesUnconfigured(t *testing.T) {
 	if rec := postMemoryVerb(t, h, "mem-1", "unpin", true); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("UNPIN: status=%d, want 503", rec.Code)
 	}
+	if rec := postMemoryVerb(t, h, "mem-1", "share", true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("SHARE: status=%d, want 503", rec.Code)
+	}
+	if rec := postMemoryVerb(t, h, "mem-1", "unshare", true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("UNSHARE: status=%d, want 503", rec.Code)
+	}
 }
 
-// --- T-081: the forgetting verbs (redact / pin / unpin) ---
+// --- T-081/T-091: the forgetting + sharing verbs (redact / pin / unpin / share / unshare) ---
 
-// postMemoryVerb POSTs /v1/memories/{id}/{verb} — the shared shape for redact/pin/unpin.
+// postMemoryVerb POSTs /v1/memories/{id}/{verb} — the shared shape for redact/pin/unpin/share/unshare.
 func postMemoryVerb(t *testing.T, h http.Handler, id, verb string, withAuth bool) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/v1/memories/"+id+"/"+verb, nil)
@@ -336,9 +361,9 @@ func postMemoryVerb(t *testing.T, h http.Handler, id, verb string, withAuth bool
 }
 
 // TestMemoryVerbs401Unauthenticated — no Authorization header → 401 before the
-// store is ever reached, for all three verbs.
+// store is ever reached, for all five verbs.
 func TestMemoryVerbs401Unauthenticated(t *testing.T) {
-	for _, verb := range []string{"redact", "pin", "unpin"} {
+	for _, verb := range []string{"redact", "pin", "unpin", "share", "unshare"} {
 		t.Run(verb, func(t *testing.T) {
 			fake := &fakeMemoryStore{}
 			h := newMemoryHandler(fake)
@@ -352,9 +377,9 @@ func TestMemoryVerbs401Unauthenticated(t *testing.T) {
 
 // TestMemoryVerbs404ForeignOwner — a foreign operator's id, or an unknown id,
 // answers 404 (the house owner-404, SEC-31/N3) BEFORE the verb ever runs; the store's
-// Get is called (existence-check) but Redact/SetPinned never are.
+// Get is called (existence-check) but Redact/SetPinned/SetShared never are.
 func TestMemoryVerbs404ForeignOwner(t *testing.T) {
-	for _, verb := range []string{"redact", "pin", "unpin"} {
+	for _, verb := range []string{"redact", "pin", "unpin", "share", "unshare"} {
 		t.Run(verb+"/foreign owner", func(t *testing.T) {
 			fake := &fakeMemoryStore{}
 			fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "someone-else"})
@@ -363,7 +388,7 @@ func TestMemoryVerbs404ForeignOwner(t *testing.T) {
 			if rec.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
 			}
-			if fake.redactCalls != 0 || fake.pinCalls != 0 {
+			if fake.redactCalls != 0 || fake.pinCalls != 0 || fake.shareCalls != 0 {
 				t.Fatal("the verb must not run when the owner-scoped Get 404s")
 			}
 		})
@@ -473,5 +498,79 @@ func TestPinMemoryIdempotent(t *testing.T) {
 	}
 	if fake.pinCalls != 0 {
 		t.Fatalf("pinCalls = %d, want 0 (already pinned, no flip)", fake.pinCalls)
+	}
+}
+
+// --- T-091: the share flip (share / unshare) ---
+
+// TestShareUnshareMemoryHappy — share flips agentVisible=true; unshare flips it back;
+// both answer 200 with the current view (MEM-6).
+func TestShareUnshareMemoryHappy(t *testing.T) {
+	fake := &fakeMemoryStore{}
+	fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "operator", HasContent: true, Content: "a note"})
+	h := newMemoryHandler(fake)
+
+	shareRec := postMemoryVerb(t, h, "mem-1", "share", true)
+	if shareRec.Code != http.StatusOK {
+		t.Fatalf("share: status = %d, want 200 (body=%s)", shareRec.Code, shareRec.Body.String())
+	}
+	var shared memoryView
+	if err := json.Unmarshal(shareRec.Body.Bytes(), &shared); err != nil {
+		t.Fatalf("decode share: %v", err)
+	}
+	if !shared.AgentVisible {
+		t.Fatal("agentVisible must be true after share")
+	}
+
+	unshareRec := postMemoryVerb(t, h, "mem-1", "unshare", true)
+	if unshareRec.Code != http.StatusOK {
+		t.Fatalf("unshare: status = %d, want 200 (body=%s)", unshareRec.Code, unshareRec.Body.String())
+	}
+	var unshared memoryView
+	if err := json.Unmarshal(unshareRec.Body.Bytes(), &unshared); err != nil {
+		t.Fatalf("decode unshare: %v", err)
+	}
+	if unshared.AgentVisible {
+		t.Fatal("agentVisible must be false after unshare")
+	}
+	if fake.shareCalls != 2 {
+		t.Fatalf("shareCalls = %d, want 2 (one flip each direction)", fake.shareCalls)
+	}
+}
+
+// TestShareMemoryIdempotent — sharing an already-shared row is a silent no-op (still
+// 200, no duplicate event); same for unsharing an already-unshared row.
+func TestShareMemoryIdempotent(t *testing.T) {
+	fake := &fakeMemoryStore{}
+	fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "operator", HasContent: true, Content: "a note", AgentVisible: true})
+	h := newMemoryHandler(fake)
+
+	rec := postMemoryVerb(t, h, "mem-1", "share", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-share: status = %d, want 200 (NOT 409)", rec.Code)
+	}
+	if fake.shareCalls != 0 {
+		t.Fatalf("shareCalls = %d, want 0 (already shared, no flip)", fake.shareCalls)
+	}
+}
+
+// TestShareMemoryTombstoned409 — a redacted (tombstoned) row cannot be shared or
+// unshared: the handler checks the fetched row's RedactedAt BEFORE ever calling the
+// store's flip (D1) and answers 409 for both directions, never touching SetShared.
+func TestShareMemoryTombstoned409(t *testing.T) {
+	for _, verb := range []string{"share", "unshare"} {
+		t.Run(verb, func(t *testing.T) {
+			fake := &fakeMemoryStore{}
+			now := time.Now()
+			fake.seed(memory.Memory{ID: "mem-1", PermissionScope: "operator", RedactedAt: &now})
+			h := newMemoryHandler(fake)
+			rec := postMemoryVerb(t, h, "mem-1", verb, true)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409 (body=%s)", rec.Code, rec.Body.String())
+			}
+			if fake.shareCalls != 0 {
+				t.Fatal("SetShared must never be called for a tombstoned target")
+			}
+		})
 	}
 }

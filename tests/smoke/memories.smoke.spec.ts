@@ -73,3 +73,48 @@ test("operator authors, redacts, and pins memories on their own operator scope",
 
   await testInfo.attach("memories-redacted-and-pinned", { body: await page.screenshot(), contentType: "image/png" });
 });
+
+// R1(b) — the share flip leg (T-091; FE-25, MEM-6, GOV-10, ADR-0065 §3). The operator
+// authors a memory, shares it (the GOV-10 consent copy is visible in the confirm
+// dialog before accepting), sees the "visible to agent" badge appear, then unshares it
+// and the badge disappears. Converts FE-25 into a CI gate: the /memories surface
+// RENDERS the share/unshare verbs + badge on an authored row.
+test("operator shares an authored memory (GOV-10 confirm copy visible) then unshares it", async ({ page }, testInfo) => {
+  await login(page);
+
+  await expect(async () => {
+    await page.goto("/memories");
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(page.getByRole("button", { name: /author memory/i })).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 60_000 });
+
+  const key = `smoke-share-${Date.now()}`;
+  await page.getByLabel("key", { exact: true }).fill(key);
+  await page.getByLabel("content", { exact: true }).fill("shareable note body");
+  await page.getByRole("button", { name: /author memory/i }).click();
+  const row = page.locator("li").filter({ hasText: key });
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  await expect(row.getByText("visible to agent")).toHaveCount(0); // unshared is the default (R2)
+
+  await testInfo.attach("memory-authored-for-share", { body: await page.screenshot(), contentType: "image/png" });
+
+  // Share: the GOV-10 copy is visible in the confirm dialog BEFORE accepting.
+  let confirmMessage = "";
+  page.once("dialog", (dialog) => {
+    confirmMessage = dialog.message();
+    void dialog.accept();
+  });
+  await row.getByRole("button", { name: /^share$/i }).click();
+  await expect(row.getByText("visible to agent")).toBeVisible({ timeout: 30_000 });
+  expect(confirmMessage).toMatch(/composer agent's context/i);
+  expect(confirmMessage).toMatch(/cannot recall past ones/i);
+
+  await testInfo.attach("memory-shared", { body: await page.screenshot(), contentType: "image/png" });
+
+  // Unshare: the badge disappears.
+  page.once("dialog", (dialog) => void dialog.accept());
+  await row.getByRole("button", { name: /^unshare$/i }).click();
+  await expect(row.getByText("visible to agent")).toHaveCount(0);
+
+  await testInfo.attach("memory-unshared", { body: await page.screenshot(), contentType: "image/png" });
+});

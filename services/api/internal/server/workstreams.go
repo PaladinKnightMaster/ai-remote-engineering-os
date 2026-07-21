@@ -25,8 +25,23 @@ type workstreamStepView struct {
 	Command    string `json:"command"`
 }
 
+// workstreamPlanRequestView is one plan request on the wire (D3, ADR-0065 §5, T-091):
+// the workstream detail's bounded history — open (with its TTL), submitted (its Run),
+// or expired. Detail view only, like Steps below.
+type workstreamPlanRequestView struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	RunID     string    `json:"runId,omitempty"`
+}
+
+func toWorkstreamPlanRequestView(pr workstream.PlanRequest) workstreamPlanRequestView {
+	return workstreamPlanRequestView{ID: pr.ID, Status: pr.Status, ExpiresAt: pr.ExpiresAt, RunID: pr.RunID}
+}
+
 // workstreamView is the wire shape for a charter. The principal is the caller
-// (implicit), so it is not echoed. Steps (the template) ride the detail view only.
+// (implicit), so it is not echoed. Steps (the template) and PlanRequests ride the
+// detail view only (GetWorkstream); list items carry neither.
 type workstreamView struct {
 	ID              string               `json:"id"`
 	Label           string               `json:"label,omitempty"`
@@ -37,13 +52,23 @@ type workstreamView struct {
 	Status          string               `json:"status"`
 	CreatedAt       time.Time            `json:"createdAt"`
 	Steps           []workstreamStepView `json:"steps,omitempty"`
+	// Kind is template | adaptive (WS-5, ADR-0065 §4); existing pre-v0.9 charters are
+	// template. Composer names the composing agent for an adaptive charter (R2);
+	// absent (omitted) for a template charter.
+	Kind     string `json:"kind"`
+	Composer string `json:"composer,omitempty"`
+	// PlanRequests is the charter's bounded plan-request history (D3, T-091),
+	// newest first, capped at 10 — set by GetWorkstream only (an extra store call
+	// toWorkstreamView itself cannot make); absent on list items and omitted for a
+	// template charter (which never opens one).
+	PlanRequests []workstreamPlanRequestView `json:"planRequests,omitempty"`
 }
 
 func toWorkstreamView(w workstream.Workstream, withSteps bool) workstreamView {
 	v := workstreamView{
 		ID: w.ID, Label: w.Label, Objective: w.Objective, GrantID: w.GrantID,
 		IntervalSeconds: w.IntervalSeconds, NextFireAt: w.NextFireAt,
-		Status: w.Status, CreatedAt: w.CreatedAt,
+		Status: w.Status, CreatedAt: w.CreatedAt, Kind: w.Kind, Composer: w.Composer,
 	}
 	if withSteps {
 		for _, st := range w.Steps {
@@ -56,11 +81,16 @@ func toWorkstreamView(w workstream.Workstream, withSteps bool) workstreamView {
 // CreateWorkstream (POST /v1/workstreams) charters a Workstream (ADR-0063; WS-1/WS-2):
 // human-agent + double-submit CSRF via the shared gate; the chartering operator is the
 // principal. The ONE consent act: the charter row + its IMMUTABLE sealed template + the
-// auto-issued delegation grant (grantee = workstream:<id>) are created in one
-// transaction, with workstream.chartered + grant.issued chained from it (AUD-18). The
-// 422 matrix here is the charter-time half of the never-wedge property: a charter that
-// could never fire (template outside its own scope/bounds, a sub-floor interval) is
-// rejected at consent, not discovered at tick time.
+// auto-issued delegation grant (grantee = workstream:<id>, or the named composer for an
+// adaptive charter, R2) are created in one transaction, with workstream.chartered +
+// grant.issued chained from it (AUD-18). The 422 matrix here is the charter-time half
+// of the never-wedge property: a charter that could never fire (template outside its
+// own scope/bounds, a sub-floor interval) is rejected at consent, not discovered at
+// tick time. Steps is now OPTIONAL on the wire (D4, ADR-0065 §4): kind/composer select
+// the charter shape, and the store's kind matrix (workstream.Store.Create) is the
+// SINGLE validator for "template requires steps" / "adaptive requires a composer and
+// zero steps" — this handler passes kind/composer/steps through nil-safe and maps the
+// store's ErrValidation to 422, rather than duplicating the matrix here.
 func (a *apiHandlers) CreateWorkstream(w http.ResponseWriter, r *http.Request) {
 	operator, ok := operatorSubject(r)
 	if !ok {
@@ -84,17 +114,19 @@ func (a *apiHandlers) CreateWorkstream(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrentRuns   int      `json:"maxConcurrentRuns"`
 		StepBudget          int      `json:"stepBudget"`
 		BudgetWindowSeconds int      `json:"budgetWindowSeconds"` // optional; 0 → defaults to the interval
+		Kind                string   `json:"kind"`                // "" | "template" | "adaptive" (D4); "" → the store defaults to template
+		Composer            string   `json:"composer"`            // required for kind=adaptive; must be absent/empty for template
 		Steps               []struct {
 			ResourceID string `json:"resourceId"`
 			Command    string `json:"command"`
-		} `json:"steps"`
+		} `json:"steps"` // OPTIONAL (D4): required only for a template charter — the store enforces this
 	}
 	if err := dec.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
 		return
 	}
-	if body.Objective == "" || len(body.Steps) == 0 || len(body.Resources) == 0 || len(body.Verbs) == 0 {
-		writeError(w, http.StatusBadRequest, "bad_request", "a workstream requires an objective, at least one template step, and a resource+verb scope")
+	if body.Objective == "" || len(body.Resources) == 0 || len(body.Verbs) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "a workstream requires an objective and a resource+verb scope")
 		return
 	}
 	for _, st := range body.Steps {
@@ -140,6 +172,8 @@ func (a *apiHandlers) CreateWorkstream(w http.ResponseWriter, r *http.Request) {
 	in := workstream.Input{
 		Principal: operator, Label: body.Label, Objective: body.Objective,
 		IntervalSeconds: body.IntervalSeconds,
+		Kind:            body.Kind,
+		Composer:        body.Composer,
 		Grant: grant.Input{
 			// Principal + Agent are bound by the store (Agent = workstream:<id>, minted
 			// there) — never caller-supplied.
@@ -157,6 +191,10 @@ func (a *apiHandlers) CreateWorkstream(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := a.workstreams.Create(r.Context(), in)
 	if err != nil {
+		if errors.Is(err, workstream.ErrValidation) {
+			writeError(w, http.StatusUnprocessableEntity, "unprocessable", err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "charter failed")
 		return
 	}
@@ -208,8 +246,13 @@ func (a *apiHandlers) ListWorkstreams(w http.ResponseWriter, r *http.Request, pa
 	writeJSON(w, http.StatusOK, page)
 }
 
-// GetWorkstream (GET /v1/workstreams/{id}) returns a charter with its template.
-// Owner-scoped: a cross-operator id answers 404 (existence-hiding, the grants pattern).
+// planRequestHistoryLimit bounds GetWorkstream's plan-request history (D3, ADR-0065
+// §5, T-091): most recent 10, newest first — the charter detail's bounded surface.
+const planRequestHistoryLimit = 10
+
+// GetWorkstream (GET /v1/workstreams/{id}) returns a charter with its template and its
+// bounded plan-request history (D3). Owner-scoped: a cross-operator id answers 404
+// (existence-hiding, the grants pattern).
 func (a *apiHandlers) GetWorkstream(w http.ResponseWriter, r *http.Request, id string) {
 	operator, ok := operatorSubject(r)
 	if !ok {
@@ -233,7 +276,16 @@ func (a *apiHandlers) GetWorkstream(w http.ResponseWriter, r *http.Request, id s
 		writeError(w, http.StatusNotFound, "not_found", "workstream not found") // owner-scoped existence-hiding
 		return
 	}
-	writeJSON(w, http.StatusOK, toWorkstreamView(ws, true))
+	v := toWorkstreamView(ws, true)
+	prs, err := a.workstreams.ListPlanRequestsForWorkstream(r.Context(), id, planRequestHistoryLimit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "get workstream failed")
+		return
+	}
+	for _, pr := range prs {
+		v.PlanRequests = append(v.PlanRequests, toWorkstreamPlanRequestView(pr))
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 // ownedWorkstream resolves an id to a charter the caller owns, writing the error

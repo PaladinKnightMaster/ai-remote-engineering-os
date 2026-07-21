@@ -28,20 +28,35 @@ function tombstoneLabel(m: MemoryView): "Expired" | "Redacted" {
   return "Redacted";
 }
 
+// SHARE_CONFIRM_COPY is the GOV-10 consent copy (ADR-0065 §3, T-091), shown verbatim
+// on EVERY share/unshare click (either direction pops the same explanation, so the
+// operator is reminded of the unshare limit even while sharing, and vice versa) —
+// naming the prompt-injection/exfiltration risk plainly, no dark patterns.
+export const SHARE_CONFIRM_COPY =
+  "Sharing places this note's content inside the composer agent's context — a prompt-injection and exfiltration risk you are explicitly accepting. Unsharing stops future reads but cannot recall past ones.";
+
 /**
  * MemoryRow — the shared FE-23 row rendering, reused read-only by the Workstreams
- * charter-detail promotion (FE-22, no onRedact/onTogglePin). Verb buttons render only
- * when their handler is supplied.
+ * charter-detail promotion (FE-22, no onRedact/onTogglePin/onToggleShare). Verb
+ * buttons render only when their handler is supplied.
+ *
+ * R2 (GOV-10, MEM-6): the share control renders ONLY on authored rows (hasContent) —
+ * an accrued content-free row is always agent-readable regardless of its agentVisible
+ * flag (memory/store.go's ReadForAgent filter), so a share toggle there would be a
+ * lying control; it gets a static hint instead. Tombstoned rows get neither (they are
+ * gone from the agent plane).
  */
 export function MemoryRow({
   m,
   onRedact,
   onTogglePin,
+  onToggleShare,
   busy,
 }: {
   m: MemoryView;
   onRedact?: (id: string) => void;
   onTogglePin?: (id: string, pinned: boolean) => void;
+  onToggleShare?: (id: string, shared: boolean) => void;
   busy?: boolean;
 }) {
   const tombstoned = Boolean(m.redactedAt);
@@ -51,6 +66,9 @@ export function MemoryRow({
         <span className="min-w-0 font-medium">{m.key || "—"}</span>
         <div className="flex items-center gap-2">
           {m.pinned && <span className="rounded-md border border-border px-2 py-0.5 text-xs font-medium">Pinned</span>}
+          {!tombstoned && m.hasContent && m.agentVisible && (
+            <span className="rounded-md border border-border px-2 py-0.5 text-xs font-medium">visible to agent</span>
+          )}
           {tombstoned ? (
             <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
               {tombstoneLabel(m)} <span className="font-mono">{m.redactedAt}</span>
@@ -68,7 +86,12 @@ export function MemoryRow({
       {m.hasContent && !tombstoned && m.content !== undefined && (
         <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground">{m.content}</pre>
       )}
-      {(onRedact || onTogglePin) && (
+      {/* R2: accrued (content-free) rows are always readable by the composer — a
+          share toggle there would misrepresent the actual (always-on) read gate. */}
+      {!tombstoned && !m.hasContent && (
+        <p className="text-xs text-muted-foreground">always visible to the composer — content-free evidence pointer</p>
+      )}
+      {(onRedact || onTogglePin || (onToggleShare && m.hasContent && !tombstoned)) && (
         <div className="flex gap-2">
           {onTogglePin && (
             <button
@@ -78,6 +101,16 @@ export function MemoryRow({
               className="rounded-md border border-border px-2 py-1 text-xs font-medium disabled:opacity-60"
             >
               {busy ? "Working…" : m.pinned ? "Unpin" : "Pin"}
+            </button>
+          )}
+          {onToggleShare && m.hasContent && !tombstoned && (
+            <button
+              type="button"
+              onClick={() => onToggleShare(m.id, m.agentVisible)}
+              disabled={busy}
+              className="rounded-md border border-border px-2 py-1 text-xs font-medium disabled:opacity-60"
+            >
+              {busy ? "Working…" : m.agentVisible ? "Unshare" : "Share"}
             </button>
           )}
           {onRedact && !tombstoned && (
@@ -241,6 +274,23 @@ export function Memories() {
     }
   }
 
+  // R2/GOV-10 (MEM-6, T-091): the SAME confirm copy fires for either direction — it
+  // states the sharing risk AND the unshare limit together, so the operator has both
+  // facts before committing either way.
+  async function onToggleShare(id: string, shared: boolean) {
+    if (!window.confirm(SHARE_CONFIRM_COPY)) return;
+    setVerbBusy(id);
+    setError(null);
+    try {
+      const path = shared ? "/v1/memories/{id}/unshare" : "/v1/memories/{id}/share";
+      const { data, error: apiErr } = await apiClient.POST(path, { params: { path: { id } } });
+      if (apiErr) setError(`Could not ${shared ? "unshare" : "share"} the memory. Refresh and try again.`);
+      else if (data) setMemories((m) => m.map((x) => (x.id === id ? data : x)));
+    } finally {
+      setVerbBusy(null);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <header className="flex items-center justify-between">
@@ -373,7 +423,14 @@ export function Memories() {
         ) : (
           <ul className="divide-y divide-border">
             {memories.map((m) => (
-              <MemoryRow key={m.id} m={m} onRedact={onRedact} onTogglePin={onTogglePin} busy={verbBusy === m.id} />
+              <MemoryRow
+                key={m.id}
+                m={m}
+                onRedact={onRedact}
+                onTogglePin={onTogglePin}
+                onToggleShare={onToggleShare}
+                busy={verbBusy === m.id}
+              />
             ))}
           </ul>
         )}

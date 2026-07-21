@@ -12,6 +12,7 @@ package workstream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -974,5 +975,82 @@ func TestSelfRetireClosesOpenPlanRequestAtomically(t *testing.T) {
 	prGot, err := s.GetPlanRequest(ctx, pr.ID)
 	if err != nil || prGot.Status != PlanRequestClosed {
 		t.Fatalf("plan request after self-retire: %+v err=%v, want closed", prGot, err)
+	}
+}
+
+// TestListPlanRequestsForWorkstream — D3 (ADR-0065 §5, T-091): the workstream-detail
+// history is bounded (default 10, clamped) and NEWEST FIRST. More requests than the
+// cap are opened (each resolved via the expiry sweep before the next open — the
+// one-open-per-charter structural invariant means only one row is ever open at a
+// time); the default list is exactly the cap's worth, ordered id DESC; an explicit
+// smaller limit re-bounds further; an unrelated charter's history stays empty.
+func TestListPlanRequestsForWorkstream(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+
+	ws, err := s.Create(ctx, sampleAdaptiveInput("operator:planlist", "agent:composer-planlist"))
+	if err != nil {
+		t.Fatalf("create adaptive charter: %v", err)
+	}
+
+	const n = 12 // > defaultPlanRequestListLimit (10)
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("workstream:%s:tick:%d", ws.ID, i)
+		pr, reattached, err := s.OpenPlanRequest(ctx, ws.ID, key, time.Now().Add(time.Hour))
+		if err != nil || reattached {
+			t.Fatalf("open #%d: reattached=%v err=%v", i, reattached, err)
+		}
+		ids = append(ids, pr.ID)
+		// Resolve it (expire) so the NEXT open is a genuine new row.
+		if _, err := pool.Exec(ctx, `UPDATE plan_requests SET expires_at = now() - interval '1 second' WHERE id = $1`, pr.ID); err != nil {
+			t.Fatalf("backdate #%d: %v", i, err)
+		}
+		if _, err := s.ExpirePlanRequestsDue(ctx, 10); err != nil {
+			t.Fatalf("expire #%d: %v", i, err)
+		}
+	}
+
+	// Default (0 → defaultPlanRequestListLimit=10): the 10 MOST RECENT, newest first.
+	got, err := s.ListPlanRequestsForWorkstream(ctx, ws.ID, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 10 {
+		t.Fatalf("default list length = %d, want 10 (the cap)", len(got))
+	}
+	for i, pr := range got {
+		want := ids[n-1-i]
+		if pr.ID != want {
+			t.Fatalf("order[%d] = %q, want %q (newest-first)", i, pr.ID, want)
+		}
+	}
+	if got[0].Status != PlanRequestExpired {
+		t.Fatalf("expected the resolved (expired) status, got %q", got[0].Status)
+	}
+
+	// An explicit smaller limit re-bounds further, still newest-first.
+	limited, err := s.ListPlanRequestsForWorkstream(ctx, ws.ID, 3)
+	if err != nil {
+		t.Fatalf("list limited: %v", err)
+	}
+	if len(limited) != 3 {
+		t.Fatalf("limited list length = %d, want 3", len(limited))
+	}
+	for i, pr := range limited {
+		want := ids[n-1-i]
+		if pr.ID != want {
+			t.Fatalf("limited order[%d] = %q, want %q", i, pr.ID, want)
+		}
+	}
+
+	// An unrelated charter's history stays empty.
+	other, err := s.Create(ctx, sampleAdaptiveInput("operator:planlist-2", "agent:composer-planlist-2"))
+	if err != nil {
+		t.Fatalf("create unrelated charter: %v", err)
+	}
+	empty, err := s.ListPlanRequestsForWorkstream(ctx, other.ID, 0)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("unrelated charter history: rows=%d err=%v, want 0", len(empty), err)
 	}
 }

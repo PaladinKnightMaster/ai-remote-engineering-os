@@ -21,6 +21,16 @@ var ErrNotFound = errors.New("workstream not found")
 // ErrPlanRequestNotFound is returned when no plan request matches (PLAN-1, T-087).
 var ErrPlanRequestNotFound = errors.New("plan request not found")
 
+// ErrValidation wraps Create's up-front, pre-transaction input checks (T-091): the
+// kind matrix (WS-5, ADR-0065 §4) is now reachable through the API — WorkstreamCreate
+// no longer requires steps (D4), so a template charter that carries none, or an
+// adaptive charter missing its composer, surfaces HERE instead of at a handler-level
+// shortcut. CreateWorkstream (workstreams.go) maps errors.Is(err, ErrValidation) to
+// 422 — the SAME status the handler's own pre-store 422 matrix already answers with —
+// so the store stays the SINGLE validator for the kind matrix without the handler
+// duplicating it (the ratified D4 shape).
+var ErrValidation = errors.New("invalid workstream")
+
 // charterEdge is the bracket edge for workstream lifecycle events — chartering (and
 // pausing/retiring, T-074) is a human-agent authorization act (ADR-0063 §2: the ONE
 // consent act, paired with the grant's own grant.issued).
@@ -90,15 +100,16 @@ func (s *Store) open(b []byte) (string, error) {
 // nothing exists). First fire = now + interval (no immediate fire, ADR-0063 §5).
 func (s *Store) Create(ctx context.Context, in Input) (Workstream, error) {
 	if in.Principal == "" || in.Objective == "" {
-		return Workstream{}, errors.New("workstream requires a principal and an objective")
+		return Workstream{}, fmt.Errorf("%w: workstream requires a principal and an objective", ErrValidation)
 	}
 	if in.IntervalSeconds <= 0 {
-		return Workstream{}, errors.New("workstream interval must be positive")
+		return Workstream{}, fmt.Errorf("%w: workstream interval must be positive", ErrValidation)
 	}
 	// The kind matrix (WS-5, ADR-0065 §4): "" defaults to KindTemplate so every
 	// pre-v0.9 caller is behavior-preserved. KindTemplate requires no composer and
 	// >=1 step; KindAdaptive requires a named composer and zero steps — Create
-	// rejects any other combination (the DB CHECK backstops it structurally).
+	// rejects any other combination (the DB CHECK backstops it structurally). Every
+	// branch below wraps ErrValidation (T-091, D4): the handler maps it to 422.
 	kind := in.Kind
 	if kind == "" {
 		kind = KindTemplate
@@ -106,24 +117,24 @@ func (s *Store) Create(ctx context.Context, in Input) (Workstream, error) {
 	switch kind {
 	case KindTemplate:
 		if in.Composer != "" {
-			return Workstream{}, errors.New("a template charter must not name a composer")
+			return Workstream{}, fmt.Errorf("%w: a template charter must not name a composer", ErrValidation)
 		}
 		if len(in.Steps) == 0 {
-			return Workstream{}, errors.New("workstream requires at least one template step")
+			return Workstream{}, fmt.Errorf("%w: workstream requires at least one template step", ErrValidation)
 		}
 	case KindAdaptive:
 		if in.Composer == "" {
-			return Workstream{}, errors.New("an adaptive charter requires a named composer")
+			return Workstream{}, fmt.Errorf("%w: an adaptive charter requires a named composer", ErrValidation)
 		}
 		if len(in.Steps) != 0 {
-			return Workstream{}, errors.New("an adaptive charter must carry zero template steps")
+			return Workstream{}, fmt.Errorf("%w: an adaptive charter must carry zero template steps", ErrValidation)
 		}
 	default:
-		return Workstream{}, fmt.Errorf("unknown workstream kind %q", kind)
+		return Workstream{}, fmt.Errorf("%w: unknown workstream kind %q", ErrValidation, kind)
 	}
 	for i, st := range in.Steps {
 		if st.ResourceID == "" || st.Command == "" {
-			return Workstream{}, fmt.Errorf("template step %d requires resourceId and command", i)
+			return Workstream{}, fmt.Errorf("%w: template step %d requires resourceId and command", ErrValidation, i)
 		}
 	}
 	if s.grants == nil {
@@ -794,4 +805,47 @@ func (s *Store) ClosePlanRequestsForGrant(ctx context.Context, grantID string) (
 		return 0, fmt.Errorf("close plan requests for grant: %w", err)
 	}
 	return int(ct.RowsAffected()), nil
+}
+
+// defaultPlanRequestListLimit/maxPlanRequestListLimit bound
+// ListPlanRequestsForWorkstream (D3, ADR-0065 §5, T-091) — the memory store's List
+// clamp pattern reused: 0 or an out-of-range value defaults to 10 (the charter
+// detail's bounded plan-request history, FE-24).
+const (
+	defaultPlanRequestListLimit = 10
+	maxPlanRequestListLimit     = 50
+)
+
+// ListPlanRequestsForWorkstream returns a charter's plan requests, NEWEST first
+// (id DESC — the UUID v7 creation-order convention reversed), bounded to limit rows
+// (clamped to [1, maxPlanRequestListLimit]; 0 or out-of-range defaults to
+// defaultPlanRequestListLimit) — the workstream-detail surface's bounded history (D3,
+// FE-24): open (with its TTL), submitted (its Run), and expired requests, so the
+// operator sees "the tick opened a request, nobody has answered it yet" without a
+// second surface.
+func (s *Store) ListPlanRequestsForWorkstream(ctx context.Context, workstreamID string, limit int) ([]PlanRequest, error) {
+	switch {
+	case limit <= 0:
+		limit = defaultPlanRequestListLimit
+	case limit > maxPlanRequestListLimit:
+		limit = maxPlanRequestListLimit
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+planRequestSelectCols+` FROM plan_requests
+		 WHERE workstream_id = $1
+		 ORDER BY id DESC
+		 LIMIT $2`, workstreamID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list plan requests for workstream: %w", err)
+	}
+	defer rows.Close()
+	var out []PlanRequest
+	for rows.Next() {
+		pr, err := scanPlanRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pr)
+	}
+	return out, rows.Err()
 }

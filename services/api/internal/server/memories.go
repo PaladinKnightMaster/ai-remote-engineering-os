@@ -33,6 +33,12 @@ type memoryView struct {
 	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
 	RedactedAt  *time.Time `json:"redactedAt,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
+	// AgentVisible is the share flip's current state (MEM-6, ADR-0065 §3; T-091):
+	// true once an operator has shared this row into the agent-plane read
+	// (memory.read) — always false for a content-free accrued row's OWN flip state
+	// (the read filter admits it regardless, memory/store.go's ReadForAgent), so the
+	// UI treats accrued rows as always-agent-visible without trusting this flag.
+	AgentVisible bool `json:"agentVisible"`
 }
 
 // toMemoryView renders one store row onto the wire. content rides the wire ONLY when
@@ -44,6 +50,7 @@ func toMemoryView(m memory.Memory) memoryView {
 		ID: m.ID, ScopeType: m.ScopeType, ScopeID: m.ScopeID, Key: m.Key, Ref: m.Ref,
 		HasContent: m.HasContent, SourceTrace: m.SourceTrace, Confidence: m.Confidence,
 		Pinned: m.Pinned, ExpiresAt: m.ExpiresAt, RedactedAt: m.RedactedAt, CreatedAt: m.CreatedAt,
+		AgentVisible: m.AgentVisible,
 	}
 	if m.HasContent && m.RedactedAt == nil {
 		content := m.Content
@@ -183,29 +190,33 @@ func (a *apiHandlers) CreateMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toMemoryView(created))
 }
 
-// ownedMemory gates the three T-081 forgetting verbs: unauthenticated → 401; the
-// memory store unconfigured → 503; owner-scoped Get-then-flip (ADR-0064 §7) — the id
-// unknown or belonging to a different operator → 404 (the house owner-404, SEC-31/N3)
-// BEFORE the verb ever runs. Returns the caller's operator subject on success.
-func (a *apiHandlers) ownedMemory(w http.ResponseWriter, r *http.Request, id string) (string, bool) {
+// ownedMemory gates every T-081/T-091 forgetting-and-sharing verb: unauthenticated →
+// 401; the memory store unconfigured → 503; owner-scoped Get-then-flip (ADR-0064 §7)
+// — the id unknown or belonging to a different operator → 404 (the house owner-404,
+// SEC-31/N3) BEFORE the verb ever runs. Returns the caller's operator subject AND the
+// fetched row — ShareMemory/UnshareMemory (T-091) need the row's RedactedAt to
+// distinguish an idempotent re-flip (200) from a tombstoned target (409, D1) before
+// ever calling the store's flip.
+func (a *apiHandlers) ownedMemory(w http.ResponseWriter, r *http.Request, id string) (string, memory.Memory, bool) {
 	operator, ok := operatorSubject(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
-		return "", false
+		return "", memory.Memory{}, false
 	}
 	if a.memories == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "the memory store is not configured")
-		return "", false
+		return "", memory.Memory{}, false
 	}
-	if _, err := a.memories.Get(r.Context(), operator, id); err != nil {
+	m, err := a.memories.Get(r.Context(), operator, id)
+	if err != nil {
 		if errors.Is(err, memory.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "memory not found")
 		} else {
 			writeError(w, http.StatusInternalServerError, "internal", "get memory failed")
 		}
-		return "", false
+		return "", memory.Memory{}, false
 	}
-	return operator, true
+	return operator, m, true
 }
 
 // RedactMemory (POST /v1/memories/{id}/redact) tombstones a memory: content is
@@ -213,7 +224,7 @@ func (a *apiHandlers) ownedMemory(w http.ResponseWriter, r *http.Request, id str
 // prior exports (the R2 forgetting boundary, ADR-0064 §3). Idempotent 200 on a
 // re-redact (D1, ratified): same desired end state, no duplicate event — NOT 409.
 func (a *apiHandlers) RedactMemory(w http.ResponseWriter, r *http.Request, id string) {
-	operator, ok := a.ownedMemory(w, r, id)
+	operator, _, ok := a.ownedMemory(w, r, id)
 	if !ok {
 		return
 	}
@@ -228,7 +239,7 @@ func (a *apiHandlers) RedactMemory(w http.ResponseWriter, r *http.Request, id st
 // PinMemory (POST /v1/memories/{id}/pin) exempts a memory from the expiry sweep
 // (ADR-0064 §3). Idempotent 200 when already pinned (D1) — NOT 409.
 func (a *apiHandlers) PinMemory(w http.ResponseWriter, r *http.Request, id string) {
-	operator, ok := a.ownedMemory(w, r, id)
+	operator, _, ok := a.ownedMemory(w, r, id)
 	if !ok {
 		return
 	}
@@ -243,7 +254,7 @@ func (a *apiHandlers) PinMemory(w http.ResponseWriter, r *http.Request, id strin
 // UnpinMemory (POST /v1/memories/{id}/unpin) makes a memory eligible for the expiry
 // sweep again (ADR-0064 §3). Idempotent 200 when already unpinned (D1) — NOT 409.
 func (a *apiHandlers) UnpinMemory(w http.ResponseWriter, r *http.Request, id string) {
-	operator, ok := a.ownedMemory(w, r, id)
+	operator, _, ok := a.ownedMemory(w, r, id)
 	if !ok {
 		return
 	}
@@ -253,4 +264,47 @@ func (a *apiHandlers) UnpinMemory(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	writeJSON(w, http.StatusOK, toMemoryView(m))
+}
+
+// setMemoryShared is the shared body of ShareMemory/UnshareMemory (MEM-6, ADR-0065
+// §3; T-091; the pin/unpin precedent). A tombstoned target (redacted OR — via
+// Redact's shared code path — expired) answers 409, checked from the Get-then-flip
+// row's RedactedAt BEFORE the store's own flip runs (D1: distinguishes "can never
+// reach the desired state" from an ordinary idempotent re-flip, which the store's
+// flip already answers 200 for).
+func (a *apiHandlers) setMemoryShared(w http.ResponseWriter, r *http.Request, id string, shared bool) {
+	operator, m, ok := a.ownedMemory(w, r, id)
+	if !ok {
+		return
+	}
+	if m.RedactedAt != nil {
+		writeError(w, http.StatusConflict, "conflict", "a tombstoned memory cannot be shared or unshared")
+		return
+	}
+	verb := "share"
+	if !shared {
+		verb = "unshare"
+	}
+	updated, err := a.memories.SetShared(r.Context(), operator, id, shared)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", verb+" memory failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, toMemoryView(updated))
+}
+
+// ShareMemory (POST /v1/memories/{id}/share) flips agent_visible to true, making an
+// operator-authored row readable by the agent plane (memory.read, T-090; MEM-6,
+// ADR-0065 §3). Idempotent 200 when already shared (D1) — NOT 409 (only a tombstoned
+// target is).
+func (a *apiHandlers) ShareMemory(w http.ResponseWriter, r *http.Request, id string) {
+	a.setMemoryShared(w, r, id, true)
+}
+
+// UnshareMemory (POST /v1/memories/{id}/unshare) flips agent_visible back to false:
+// stops FUTURE agent-plane reads — it cannot recall a row already read into a prior
+// agent context (the GOV-10 consent copy states this plainly). Idempotent 200 when
+// already unshared (D1) — NOT 409 (only a tombstoned target is).
+func (a *apiHandlers) UnshareMemory(w http.ResponseWriter, r *http.Request, id string) {
+	a.setMemoryShared(w, r, id, false)
 }

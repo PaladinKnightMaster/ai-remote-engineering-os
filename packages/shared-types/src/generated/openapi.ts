@@ -703,6 +703,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/memories/{id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Share a memory into the agent-plane read (idempotent; MEM-6, ADR-0065 §3) */
+        post: operations["shareMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/memories/{id}/unshare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unshare a memory, stopping future agent-plane reads (idempotent; MEM-6, ADR-0065 §3) */
+        post: operations["unshareMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -822,6 +856,8 @@ export interface components {
             outcome?: string;
             /** @description The gateway invocation id once the step is dispatched — the read-time evidence-packet anchor into the hash-linked audit chain (AUD-15). Absent until dispatched. */
             invocationId?: string;
+            /** @description The step's operator-authored command — present ONLY when the parent Run's status is 'proposed' (D2, ADR-0065 §6): the plan-preview review surface for a composer-submitted adaptive plan, on GetRun only. Absent for every other status and every other view (the ADR-0059 operator-only persisted-command posture; here inverted because the operator has not yet seen this plan). */
+            command?: string;
         };
         GrantCreate: {
             /** @description The grantee agent subject this grant authorizes. */
@@ -862,6 +898,14 @@ export interface components {
             label?: string;
             /** @description The chartered objective (reviewed at consent; GOV-8). */
             objective: string;
+            /**
+             * @description template (the default) instantiates the immutable steps array below verbatim every tick. adaptive names a composer agent instead and must carry NO steps — each tick opens a durable plan request that the composer answers over the gateway (ADR-0065 §4/§5); the auto-issued grant's grantee is the named composer (R2).
+             * @default template
+             * @enum {string}
+             */
+            kind: "template" | "adaptive";
+            /** @description The named composer agent subject — REQUIRED when kind is adaptive, and MUST be absent/empty when kind is template (the store's kind matrix is the single validator; a mismatch answers 422). Becomes the auto-issued grant's grantee for an adaptive charter (R2, ADR-0065 §4). */
+            composer?: string;
             /** @description The charter scope — becomes the auto-issued grant's resources; every template step must target one of these. */
             resources: string[];
             verbs: string[];
@@ -874,8 +918,17 @@ export interface components {
             stepBudget: number;
             /** @description Rolling budget window (WS-4) — the step budget counts only Runs created within it. Omitted → defaults to the interval ("steps per period"). */
             budgetWindowSeconds?: number;
-            /** @description The IMMUTABLE plan template (edit = retire + re-charter). */
-            steps: components["schemas"]["WorkstreamStep"][];
+            /** @description The IMMUTABLE plan template (edit = retire + re-charter). Required (minItems 1) for a template charter (the default); MUST be omitted or empty for an adaptive charter — the store's kind matrix enforces this (422 on a mismatch), not this field's own presence. */
+            steps?: components["schemas"]["WorkstreamStep"][];
+        };
+        WorkstreamPlanRequestView: {
+            id: string;
+            /** @description open | submitted | expired | closed (PLAN-1, ADR-0065 §5). */
+            status: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** @description The `proposed` Run this request's plan.submit created; absent until submitted. */
+            runId?: string;
         };
         Workstream: {
             id: string;
@@ -890,8 +943,17 @@ export interface components {
             status: string;
             /** Format: date-time */
             createdAt: string;
-            /** @description The immutable template — detail view only (absent on list items). */
+            /**
+             * @description template | adaptive (WS-5, ADR-0065 §4); existing pre-v0.9 charters are template.
+             * @enum {string}
+             */
+            kind: "template" | "adaptive";
+            /** @description The named composer agent subject for an adaptive charter (R2, ADR-0065 §4); absent for a template charter. */
+            composer?: string;
+            /** @description The immutable template — detail view only (absent on list items); empty for an adaptive charter. */
             steps?: components["schemas"]["WorkstreamStep"][];
+            /** @description The charter's most recent plan requests, newest first, capped at 10 (D3, ADR-0065 §5) — detail view only (absent on list items), like steps. */
+            planRequests?: components["schemas"]["WorkstreamPlanRequestView"][];
         };
         MemoryCreate: {
             /** @enum {string} */
@@ -931,6 +993,8 @@ export interface components {
             confidence: number;
             /** @description Exempts the row from the expiry sweep (T-081). */
             pinned: boolean;
+            /** @description The share flip's current state (MEM-6, ADR-0065 §3): true once an operator-authored row has been shared into the agent-plane read (memory.read). Default false at write time. A content-free accrued row (hasContent=false) is always agent-readable regardless of this flag (memory/store.go's ReadForAgent filter) — the UI must not offer a share toggle for those rows (it would be a lying control). */
+            agentVisible: boolean;
             /** Format: date-time */
             expiresAt?: string;
             /**
@@ -2280,6 +2344,90 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            /** @description The memory store is not configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    shareMemory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The memory's current state (already shared, or newly shared — idempotent, D1). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description The memory is tombstoned (redacted or expired) and can never be shared. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The memory store is not configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    unshareMemory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The memory's current state (already unshared, or newly unshared — idempotent, D1). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description The memory is tombstoned (redacted or expired) and can never be unshared. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description The memory store is not configured. */
             503: {
                 headers: {

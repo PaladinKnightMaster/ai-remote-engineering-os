@@ -33,6 +33,7 @@ export function Runs() {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<Run | null>(null);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
+  const [resolvingId, setResolvingId] = useState<string | null>(null); // approve/deny a 'proposed' Run (FE-24)
 
   const loadRuns = useCallback(async () => {
     setLoading(true);
@@ -138,6 +139,37 @@ export function Runs() {
       }
     } finally {
       setCancelingId(null);
+    }
+  }
+
+  // FE-24 (RUN-6, ADR-0065 §6): resolve a 'proposed' Run — the plan-preview park's
+  // consent surface. Approve restates the grant it launches under (GOV-10: consent
+  // binds to THIS tick's reviewed plan); deny is equally first-class, no extra
+  // friction. 403 (a dead bounding grant) and 409 (already resolved by a race) are
+  // surfaced honestly rather than as a generic failure.
+  async function onResolveProposed(id: string, decision: "approve" | "deny") {
+    if (decision === "approve" && !window.confirm("Approving launches this agent-composed plan, exactly as shown below, under the charter's grant.")) {
+      return;
+    }
+    setResolvingId(id);
+    setError(null);
+    try {
+      const path = decision === "approve" ? "/v1/runs/{id}/approve" : "/v1/runs/{id}/deny";
+      const { error: apiErr } = await apiClient.POST(path, { params: { path: { id } } });
+      if (apiErr) {
+        setError(
+          apiErr.message
+            ? `Could not ${decision} the run: ${apiErr.message}`
+            : `Could not ${decision} the run — it may no longer be proposed. Refresh and try again.`,
+        );
+      }
+      await loadRuns();
+      if (selected === id) {
+        const { data } = await apiClient.GET("/v1/runs/{id}", { params: { path: { id } } });
+        if (data) setDetail(data);
+      }
+    } finally {
+      setResolvingId(null);
     }
   }
 
@@ -295,7 +327,12 @@ export function Runs() {
                     {r.id}
                   </button>
                   <div className="flex items-center gap-3">
-                    <span className="text-muted-foreground">{r.status}</span>
+                    {/* FE-24: 'proposed' is a distinct chip — the plan-preview park (RUN-6). */}
+                    {r.status === "proposed" ? (
+                      <span className="rounded-md border border-border px-2 py-0.5 text-xs font-medium">proposed</span>
+                    ) : (
+                      <span className="text-muted-foreground">{r.status}</span>
+                    )}
                     {isCancelable(r.status) && (
                       <button
                         onClick={() => void onCancel(r.id)}
@@ -321,23 +358,69 @@ export function Runs() {
                   </p>
                 ) : null}
 
-                {selected === r.id && (
-                  <ol aria-label="run steps" className="divide-y divide-border rounded-md border border-border">
-                    {(detail?.steps ?? []).map((s) => (
-                      <li key={s.stepIndex} className="flex items-center justify-between gap-3 p-2 text-xs">
-                        <span className="font-mono text-muted-foreground">
-                          {s.stepIndex + 1}. {s.resourceId}
-                        </span>
-                        <span>
-                          {s.status}
-                          {s.outcome ? ` · ${s.outcome}` : ""}
-                        </span>
-                      </li>
-                    ))}
-                    {(detail?.steps ?? []).length === 0 && (
-                      <li className="p-2 text-xs text-muted-foreground">Loading steps…</li>
-                    )}
-                  </ol>
+                {selected === r.id && r.status === "proposed" ? (
+                  // FE-24 (RUN-6, GOV-10, ADR-0065 §6): the plan-preview review — every
+                  // step's resource + the D2 command, verbatim, before approving launches
+                  // it under the charter's grant. The ApprovalPrompt visual language
+                  // (monospace command block, primary/destructive action pair) without
+                  // reusing the component itself (it is shaped for one resource/command
+                  // pair, not an ordered multi-step plan).
+                  <section role="region" aria-label="plan preview" className="space-y-3 rounded-md border border-border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">
+                      An agent-composed plan is parked for your review. Approving launches every step below, in
+                      order, under the charter's grant — nothing runs until you decide. Deny is equally first-class.
+                    </p>
+                    <ol aria-label="proposed plan" className="space-y-2">
+                      {(detail?.steps ?? []).map((s) => (
+                        <li key={s.stepIndex} className="text-xs">
+                          <span className="text-muted-foreground">
+                            Step {s.stepIndex + 1} · {s.resourceId}
+                          </span>
+                          <pre className="mt-1 overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground" aria-label="command">
+                            {s.command}
+                          </pre>
+                        </li>
+                      ))}
+                      {(detail?.steps ?? []).length === 0 && <li className="text-xs text-muted-foreground">Loading plan…</li>}
+                    </ol>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void onResolveProposed(r.id, "approve")}
+                        disabled={resolvingId === r.id}
+                        className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+                      >
+                        {resolvingId === r.id ? "Working…" : "Approve"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onResolveProposed(r.id, "deny")}
+                        disabled={resolvingId === r.id}
+                        className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-60"
+                      >
+                        Deny
+                      </button>
+                    </div>
+                  </section>
+                ) : (
+                  selected === r.id && (
+                    <ol aria-label="run steps" className="divide-y divide-border rounded-md border border-border">
+                      {(detail?.steps ?? []).map((s) => (
+                        <li key={s.stepIndex} className="flex items-center justify-between gap-3 p-2 text-xs">
+                          <span className="font-mono text-muted-foreground">
+                            {s.stepIndex + 1}. {s.resourceId}
+                          </span>
+                          <span>
+                            {s.status}
+                            {s.outcome ? ` · ${s.outcome}` : ""}
+                          </span>
+                        </li>
+                      ))}
+                      {(detail?.steps ?? []).length === 0 && (
+                        <li className="p-2 text-xs text-muted-foreground">Loading steps…</li>
+                      )}
+                    </ol>
+                  )
                 )}
               </li>
             ))}

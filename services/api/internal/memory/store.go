@@ -321,6 +321,34 @@ func (s *Store) SetPinned(ctx context.Context, owner, id string, pinned bool) (M
 	}, outcome)
 }
 
+// SetShared flips one owner-scoped memory's agent_visible flag (MEM-6, ADR-0065 §3;
+// R3, the ratified pin/unpin precedent applied to sharing): default-invisible
+// operator-authored content becomes readable by the agent plane (ReadForAgent) only
+// once shared. Idempotent per direction, same as SetPinned — a re-share/re-unshare is
+// a silent no-op (no duplicate memory.shared/memory.unshared). The flip predicate ALSO
+// requires redacted_at IS NULL (D1): a tombstoned row can never be (re)shared or
+// (re)unshared by the flip itself — but the caller (ShareMemory/UnshareMemory,
+// memories.go) checks RedactedAt on the Get-then-flip row BEFORE calling this, so a
+// tombstoned target answers 409 rather than a silently-absorbed no-op 200 (the D1
+// distinction: idempotent-200 for "already in the desired state," 409 for "can never
+// reach it"). ErrNotFound when id does not exist or belongs to a different owner
+// (SEC-31/N3).
+func (s *Store) SetShared(ctx context.Context, owner, id string, shared bool) (Memory, error) {
+	outcome := "memory.shared"
+	if !shared {
+		outcome = "memory.unshared"
+	}
+	return s.flip(ctx, owner, id, func(tx pgx.Tx) (int64, error) {
+		ct, err := tx.Exec(ctx, `
+			UPDATE memories SET agent_visible = $3, updated_at = now()
+			 WHERE id = $1 AND permission_scope = $2 AND agent_visible != $3 AND redacted_at IS NULL`, id, owner, shared)
+		if err != nil {
+			return 0, err
+		}
+		return ct.RowsAffected(), nil
+	}, outcome)
+}
+
 // ExpireDue tombstones up to batch unpinned, not-yet-redacted rows whose expires_at
 // has passed (ADR-0064 §3/DUR-9, F-b — rides the api's existing reaper loop, T-081).
 // ONE tx: the SELECT ... FOR UPDATE SKIP LOCKED sub-query claims a bounded batch

@@ -209,4 +209,126 @@ describe("Workstreams route", () => {
     renderRoute();
     await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/could not load/i));
   });
+
+  // --- T-091: FE-25 (the share control on the charter detail's memory rows) ---
+
+  it("shares an authored memory row on the charter detail (share/unshare live here; redact/pin still do not)", async () => {
+    mockGET({
+      workstreams: [sampleWS],
+      grants: [sampleGrant],
+      detail: { ...sampleWS, steps: [] },
+      memories: [
+        {
+          id: "mem-authored",
+          scopeType: "workstream",
+          scopeId: "ws-1",
+          key: "note",
+          ref: "",
+          hasContent: true,
+          content: "a note",
+          sourceTrace: "operator",
+          confidence: 1,
+          pinned: false,
+          agentVisible: false,
+          createdAt: "2026-07-06T00:00:00Z",
+        },
+      ],
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(apiClient.POST).mockResolvedValue({
+      data: { id: "mem-authored", agentVisible: true, hasContent: true, pinned: false },
+      error: undefined,
+    } as never);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
+    fireEvent.click(screen.getByText("nightly health"));
+
+    const shareBtn = await screen.findByRole("button", { name: /^share$/i });
+    fireEvent.click(shareBtn);
+
+    await waitFor(() =>
+      expect(apiClient.POST).toHaveBeenCalledWith("/v1/memories/{id}/share", { params: { path: { id: "mem-authored" } } }),
+    );
+    expect(screen.queryByRole("button", { name: /^redact$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^pin$/i })).toBeNull();
+  });
+
+  // --- T-091: D4 (the adaptive charter form) ---
+
+  it("hides the step editor and requires a composer for an adaptive charter, then charters with kind+composer and no steps", async () => {
+    mockGET({ resources: [{ id: "res-1", type: "ssh", name: "edge-01" }] });
+    vi.mocked(apiClient.POST).mockResolvedValue({
+      data: { ...sampleWS, kind: "adaptive", composer: "agent:composer-1", steps: [] },
+      error: undefined,
+    } as never);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByRole("option", { name: /edge-01/ })).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText("objective"), { target: { value: "keep hosts healthy" } });
+    fireEvent.change(screen.getByLabelText("scope resource", { exact: true }), { target: { value: "res-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /add to scope/i }));
+
+    fireEvent.change(screen.getByLabelText("workstream kind"), { target: { value: "adaptive" } });
+    // The step editor is gone; only the composer field remains.
+    expect(screen.queryByLabelText("step resource", { exact: true })).toBeNull();
+    expect(screen.queryByRole("button", { name: /add step/i })).toBeNull();
+    expect((screen.getByRole("button", { name: /charter workstream/i }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("composer agent"), { target: { value: "agent:composer-1" } });
+    expect((screen.getByRole("button", { name: /charter workstream/i }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /charter workstream/i }));
+
+    await waitFor(() =>
+      expect(apiClient.POST).toHaveBeenCalledWith(
+        "/v1/workstreams",
+        expect.objectContaining({
+          body: expect.objectContaining({ kind: "adaptive", composer: "agent:composer-1", resources: ["res-1"] }),
+        }),
+      ),
+    );
+    const charterCall = vi.mocked(apiClient.POST).mock.calls.find((c) => c[0] === "/v1/workstreams");
+    const body = (charterCall![1] as { body: Record<string, unknown> }).body;
+    expect(body.steps).toBeUndefined();
+  });
+
+  it("shows the GOV-10 consent copy for an adaptive charter (parks for review; memory access named)", async () => {
+    mockGET({});
+    renderRoute();
+    await waitFor(() => expect(screen.getByLabelText("workstream kind")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("workstream kind"), { target: { value: "adaptive" } });
+    expect(screen.getByText(/always parks for your review/i)).toBeTruthy();
+    expect(screen.getByText(/accrued memory/i)).toBeTruthy();
+  });
+
+  // --- T-091: D3 (the plan-request history) + kind badge/composer on the detail ---
+
+  it("renders the adaptive charter's kind badge + composer, and its plan-request history (open/submitted/expired)", async () => {
+    const adaptiveWS = { ...sampleWS, kind: "adaptive" as const, composer: "agent:composer-1" };
+    mockGET({
+      workstreams: [adaptiveWS],
+      grants: [sampleGrant],
+      detail: {
+        ...adaptiveWS,
+        steps: [],
+        planRequests: [
+          { id: "pr-1", status: "open", expiresAt: "2026-07-06T00:05:00Z" },
+          { id: "pr-2", status: "submitted", expiresAt: "2026-07-06T00:05:00Z", runId: "run-9" },
+          { id: "pr-3", status: "expired", expiresAt: "2026-07-05T00:05:00Z" },
+        ],
+      },
+    });
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
+    fireEvent.click(screen.getByText("nightly health"));
+
+    expect(await screen.findByText("adaptive")).toBeTruthy();
+    expect(screen.getByText("agent:composer-1")).toBeTruthy();
+    expect(await screen.findByText(/plan requests/i)).toBeTruthy();
+    expect(screen.getByText(/open · expires/i)).toBeTruthy();
+    expect(screen.getByText(/submitted ·/i)).toBeTruthy();
+    expect(screen.getByText("run-9")).toBeTruthy();
+    expect(screen.getByText("expired")).toBeTruthy();
+  });
 });

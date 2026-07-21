@@ -56,6 +56,7 @@ const sampleMemory: MemoryView = {
   sourceTrace: "operator",
   confidence: 1,
   pinned: false,
+  agentVisible: false,
   createdAt: "2026-07-06T00:00:00Z",
 };
 
@@ -162,6 +163,68 @@ describe("Memories route", () => {
     expect(await screen.findByText("Pinned")).toBeTruthy();
   });
 
+  // --- T-091: the share flip (R2/GOV-10, MEM-6/FE-25) ---
+
+  it("shares an authored memory via confirm → POST /share → badge flips, then unshares it back", async () => {
+    mockGET([sampleMemory]); // hasContent=true, agentVisible=false
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const shared: MemoryView = { ...sampleMemory, agentVisible: true };
+    vi.mocked(apiClient.POST).mockResolvedValueOnce({ data: shared, error: undefined } as never);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("note-1")).toBeTruthy());
+    expect(screen.queryByText("visible to agent")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/composer agent's context/i));
+    await waitFor(() =>
+      expect(apiClient.POST).toHaveBeenCalledWith("/v1/memories/{id}/share", { params: { path: { id: "mem-1" } } }),
+    );
+    expect(await screen.findByText("visible to agent")).toBeTruthy();
+
+    // Now unshare — the same confirm copy, the inverse route.
+    const unshared: MemoryView = { ...sampleMemory, agentVisible: false };
+    vi.mocked(apiClient.POST).mockResolvedValueOnce({ data: unshared, error: undefined } as never);
+    fireEvent.click(screen.getByRole("button", { name: /^unshare$/i }));
+    await waitFor(() =>
+      expect(apiClient.POST).toHaveBeenCalledWith("/v1/memories/{id}/unshare", { params: { path: { id: "mem-1" } } }),
+    );
+    expect(screen.queryByText("visible to agent")).toBeNull();
+  });
+
+  it("does not call share when the GOV-10 confirm is dismissed", async () => {
+    mockGET([sampleMemory]);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("note-1")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    expect(apiClient.POST).not.toHaveBeenCalled();
+  });
+
+  it("renders no share control for a content-free accrued row — a static hint instead (a toggle there would lie)", async () => {
+    const accrued: MemoryView = {
+      id: "mem-accrued",
+      scopeType: "operator",
+      scopeId: "operator:admin",
+      ref: "run:run-1/step:0",
+      hasContent: false,
+      sourceTrace: "run:run-1",
+      confidence: 1,
+      pinned: false,
+      agentVisible: false,
+      createdAt: "2026-07-06T00:00:00Z",
+    };
+    mockGET([accrued]);
+    renderRoute();
+
+    await waitFor(() => expect(screen.getByText(/run:run-1\/step:0/)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /^share$/i })).toBeNull();
+    expect(screen.getByText(/always visible to the composer/i)).toBeTruthy();
+  });
+
   it("exports the listed scope to a downloaded markdown manifest (anchor + blob, not the file)", async () => {
     mockGET([sampleMemory]);
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
@@ -228,6 +291,7 @@ describe("MemoryRow tombstone label (FE-23)", () => {
       sourceTrace: "run:run-1",
       confidence: 1,
       pinned: false,
+      agentVisible: false,
       createdAt: "2026-07-06T00:00:00Z",
     };
     const { container } = render(
@@ -238,5 +302,22 @@ describe("MemoryRow tombstone label (FE-23)", () => {
     expect(screen.getByText(/run:run-1\/step:0/)).toBeTruthy();
     // No content block rendered for a content-free accrued pointer (hasContent=false).
     expect(container.querySelector("pre")).toBeNull();
+  });
+
+  it("renders no share control (and no badge) for a tombstoned authored row — it is gone from the agent plane", () => {
+    const tombstoned: MemoryView = {
+      ...sampleMemory,
+      content: undefined,
+      agentVisible: true, // was shared before redaction — must not render as a live control
+      redactedAt: "2026-07-10T00:00:00Z",
+    };
+    render(
+      <ul>
+        <MemoryRow m={tombstoned} onToggleShare={() => {}} />
+      </ul>,
+    );
+    expect(screen.queryByRole("button", { name: /^share$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^unshare$/i })).toBeNull();
+    expect(screen.queryByText("visible to agent")).toBeNull();
   });
 });

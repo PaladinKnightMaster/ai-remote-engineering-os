@@ -105,6 +105,18 @@ const (
 	SessionResolveDecisionDeny    SessionResolveDecision = "deny"
 )
 
+// Defines values for WorkstreamKind.
+const (
+	WorkstreamKindAdaptive WorkstreamKind = "adaptive"
+	WorkstreamKindTemplate WorkstreamKind = "template"
+)
+
+// Defines values for WorkstreamCreateKind.
+const (
+	WorkstreamCreateKindAdaptive WorkstreamCreateKind = "adaptive"
+	WorkstreamCreateKindTemplate WorkstreamCreateKind = "template"
+)
+
 // Defines values for ListMemoriesParamsScopeType.
 const (
 	ListMemoriesParamsScopeTypeOperator   ListMemoriesParamsScopeType = "operator"
@@ -247,7 +259,9 @@ type MemoryCreateScopeType string
 
 // MemoryView defines model for MemoryView.
 type MemoryView struct {
-	Confidence float32 `json:"confidence"`
+	// AgentVisible The share flip's current state (MEM-6, ADR-0065 §3): true once an operator-authored row has been shared into the agent-plane read (memory.read). Default false at write time. A content-free accrued row (hasContent=false) is always agent-readable regardless of this flag (memory/store.go's ReadForAgent filter) — the UI must not offer a share toggle for those rows (it would be a lying control).
+	AgentVisible bool    `json:"agentVisible"`
+	Confidence   float32 `json:"confidence"`
 
 	// Content Present only when hasContent is true and the row is not redacted; opened from the sealed-at-rest bytes on read.
 	Content   *string    `json:"content,omitempty"`
@@ -348,6 +362,9 @@ type RunCreate struct {
 
 // RunStepView defines model for RunStepView.
 type RunStepView struct {
+	// Command The step's operator-authored command — present ONLY when the parent Run's status is 'proposed' (D2, ADR-0065 §6): the plan-preview review surface for a composer-submitted adaptive plan, on GetRun only. Absent for every other status and every other view (the ADR-0059 operator-only persisted-command posture; here inverted because the operator has not yet seen this plan).
+	Command *string `json:"command,omitempty"`
+
 	// InvocationId The gateway invocation id once the step is dispatched — the read-time evidence-packet anchor into the hash-linked audit chain (AUD-15). Absent until dispatched.
 	InvocationId *string `json:"invocationId,omitempty"`
 	Outcome      *string `json:"outcome,omitempty"`
@@ -398,30 +415,47 @@ type SessionResolveDecision string
 
 // Workstream defines model for Workstream.
 type Workstream struct {
+	// Composer The named composer agent subject for an adaptive charter (R2, ADR-0065 §4); absent for a template charter.
+	Composer  *string   `json:"composer,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 
 	// GrantId The charter's auto-issued delegation grant (1:1; retire revokes it).
-	GrantId         string    `json:"grantId"`
-	Id              string    `json:"id"`
-	IntervalSeconds int       `json:"intervalSeconds"`
-	Label           *string   `json:"label,omitempty"`
-	NextFireAt      time.Time `json:"nextFireAt"`
-	Objective       string    `json:"objective"`
+	GrantId         string `json:"grantId"`
+	Id              string `json:"id"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+
+	// Kind template | adaptive (WS-5, ADR-0065 §4); existing pre-v0.9 charters are template.
+	Kind       WorkstreamKind `json:"kind"`
+	Label      *string        `json:"label,omitempty"`
+	NextFireAt time.Time      `json:"nextFireAt"`
+	Objective  string         `json:"objective"`
+
+	// PlanRequests The charter's most recent plan requests, newest first, capped at 10 (D3, ADR-0065 §5) — detail view only (absent on list items), like steps.
+	PlanRequests *[]WorkstreamPlanRequestView `json:"planRequests,omitempty"`
 
 	// Status active | paused | retired (ADR-0063 §7).
 	Status string `json:"status"`
 
-	// Steps The immutable template — detail view only (absent on list items).
+	// Steps The immutable template — detail view only (absent on list items); empty for an adaptive charter.
 	Steps *[]WorkstreamStep `json:"steps,omitempty"`
 }
+
+// WorkstreamKind template | adaptive (WS-5, ADR-0065 §4); existing pre-v0.9 charters are template.
+type WorkstreamKind string
 
 // WorkstreamCreate defines model for WorkstreamCreate.
 type WorkstreamCreate struct {
 	// BudgetWindowSeconds Rolling budget window (WS-4) — the step budget counts only Runs created within it. Omitted → defaults to the interval ("steps per period").
 	BudgetWindowSeconds *int `json:"budgetWindowSeconds,omitempty"`
 
+	// Composer The named composer agent subject — REQUIRED when kind is adaptive, and MUST be absent/empty when kind is template (the store's kind matrix is the single validator; a mismatch answers 422). Becomes the auto-issued grant's grantee for an adaptive charter (R2, ADR-0065 §4).
+	Composer *string `json:"composer,omitempty"`
+
 	// IntervalSeconds The fixed schedule interval; must be at or above the server's floor (PERF-8). First fire = charter + interval.
 	IntervalSeconds int `json:"intervalSeconds"`
+
+	// Kind template (the default) instantiates the immutable steps array below verbatim every tick. adaptive names a composer agent instead and must carry NO steps — each tick opens a durable plan request that the composer answers over the gateway (ADR-0065 §4/§5); the auto-issued grant's grantee is the named composer (R2).
+	Kind *WorkstreamCreateKind `json:"kind,omitempty"`
 
 	// Label Operator-facing name for the charter.
 	Label             *string `json:"label,omitempty"`
@@ -435,12 +469,27 @@ type WorkstreamCreate struct {
 	Resources  []string `json:"resources"`
 	StepBudget int      `json:"stepBudget"`
 
-	// Steps The IMMUTABLE plan template (edit = retire + re-charter).
-	Steps []WorkstreamStep `json:"steps"`
+	// Steps The IMMUTABLE plan template (edit = retire + re-charter). Required (minItems 1) for a template charter (the default); MUST be omitted or empty for an adaptive charter — the store's kind matrix enforces this (422 on a mismatch), not this field's own presence.
+	Steps *[]WorkstreamStep `json:"steps,omitempty"`
 
 	// TtlSeconds Charter (= grant) lifetime in seconds.
 	TtlSeconds int      `json:"ttlSeconds"`
 	Verbs      []string `json:"verbs"`
+}
+
+// WorkstreamCreateKind template (the default) instantiates the immutable steps array below verbatim every tick. adaptive names a composer agent instead and must carry NO steps — each tick opens a durable plan request that the composer answers over the gateway (ADR-0065 §4/§5); the auto-issued grant's grantee is the named composer (R2).
+type WorkstreamCreateKind string
+
+// WorkstreamPlanRequestView defines model for WorkstreamPlanRequestView.
+type WorkstreamPlanRequestView struct {
+	ExpiresAt time.Time `json:"expiresAt"`
+	Id        string    `json:"id"`
+
+	// RunId The `proposed` Run this request's plan.submit created; absent until submitted.
+	RunId *string `json:"runId,omitempty"`
+
+	// Status open | submitted | expired | closed (PLAN-1, ADR-0065 §5).
+	Status string `json:"status"`
 }
 
 // WorkstreamStep defines model for WorkstreamStep.
@@ -594,9 +643,15 @@ type ServerInterface interface {
 	// Redact a memory (idempotent tombstone flip; erases content — never the audit chain, ADR-0064 §3)
 	// (POST /v1/memories/{id}/redact)
 	RedactMemory(w http.ResponseWriter, r *http.Request, id string)
+	// Share a memory into the agent-plane read (idempotent; MEM-6, ADR-0065 §3)
+	// (POST /v1/memories/{id}/share)
+	ShareMemory(w http.ResponseWriter, r *http.Request, id string)
 	// Unpin a memory, making it eligible for the expiry sweep again (idempotent; ADR-0064 §3)
 	// (POST /v1/memories/{id}/unpin)
 	UnpinMemory(w http.ResponseWriter, r *http.Request, id string)
+	// Unshare a memory, stopping future agent-plane reads (idempotent; MEM-6, ADR-0065 §3)
+	// (POST /v1/memories/{id}/unshare)
+	UnshareMemory(w http.ResponseWriter, r *http.Request, id string)
 	// List resources
 	// (GET /v1/resources)
 	ListResources(w http.ResponseWriter, r *http.Request, params ListResourcesParams)
@@ -759,9 +814,21 @@ func (_ Unimplemented) RedactMemory(w http.ResponseWriter, r *http.Request, id s
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Share a memory into the agent-plane read (idempotent; MEM-6, ADR-0065 §3)
+// (POST /v1/memories/{id}/share)
+func (_ Unimplemented) ShareMemory(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Unpin a memory, making it eligible for the expiry sweep again (idempotent; ADR-0064 §3)
 // (POST /v1/memories/{id}/unpin)
 func (_ Unimplemented) UnpinMemory(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Unshare a memory, stopping future agent-plane reads (idempotent; MEM-6, ADR-0065 §3)
+// (POST /v1/memories/{id}/unshare)
+func (_ Unimplemented) UnshareMemory(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1334,6 +1401,37 @@ func (siw *ServerInterfaceWrapper) RedactMemory(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
+// ShareMemory operation middleware
+func (siw *ServerInterfaceWrapper) ShareMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ShareMemory(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UnpinMemory operation middleware
 func (siw *ServerInterfaceWrapper) UnpinMemory(w http.ResponseWriter, r *http.Request) {
 
@@ -1356,6 +1454,37 @@ func (siw *ServerInterfaceWrapper) UnpinMemory(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UnpinMemory(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UnshareMemory operation middleware
+func (siw *ServerInterfaceWrapper) UnshareMemory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UnshareMemory(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2202,7 +2331,13 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/memories/{id}/redact", wrapper.RedactMemory)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories/{id}/share", wrapper.ShareMemory)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/memories/{id}/unpin", wrapper.UnpinMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/memories/{id}/unshare", wrapper.UnshareMemory)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources", wrapper.ListResources)

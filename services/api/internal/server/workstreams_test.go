@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +34,13 @@ type fakeWorkstreamStore struct {
 	markSubmittedErr error
 	lastMarkRunID    string
 	lastMarkActor    string
+
+	// T-091 fixtures: the workstream-detail plan-request history + Create's
+	// validation-error simulation (the store's kind-matrix, mapped to 422).
+	planRequestHistory     []workstream.PlanRequest
+	lastListPlanRequestsID string
+	lastListPlanRequestsN  int
+	createErr              error
 }
 
 func (f *fakeWorkstreamStore) ClosePlanRequestsForGrant(_ context.Context, grantID string) (int, error) {
@@ -73,12 +81,23 @@ func (f *fakeWorkstreamStore) Retire(_ context.Context, id string) (bool, error)
 
 func (f *fakeWorkstreamStore) Create(_ context.Context, in workstream.Input) (workstream.Workstream, error) {
 	f.lastCreate = &in
+	if f.createErr != nil {
+		return workstream.Workstream{}, f.createErr
+	}
+	steps := make([]workstream.Step, len(in.Steps))
+	for i, st := range in.Steps {
+		steps[i] = workstream.Step{Index: i, ResourceID: st.ResourceID, Command: st.Command}
+	}
+	kind := in.Kind
+	if kind == "" {
+		kind = workstream.KindTemplate
+	}
 	return workstream.Workstream{
 		ID: "ws-00001", Principal: in.Principal, Label: in.Label, Objective: in.Objective,
 		GrantID: "grant-00001", IntervalSeconds: in.IntervalSeconds,
 		NextFireAt: time.Now().Add(time.Duration(in.IntervalSeconds) * time.Second),
 		Status:     workstream.StatusActive,
-		Steps:      []workstream.Step{{Index: 0, ResourceID: in.Steps[0].ResourceID, Command: in.Steps[0].Command}},
+		Steps:      steps, Kind: kind, Composer: in.Composer,
 	}, nil
 }
 
@@ -87,6 +106,14 @@ func (f *fakeWorkstreamStore) Get(_ context.Context, id string) (workstream.Work
 		return w, nil
 	}
 	return workstream.Workstream{}, workstream.ErrNotFound
+}
+
+// ListPlanRequestsForWorkstream mirrors the store's bounded, newest-first history
+// (D3, T-091) — the scripted planRequestHistory, regardless of workstreamID/limit
+// (tests assert the args via lastListPlanRequestsID/N instead).
+func (f *fakeWorkstreamStore) ListPlanRequestsForWorkstream(_ context.Context, workstreamID string, limit int) ([]workstream.PlanRequest, error) {
+	f.lastListPlanRequestsID, f.lastListPlanRequestsN = workstreamID, limit
+	return f.planRequestHistory, nil
 }
 
 func (f *fakeWorkstreamStore) ListForOperator(_ context.Context, operator, _ string, _ int) ([]workstream.Workstream, string, error) {
@@ -214,14 +241,16 @@ func TestCreateWorkstream422Matrix(t *testing.T) {
 }
 
 // TestCreateWorkstream400 — structurally invalid charters answer 400 before any store
-// call (no objective / no steps / an incomplete step / an unknown field).
+// call (no objective / an incomplete step / an unknown field). "No steps" is NOT here
+// (D4, T-091): steps is now optional on the wire — an empty/absent array reaches the
+// store, whose kind matrix is the SINGLE validator (see
+// TestCreateWorkstream422FromStoreValidation below).
 func TestCreateWorkstream400(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
 	}{
 		{"no objective", charterBody(func(m map[string]any) { m["objective"] = "" })},
-		{"no steps", charterBody(func(m map[string]any) { m["steps"] = []map[string]string{} })},
 		{"incomplete step", charterBody(func(m map[string]any) {
 			m["steps"] = []map[string]string{{"resourceId": "res-a"}}
 		})},
@@ -236,6 +265,53 @@ func TestCreateWorkstream400(t *testing.T) {
 				t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestCreateWorkstreamAdaptiveHappy — an adaptive charter (kind + composer, NO steps
+// key) answers 201 and binds Kind/Composer through to the store (D4, ADR-0065 §4);
+// the view echoes kind=adaptive + the composer.
+func TestCreateWorkstreamAdaptiveHappy(t *testing.T) {
+	fake := &fakeWorkstreamStore{}
+	h := newWorkstreamHandler(fake, 60)
+	body := charterBody(func(m map[string]any) {
+		delete(m, "steps")
+		m["kind"] = "adaptive"
+		m["composer"] = "agent:composer-1"
+	})
+	rec := postWorkstream(t, h, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if fake.lastCreate == nil || fake.lastCreate.Kind != "adaptive" || fake.lastCreate.Composer != "agent:composer-1" {
+		t.Fatalf("input binding wrong: %+v", fake.lastCreate)
+	}
+	if len(fake.lastCreate.Steps) != 0 {
+		t.Fatalf("an adaptive charter must bind zero steps, got %d", len(fake.lastCreate.Steps))
+	}
+	var got workstreamView
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Kind != "adaptive" || got.Composer != "agent:composer-1" {
+		t.Fatalf("view wrong: %+v", got)
+	}
+}
+
+// TestCreateWorkstream422FromStoreValidation — the store's kind-matrix validation
+// (e.g. a template charter with no steps, or an adaptive charter with no composer)
+// surfaces as 422 via errors.Is(err, workstream.ErrValidation) — the store, not the
+// handler, is the single validator for this matrix (D4).
+func TestCreateWorkstream422FromStoreValidation(t *testing.T) {
+	fake := &fakeWorkstreamStore{createErr: fmt.Errorf("%w: workstream requires at least one template step", workstream.ErrValidation)}
+	h := newWorkstreamHandler(fake, 60)
+	body := charterBody(func(m map[string]any) { delete(m, "steps") })
+	rec := postWorkstream(t, h, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "at least one template step") {
+		t.Fatalf("body must surface the store's validation message, got %s", rec.Body.String())
 	}
 }
 
@@ -263,6 +339,42 @@ func TestGetWorkstreamOwnerScoped(t *testing.T) {
 	}
 	if rec := get("ws-unknown"); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown charter: status=%d, want 404", rec.Code)
+	}
+}
+
+// TestGetWorkstreamPlanRequests — the detail view carries the charter's bounded
+// plan-request history (D3, ADR-0065 §5, T-091): the handler calls
+// ListPlanRequestsForWorkstream(id, 10) and renders whatever comes back.
+func TestGetWorkstreamPlanRequests(t *testing.T) {
+	expiresAt := time.Now().Add(90 * time.Second)
+	fake := &fakeWorkstreamStore{
+		byID: map[string]workstream.Workstream{
+			"ws-mine": {ID: "ws-mine", Principal: "operator", Objective: "o", Kind: workstream.KindAdaptive, Composer: "agent:composer-1", Status: workstream.StatusActive},
+		},
+		planRequestHistory: []workstream.PlanRequest{
+			{ID: "pr-1", WorkstreamID: "ws-mine", Status: workstream.PlanRequestOpen, ExpiresAt: expiresAt},
+		},
+	}
+	h := newWorkstreamHandler(fake, 60)
+	r := httptest.NewRequest(http.MethodGet, "/v1/workstreams/ws-mine", nil)
+	r.Header.Set("Authorization", "Bearer x")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if fake.lastListPlanRequestsID != "ws-mine" || fake.lastListPlanRequestsN != planRequestHistoryLimit {
+		t.Fatalf("ListPlanRequestsForWorkstream bound wrong: id=%q limit=%d", fake.lastListPlanRequestsID, fake.lastListPlanRequestsN)
+	}
+	var got workstreamView
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Kind != "adaptive" || got.Composer != "agent:composer-1" {
+		t.Fatalf("kind/composer wrong: %+v", got)
+	}
+	if len(got.PlanRequests) != 1 || got.PlanRequests[0].ID != "pr-1" || got.PlanRequests[0].Status != "open" {
+		t.Fatalf("planRequests wrong: %+v", got.PlanRequests)
 	}
 }
 

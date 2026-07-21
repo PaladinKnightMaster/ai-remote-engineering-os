@@ -242,6 +242,9 @@ type workstreamStore interface {
 	PollOpenPlanRequests(ctx context.Context, agentSubject, workstreamID string) ([]workstream.PlanRequestComposition, error)
 	GetPlanRequest(ctx context.Context, id string) (workstream.PlanRequest, error)
 	MarkPlanRequestSubmitted(ctx context.Context, id, runID, actor string) (bool, error)
+	// ListPlanRequestsForWorkstream (D3, ADR-0065 §5, T-091) backs the workstream
+	// detail's bounded plan-request history (FE-24): GetWorkstream's ONLY caller.
+	ListPlanRequestsForWorkstream(ctx context.Context, workstreamID string, limit int) ([]workstream.PlanRequest, error)
 }
 
 // WithWorkstreamStore wires the chartered-Workstream store (ADR-0063, T-071): the
@@ -271,6 +274,11 @@ type memoryStore interface {
 	Get(ctx context.Context, owner, id string) (memory.Memory, error)
 	Redact(ctx context.Context, owner, id string) (memory.Memory, error)
 	SetPinned(ctx context.Context, owner, id string, pinned bool) (memory.Memory, error)
+	// SetShared (MEM-6, ADR-0065 §3, T-091) is the share flip: ShareMemory/UnshareMemory
+	// use it to make/unmake an operator-authored row readable by the agent plane
+	// (ReadForAgent). Guarded the same way as SetPinned (idempotent per direction) plus
+	// the redacted_at IS NULL predicate (a tombstoned row can never be shared).
+	SetShared(ctx context.Context, owner, id string, shared bool) (memory.Memory, error)
 	// ReadForAgent (MEM-5, SEC-32, ADR-0065 §3, T-090) is memory.read's forward target
 	// (ReadMemory, adaptive_internal.go): a SEPARATE, grant-scoped, visibility-filtered
 	// read — List/Get above (owner-keyed) are untouched by this addition.

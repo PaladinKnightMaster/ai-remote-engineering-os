@@ -15,14 +15,26 @@ import (
 const maxStepsPerRun = 50
 
 // runStepView / runView are the wire shapes for a Run's status. The operator-authored
-// command is NOT echoed back (the operator submitted it; this view is for watching
-// progress). The full plan + commands live in the operator-only store.
+// command is NOT echoed back for a template/operator-direct Run — the operator
+// submitted (or reviewed, per the template) it already; this view is for watching
+// progress. The full plan + commands live in the operator-only store.
+//
+// The ONE exception (D2, ADR-0065 §6, T-091): when the Run is 'proposed' — a
+// composer-submitted adaptive plan parked for its FIRST human review — Command DOES
+// ride the wire, on GetRun only. This is a deliberate inversion of the ADR-0059
+// operator-only persisted-command posture: that posture assumed "the operator already
+// knows the command, they submitted it themselves"; a composed plan breaks that
+// assumption — the operator has never seen it, and the plan-preview review (GOV-10) IS
+// how consent binds to this tick's reviewed artifact. toRunView gates the field
+// strictly to r.Status == run.StatusProposed, so every other status/view (including
+// ListRuns, whose items never carry steps at all) stays byte-unchanged.
 type runStepView struct {
 	StepIndex    int    `json:"stepIndex"`
 	ResourceID   string `json:"resourceId"`
 	Status       string `json:"status"`
 	Outcome      string `json:"outcome,omitempty"`
 	InvocationID string `json:"invocationId,omitempty"` // the chain anchor (AUD-15); absent until dispatched
+	Command      string `json:"command,omitempty"`      // ONLY when the parent Run is 'proposed' (D2) — absent otherwise
 }
 
 type runView struct {
@@ -35,11 +47,16 @@ type runView struct {
 
 func toRunView(r run.Run) runView {
 	v := runView{ID: r.ID, Status: r.Status, Actor: r.Actor, GrantID: r.GrantID, Steps: make([]runStepView, 0, len(r.Steps))}
+	proposed := r.Status == run.StatusProposed // D2: the plan-preview review gate
 	for _, s := range r.Steps {
-		v.Steps = append(v.Steps, runStepView{
+		sv := runStepView{
 			StepIndex: s.Index, ResourceID: s.ResourceID, Status: s.Status,
 			Outcome: s.Outcome, InvocationID: s.InvocationID,
-		})
+		}
+		if proposed {
+			sv.Command = s.Command
+		}
+		v.Steps = append(v.Steps, sv)
 	}
 	return v
 }
