@@ -34,6 +34,7 @@ import (
 	"aireos.local/packages/go/migrate"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/account"
+	"aireos.local/services/api/internal/ctxindex"
 	"aireos.local/services/api/internal/grant"
 	"aireos.local/services/api/internal/memory"
 	runengine "aireos.local/services/api/internal/run"
@@ -209,6 +210,27 @@ func serve(dsn string) error {
 	} else {
 		log.Print("run engine disabled: GATEWAY_URL not set (workstream ticker dormant too)")
 	}
+
+	// The Layer 1 Live/Context Index incremental indexer (ADR-0066 §3, T-097):
+	// api-local like grants/workstreams/memory → wired unconditionally (no gateway
+	// dependency — it only reads local sources into Postgres). Its own background
+	// goroutine mirrors the workstream ticker's Sweep/Run split (T-073's precedent)
+	// rather than folding into runReaper's loop, since it has no server.Option
+	// wiring point to piggyback state from. AIREOS_CONTEXT_INDEX_SECONDS (OI-17): an
+	// optional positive-integer-seconds cadence override, resolved synchronously at
+	// boot (the AIREOS_MEMORY_SWEEP_SECONDS pattern) so a bad value fails serve loud
+	// BEFORE the process ever accepts traffic. Unset → ctxindex.DefaultIndexInterval
+	// (60s) — not written by install.sh (the zero-required-env posture).
+	ctxIndexInterval := ctxindex.DefaultIndexInterval
+	if v := os.Getenv("AIREOS_CONTEXT_INDEX_SECONDS"); v != "" {
+		n, cerr := strconv.Atoi(v)
+		if cerr != nil || n <= 0 {
+			return fmt.Errorf("AIREOS_CONTEXT_INDEX_SECONDS must be a positive integer, got %q", v)
+		}
+		ctxIndexInterval = time.Duration(n) * time.Second
+	}
+	go ctxindex.NewIndexer(ctxindex.NewStore(pool)).Run(context.Background(), ctxIndexInterval)
+	log.Print("context indexer started (Layer 1 incremental sweep)")
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),

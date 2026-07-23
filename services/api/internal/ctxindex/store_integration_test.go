@@ -5,8 +5,8 @@
 //	docker compose -f infra/docker-compose/docker-compose.mvp.yml up -d postgres
 //	export API_TEST_DATABASE_URL=postgres://cockpit:change-me@localhost:5432/cockpit?sslmode=disable
 //	go run ./services/api migrate up
-//	go test -tags integration ./services/api/internal/context/...
-package context
+//	go test -tags integration ./services/api/internal/ctxindex/...
+package ctxindex
 
 import (
 	"context"

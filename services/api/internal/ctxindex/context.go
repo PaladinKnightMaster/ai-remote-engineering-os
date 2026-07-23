@@ -1,7 +1,9 @@
-// Package context is services/api's Layer 1 Live/Context Index store — the fifth
+// Package ctxindex is services/api's Layer 1 Live/Context Index store — the fifth
 // sibling seam after internal/run, internal/grant, internal/workstream, and
-// internal/memory (ADR-0066; v0.10.0 "Live/Context Index"). Context is the
-// deterministic, offline, read-only projection of an operator-registered project
+// internal/memory (ADR-0066; v0.10.0 "Live/Context Index"). Named ctxindex rather than
+// the seam's natural word ("context") because that collides with the stdlib `context`
+// package every file here also imports — a recognized Go anti-pattern (T-097). ctxindex
+// is the deterministic, offline, read-only projection of an operator-registered project
 // workspace (docs/runbooks/repo/tickets) that a charter's composer reads at plan time
 // — the sibling read plane beside Layer 2 (Persistent Scoped Memory, ADR-0064): the
 // composer already reads accrued memory; this seam gives it a fresh view of the
@@ -16,14 +18,17 @@
 // that charter → FTS over their chunks — cross-grant/foreign-source reads are
 // impossible by construction (SEC-33).
 //
-// This ticket (T-096) lands the schema (migration 0014) + this store's data-op
-// skeleton (CreateSource/GetSource/ListSources/RemoveSource/ReplaceSourceChunks) + the
-// confined-root file reader (root.go, SEC-33/K5). No outbox/events here — the operator
-// audit events (context.source.registered/removed) land with the routes at T-100; the
-// per-agent-read context.read chaining lands with SearchForAgent at T-098. It is
-// deliberately self-contained (the internal/run / internal/memory extraction seam
-// precedent): nothing outside this package imports it yet.
-package context
+// T-096 landed the schema (migration 0014) + this store's data-op skeleton
+// (CreateSource/GetSource/ListSources/RemoveSource/ReplaceSourceChunks) + the
+// confined-root file reader (root.go, SEC-33/K5). T-097 adds the per-file incremental
+// state (migration 0015, context_files), the deterministic chunker (chunker.go, K2),
+// and the in-process incremental indexer (indexer.go, CTX-3/K6) that rides the api's
+// existing background goroutine. No outbox/events here — the operator audit events
+// (context.source.registered/removed) land with the routes at T-100; the per-agent-read
+// context.read chaining lands with SearchForAgent at T-098. It is deliberately
+// self-contained (the internal/run / internal/memory extraction seam precedent):
+// nothing outside this package imports it yet.
+package ctxindex
 
 import "time"
 
