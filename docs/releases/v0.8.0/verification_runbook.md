@@ -27,9 +27,13 @@ Recorded: OK — every in-repo path referenced in CANONICAL + the ADRs resolves
 ## Step 2 — VER-23 code gates (Dockerized)
 
 ```bash
-# Go (per module; golang:1.23):
+# Go (explicit per-module paths — `go.work` means a bare `./...` from the repo
+# root fails with "directory prefix . does not contain modules listed in
+# go.work"; list every workspace module, mirroring .github/workflows/ci.yml's
+# explicit-path pattern):
+GOMOD='./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./packages/go/outbox/... ./services/api/... ./services/audit-service/... ./services/connector-service/... ./services/mcp-gateway/... ./services/policy-service/... ./services/session-broker/...'
 docker run --rm -v "$PWD":/w -w /w golang:1.23 bash -c \
-  'go build ./... && go vet ./... && go vet -tags integration ./... && gofmt -l .'
+  "go build $GOMOD && go vet $GOMOD && go vet -tags integration $GOMOD && gofmt -l ."
 docker run --rm -v "$PWD":/w -w /w/services/api golang:1.23 \
   go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0 run ./...
 # JS (node:22-alpine; per-workspace — `pnpm -r typecheck` PATH-races on this host):

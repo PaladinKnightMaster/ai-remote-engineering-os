@@ -23,11 +23,12 @@ the eighth, infra-level edge ADR-0046 added to the seven above.
 
 | Edge | Decision enforced | Handler |
 |---|---|---|
-| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)**; **charter/pause/resume/retire a Workstream (v0.7.0)**; **list/author/redact/pin a scoped memory (v0.8.0 — the operator memory surface, SEC-31)**; **share/unshare a memory to the composer + approve/deny a `proposed` (agent-composed) Run (v0.9.0 — the two GOV-10 consent surfaces)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`, `CreateWorkstream`, `PauseWorkstream`, `ResumeWorkstream`, `RetireWorkstream`, `ListMemories`, `CreateMemory`, `RedactMemory`, `PinMemory`, `UnpinMemory`, `ShareMemory`, `UnshareMemory`, `ApproveRun`, `DenyRun`) |
+| `human-agent` | Operator login/session/CSRF; the approve/deny verb on a parked session **and on a parked tool invocation**; **launch/cancel a governed Run (v0.5.0)**; **issue/revoke a delegation grant (v0.6.0)**; **charter/pause/resume/retire a Workstream (v0.7.0)**; **list/author/redact/pin a scoped memory (v0.8.0 — the operator memory surface, SEC-31)**; **share/unshare a memory to the composer + approve/deny a `proposed` (agent-composed) Run (v0.9.0 — the two GOV-10 consent surfaces)**; **register/list/remove a charter-bound context source (v0.10.0 — the GOV-11 consent surface)** | `services/api/internal/server` (`CreateSession`, `ResolveSession`, `ResolveInvocation`, `CreateRun`, `CancelRun`, `createGrant`, `revokeGrant`, `CreateWorkstream`, `PauseWorkstream`, `ResumeWorkstream`, `RetireWorkstream`, `ListMemories`, `CreateMemory`, `RedactMemory`, `PinMemory`, `UnpinMemory`, `ShareMemory`, `UnshareMemory`, `ApproveRun`, `DenyRun`, `ListContextSources`, `CreateContextSource`, `DeleteContextSource`) |
 | `agent-tool` | An agent's MCP `tools/call` on the gateway (the `remote.exec` tool) — scoped (SEC-16) to the agent token's resource; drives a governed invocation | `services/mcp-gateway/internal/server` (`/mcp`; audience `mcp-gateway`) |
 | `agent-tool` (**`run.launch`**, v0.6.0) | An agent launches a grant-bounded Run — a **control-plane** tool (no single-resource target, so the per-call SEC-16 resource check is N/A; the api-validated **grant** is the scope, SEC-29); mints no egress; idempotency-keyed (a retry re-attaches, never double-launches) | `services/mcp-gateway/internal/catalog` (`run.launch` branch before the target resolver) |
 | `agent-tool` (**`workstream.poll`** / **`plan.submit`**, v0.9.0) | The composer discovers its charters' open plan requests (with composition context) and answers one with an ordered plan — control-plane forwards like `run.launch`; the api pins `plan.submit` to **the grant's grantee** (an unknown request and a foreign agent's answer the byte-identical refusal — no oracle); the submitted plan runs plan-vs-grant (SEC-29) and parks as a `proposed` Run (it executes NOTHING) | `services/mcp-gateway/internal/catalog` (control-plane branches) → pinned api internal routes (`/v1/internal/plan-polls`, `/v1/internal/plan-submissions`) |
 | **`agent-memory`** (**`memory.read`**, v0.9.0 — **the reserved edge's ONE enforced path**) | The composer reads the memory its own live grants entitle it to — **read-only**; the readable set is derived **entirely server-side** (charter scope + that grant's Runs — cross-grant impossible by construction); tombstoned rows excluded; authored content only when the operator's **share flip** set `agent_visible`; results clamped 50/200; **every read chains one `memory.read` event fail-loud in the read's own transaction** (no event, no data); rides the gateway's per-agent in-flight cap | `services/mcp-gateway/internal/catalog` (`memory.read`, `Edge: "agent-memory"`) → `services/api/internal/server` (`/v1/internal/memory-reads`) → `internal/memory.ReadForAgent` (the operator-keyed `List`/`Get` are a separate, untouched surface) |
+| **`agent-workspace`** (**`context.search`**, v0.10.0 — **the reserved edge's second enforced path**) | The composer searches the charter-bound context its own live grants entitle it to — **read-only** (no agent write path; indexing is a machine sweep of operator-registered sources); the readable set is derived **entirely server-side** (live grants → each grant's charter → context sources bound to that charter → FTS over their chunks — cross-grant/foreign-source reads impossible by construction, never by filter); an out-of-set `workstreamId` answers **empty, never an error** (no oracle); the indexer is **confined to the registered source root** (no path traversal, no symlink-escape, no out-of-root read); results clamped 50/200; **every read chains one `context.read` event fail-loud in the read's own transaction** (no event, no data); rides the gateway's per-agent in-flight cap; the composed plan **still always parks** (ADR-0065's injection control carries) | `services/mcp-gateway/internal/catalog` (`context.search`, `Edge: "agent-workspace"`) → `services/api/internal/server` (`/v1/internal/context-searches`) → `internal/ctxindex.SearchForAgent` (the operator `/v1/context-sources*` register/list/remove surface is a separate, untouched route set) |
 | `service-service` (mcp-gateway → api, **launch forward**, v0.6.0) | The keyless gateway forwards {agent-subject, grant-id, plan} for plan-vs-grant validation + Run creation; **subject-pinned `subject=="mcp-gateway"`** on a route-scoped asymmetric-only verifier (SEC-27) | `services/api/internal/server` (internal `POST /v1/internal/delegated-runs`; api holds the gateway's PUBLIC key only — a verify key, not a mint key) |
 | `agent-remote-session` | Cockpit WS attach only for a `pending` session — a parked `pending_approval` session is refused (the approval gate needs no broker code) | `services/session-broker/internal/server` (status guard) |
 | `service-service` (api → policy-service) | `requires_approval` decision at session-create + operator resolution relay | `services/policy-service/internal/server/server.go` (decide + resolve handlers; audience `policy-service`) |
@@ -332,3 +333,59 @@ terminal event; the deferred `run.launched` chains at approve, not at submit).
 **Offline (OI-16):** migration 0013 rides the migrate loop; the three tools ride the
 already-installed gateway binary + `/mcp` route — **zero install-wiring diff again**
 (no new unit, route, env, or key).
+
+## Layer 1 Live/Context Index — the lit `agent-workspace` read path (v0.10.0; ADR-0066)
+
+v0.10.0 lights the **second** reserved edge: `agent-workspace`, enforced on
+exactly one path, `context.search` (see the enforcement table above). The edge
+*set* is unchanged (ADR-0046 preserved); `agent-repo` **stays reserved** — held
+for Git Intelligence (REQ-015: the issue/PR/CI/code graph), a deliberately
+distinct module from the docs/runbooks/repo/tickets project-workspace corpus
+`agent-workspace` serves. The seam is `services/api/internal/ctxindex` (the ADR
+and the release criteria say `internal/context` in prose; see the module map for
+the as-built rename note). The plan author remains the customer's external agent,
+inbound over the ADR-0056 MCP surface — zero model dependency, zero new egress,
+the L3 hard gate untouched.
+
+- **SEC-33 — the context-index invariant (the release's named invariant).** Agent
+  context-index access is **read-only** (indexing is a machine sweep of
+  operator-registered sources — no agent write path exists); the readable set
+  derives from **the caller's own live grants by construction** (its grant's
+  charter → the context sources bound to that charter → FTS over their chunks —
+  never a caller-supplied path, never a foreign charter); an out-of-set
+  `workstreamId` answers **empty, never an error** (no oracle — same posture as
+  `agent-memory`'s cross-grant containment); the indexer is **confined to a
+  registered source root** (no path traversal, no symlink-escape, no
+  out-of-root read — the confined-root guard is a live, tested negative, N2);
+  **every agent-plane read is chained fail-loud** (`context.read`, content-free,
+  enqueued inside the read's own transaction — no event, no data); results are
+  clamped 50/200 and ride the gateway's per-agent in-flight cap; and **every
+  agent-composed plan still parks** as a `proposed` Run before any step executes
+  (the ADR-0065 always-park invariant is L1's injection control — indexed
+  content is untrusted, exactly like shared operator memory). The operator
+  `/v1/memories*` and `/v1/context-sources*` surfaces are **separate, untouched**
+  route sets from the agent read plane. Proven live by WD-10's N1/N2/N4/N6
+  negatives on both stacks.
+- **The confined-root guard (SEC-33, N2).** The context source's file reader
+  resolves every candidate path against the registered root and rejects any
+  result (via `../` traversal or a symlink target) that escapes it — indexing
+  and reading both refuse an out-of-root file; the source is marked errored
+  rather than the sweep crashing.
+- **GOV-11 — the context-source consent surface.** Registration copy states
+  plainly that a bound source's content becomes readable by this charter's
+  composer agent (naming the prompt-injection risk honestly) and that removal
+  stops future reads but cannot recall past ones.
+
+Event vocabulary added (**AUD-21**; content-free, ADR-0049): **`context.read`**
+(agent plane only, one per `context.search` call, edge `agent-workspace`, Target
+= `context:<comma-joined chunk ids>` — never source content) and the operator
+`human-agent`-edge pair **`context.source.registered`** / **`context.source.removed`**
+(one per register/remove, content-free — the root path never appears in the
+event; re-removing an already-removed source is a silent no-op, no duplicate
+event). Operator context-source reads (if any admin preview exists) stay
+unchained, matching the ADR-0064 §8 posture. **Offline (OI-17):** migrations
+0014+0015 ride the migrate loop; the indexer rides the already-running api
+goroutine; `context.search` rides the already-installed gateway binary + Caddy
+`/mcp` route — **zero install-wiring diff again** (no new unit, route, env, or
+key; `AIREOS_CONTEXT_INDEX_SECONDS` is an optional e2e-only override, not
+written by the installer).

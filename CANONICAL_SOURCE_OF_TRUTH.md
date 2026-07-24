@@ -61,6 +61,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | v0.7.0 release artifacts (DOC-15) | `docs/releases/v0.7.0/` (release notes + manifest + verification runbook + criteria) |
 | v0.8.0 release artifacts (DOC-16) | `docs/releases/v0.8.0/` (release notes + manifest + verification runbook + criteria) |
 | v0.9.0 release artifacts (DOC-17) | `docs/releases/v0.9.0/` (release notes + manifest + verification runbook + criteria) |
+| v0.10.0 release artifacts (DOC-18) | `docs/releases/v0.10.0/` (release notes + manifest + verification runbook + criteria) |
 | Reference inventory | `references/references_v3.csv` |
 | Reference tags | `references/reference-tags-v3.md` |
 | Deep-dive / historical docs | `docs/deep-dive/` |
