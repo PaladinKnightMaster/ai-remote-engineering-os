@@ -229,7 +229,7 @@ func serve(dsn string) error {
 		}
 		ctxIndexInterval = time.Duration(n) * time.Second
 	}
-	go ctxindex.NewIndexer(ctxindex.NewStore(pool)).Run(context.Background(), ctxIndexInterval)
+	go ctxindex.NewIndexer(ctxindex.NewStore(pool, store.OutboxTable)).Run(context.Background(), ctxIndexInterval)
 	log.Print("context indexer started (Layer 1 incremental sweep)")
 
 	srv := &http.Server{

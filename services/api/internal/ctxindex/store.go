@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aireos.local/packages/go/outbox"
 )
 
 // ErrNotFound is returned when no context source has the given (owner-scoped) id — the
@@ -22,16 +25,20 @@ const selectCols = `id, root_path, scope_type, scope_id, permission_scope, statu
 
 // Store persists context sources + their indexed chunks. It takes the pgx pool
 // directly (the internal/run / internal/memory pattern) so the package stays
-// extraction-ready. No outbox writer here (T-096): operator audit events land with the
-// routes at T-100; the per-agent-read context.read chaining lands with SearchForAgent
-// at T-098 — this ticket is data-op only.
+// extraction-ready. The T-096/T-097 indexer methods below (CreateSource..RemoveFile)
+// do NOT enqueue events — operator audit events land with the routes at T-100; only
+// SearchForAgent (T-098) uses writer, chaining one content-free context.read event per
+// call inside the read's own transaction.
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	writer outbox.Writer
 }
 
-// NewStore builds the context store.
-func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+// NewStore builds the context store. outboxTable is the api outbox table (e.g.
+// "api_outbox") into which SearchForAgent enqueues context.read in the caller's
+// transaction — the same table memory.NewStore receives (ADR-0048 shared DB).
+func NewStore(pool *pgxpool.Pool, outboxTable string) *Store {
+	return &Store{pool: pool, writer: outbox.Writer{Table: outboxTable}}
 }
 
 // CreateSource inserts a charter-bound context source (ADR-0066 §1). id is minted here
@@ -355,6 +362,122 @@ func (s *Store) MarkErrored(ctx context.Context, sourceID string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// defaultSearchLimit/maxSearchLimit bound SearchForAgent's result count (K4 — the
+// memory store's defaultListLimit/maxListLimit clamp reused verbatim): default 50 when
+// the caller passes 0, clamped to [1, 200] otherwise.
+const (
+	defaultSearchLimit = 50
+	maxSearchLimit     = 200
+)
+
+// agentWorkspaceEdge is the ONE lit context-index agent path (SEC-33, ADR-0066 §4,
+// T-098): the sole edge value context.read's event carries. It is the reserved
+// `agent-workspace` edge (ADR-0046) enforced on this one path — a deliberate reuse of
+// an already-named edge, not an eighth edge invented; distinct from `agent-memory`
+// (memory.agentMemoryEdge), which is a completely separate corpus/read plane.
+const agentWorkspaceEdge = "agent-workspace"
+
+// SearchForAgent is the agent-plane grant-scoped FTS read (CTX-4, SEC-33, K4, T-098) —
+// a SEPARATE method from the indexer's AllSources/FileStates/etc. above, which are NOT
+// grant-scoped and must never be reused for this. It mirrors memory.Store.ReadForAgent
+// exactly: the readable set is derived ENTIRELY server-side from the caller's own
+// ACTIVE, unexpired grants (agent == agentSubject — never a caller-supplied path,
+// cross-grant impossible BY CONSTRUCTION) — live grants → each grant's charter
+// (workstreams.grant_id) → the context sources bound to that charter → FTS over their
+// chunks. workstreamID narrows the union to the ONE charter it names; a value outside
+// the caller's own derived set (unknown, foreign, or a charter this agent does not
+// compose for) matches nothing in the CTE below and answers an EMPTY slice — never an
+// error (no oracle, N1). An empty/whitespace query also answers empty (a search needs
+// terms) without touching the database's FTS path. Results rank by ts_rank (lexical)
+// then recency (created_at DESC), clamped [1, maxSearchLimit] (default
+// defaultSearchLimit when limit <= 0).
+//
+// R4/fail-loud (SEC-33): chains EXACTLY ONE context.read event PER CALL, enqueued
+// INSIDE the SAME transaction as the read itself, committed only once the enqueue
+// succeeds — if the enqueue fails, the whole call fails (no event, no data reaches the
+// caller). The event is content-free (ADR-0049): Target lists the returned chunk ids
+// (the memory.read "memory:<ids>" convention extended — "context:" with no ids when
+// the result is empty), Actor is the reading agent, Edge is agent-workspace,
+// EvidencePacketID is the workstreamId filter's scope anchor when one was given, else
+// "" — the query text and chunk content NEVER appear in the event.
+func (s *Store) SearchForAgent(ctx context.Context, agentSubject, workstreamID, query string, limit int) ([]ChunkResult, error) {
+	switch {
+	case limit <= 0:
+		limit = defaultSearchLimit
+	case limit > maxSearchLimit:
+		limit = maxSearchLimit
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	var out []ChunkResult
+	var ids []string
+
+	// An empty/whitespace query never matches (a search needs terms) — answered
+	// empty without running the FTS query, still chaining its context.read event
+	// below (a successful call always chains, even a no-op one; N4).
+	if strings.TrimSpace(query) != "" {
+		rows, qerr := tx.Query(ctx, `
+			WITH live_grants AS (
+				SELECT id FROM delegation_grants
+				 WHERE agent = $1 AND status = 'active' AND expires_at > now()
+			),
+			scoped_grants AS (
+				SELECT g.id FROM live_grants g
+				 WHERE $2 = '' OR g.id IN (SELECT grant_id FROM workstreams WHERE id::text = $2)
+			),
+			charter_scope AS (
+				SELECT id::text AS ws_id FROM workstreams WHERE grant_id IN (SELECT id FROM scoped_grants)
+			),
+			readable_sources AS (
+				SELECT id FROM context_sources
+				 WHERE scope_type = 'workstream' AND scope_id IN (SELECT ws_id FROM charter_scope)
+			)
+			SELECT c.id, c.source_id, c.file_path, c.locator, c.content
+			  FROM context_chunks c
+			 WHERE c.source_id IN (SELECT id FROM readable_sources)
+			   AND c.content_tsv @@ plainto_tsquery('english', $3)
+			 ORDER BY ts_rank(c.content_tsv, plainto_tsquery('english', $3)) DESC, c.created_at DESC
+			 LIMIT $4`, agentSubject, workstreamID, query, limit)
+		if qerr != nil {
+			return nil, fmt.Errorf("search for agent: %w", qerr)
+		}
+		for rows.Next() {
+			var r ChunkResult
+			if serr := rows.Scan(&r.ChunkID, &r.SourceID, &r.FilePath, &r.Locator, &r.Content); serr != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan search result: %w", serr)
+			}
+			out = append(out, r)
+			ids = append(ids, r.ChunkID)
+		}
+		rows.Close()
+		if rerr := rows.Err(); rerr != nil {
+			return nil, fmt.Errorf("search for agent rows: %w", rerr)
+		}
+	}
+
+	evidence := ""
+	if workstreamID != "" {
+		evidence = "workstream:" + workstreamID
+	}
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: agentSubject, Edge: agentWorkspaceEdge,
+		Target: "context:" + strings.Join(ids, ","), Outcome: "context.read",
+		EvidencePacketID: evidence,
+	}); err != nil {
+		return nil, fmt.Errorf("enqueue context.read: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit search for agent: %w", err)
+	}
+	return out, nil
 }
 
 // rowScanner is satisfied by both pgx.Row (QueryRow) and pgx.Rows (Query, via

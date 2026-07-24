@@ -25,7 +25,7 @@ func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return NewStore(pool), pool
+	return NewStore(pool, "api_outbox"), pool
 }
 
 func testDSN(t *testing.T) string {

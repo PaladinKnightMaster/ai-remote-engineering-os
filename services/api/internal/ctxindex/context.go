@@ -88,3 +88,16 @@ type Chunk struct {
 	FileHash  string
 	CreatedAt time.Time
 }
+
+// ChunkResult is one ranked hit returned by SearchForAgent (T-098, CTX-4). Unlike the
+// content-free audit event the read chains, the result rows themselves are
+// content-BEARING — the composer needs the chunk text + its provenance (file/locator)
+// to ground a plan, exactly as ReadForAgent's Memory rows carry opened content for the
+// composer.
+type ChunkResult struct {
+	ChunkID  string
+	SourceID string
+	FilePath string
+	Locator  string
+	Content  string
+}
