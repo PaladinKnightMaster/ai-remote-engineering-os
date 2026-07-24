@@ -66,11 +66,12 @@ func TestWD8RedactIdempotent(t *testing.T) {
 // TestWD8AgentPlaneRejected — N2 (SEC-31): a VALID agent-tool token (aud=mcp-gateway)
 // against services/api's operator-plane /v1/memories* routes is rejected — the wrong
 // edge/wrong plane, not a signature failure (the WD-4 forge-test precedent applied to
-// the memory boundary). The gateway's tools/list exposes exactly the five control-plane
-// tools (F-b, T-090 amendment): remote.exec, run.launch, workstream.poll, plan.submit,
-// memory.read — and, memory.read's own governance carve-out aside, NO memory-WRITE
-// tool of any kind (no author/redact/share/pin verb reaches the agent plane; the read
-// plane is memory.read alone, chained per ADR-0065 §3/R4).
+// the memory boundary). The gateway's tools/list exposes exactly the six control-plane
+// tools (F-b, T-090 + T-099 amendment): remote.exec, run.launch, workstream.poll,
+// plan.submit, memory.read, context.search — and, memory.read's/context.search's own
+// governance carve-outs aside, NO memory-WRITE tool of any kind (no author/redact/
+// share/pin verb reaches the agent plane; the read plane is memory.read + context.search
+// alone, each chained per ADR-0065 §3/R4 and ADR-0066 §4/SEC-33 respectively).
 func TestWD8AgentPlaneRejected(t *testing.T) {
 	apiURL := env("E2E_API_URL", "http://api:8080")
 	mcpURL := env("E2E_MCP_URL", "http://mcp-gateway:8085")
@@ -150,15 +151,16 @@ func TestWD8AgentPlaneRejected(t *testing.T) {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	// F-b (T-090 amendment): the exact tool surface is five, not two — the v0.9
-	// adaptive-workstream control-plane tools ride alongside remote.exec/run.launch.
-	// The set-equality check below still enforces the N2 spirit intact: no memory tool
-	// OTHER THAN memory.read reaches the agent plane — no write/author/redact/share/pin
-	// verb of any kind, because any such tool would inflate len(tools) or introduce a
-	// name outside `want` and fail this assertion.
+	// F-b (T-090 + T-099 amendment): the exact tool surface is six, not two — the v0.9
+	// adaptive-workstream control-plane tools plus the v0.10 context.search ride
+	// alongside remote.exec/run.launch. The set-equality check below still enforces the
+	// N2 spirit intact: no memory tool OTHER THAN memory.read reaches the agent plane —
+	// no write/author/redact/share/pin verb of any kind, because any such tool would
+	// inflate len(tools) or introduce a name outside `want` and fail this assertion.
 	want := map[string]bool{
 		"remote.exec": true, "run.launch": true,
 		"workstream.poll": true, "plan.submit": true, "memory.read": true,
+		"context.search": true,
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("gateway tools/list = %v, want exactly %v (no memory-write tool)", tools, want)

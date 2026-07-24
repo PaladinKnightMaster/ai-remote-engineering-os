@@ -43,6 +43,7 @@ import (
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/api/internal/ctxindex"
 	"aireos.local/services/api/internal/gateway"
 	"aireos.local/services/api/internal/grant"
 	"aireos.local/services/api/internal/memory"
@@ -171,6 +172,11 @@ type apiHandlers struct {
 	// /v1/memories routes answer 503. Accrual (AccrueRunTerminal) is wired directly into
 	// the run store (main.go) — the routes here only ever call List/CreateAuthored.
 	memories memoryStore
+	// contextIndex is the Layer 1 Live/Context Index store (ADR-0066 / T-099); nil →
+	// /v1/internal/context-searches is not mounted (context.search answers a tool
+	// error, the memory.read unconfigured precedent). The operator /v1/context-sources*
+	// surface + its own store wiring land at T-100 — out of scope here.
+	contextIndex contextSearchStore
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -293,6 +299,26 @@ func WithMemoryStore(ms memoryStore) Option {
 	return func(h *apiHandlers) { h.memories = ms }
 }
 
+// contextSearchStore is the slice of the Layer 1 context-index store the
+// context.search forward needs (ADR-0066, T-098/T-099). nil → the
+// /v1/internal/context-searches route is not mounted.
+type contextSearchStore interface {
+	// SearchForAgent (D4, SEC-33, ADR-0066 §4) is context.search's forward target
+	// (SearchContext, adaptive_internal.go): the readable set is derived ENTIRELY
+	// server-side from the caller's own live grants → charter-bound context sources.
+	SearchForAgent(ctx context.Context, agentSubject, workstreamID, query string, limit int) ([]ctxindex.ChunkResult, error)
+}
+
+// WithContextStore wires the Layer 1 Live/Context Index store (ADR-0066, T-099): the
+// gateway's context.search forward target (POST /v1/internal/context-searches). nil/
+// absent → the route is not mounted. Context is api-local (no gateway needed for the
+// search itself — the gateway forward carries no egress), so like memory it is wired
+// unconditionally; the SAME store instance the indexer sweep uses (main.go) is passed
+// here, not a divergent second construction.
+func WithContextStore(cs contextSearchStore) Option {
+	return func(h *apiHandlers) { h.contextIndex = cs }
+}
+
 // WithGatewayVerifier wires the route-scoped verifier for the inbound delegated-launch
 // forward (ADR-0062, T-065a): it accepts ONLY the gateway's v4.public service token, so the
 // gateway's token reaches ONLY /v1/internal/delegated-runs and never the operator routes
@@ -377,13 +403,14 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 			ir.Post("/v1/internal/delegated-runs", h.LaunchDelegatedRun)
 		})
 	}
-	// The three v0.9 control-plane forwards (ADR-0065, T-090): workstream.poll /
-	// plan.submit / memory.read. Same route-scoped verifier + the SAME manual-mount
-	// posture as delegated-runs above (an internal RPC, not in the OpenAPI fragment);
-	// each handler additionally pins subject == "mcp-gateway" itself
-	// (onlyGatewaySubject, adaptive_internal.go) — the mirror of LaunchDelegatedRun's
-	// own pin. Mounted independently per the store each needs, so a partially-wired
-	// api (e.g. memory configured without the run engine) still exposes what it can.
+	// The three v0.9 control-plane forwards (ADR-0065, T-090: workstream.poll /
+	// plan.submit / memory.read) plus the v0.10 addition (ADR-0066 §4, T-099:
+	// context.search). Same route-scoped verifier + the SAME manual-mount posture as
+	// delegated-runs above (an internal RPC, not in the OpenAPI fragment); each handler
+	// additionally pins subject == "mcp-gateway" itself (onlyGatewaySubject,
+	// adaptive_internal.go) — the mirror of LaunchDelegatedRun's own pin. Mounted
+	// independently per the store each needs, so a partially-wired api (e.g. memory
+	// configured without the run engine) still exposes what it can.
 	if h.gatewayVerifier != nil {
 		base.Group(func(ir chi.Router) {
 			ir.Use(mw.RequireCapability(h.gatewayVerifier, "service-service"))
@@ -395,6 +422,11 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 			}
 			if h.memories != nil {
 				ir.Post("/v1/internal/memory-reads", h.ReadMemory)
+			}
+			// context.search (D4, ADR-0066 §4, T-099): the v0.10 addition to the same
+			// manual-mount posture — an internal RPC, not in the OpenAPI fragment.
+			if h.contextIndex != nil {
+				ir.Post("/v1/internal/context-searches", h.SearchContext)
 			}
 		})
 	}

@@ -270,3 +270,67 @@ func (a *apiHandlers) ReadMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, readMemoryResponse{Items: views})
 }
+
+// --- context.search (D4, ADR-0066 §4, T-099) ----------------------------------------
+
+// searchContextRequest is the gateway's context.search forward body (mirrors
+// mcp.Client.Search's wire shape).
+type searchContextRequest struct {
+	AgentSubject string `json:"agentSubject"`
+	Query        string `json:"query"`
+	WorkstreamID string `json:"workstreamId"`
+}
+
+// contextChunkView is the wire shape of one ranked context chunk (mirrors
+// mcp.ContextChunkView field-for-field).
+type contextChunkView struct {
+	ChunkID  string `json:"chunkId"`
+	SourceID string `json:"sourceId"`
+	FilePath string `json:"filePath"`
+	Locator  string `json:"locator"`
+	Content  string `json:"content"`
+}
+
+type searchContextResponse struct {
+	Chunks []contextChunkView `json:"chunks"`
+}
+
+// SearchContext (POST /v1/internal/context-searches) is api's inbound forward target
+// for the gateway's context.search tool — the ONE lit agent-workspace path (D4,
+// SEC-33, ADR-0066 §4): the readable set is derived ENTIRELY server-side by
+// ctxindex.Store.SearchForAgent from the caller's own live grants; this handler is a
+// thin adapter, like ReadMemory. Gateway-only (onlyGatewaySubject). An out-of-scope
+// filter or simply no matches answers an empty 200, never an error (no oracle, N1).
+func (a *apiHandlers) SearchContext(w http.ResponseWriter, r *http.Request) {
+	if !onlyGatewaySubject(w, r) {
+		return
+	}
+	if a.contextIndex == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the context index is not configured")
+		return
+	}
+	var body searchContextRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid request body: "+err.Error())
+		return
+	}
+	if body.AgentSubject == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "agentSubject is required")
+		return
+	}
+	results, err := a.contextIndex.SearchForAgent(r.Context(), body.AgentSubject, body.WorkstreamID, body.Query, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "context search failed")
+		return
+	}
+	views := make([]contextChunkView, 0, len(results))
+	for _, c := range results {
+		views = append(views, contextChunkView{
+			ChunkID: c.ChunkID, SourceID: c.SourceID, FilePath: c.FilePath,
+			Locator: c.Locator, Content: c.Content,
+		})
+	}
+	writeJSON(w, http.StatusOK, searchContextResponse{Chunks: views})
+}

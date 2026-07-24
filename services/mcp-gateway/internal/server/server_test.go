@@ -724,16 +724,27 @@ func (f *fakeReadForwarder) Read(context.Context, string, string) ([]mcp.MemoryR
 	return f.items, f.err
 }
 
-// controlPlaneHandler mirrors governedHandler but additionally wires the three v0.9
+// fakeSearchForwarder mirrors fakeReadForwarder for the v0.10 context.search tool
+// (ADR-0066 §4, T-099).
+type fakeSearchForwarder struct {
+	chunks []mcp.ContextChunkView
+	err    error
+}
+
+func (f *fakeSearchForwarder) Search(context.Context, string, string, string) ([]mcp.ContextChunkView, error) {
+	return f.chunks, f.err
+}
+
+// controlPlaneHandler mirrors governedHandler but additionally wires the v0.9/v0.10
 // forwarders (any of which may be nil — the T-090 "answers a tool error" posture).
-func controlPlaneHandler(t *testing.T, st catalog.Store, poll mcp.PollForwarder, submit mcp.SubmitForwarder, read mcp.ReadForwarder) (http.Handler, *auth.Signer) {
+func controlPlaneHandler(t *testing.T, st catalog.Store, poll mcp.PollForwarder, submit mcp.SubmitForwarder, read mcp.ReadForwarder, search mcp.ContextSearchForwarder) (http.Handler, *auth.Signer) {
 	t.Helper()
 	key, _ := auth.GenerateKey()
 	v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "", "mcp-gateway"))
 	cat := catalog.New(catalog.Config{
 		Store: st, Policy: &fakePolicy{decision: "allow"}, Broker: &fakeBroker{},
 		MaxInFlight: 4, WaitTimeout: 200 * time.Millisecond, PollInterval: 5 * time.Millisecond,
-		PollForwarder: poll, SubmitForwarder: submit, ReadForwarder: read,
+		PollForwarder: poll, SubmitForwarder: submit, ReadForwarder: read, SearchForwarder: search,
 	})
 	return New(Config{Verifier: v, Catalog: cat}), auth.NewSigner(key, "")
 }
@@ -749,12 +760,13 @@ func callTool(t *testing.T, h http.Handler, tok, name, argsJSON string) rpcRespo
 // ADR-0062 §3), all three v0.9 control-plane tools answer a TOOL error (never an
 // rpc-level error, never a panic).
 func TestControlPlaneToolsNilForwarderErrors(t *testing.T) {
-	h, s := controlPlaneHandler(t, &fakeStore{}, nil, nil, nil)
+	h, s := controlPlaneHandler(t, &fakeStore{}, nil, nil, nil, nil)
 	tok := agentToken(t, s)
 	for _, tc := range []struct{ name, args string }{
 		{"workstream.poll", `{}`},
 		{"plan.submit", `{}`},
 		{"memory.read", `{}`},
+		{"context.search", `{"query":"ops runbook"}`},
 	} {
 		resp := callTool(t, h, tok, tc.name, tc.args)
 		isErr, text := toolResult(t, resp)
@@ -769,11 +781,23 @@ func TestControlPlaneToolsNilForwarderErrors(t *testing.T) {
 // for remote.exec — reads carry no grant-budget bound, so this cap is their only brake.
 func TestMemoryReadConcurrencyCap(t *testing.T) {
 	st := &fakeStore{inFlight: 4} // == controlPlaneHandler's MaxInFlight: at the cap
-	h, s := controlPlaneHandler(t, st, nil, nil, &fakeReadForwarder{})
+	h, s := controlPlaneHandler(t, st, nil, nil, &fakeReadForwarder{}, nil)
 	resp := callTool(t, h, agentToken(t, s), "memory.read", `{}`)
 	isErr, text := toolResult(t, resp)
 	if !isErr || !strings.Contains(text, "concurrent") {
 		t.Fatalf("memory.read at the concurrency cap: isError=%v text=%q, want a concurrency refusal", isErr, text)
+	}
+}
+
+// TestContextSearchConcurrencyCap — the memory.read precedent (D5/PERF-10(5))
+// extended to context.search (ADR-0066 §4, T-099): a second read verb, same cap.
+func TestContextSearchConcurrencyCap(t *testing.T) {
+	st := &fakeStore{inFlight: 4} // == controlPlaneHandler's MaxInFlight: at the cap
+	h, s := controlPlaneHandler(t, st, nil, nil, nil, &fakeSearchForwarder{})
+	resp := callTool(t, h, agentToken(t, s), "context.search", `{"query":"ops runbook"}`)
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "concurrent") {
+		t.Fatalf("context.search at the concurrency cap: isError=%v text=%q, want a concurrency refusal", isErr, text)
 	}
 }
 
@@ -786,7 +810,7 @@ func TestPollSubmitBypassConcurrencyCap(t *testing.T) {
 	st := &fakeStore{inFlight: 4} // at controlPlaneHandler's cap — would refuse memory.read
 	poll := &fakePollForwarder{requests: []mcp.PlanRequestView{{RequestID: "req-1"}}}
 	submit := &fakeSubmitForwarder{runID: "run-1", status: "proposed"}
-	h, s := controlPlaneHandler(t, st, poll, submit, nil)
+	h, s := controlPlaneHandler(t, st, poll, submit, nil, nil)
 	tok := agentToken(t, s)
 
 	if isErr, text := toolResult(t, callTool(t, h, tok, "workstream.poll", `{}`)); isErr {
@@ -804,7 +828,8 @@ func TestPollSubmitReadHappyPath(t *testing.T) {
 	poll := &fakePollForwarder{requests: []mcp.PlanRequestView{{RequestID: "req-1", Objective: "keep it healthy"}}}
 	submit := &fakeSubmitForwarder{runID: "run-9", status: "proposed"}
 	read := &fakeReadForwarder{items: []mcp.MemoryRowView{{ID: "mem-1"}}}
-	h, s := controlPlaneHandler(t, &fakeStore{}, poll, submit, read)
+	search := &fakeSearchForwarder{chunks: []mcp.ContextChunkView{{ChunkID: "chunk-1"}}}
+	h, s := controlPlaneHandler(t, &fakeStore{}, poll, submit, read, search)
 	tok := agentToken(t, s)
 
 	if isErr, text := toolResult(t, callTool(t, h, tok, "workstream.poll", `{}`)); isErr || !strings.Contains(text, "req-1") {
@@ -817,13 +842,16 @@ func TestPollSubmitReadHappyPath(t *testing.T) {
 	if isErr, text := toolResult(t, callTool(t, h, tok, "memory.read", `{}`)); isErr || !strings.Contains(text, "mem-1") {
 		t.Fatalf("memory.read happy path: isError=%v text=%q", isErr, text)
 	}
+	if isErr, text := toolResult(t, callTool(t, h, tok, "context.search", `{"query":"ops runbook"}`)); isErr || !strings.Contains(text, "chunk-1") {
+		t.Fatalf("context.search happy path: isError=%v text=%q", isErr, text)
+	}
 }
 
 // TestSubmitPlanRefusalIsToolError — plan.submit's SEC-29 refusal shape (the
 // run.launch mapping): a non-empty forwarder refusal is a TOOL error, not an rpc error.
 func TestSubmitPlanRefusalIsToolError(t *testing.T) {
 	submit := &fakeSubmitForwarder{refusal: "the grant does not authorize this agent"}
-	h, s := controlPlaneHandler(t, &fakeStore{}, nil, submit, nil)
+	h, s := controlPlaneHandler(t, &fakeStore{}, nil, submit, nil, nil)
 	args := `{"requestId":"req-1","steps":[{"resourceId":"r1","command":"echo hi"}]}`
 	isErr, text := toolResult(t, callTool(t, h, agentToken(t, s), "plan.submit", args))
 	if !isErr || !strings.Contains(text, "does not authorize") {

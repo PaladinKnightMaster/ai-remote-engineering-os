@@ -57,11 +57,12 @@ type Registry struct {
 }
 
 // NewRegistry builds the registry. v0.9 (ADR-0065, T-090) adds three control-plane
-// tools on the run.launch pattern (workstream.poll / plan.submit / memory.read) — the
-// exact set the F-b WD-8 amendment now asserts.
+// tools on the run.launch pattern (workstream.poll / plan.submit / memory.read); v0.10
+// (ADR-0066 §4, T-099) adds a sixth, context.search, on the SAME memory.read forward
+// pattern — the exact set the F-b WD-8/WD-9 amendment now asserts.
 func NewRegistry() *Registry {
 	r := &Registry{defs: map[string]ToolDef{}}
-	for _, d := range []ToolDef{remoteExec(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead()} {
+	for _, d := range []ToolDef{remoteExec(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead(), contextSearch()} {
 		r.defs[d.Name] = d
 		r.list = append(r.list, d.Tool())
 	}
@@ -277,6 +278,44 @@ func memoryRead() ToolDef {
 	}
 }
 
+// contextSearchTool is the v0.10 agent-workspace-read control-plane tool name
+// (ADR-0066 §4, T-099) — the ONE path the reserved agent-workspace edge is enforced on
+// (SEC-33).
+const contextSearchTool = "context.search"
+
+// context.search — the composer searches the project context (docs/runbooks/repo) its
+// charter's grant entitles it to (ADR-0066 §4). Like memory.read it DOES carry a
+// governance Edge (the reserved agent-workspace edge, documenting the enforcement even
+// though this control-plane dispatch bypasses the target-resolution/policy path that
+// would otherwise consult it). No target resolver, no egress minted: the gateway
+// forwards {agent, query, optional workstream filter} to services/api, which derives
+// the readable set from the caller's own LIVE grants and chains one context.read event
+// per call.
+func contextSearch() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "required": ["query"],
+  "additionalProperties": false,
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "The search terms to look up in the project context (docs, runbooks, repo) your charter's grant entitles you to."
+    },
+    "workstreamId": {
+      "type": "string",
+      "description": "Optional: narrow the search to one of your charters. Omit to search everything your grants entitle you to."
+    }
+  }
+}`
+	return ToolDef{
+		Name: contextSearchTool,
+		Description: "Search the project context (docs/runbooks/repo) your charter's grant entitles you to. " +
+			"Returns ranked text chunks with their source file and location. Every search is audited.",
+		InputSchema: json.RawMessage(inputSchema),
+		Edge:        "agent-workspace",
+	}
+}
+
 // ErrUnknownTool is returned for a tools/call against an unregistered tool.
 var ErrUnknownTool = errors.New("unknown tool")
 
@@ -320,6 +359,9 @@ type Service struct {
 	pollForwarder   mcp.PollForwarder
 	submitForwarder mcp.SubmitForwarder
 	readForwarder   mcp.ReadForwarder
+	// searchForwarder is the v0.10 context.search forward (ADR-0066 §4, T-099), nil-able
+	// like its three siblings above.
+	searchForwarder mcp.ContextSearchForwarder
 }
 
 // Config wires the governed tool service. Zero values get safe defaults.
@@ -336,6 +378,9 @@ type Config struct {
 	PollForwarder   mcp.PollForwarder   // workstream.poll forward; nil → tool error
 	SubmitForwarder mcp.SubmitForwarder // plan.submit forward; nil → tool error
 	ReadForwarder   mcp.ReadForwarder   // memory.read forward; nil → tool error
+	// SearchForwarder is the v0.10 context.search forward (ADR-0066 §4, T-099); nil →
+	// tool error.
+	SearchForwarder mcp.ContextSearchForwarder
 }
 
 // New builds the governed tool service.
@@ -357,6 +402,7 @@ func New(cfg Config) *Service {
 		maxInFlight: cfg.MaxInFlight, waitTimeout: cfg.WaitTimeout, pollInterval: cfg.PollInterval,
 		runWaitTimeout: cfg.RunWaitTimeout, forwarder: cfg.Forwarder,
 		pollForwarder: cfg.PollForwarder, submitForwarder: cfg.SubmitForwarder, readForwarder: cfg.ReadForwarder,
+		searchForwarder: cfg.SearchForwarder,
 	}
 }
 
@@ -378,11 +424,12 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		return mcp.ToolResult{}, errors.New("no agent capability on the invocation")
 	}
 
-	// Four CONTROL-PLANE tools (run.launch, ADR-0062 T-065b; workstream.poll/plan.submit/
-	// memory.read, ADR-0065 T-090): none resolve a resource target, so all are dispatched
-	// BEFORE the remote.exec target resolution + the SEC-16 scope check (which would
-	// otherwise reject them). Their authority is the delegation grant / api's own
-	// derivation — never the agent token's resource/operation scope.
+	// FIVE CONTROL-PLANE tools (run.launch, ADR-0062 T-065b; workstream.poll/plan.submit/
+	// memory.read, ADR-0065 T-090; context.search, ADR-0066 T-099): none resolve a
+	// resource target, so all are dispatched BEFORE the remote.exec target resolution +
+	// the SEC-16 scope check (which would otherwise reject them). Their authority is the
+	// delegation grant / api's own derivation — never the agent token's resource/operation
+	// scope.
 	switch name {
 	case runLaunchTool:
 		return s.launchRun(ctx, capb.Subject, args)
@@ -392,6 +439,8 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		return s.submitPlan(ctx, capb.Subject, args)
 	case memoryReadTool:
 		return s.readMemory(ctx, capb.Subject, args)
+	case contextSearchTool:
+		return s.searchContext(ctx, capb.Subject, args)
 	}
 
 	// Validate + resolve the governance target (resource:<id>) from the args.
@@ -579,6 +628,44 @@ func (s *Service) readMemory(ctx context.Context, agentSubject string, args json
 	}{items})
 	if merr != nil {
 		return mcp.ToolResult{}, fmt.Errorf("marshal read result: %w", merr)
+	}
+	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: string(body)}}}, nil
+}
+
+// searchContext handles the context.search control-plane tool (ADR-0066 §4, T-099): the
+// ONE lit agent-workspace path (SEC-33). Like memory.read it is a READ with no
+// grant-budget bound, so it participates in the SAME per-agent maxInFlight cap
+// (PERF-3/PERF-10(5)) — the memory.read precedent extended to a second read verb.
+func (s *Service) searchContext(ctx context.Context, agentSubject string, args json.RawMessage) (mcp.ToolResult, error) {
+	if s.searchForwarder == nil {
+		return toolError("context search is not available on this gateway"), nil
+	}
+	inFlight, err := s.store.CountInFlight(ctx, agentSubject)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("concurrency check: %w", err)
+	}
+	if inFlight >= s.maxInFlight {
+		return toolError("too many concurrent invocations for this agent; retry shortly"), nil
+	}
+	var a struct {
+		Query        string `json:"query"`
+		WorkstreamID string `json:"workstreamId"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return toolError("invalid context.search arguments: " + err.Error()), nil
+	}
+	if a.Query == "" {
+		return toolError("context.search requires a query"), nil
+	}
+	chunks, err := s.searchForwarder.Search(ctx, agentSubject, a.Query, a.WorkstreamID)
+	if err != nil {
+		return mcp.ToolResult{}, fmt.Errorf("forward context search: %w", err)
+	}
+	body, merr := json.Marshal(struct {
+		Chunks []mcp.ContextChunkView `json:"chunks"`
+	}{chunks})
+	if merr != nil {
+		return mcp.ToolResult{}, fmt.Errorf("marshal search result: %w", merr)
 	}
 	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: string(body)}}}, nil
 }

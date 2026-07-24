@@ -110,17 +110,19 @@ func serve() error {
 	// agent-initiated Run launch; api validates plan-vs-grant and creates the Run. Signed with
 	// the gateway's OWN asymmetric service token (api's route-scoped verifier accepts it). Unset
 	// API_URL → nil → run.launch answers a tool error (agent-initiated Runs disabled).
-	// The v0.9 forwards (ADR-0065, T-090: workstream.poll/plan.submit/memory.read) share the
-	// SAME client — one baseURL, one signer, no new key, no new minting workload.
+	// The v0.9 forwards (ADR-0065, T-090: workstream.poll/plan.submit/memory.read) and the
+	// v0.10 addition (ADR-0066 §4, T-099: context.search) share the SAME client — one
+	// baseURL, one signer, no new key, no new minting workload.
 	var (
 		forwarder       mcp.LaunchForwarder
 		pollForwarder   mcp.PollForwarder
 		submitForwarder mcp.SubmitForwarder
 		readForwarder   mcp.ReadForwarder
+		searchForwarder mcp.ContextSearchForwarder
 	)
 	if apiURL := os.Getenv("API_URL"); apiURL != "" {
 		fwd := apiforward.New(apiURL, signer)
-		forwarder, pollForwarder, submitForwarder, readForwarder = fwd, fwd, fwd, fwd
+		forwarder, pollForwarder, submitForwarder, readForwarder, searchForwarder = fwd, fwd, fwd, fwd, fwd
 	}
 	cat := catalog.New(catalog.Config{
 		Store:           gw,
@@ -133,6 +135,7 @@ func serve() error {
 		PollForwarder:   pollForwarder,
 		SubmitForwarder: submitForwarder,
 		ReadForwarder:   readForwarder,
+		SearchForwarder: searchForwarder,
 	})
 	// Operator-plane resolver (ADR-0057 §4): the internal resolve/list routes, gated
 	// service-service, that services/api proxies the operator's approve/deny to.

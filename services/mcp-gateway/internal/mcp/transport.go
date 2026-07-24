@@ -179,6 +179,30 @@ type ReadForwarder interface {
 	Read(ctx context.Context, agentSubject, workstreamID string) ([]MemoryRowView, error)
 }
 
+// ContextChunkView is one ranked context chunk on the agent-plane read (ADR-0066 §4,
+// T-099): content-bearing — the composer needs the chunk text + its provenance
+// (file/locator) to ground a plan, exactly as MemoryRowView carries opened content for
+// the composer over a different corpus.
+type ContextChunkView struct {
+	ChunkID  string `json:"chunkId"`
+	SourceID string `json:"sourceId"`
+	FilePath string `json:"filePath"`
+	Locator  string `json:"locator"`
+	Content  string `json:"content"`
+}
+
+// ContextSearchForwarder forwards context.search to services/api (ADR-0066 §4, T-099):
+// the keyless gateway relays {agent, query, optional workstream filter} to api's
+// subject-pinned internal route, which derives the caller's readable context sources
+// entirely from its own LIVE grants (SEC-33 containment BY CONSTRUCTION) and chains ONE
+// context.read event per call. err is an infrastructure failure (fail-closed); a
+// revoked/expired grant, an out-of-scope filter, or simply no matches all answer an
+// EMPTY slice, never an error (no oracle) — the memory.read Read precedent. nil →
+// context.search answers a tool error.
+type ContextSearchForwarder interface {
+	Search(ctx context.Context, agentSubject, query, workstreamID string) ([]ContextChunkView, error)
+}
+
 // Operator-plane sentinels the resolve handler maps to HTTP status (404 / 409).
 var (
 	ErrInvocationNotFound = errors.New("invocation not found")

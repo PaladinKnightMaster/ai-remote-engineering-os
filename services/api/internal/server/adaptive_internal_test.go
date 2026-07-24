@@ -10,6 +10,7 @@ import (
 
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
+	"aireos.local/services/api/internal/ctxindex"
 	"aireos.local/services/api/internal/memory"
 	"aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/workstream"
@@ -222,5 +223,75 @@ func TestReadMemoryRequiresAgentSubject(t *testing.T) {
 	rec := postInternal(t, h, "/v1/internal/memory-reads", `{}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- context.search (D4, ADR-0066 §4, T-099) ----------------------------------------
+
+// fakeContextStore captures the last SearchForAgent call (the fakeMemoryStore
+// readItems/lastReadAgent shape, applied to the context-index forward).
+type fakeContextStore struct {
+	results   []ctxindex.ChunkResult
+	err       error
+	lastAgent string
+	lastWS    string
+	lastQuery string
+	lastLimit int
+}
+
+func (f *fakeContextStore) SearchForAgent(_ context.Context, agentSubject, workstreamID, query string, limit int) ([]ctxindex.ChunkResult, error) {
+	f.lastAgent, f.lastWS, f.lastQuery, f.lastLimit = agentSubject, workstreamID, query, limit
+	return f.results, f.err
+}
+
+// contextHandler builds a handler wired ONLY with the context-index store: context.search
+// needs no workstream/grant/run/memory store, so a dedicated minimal builder avoids
+// threading a sixth always-nil param through every adaptiveHandler call site above.
+func contextHandler(t *testing.T, cs contextSearchStore, verifier mw.Verifier) http.Handler {
+	t.Helper()
+	key, _ := auth.GenerateKey()
+	opts := []Option{WithGatewayVerifier(verifier)}
+	if cs != nil {
+		opts = append(opts, WithContextStore(cs))
+	}
+	return New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", opts...)
+}
+
+func TestSearchContextHappyPath(t *testing.T) {
+	cs := &fakeContextStore{results: []ctxindex.ChunkResult{{ChunkID: "chunk-1", FilePath: "docs/runbook.md"}}}
+	h := contextHandler(t, cs, gwOnlyVerifier{})
+	rec := postInternal(t, h, "/v1/internal/context-searches", `{"agentSubject":"agent:x","query":"ops runbook","workstreamId":"ws-1"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "chunk-1") {
+		t.Fatalf("status=%d body=%s, want 200 + chunk-1", rec.Code, rec.Body.String())
+	}
+	if cs.lastAgent != "agent:x" || cs.lastWS != "ws-1" || cs.lastQuery != "ops runbook" {
+		t.Fatalf("SearchForAgent called with agent=%q ws=%q query=%q, want agent:x / ws-1 / ops runbook",
+			cs.lastAgent, cs.lastWS, cs.lastQuery)
+	}
+}
+
+func TestSearchContextGatewayOnlyPin(t *testing.T) {
+	cs := &fakeContextStore{}
+	h := contextHandler(t, cs, notGatewayVerifier{})
+	rec := postInternal(t, h, "/v1/internal/context-searches", `{"agentSubject":"agent:x","query":"ops"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-gateway caller: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestSearchContextRequiresAgentSubject(t *testing.T) {
+	h := contextHandler(t, &fakeContextStore{}, gwOnlyVerifier{})
+	rec := postInternal(t, h, "/v1/internal/context-searches", `{"query":"ops"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestSearchContextUnconfigured(t *testing.T) {
+	h := contextHandler(t, nil, gwOnlyVerifier{})
+	rec := postInternal(t, h, "/v1/internal/context-searches", `{"agentSubject":"agent:x","query":"ops"}`)
+	if rec.Code != http.StatusNotFound {
+		// The route is not mounted at all when h.contextIndex is nil (no group entry).
+		t.Fatalf("status = %d, want 404 (route not mounted)", rec.Code)
 	}
 }

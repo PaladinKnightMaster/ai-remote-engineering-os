@@ -211,16 +211,20 @@ func serve(dsn string) error {
 		log.Print("run engine disabled: GATEWAY_URL not set (workstream ticker dormant too)")
 	}
 
-	// The Layer 1 Live/Context Index incremental indexer (ADR-0066 §3, T-097):
-	// api-local like grants/workstreams/memory → wired unconditionally (no gateway
-	// dependency — it only reads local sources into Postgres). Its own background
-	// goroutine mirrors the workstream ticker's Sweep/Run split (T-073's precedent)
-	// rather than folding into runReaper's loop, since it has no server.Option
-	// wiring point to piggyback state from. AIREOS_CONTEXT_INDEX_SECONDS (OI-17): an
-	// optional positive-integer-seconds cadence override, resolved synchronously at
-	// boot (the AIREOS_MEMORY_SWEEP_SECONDS pattern) so a bad value fails serve loud
-	// BEFORE the process ever accepts traffic. Unset → ctxindex.DefaultIndexInterval
-	// (60s) — not written by install.sh (the zero-required-env posture).
+	// The Layer 1 Live/Context Index incremental indexer (ADR-0066 §3, T-097) + the
+	// agent-plane context.search forward target (ADR-0066 §4, T-099): api-local like
+	// grants/workstreams/memory → wired unconditionally (no gateway dependency — the
+	// indexer only reads local sources into Postgres, and the search route mints no
+	// egress). ONE store instance serves BOTH the indexer goroutine and the
+	// server.WithContextStore wiring below — not a divergent second construction (the
+	// memStore precedent). Its own background goroutine mirrors the workstream ticker's
+	// Sweep/Run split (T-073's precedent) rather than folding into runReaper's loop,
+	// since it has no server.Option wiring point to piggyback state from.
+	// AIREOS_CONTEXT_INDEX_SECONDS (OI-17): an optional positive-integer-seconds
+	// cadence override, resolved synchronously at boot (the AIREOS_MEMORY_SWEEP_SECONDS
+	// pattern) so a bad value fails serve loud BEFORE the process ever accepts traffic.
+	// Unset → ctxindex.DefaultIndexInterval (60s) — not written by install.sh (the
+	// zero-required-env posture).
 	ctxIndexInterval := ctxindex.DefaultIndexInterval
 	if v := os.Getenv("AIREOS_CONTEXT_INDEX_SECONDS"); v != "" {
 		n, cerr := strconv.Atoi(v)
@@ -229,8 +233,10 @@ func serve(dsn string) error {
 		}
 		ctxIndexInterval = time.Duration(n) * time.Second
 	}
-	go ctxindex.NewIndexer(ctxindex.NewStore(pool, store.OutboxTable)).Run(context.Background(), ctxIndexInterval)
+	ctxStore := ctxindex.NewStore(pool, store.OutboxTable)
+	go ctxindex.NewIndexer(ctxStore).Run(context.Background(), ctxIndexInterval)
 	log.Print("context indexer started (Layer 1 incremental sweep)")
+	opts = append(opts, server.WithContextStore(ctxStore))
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),

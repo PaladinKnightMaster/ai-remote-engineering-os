@@ -217,9 +217,39 @@ func (c *Client) Read(ctx context.Context, agentSubject, workstreamID string) ([
 	return ok.Items, nil
 }
 
+// Search POSTs the context.search forward (ADR-0066 §4, T-099): 2xx → the readable
+// chunks (possibly empty — an out-of-scope filter or simply no matches, api-side, no
+// error, no oracle); other → an infra error. context.search has no refusal shape, the
+// memory.read Read precedent: api never distinguishes "denied" from "nothing to see."
+func (c *Client) Search(ctx context.Context, agentSubject, query, workstreamID string) ([]mcp.ContextChunkView, error) {
+	body, err := json.Marshal(map[string]any{
+		"agentSubject": agentSubject,
+		"query":        query,
+		"workstreamId": workstreamID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal search: %w", err)
+	}
+	raw, status, err := c.post(ctx, "/v1/internal/context-searches", body)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("api search: unexpected status %d", status)
+	}
+	var ok struct {
+		Chunks []mcp.ContextChunkView `json:"chunks"`
+	}
+	if err := json.Unmarshal(raw, &ok); err != nil {
+		return nil, fmt.Errorf("decode search result: %w", err)
+	}
+	return ok.Chunks, nil
+}
+
 var (
-	_ mcp.LaunchForwarder = (*Client)(nil)
-	_ mcp.PollForwarder   = (*Client)(nil)
-	_ mcp.SubmitForwarder = (*Client)(nil)
-	_ mcp.ReadForwarder   = (*Client)(nil)
+	_ mcp.LaunchForwarder        = (*Client)(nil)
+	_ mcp.PollForwarder          = (*Client)(nil)
+	_ mcp.SubmitForwarder        = (*Client)(nil)
+	_ mcp.ReadForwarder          = (*Client)(nil)
+	_ mcp.ContextSearchForwarder = (*Client)(nil)
 )

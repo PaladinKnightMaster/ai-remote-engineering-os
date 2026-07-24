@@ -14,10 +14,10 @@ func TestRegistryListsRemoteExec(t *testing.T) {
 	tools := NewRegistry().List()
 	// v0.9 (ADR-0065, T-090): the registry advertises remote.exec, the control-plane
 	// run.launch (agent-initiated Runs), and the three new control-plane tools
-	// (workstream.poll/plan.submit/memory.read) — the exact set the F-b WD-8
-	// amendment now asserts.
-	if len(tools) != 5 || tools[0].Name != "remote.exec" || tools[1].Name != "run.launch" {
-		t.Fatalf("List() = %+v, want [remote.exec run.launch workstream.poll plan.submit memory.read]", tools)
+	// (workstream.poll/plan.submit/memory.read). v0.10 (ADR-0066, T-099) adds a sixth,
+	// context.search — the exact set the F-b WD-8/WD-9 amendment now asserts.
+	if len(tools) != 6 || tools[0].Name != "remote.exec" || tools[1].Name != "run.launch" {
+		t.Fatalf("List() = %+v, want [remote.exec run.launch workstream.poll plan.submit memory.read context.search]", tools)
 	}
 	// The advertised inputSchema is a valid JSON Schema object requiring the
 	// two typed args — this is the agent's interface (ADR-0057 / UX).
@@ -62,11 +62,11 @@ func TestLookupGovernanceMetadata(t *testing.T) {
 	}
 }
 
-// TestControlPlaneToolsMetadata — ADR-0065 §1/§2, T-090: all four control-plane tools
-// (run.launch + the three v0.9 additions) carry no Edge/Action/Operation EXCEPT
-// memory.read, which alone carries the reserved agent-memory edge (SEC-32) — the ONE
-// lit path. workstream.poll/plan.submit ride the existing agent-tool transport reading,
-// same as run.launch.
+// TestControlPlaneToolsMetadata — ADR-0065 §1/§2 + ADR-0066 §4, T-090/T-099: all
+// control-plane tools carry no Edge/Action/Operation EXCEPT memory.read (the reserved
+// agent-memory edge, SEC-32) and context.search (the reserved agent-workspace edge,
+// SEC-33) — the two lit read paths. workstream.poll/plan.submit ride the existing
+// agent-tool transport reading, same as run.launch.
 func TestControlPlaneToolsMetadata(t *testing.T) {
 	r := NewRegistry()
 	for _, name := range []string{"run.launch", "workstream.poll", "plan.submit"} {
@@ -90,6 +90,19 @@ func TestControlPlaneToolsMetadata(t *testing.T) {
 	}
 	if def.Description == "" {
 		t.Fatal("memory.read must carry a description (the agent's UX)")
+	}
+	csDef, ok := r.Lookup("context.search")
+	if !ok {
+		t.Fatal("context.search not found")
+	}
+	if csDef.Edge != "agent-workspace" {
+		t.Fatalf("context.search edge = %q, want agent-workspace (SEC-33, the sole lit path)", csDef.Edge)
+	}
+	if csDef.Action != "" || csDef.Operation != "" {
+		t.Fatalf("context.search must carry no Action/Operation (control-plane dispatch), got %+v", csDef)
+	}
+	if csDef.Description == "" {
+		t.Fatal("context.search must carry a description (the agent's UX)")
 	}
 }
 
