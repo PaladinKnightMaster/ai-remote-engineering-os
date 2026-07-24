@@ -26,6 +26,15 @@ HOST=aireos-wd1-host
 SSHD=aireos-wd1-sshd
 NET=aireos-wd1
 KEYVOL=aireos-wd1-keys
+# CTXVOL (T-102, OI-17): a harness-owned volume mounted at the SAME path on BOTH
+# $HOST and the Go test-runner container, standing in for "a real host directory
+# the installed api process can read" — api runs as a systemd SERVICE inside $HOST
+# (no bind-mounted repo checkout there, unlike compose e2e's shared x-go anchor), and
+# the test-runner container has no other filesystem access to $HOST at all. This is
+# wd1 TEST-HARNESS wiring only (this script) — it is never install.sh/systemd/Caddy/
+# env, so it does not touch the OI-17 zero-install-wiring-diff claim.
+CTXVOL=aireos-wd1-context
+CTXPATH=/wd1-context
 DBPW=wd1secret
 OPPW=e2e-operator-pw   # must match operatorPass in tests/e2e/harness_test.go
 RID=01900000-0000-7000-8000-0000000000e2   # must match tests/e2e/cmd/seed + harness_test.go
@@ -33,7 +42,7 @@ RID=01900000-0000-7000-8000-0000000000e2   # must match tests/e2e/cmd/seed + har
 log() { printf '\033[1;35m[wd1]\033[0m %s\n' "$*"; }
 cleanup() {
   docker rm -f "$HOST" "$SSHD" >/dev/null 2>&1 || true
-  docker volume rm "$KEYVOL" >/dev/null 2>&1 || true
+  docker volume rm "$KEYVOL" "$CTXVOL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -f "$OUT/wd1-caddy-ca.pem" 2>/dev/null || true
 }
@@ -53,6 +62,7 @@ log "build host + sshd images"
 cleanup
 docker network create "$NET" >/dev/null
 docker volume create "$KEYVOL" >/dev/null
+docker volume create "$CTXVOL" >/dev/null
 
 # 3. generate the SSH keys (keys-only seed → KEYVOL); the DB insert is skipped.
 log "generate ssh keys (keys-only seed)"
@@ -69,7 +79,7 @@ docker run -d --name "$SSHD" --network "$NET" --network-alias "$SSHD" \
 log "start systemd host"
 docker run -d --name "$HOST" --network "$NET" --privileged --cgroupns=host \
   --tmpfs /run --tmpfs /run/lock -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-  -v "$OUT":/artifacts:ro -v "$KEYVOL":/wd1keys:ro aireos-wd1-host:latest >/dev/null
+  -v "$OUT":/artifacts:ro -v "$KEYVOL":/wd1keys:ro -v "$CTXVOL":"$CTXPATH" aireos-wd1-host:latest >/dev/null
 for i in $(seq 1 30); do
   case "$(docker exec "$HOST" systemctl is-system-running 2>&1 || true)" in running|degraded) break;; esac; sleep 1
 done
@@ -152,8 +162,8 @@ docker exec "$HOST" cat "$CA_PATH" > "$CA_FILE"
 #     than skips) Caddy's self-signed cert — no InsecureSkipVerify anywhere.
 log "run the WD-1 walkthrough driver (Caddy HTTPS, verified)"
 docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod \
-  -v "$CA_FILE":/wd1ca/root.crt:ro \
-  -e WD1_BASE_URL="https://$HOST" -e WD1_CA_FILE=/wd1ca/root.crt \
+  -v "$CA_FILE":/wd1ca/root.crt:ro -v "$CTXVOL":"$CTXPATH" \
+  -e WD1_BASE_URL="https://$HOST" -e WD1_CA_FILE=/wd1ca/root.crt -e WD1_CONTEXT_ROOT="$CTXPATH" \
   golang:1.23 bash -c 'go test -tags wd1 -count=1 -v -timeout 1500s ./tests/e2e/...' 2>&1 | tail -18
 
 # 11. assert the audit chain host-internally (WD-2.4: integrity + the governed
@@ -182,7 +192,15 @@ docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env |
 # agent-plane read + the operator's share flip that gates it), run.denied (the deny cycle
 # on a submitted plan, distinct from the revoke-cascade's run.canceled). Per-composer/
 # per-id exactly-once precision is asserted in-test via the audit read-proxy.
-WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired memory.written memory.redacted memory.expired plan.requested plan.submitted plan.expired memory.read memory.shared memory.unshared run.denied"
+# v0.10 (OI-17, T-102) adds the Layer 1 Live/Context Index vocabulary (ADR-0066, same
+# api relay + migrations 0014+0015 riding the migrate loop): context.source.registered
+# (the operator's one consent act binding a source to a charter) and context.read (the
+# composer's per-search chained read, agent-workspace edge, content-free). The indexer
+# rides the already-running api goroutine at the REAL 60s production floor (no
+# AIREOS_CONTEXT_INDEX_SECONDS override); context.search rides the already-installed
+# gateway binary + Caddy /mcp route — no new unit/route/key/env. Per-composer/per-id
+# exactly-once precision is asserted in-test via the audit read-proxy.
+WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired memory.written memory.redacted memory.expired plan.requested plan.submitted plan.expired memory.read memory.shared memory.unshared run.denied context.source.registered context.read"
 for attempt in 1 2 3 4 5 6; do
   OUTCOMES="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT outcome FROM audit_events ORDER BY seq\"")"
   MISSING=""
@@ -215,4 +233,4 @@ for attempt in 1 2 3; do
   sleep 5
 done
 
-log "T-053a/T-061/T-069/T-077/T-084/T-093 PASS — WD-4 + WD-5 + WD-6 + WD-7 + WD-8 + WD-9 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop)), the WD-8 Persistent Scoped Memory plane (OI-15: the completed tick ACCRUES a content-free pointer with nobody writing it → author/scoped-read/redact + the N1 idempotent no-op → the agent plane is rejected on /v1/memories* (SEC-31) → unknown-id 404s → the sweep at the PRODUCTION 2-min reaper cadence expires the unpinned row exactly once and spares the pinned one → an operator-canceled Run accrues exactly one :canceled pointer; migration 0012 rides the migrate loop, the sweep rides the unconditional reaper goroutine), AND the WD-9 Adaptive-Workstreams plane (OI-16: a real external MCP client composes the next tick's plan from governed memory it reads over Caddy /mcp, a human reviews the exact plan before anything runs, the engine executes it, the outcome accrues, and the NEXT tick's read proves the loop closed — at the 60s production floor; cross-grant containment + revoke-cascades-with-zero-run.denied + the share gate + the deny cycle + expiry-never-wedges all proven installed; migration 0013 rides the migrate loop, the three control-plane MCP tools ride the existing gateway binary + /mcp route — NO new unit/route/key/env for either v0.8 or v0.9); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched + memory.written/memory.redacted/memory.expired + plan.requested/plan.submitted/plan.expired + memory.read/memory.shared/memory.unshared + run.denied)."
+log "T-053a/T-061/T-069/T-077/T-084/T-093/T-102 PASS — WD-4 + WD-5 + WD-6 + WD-7 + WD-8 + WD-9 + WD-10 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop)), the WD-8 Persistent Scoped Memory plane (OI-15: the completed tick ACCRUES a content-free pointer with nobody writing it → author/scoped-read/redact + the N1 idempotent no-op → the agent plane is rejected on /v1/memories* (SEC-31) → unknown-id 404s → the sweep at the PRODUCTION 2-min reaper cadence expires the unpinned row exactly once and spares the pinned one → an operator-canceled Run accrues exactly one :canceled pointer; migration 0012 rides the migrate loop, the sweep rides the unconditional reaper goroutine), the WD-9 Adaptive-Workstreams plane (OI-16: a real external MCP client composes the next tick's plan from governed memory it reads over Caddy /mcp, a human reviews the exact plan before anything runs, the engine executes it, the outcome accrues, and the NEXT tick's read proves the loop closed — at the 60s production floor; cross-grant containment + revoke-cascades-with-zero-run.denied + the share gate + the deny cycle + expiry-never-wedges all proven installed; migration 0013 rides the migrate loop, the three control-plane MCP tools ride the existing gateway binary + /mcp route — NO new unit/route/key/env for either v0.8 or v0.9), AND the WD-10 Layer 1 Live/Context Index plane (OI-17: a real host directory bound to a charter — via the wd1-harness-owned CTXVOL, standing in for the installed api's own filesystem, since api is a systemd service inside $HOST with no bind-mounted repo checkout — is swept by the in-process indexer at the REAL 60s production floor, the composer's context.search over Caddy /mcp reads it (chained context.read, agent-workspace edge, content-free) alongside memory.read, a human reviews and approves the exact grounded plan, the flagged resource's invocation-level park+approve completes it, it accrues, and a live source edit is reflected on the NEXT sweep with no rebuild call; the confined-root guard (N2) holds installed too; migrations 0014+0015 ride the migrate loop, context.search rides the existing gateway binary + /mcp route — NO new unit/route/key/required-env); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched + memory.written/memory.redacted/memory.expired + plan.requested/plan.submitted/plan.expired + memory.read/memory.shared/memory.unshared + run.denied + context.source.registered/context.read)."

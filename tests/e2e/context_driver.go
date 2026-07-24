@@ -2,11 +2,12 @@
 
 // Shared Layer 1 Live/Context Index driver helpers (ADR-0066) — used by the compose
 // e2e WD-10 capstone (wd10_test.go / wd10_negatives_test.go, tag e2e) and, at T-102,
-// the installed-stack WD-10 driver (tag wd1). The operator surface
+// the installed-stack WD-10 driver (wd1_test.go, tag wd1). The operator surface
 // (/v1/context-sources*) is HTTP-only (no DB), the workstream_driver.go/memory_driver.go
 // pattern; the agent-plane context.search tool is driven over the SAME real MCP
 // transport the wd9_driver.go helpers use — a real external MCP client, not an
-// internal-route shortcut (G1).
+// internal-route shortcut (G1). wd10ScratchDir is topology-aware (WD1_CONTEXT_ROOT,
+// T-102) so every helper below works unchanged under either tag.
 package e2e
 
 import (
@@ -177,18 +178,36 @@ func waitForSearchHit(t *testing.T, client *http.Client, mcpURL, tok, query, wor
 	}
 }
 
-// wd10ScratchDir creates a real directory under the SAME bind-mounted repo tree every
-// e2e Go service container mounts at its working directory (docker-compose.e2e.yml's
-// shared x-go anchor, `../../:/work`) — so a file the tester container writes here is
-// the EXACT file api's in-process indexer (T-097) reads from its own mount; no new
-// shared volume is wired (OI-17: zero new install wiring, the same host directory is
-// simply mounted twice). Removed in t.Cleanup — never left behind in the working tree
-// (also .gitignore'd as a second line of defense against a failed run).
+// wd10ScratchDir creates a real directory a registered context source can bind to —
+// topology-aware (T-102), so the SAME helper serves both drivers:
+//
+//   - e2e (compose): under the SAME bind-mounted repo tree every e2e Go service
+//     container mounts at its working directory (docker-compose.e2e.yml's shared
+//     x-go anchor, `../../:/work`) — a file the tester container writes here is the
+//     EXACT file api's in-process indexer (T-097) reads from its own mount; no new
+//     shared volume is wired (OI-17: zero new install wiring, the same host directory
+//     is simply mounted twice).
+//   - wd1 (installed): `api` is a systemd SERVICE running INSIDE the privileged
+//     $HOST container (aireos-api.service), not a container the tester shares a bind
+//     mount with — there is no repo checkout inside $HOST at all, so os.Getwd()
+//     would name a directory only the TESTER can see. run-wd1.sh instead mounts a
+//     dedicated, harness-owned Docker volume (aireos-wd1-context) at the SAME path on
+//     BOTH the tester container and $HOST, and exports that path as WD1_CONTEXT_ROOT
+//     — a real host directory the installed api process can read. This is wd1 TEST-
+//     HARNESS wiring only (run-wd1.sh), never install.sh/systemd/Caddy/env — it does
+//     not touch the OI-17 zero-install-wiring-diff claim.
+//
+// Removed in t.Cleanup — never left behind (also .gitignore'd as a second line of
+// defense against a failed run, on the e2e/host-checkout side).
 func wd10ScratchDir(t *testing.T) string {
 	t.Helper()
-	base, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+	base := env("WD1_CONTEXT_ROOT", "")
+	if base == "" {
+		var err error
+		base, err = os.Getwd()
+		if err != nil {
+			t.Fatalf("getwd: %v", err)
+		}
 	}
 	dir := filepath.Join(base, ".wd10-scratch", wd10Token())
 	if err := os.MkdirAll(dir, 0o755); err != nil {

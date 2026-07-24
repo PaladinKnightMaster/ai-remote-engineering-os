@@ -24,6 +24,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1064,4 +1066,245 @@ func logout(t *testing.T, client *http.Client, base, sess, csrf string) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout: status %d", resp.StatusCode)
 	}
+}
+
+// TestWD10InstalledStack — OI-17 (T-102): the FULL WD-10 Layer 1 Live/Context Index
+// happy path (release-criteria §2, legs 1-8) on the INSTALLED stack through Caddy
+// HTTPS, at the REAL production posture — the 60s adaptive-schedule floor AND the 60s
+// context-indexer sweep floor (defaultWorkstreamMinInterval / ctxindex.DefaultIndexInterval,
+// NEITHER overridden). Migrations 0014+0015 ride install.sh's existing migrate loop;
+// the indexer rides the already-running api goroutine; context.search rides the
+// already-installed gateway binary + Caddy /mcp route — NO new unit, route, key, or
+// required env (OI-17's zero-install-wiring-diff claim).
+//
+// Topology note (why this test differs from the compose e2e wd10_test.go beyond the
+// transport): on compose, `api` is a container sharing docker-compose.e2e.yml's x-go
+// bind-mount anchor with the tester, so a directory the tester writes under its own
+// cwd is the SAME directory api's indexer reads. On the install, `api` is a systemd
+// SERVICE running INSIDE the privileged $HOST container (aireos-api.service,
+// ProtectSystem=strict/ProtectHome=true/PrivateTmp=true — these gate WRITES and hide
+// /home,/root,/tmp; they do not block reads of a world-readable directory elsewhere),
+// and the Go test binary runs in an entirely SEPARATE container with no bind mount or
+// docker-exec reach into $HOST at all. run-wd1.sh bridges this with a harness-owned
+// Docker volume (aireos-wd1-context) mounted at the SAME path (WD1_CONTEXT_ROOT) on
+// BOTH containers — a real host directory the installed api process can read — so
+// wd10ScratchDir (context_driver.go, topology-aware since T-102) just works here
+// unchanged. This is wd1 TEST-HARNESS wiring (run-wd1.sh) only, never install.sh/
+// systemd/Caddy/env: it does not touch the OI-17 zero-install-wiring-diff claim.
+//
+// Only the resource the install seeds (resourceID) exists here and it is
+// requires_approval-flagged (the WD-5/7/8/9 installed precedent), so the approved
+// plan parks a SECOND time at the invocation level before the sequencer completes it —
+// double governance live, same as WD-9 installed. Runs AFTER TestWD9InstalledStack
+// (source order, WD1_test.go): the install has ONE flagged resource, so parked
+// invocations stay one-at-a-time per test.
+//
+// Chain assertions ride the operator audit read-proxy (pollProxyTargetOutcome/
+// pollProxyActorOutcomeCount/countProxyTargetOutcome — the wd1 driver has no
+// host-internal audit reach); chain INTEGRITY + the new context.source.registered/
+// context.read vocabulary is asserted host-internally by run-wd1.sh (WANTS).
+func TestWD10InstalledStack(t *testing.T) {
+	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
+	client := newWD1TLSClient(t, 90*time.Second)
+
+	sess, csrf, status, err := doLogin(client, base)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+	suffix := wd1MemSuffix()
+
+	agentID := "wd10-inst-" + suffix
+	tok := mintAgentTokenViaAPI(t, client, base, sess, csrf, agentID, resourceID)
+	composer := "agent:" + agentID
+	ws := charterWorkstream(t, client, base, sess, csrf, charterOpts{
+		objective: "wd10 installed context " + suffix, resources: []string{resourceID},
+		intervalSeconds: 60, stepBudget: 100, kind: "adaptive", composer: composer,
+	})
+	t.Cleanup(func() { retireWorkstream(t, client, base, sess, csrf, ws.ID) })
+	t.Logf("chartered adaptive workstream %s (composer %s) at the 60s production floor", ws.ID, composer)
+
+	// --- Leg 1: register a context source over a REAL host directory (the CTXVOL
+	// bridge), bound to the charter (GOV-11 consent is the register-route copy, T-100;
+	// this driver proves the wire, not the UI copy) ---------------------------------
+	dir := wd10ScratchDir(t) // WD1_CONTEXT_ROOT-aware: a real path the installed api can read
+	term1 := wd10Token()
+	writeContextDoc(t, dir, "runbook.md", term1)
+	src := registerContextSource(t, client, base, sess, csrf, dir, ws.ID)
+	if src.ScopeType != "workstream" || src.ScopeID != ws.ID {
+		t.Fatalf("context source scope = %s/%s, want workstream/%s", src.ScopeType, src.ScopeID, ws.ID)
+	}
+	if src.LastIndexedAt != nil {
+		t.Fatalf("freshly registered source lastIndexedAt = %v, want nil (not yet swept)", src.LastIndexedAt)
+	}
+	registered := pollProxyTargetOutcome(t, client, base, sess, csrf, "context-source:"+src.ID, "context.source.registered", 30*time.Second)
+	if registered.Actor != "operator:admin" || registered.Edge != "human-agent" {
+		t.Fatalf("context.source.registered = {actor:%q edge:%q}, want {operator:admin human-agent}", registered.Actor, registered.Edge)
+	}
+	t.Logf("PASS installed WD-10 leg 1 — context source %s registered over %s (the CTXVOL-bridged real host directory), bound to charter %s; context.source.registered chained", src.ID, dir, ws.ID)
+
+	// --- Leg 2: the indexer sweeps at the REAL 60s production floor (no override) --
+	indexed := waitForSourceIndexed(t, client, base, sess, csrf, ws.ID, src.ID, 90*time.Second)
+	if indexed.Status != "active" {
+		t.Fatalf("indexed source status = %q, want active", indexed.Status)
+	}
+	waitForSearchHit(t, client, base, tok, term1, ws.ID, term1, 90*time.Second)
+	t.Log("PASS installed WD-10 leg 2 — the in-process indexer swept the source at the production 60s floor (no AIREOS_CONTEXT_INDEX_SECONDS override); lastIndexedAt set, status active")
+
+	// --- Leg 3: the tick publishes (v0.9 machinery, at the 60s floor) --------------
+	req1 := waitForPlanRequest(t, client, base, tok, ws.ID, 150*time.Second)
+	t.Logf("PASS installed WD-10 leg 3 — the adaptive tick opened plan request %s", req1.RequestID)
+
+	// --- Leg 4: the composer reads memory AND context — both chained --------------
+	_ = readMemoryMCP(t, client, base, tok, ws.ID)
+	chunks := searchContextMCP(t, client, base, tok, term1, ws.ID)
+	if len(chunks) == 0 {
+		t.Fatalf("context.search(%q) returned zero chunks", term1)
+	}
+	var hit contextChunkView
+	var sawTerm bool
+	for _, c := range chunks {
+		if strings.Contains(c.Content, term1) {
+			hit = c
+			sawTerm = true
+			break
+		}
+	}
+	if !sawTerm {
+		t.Fatalf("context.search(%q) chunks = %+v, none carried the term", term1, chunks)
+	}
+	ctxReads := pollProxyActorOutcomeCount(t, client, base, sess, csrf, composer, "context.read", 1, 30*time.Second)
+	if len(ctxReads) < 1 {
+		t.Fatalf("context.read count for composer %s = %d, want >=1", composer, len(ctxReads))
+	}
+	last := ctxReads[len(ctxReads)-1]
+	if last.Edge != "agent-workspace" {
+		t.Fatalf("context.read edge = %q, want agent-workspace (SEC-33)", last.Edge)
+	}
+	if !strings.HasPrefix(last.Target, "context:") || !strings.Contains(last.Target, hit.ChunkID) {
+		t.Fatalf("context.read target = %q, want it to start with context: and list the returned chunk id %s", last.Target, hit.ChunkID)
+	}
+	if strings.Contains(last.Target, term1) || strings.Contains(last.EvidencePacketID, term1) {
+		t.Fatalf("context.read event leaked the query/content term (content-free violation): %+v", last)
+	}
+	t.Log("PASS installed WD-10 leg 4 — the composer read memory.read AND context.search over the installed gateway; context.read chained, edge=agent-workspace, target lists the chunk id only, content-free")
+
+	// --- Leg 5: the composer composes grounded in fresh context and submits -------
+	step := map[string]string{"resourceId": resourceID, "command": "echo WD10-INSTALLED-" + term1}
+	runID, planStatus, isErr, text := submitPlanMCP(t, client, base, tok, req1.RequestID, []map[string]string{step})
+	if isErr {
+		t.Fatalf("plan.submit refused (want success): %q", text)
+	}
+	if planStatus != "proposed" {
+		t.Fatalf("plan.submit run status = %q, want proposed", planStatus)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "plan-request:"+req1.RequestID, "plan.submitted", 30*time.Second)
+	t.Logf("PASS installed WD-10 leg 5 — plan.submit created proposed run %s grounded in the retrieved chunk's term; plan.submitted chained", runID)
+
+	// --- Leg 6: a human reviews the exact plan, then approves ---------------------
+	preview := getRun(t, client, base, sess, csrf, runID)
+	if preview.Status != "proposed" || len(preview.Steps) != 1 || preview.Steps[0].Command != step["command"] || preview.Steps[0].ResourceID != resourceID {
+		t.Fatalf("preview run %+v, want proposed with the sealed command+resource visible", preview)
+	}
+	approved, acode := approveRun(t, client, base, sess, csrf, runID)
+	if acode != http.StatusOK || approved.Status != "pending" {
+		t.Fatalf("approve run: status %d, view %+v, want 200/pending", acode, approved)
+	}
+	t.Log("PASS installed WD-10 leg 6 — the operator reviewed the exact sealed command (grounded in the indexed context) and approved; proposed->pending")
+
+	// --- Leg 7: the flagged resource's invocation-level park+approve (double
+	// governance, the WD-9-installed pattern) -> completed -> accrue --------------
+	inv := pollPendingInvocation(t, client, base, sess, csrf, resourceID, 90*time.Second)
+	if inv.RunID != runID {
+		t.Fatalf("parked invocation belongs to run %q, want %q", inv.RunID, runID)
+	}
+	resolveInvocation(t, client, base, inv.ID, sess, csrf, "approve")
+	final := waitRunStatusHTTP(t, client, base, sess, csrf, runID, "completed", 90*time.Second)
+	if final.Actor != composer || final.GrantID != ws.GrantID {
+		t.Fatalf("completed run provenance = {actor:%q grant:%q}, want {%s %s}", final.Actor, final.GrantID, composer, ws.GrantID)
+	}
+	accrued := waitForMemory(t, client, base, sess, csrf, "run", runID, 30*time.Second, func(m memoryView) bool {
+		return m.Ref == "run:"+runID
+	})
+	if accrued.HasContent {
+		t.Fatalf("accrued memory %s hasContent=true, want false (content-free pointer)", accrued.ID)
+	}
+	pollProxyTargetOutcome(t, client, base, sess, csrf, "memory:"+accrued.ID, "memory.written", 30*time.Second)
+	t.Logf("PASS installed WD-10 leg 7 — the invocation-level park+approve drove the plan to completed (actor=%s); the terminal Run accrued its content-free pointer %s (memory.written chained)", composer, accrued.ID)
+
+	// --- Leg 8: freshness proves — the next sweep (60s floor) reflects a live edit -
+	term2 := wd10Token()
+	writeContextDoc(t, dir, "runbook.md", term2) // in-place edit: term1 -> term2, no re-registration
+	waitForSearchHit(t, client, base, tok, term2, ws.ID, term2, 90*time.Second)
+	if hits := searchContextMCP(t, client, base, tok, term1, ws.ID); len(hits) != 0 {
+		for _, h := range hits {
+			if strings.Contains(h.Content, term1) {
+				t.Fatalf("context.search(%q) still returned the pre-edit term after the file was overwritten: %+v", term1, h)
+			}
+		}
+	}
+	t.Log("PASS WD-10 INSTALLED — context source registered over a real host directory (CTXVOL bridge) -> indexed at the production 60s floor -> tick opened a plan request -> the composer read memory AND context (both chained, context.read content-free/agent-workspace) -> composed+submitted a plan grounded in the indexed term -> the operator reviewed the exact sealed command and approved -> the flagged resource's invocation-level park+approve completed it -> exactly the content-free accrual -> a live source edit was reflected on the very next sweep with no rebuild call. Chain integrity + the context.source.registered/context.read vocabulary is asserted by run-wd1.sh.")
+}
+
+// TestWD10ConfinedRootInstalled — the N2 confined-root negative (SEC-33, K5) on the
+// INSTALLED stack: a symlinked directory and a symlinked file inside a registered root,
+// both pointing outside it, are neither indexed nor ever read — matching
+// TestWD10ConfinedRoot (wd10_negatives_test.go) exactly, on the CTXVOL-bridged
+// installed-topology scratch dir (WD1_CONTEXT_ROOT). Cheap (no schedule tick / plan
+// compose needed) — the criteria §2 "one key negative, time/suite-ceiling permitting"
+// pick alongside the happy path above; the remaining five WD-10 negatives (N1, N3, N4,
+// N5, N6) stay compose-proven (wd10_negatives_test.go) per the WD-9-installed precedent
+// of not re-running the full negative matrix installed.
+func TestWD10ConfinedRootInstalled(t *testing.T) {
+	base := env("WD1_BASE_URL", "https://aireos-wd1-host")
+	client := newWD1TLSClient(t, 90*time.Second)
+
+	sess, csrf, status, err := doLogin(client, base)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("login: status=%d err=%v", status, err)
+	}
+	suffix := wd1MemSuffix()
+
+	agentID := "wd10-inst-cr-" + suffix
+	tok := mintAgentTokenViaAPI(t, client, base, sess, csrf, agentID, resourceID)
+	composer := "agent:" + agentID
+	ws := charterWorkstream(t, client, base, sess, csrf, charterOpts{
+		objective: "wd10 installed confined root " + suffix, resources: []string{resourceID},
+		intervalSeconds: 60, stepBudget: 100, kind: "adaptive", composer: composer,
+	})
+	t.Cleanup(func() { retireWorkstream(t, client, base, sess, csrf, ws.ID) })
+
+	inRoot := wd10ScratchDir(t)
+	outside := wd10ScratchDir(t) // a SIBLING scratch dir — never registered, never inside inRoot
+
+	inTerm := wd10Token()
+	writeContextDoc(t, inRoot, "runbook.md", inTerm)
+	outsideTerm := wd10Token()
+	writeContextDoc(t, outside, "secret.md", outsideTerm)
+
+	// The classic indexer-escape vectors (ADR-0066 §1 red-team #4 / root_test.go): a
+	// symlink INSIDE the root pointing at the outside directory, and one pointing
+	// directly at the outside file.
+	if err := os.Symlink(outside, filepath.Join(inRoot, "escape-dir")); err != nil {
+		t.Fatalf("seed symlink-to-dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(inRoot, "escape-file.md")); err != nil {
+		t.Fatalf("seed symlink-to-file: %v", err)
+	}
+
+	src := registerContextSource(t, client, base, sess, csrf, inRoot, ws.ID)
+	waitForSourceIndexed(t, client, base, sess, csrf, ws.ID, src.ID, 90*time.Second)
+
+	// The in-root content indexes and searches normally (positive control — the guard
+	// rejects escapes, not legitimate access).
+	waitForSearchHit(t, client, base, tok, inTerm, ws.ID, inTerm, 90*time.Second)
+
+	// The out-of-root content, reached via EITHER symlink, never appears.
+	if hits := searchContextMCP(t, client, base, tok, outsideTerm, ws.ID); len(hits) != 0 {
+		t.Fatalf("context.search(%q) (scoped) = %+v, want empty — the symlink escape must never be indexed/read", outsideTerm, hits)
+	}
+	if hits := searchContextMCP(t, client, base, tok, outsideTerm, ""); len(hits) != 0 {
+		t.Fatalf("context.search(%q) (unfiltered) = %+v, want empty — the symlink escape must never be indexed/read", outsideTerm, hits)
+	}
+
+	t.Log("PASS installed WD-10 N2 — the indexer stayed confined to its registered root on the install: a symlinked directory and a symlinked file, both pointing outside the root, were neither indexed nor ever read; the in-root content indexed and searched normally")
 }
