@@ -19,8 +19,31 @@ type Workstream = components["schemas"]["Workstream"];
 type Grant = components["schemas"]["Grant"];
 type Run = components["schemas"]["Run"];
 type Resource = components["schemas"]["Resource"];
+type ContextSource = components["schemas"]["ContextSource"];
 type TemplateStep = { resourceId: string; resourceName: string; command: string };
 type WorkstreamKind = components["schemas"]["WorkstreamCreate"]["kind"] & string;
+
+// GOV-11 (T-100b, ADR-0066 §1): the context-source consent surface — mirrors the tone
+// of the v0.9 memory-share confirm copy (SHARE_CONFIRM_COPY above), naming the
+// prompt-injection risk honestly rather than burying it in fine print. Shown verbatim
+// in the confirm dialog BEFORE a register or a remove commits (no dark patterns).
+export const CONTEXT_SOURCE_REGISTER_CONFIRM_COPY =
+  "Registering this directory makes its content readable by this charter's composer agent — a prompt-injection and exfiltration risk you are explicitly accepting. Register only content you intend the agent to see. A plan grounded in it still parks for your review before anything runs.";
+export const CONTEXT_SOURCE_REMOVE_CONFIRM_COPY =
+  "Remove this context source? This stops future agent reads of this directory — it does not and cannot recall anything the agent may already have read from it.";
+
+/** FE-26: a null lastIndexedAt is "never indexed / pending" (the first sweep hasn't run
+ * yet); otherwise a coarse relative "last indexed …ago" (the staleness signal, CTX-3). */
+function relativeAgo(iso: string): string {
+  const diffSec = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diffSec < 5) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  return `${Math.round(diffHr / 24)}d ago`;
+}
 
 export function Workstreams() {
   const [workstreams, setWorkstreams] = useState<Workstream[]>([]);
@@ -54,6 +77,13 @@ export function Workstreams() {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<Workstream | null>(null);
   const [memories, setMemories] = useState<MemoryView[]>([]);
+
+  // FE-26 (ADR-0066 §1, T-100b): a charter's bound context sources — fetched fresh
+  // whenever the detail opens (the FE-22 memory precedent — no auto-poll).
+  const [contextSources, setContextSources] = useState<ContextSource[]>([]);
+  const [csRootPath, setCsRootPath] = useState("");
+  const [csRegistering, setCsRegistering] = useState(false);
+  const [csVerbBusy, setCsVerbBusy] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -113,6 +143,21 @@ export function Workstreams() {
       setMemories(data ?? []);
     })();
   }, [selected]);
+
+  // FE-26: the charter's bound context sources (CTX-1) — same fetch-on-select shape as
+  // the FE-22 scoped-memory effect above.
+  const loadContextSources = useCallback(async (workstreamId: string) => {
+    const { data } = await apiClient.GET("/v1/context-sources", { params: { query: { workstreamId } } });
+    setContextSources(data ?? []);
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setContextSources([]);
+      return;
+    }
+    void loadContextSources(selected);
+  }, [selected, loadContextSources]);
 
   const grantOf = (ws: Workstream) => grants.find((g) => g.id === ws.grantId);
   const runsOf = (ws: Workstream) => runs.filter((r) => r.grantId === ws.grantId);
@@ -197,6 +242,49 @@ export function Workstreams() {
       else if (data) setMemories((m) => m.map((x) => (x.id === id ? data : x)));
     } finally {
       setMemVerbBusy(null);
+    }
+  }
+
+  // FE-26/GOV-11 (T-100b, ADR-0066 §1): register a charter-bound context source. The
+  // GOV-11 confirm copy fires BEFORE the POST commits — no dark patterns.
+  async function onRegisterContextSource() {
+    const rootPath = csRootPath.trim();
+    if (!rootPath || !selected) return;
+    if (!window.confirm(CONTEXT_SOURCE_REGISTER_CONFIRM_COPY)) return;
+    setCsRegistering(true);
+    setError(null);
+    try {
+      const { data, error: apiErr } = await apiClient.POST("/v1/context-sources", {
+        body: { rootPath, workstreamId: selected },
+      });
+      if (apiErr || !data) {
+        setError(
+          apiErr?.message ? `Could not register the context source: ${apiErr.message}` : "Could not register the context source.",
+        );
+        return;
+      }
+      setCsRootPath("");
+      setContextSources((cs) => [...cs, data]);
+    } finally {
+      setCsRegistering(false);
+    }
+  }
+
+  // GOV-11: removal stops future agent reads but cannot recall past ones — stated at
+  // the act, same confirm-before-commit shape as the memory redact/share verbs.
+  async function onRemoveContextSource(id: string) {
+    if (!window.confirm(CONTEXT_SOURCE_REMOVE_CONFIRM_COPY)) return;
+    setCsVerbBusy(id);
+    setError(null);
+    try {
+      const { error: apiErr } = await apiClient.DELETE("/v1/context-sources/{id}", { params: { path: { id } } });
+      if (apiErr) {
+        setError("Could not remove the context source. Refresh and try again.");
+        return;
+      }
+      setContextSources((cs) => cs.filter((s) => s.id !== id));
+    } finally {
+      setCsVerbBusy(null);
     }
   }
 
@@ -597,6 +685,77 @@ export function Workstreams() {
                             ))}
                           </ul>
                         )}
+                      </div>
+
+                      {/* FE-26 (ADR-0066 §1, T-100b): the charter's bound context
+                          sources — a source's content becomes part of what this
+                          charter's composer agent can search (context.search). */}
+                      <div aria-label="context sources" className="space-y-2">
+                        <p className="text-xs font-medium">Context sources</p>
+                        {contextSources.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No context sources registered.</p>
+                        ) : (
+                          <ul className="divide-y divide-border rounded-md border border-border">
+                            {contextSources.map((cs) => (
+                              <li key={cs.id} className="space-y-1 p-2 text-xs">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="min-w-0 truncate font-mono text-foreground">{cs.rootPath}</span>
+                                  <span
+                                    className={`shrink-0 rounded-md border px-2 py-0.5 font-medium ${
+                                      cs.status === "errored"
+                                        ? "border-destructive/40 bg-destructive/10 text-destructive"
+                                        : "border-border text-muted-foreground"
+                                    }`}
+                                  >
+                                    {cs.status}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between gap-2 text-muted-foreground">
+                                  <span>{cs.lastIndexedAt ? `last indexed ${relativeAgo(cs.lastIndexedAt)}` : "never indexed / pending"}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => void onRemoveContextSource(cs.id)}
+                                    disabled={csVerbBusy === cs.id}
+                                    className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-60"
+                                  >
+                                    {csVerbBusy === cs.id ? "Working…" : "Remove"}
+                                  </button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+
+                        <form
+                          aria-label="register context source"
+                          className="flex gap-2"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void onRegisterContextSource();
+                          }}
+                        >
+                          <input
+                            aria-label="root path"
+                            value={csRootPath}
+                            onChange={(e) => setCsRootPath(e.target.value)}
+                            placeholder="/docs/runbooks (the directory to index)"
+                            className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs font-mono"
+                          />
+                          <button
+                            type="submit"
+                            disabled={csRegistering || !csRootPath.trim()}
+                            className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-60"
+                          >
+                            {csRegistering ? "Registering…" : "Register"}
+                          </button>
+                        </form>
+                        {/* GOV-11: the consent copy stated at the surface, beside the
+                            act (the confirm dialog restates it before the POST commits). */}
+                        <p className="text-xs text-muted-foreground">
+                          Registering a directory here makes its content <strong>readable by this charter's composer
+                          agent</strong> — register only content you intend the agent to see. Removing a source stops
+                          future agent reads but cannot recall past ones.
+                        </p>
                       </div>
                     </div>
                   )}

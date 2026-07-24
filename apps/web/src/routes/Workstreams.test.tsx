@@ -3,11 +3,11 @@
 // workstreams.smoke.spec.ts (CLAUDE.md DoD: jsdom unit tests do not satisfy it).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../api", () => ({
-  apiClient: { GET: vi.fn(), POST: vi.fn() },
+  apiClient: { GET: vi.fn(), POST: vi.fn(), DELETE: vi.fn() },
 }));
 
 import { Workstreams } from "./Workstreams";
@@ -28,6 +28,7 @@ function mockGET(opts: {
   resources?: unknown[];
   detail?: unknown;
   memories?: unknown[];
+  contextSources?: unknown[];
   wsErr?: unknown;
 }) {
   vi.mocked(apiClient.GET).mockImplementation(((path: string) => {
@@ -36,6 +37,7 @@ function mockGET(opts: {
     if (path === "/v1/runs") return Promise.resolve({ data: { items: opts.runs ?? [], page: {} }, error: undefined });
     if (path === "/v1/workstreams/{id}") return Promise.resolve({ data: opts.detail, error: undefined });
     if (path === "/v1/memories") return Promise.resolve({ data: opts.memories ?? [], error: undefined });
+    if (path === "/v1/context-sources") return Promise.resolve({ data: opts.contextSources ?? [], error: undefined });
     if (opts.wsErr) return Promise.resolve({ data: undefined, error: opts.wsErr });
     return Promise.resolve({ data: { items: opts.workstreams ?? [], page: {} }, error: undefined });
   }) as never);
@@ -330,5 +332,117 @@ describe("Workstreams route", () => {
     expect(screen.getByText(/submitted ·/i)).toBeTruthy();
     expect(screen.getByText("run-9")).toBeTruthy();
     expect(screen.getByText("expired")).toBeTruthy();
+  });
+
+  // --- T-100b: FE-26 / GOV-11 (the charter's bound context sources) ---
+
+  it("lists the charter's context sources with their staleness signal (active/errored + never-indexed)", async () => {
+    mockGET({
+      workstreams: [sampleWS],
+      grants: [sampleGrant],
+      detail: { ...sampleWS, steps: [] },
+      contextSources: [
+        { id: "cs-1", rootPath: "/docs/runbooks", scopeType: "workstream", scopeId: "ws-1", status: "active", lastIndexedAt: "2026-07-06T00:00:00Z", createdAt: "2026-07-06T00:00:00Z", updatedAt: "2026-07-06T00:00:00Z" },
+        { id: "cs-2", rootPath: "/missing/root", scopeType: "workstream", scopeId: "ws-1", status: "errored", createdAt: "2026-07-06T00:00:00Z", updatedAt: "2026-07-06T00:00:00Z" },
+      ],
+    });
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
+    fireEvent.click(screen.getByText("nightly health"));
+
+    const csHeading = await screen.findByText(/context sources/i);
+    const csSection = csHeading.closest("div")!;
+    expect(within(csSection).getByText("/docs/runbooks")).toBeTruthy();
+    expect(within(csSection).getByText("active")).toBeTruthy();
+    expect(within(csSection).getByText("/missing/root")).toBeTruthy();
+    expect(within(csSection).getByText("errored")).toBeTruthy();
+    expect(within(csSection).getByText(/never indexed \/ pending/i)).toBeTruthy();
+    expect(apiClient.GET).toHaveBeenCalledWith("/v1/context-sources", { params: { query: { workstreamId: "ws-1" } } });
+  });
+
+  it("shows the GOV-11 confirm copy and registers a context source via POST /v1/context-sources", async () => {
+    mockGET({ workstreams: [sampleWS], grants: [sampleGrant], detail: { ...sampleWS, steps: [] } });
+    let confirmMessage = "";
+    vi.spyOn(window, "confirm").mockImplementation((msg) => {
+      confirmMessage = msg ?? "";
+      return true;
+    });
+    vi.mocked(apiClient.POST).mockResolvedValue({
+      data: {
+        id: "cs-new",
+        rootPath: "/docs/tickets",
+        scopeType: "workstream",
+        scopeId: "ws-1",
+        status: "active",
+        createdAt: "2026-07-06T00:00:00Z",
+        updatedAt: "2026-07-06T00:00:00Z",
+      },
+      error: undefined,
+    } as never);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
+    fireEvent.click(screen.getByText("nightly health"));
+
+    // GOV-11: the consent copy renders on the surface itself (not only the confirm dialog).
+    expect(await screen.findByText(/readable by this charter's composer/i)).toBeTruthy();
+
+    fireEvent.change(await screen.findByLabelText("root path"), { target: { value: "/docs/tickets" } });
+    fireEvent.click(screen.getByRole("button", { name: /^register$/i }));
+
+    await waitFor(() =>
+      expect(apiClient.POST).toHaveBeenCalledWith("/v1/context-sources", {
+        body: { rootPath: "/docs/tickets", workstreamId: "ws-1" },
+      }),
+    );
+    expect(confirmMessage).toMatch(/readable by this charter's composer agent/i);
+    expect(confirmMessage).toMatch(/prompt-injection/i);
+    expect(await screen.findByText("/docs/tickets")).toBeTruthy();
+  });
+
+  it("does not register when the GOV-11 confirm is dismissed", async () => {
+    mockGET({ workstreams: [sampleWS], grants: [sampleGrant], detail: { ...sampleWS, steps: [] } });
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
+    fireEvent.click(screen.getByText("nightly health"));
+
+    fireEvent.change(await screen.findByLabelText("root path"), { target: { value: "/docs/tickets" } });
+    fireEvent.click(screen.getByRole("button", { name: /^register$/i }));
+
+    await waitFor(() => expect(window.confirm).toHaveBeenCalled());
+    expect(apiClient.POST).not.toHaveBeenCalledWith("/v1/context-sources", expect.anything());
+  });
+
+  it("shows the GOV-11 removal confirm copy and removes a context source via DELETE /v1/context-sources/{id}", async () => {
+    mockGET({
+      workstreams: [sampleWS],
+      grants: [sampleGrant],
+      detail: { ...sampleWS, steps: [] },
+      contextSources: [
+        { id: "cs-1", rootPath: "/docs/runbooks", scopeType: "workstream", scopeId: "ws-1", status: "active", createdAt: "2026-07-06T00:00:00Z", updatedAt: "2026-07-06T00:00:00Z" },
+      ],
+    });
+    let confirmMessage = "";
+    vi.spyOn(window, "confirm").mockImplementation((msg) => {
+      confirmMessage = msg ?? "";
+      return true;
+    });
+    vi.mocked(apiClient.DELETE).mockResolvedValue({ data: undefined, error: undefined } as never);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("nightly health")).toBeTruthy());
+    fireEvent.click(screen.getByText("nightly health"));
+
+    const row = (await screen.findByText("/docs/runbooks")).closest("li")!;
+    fireEvent.click(within(row).getByRole("button", { name: /^remove$/i }));
+
+    await waitFor(() =>
+      expect(apiClient.DELETE).toHaveBeenCalledWith("/v1/context-sources/{id}", { params: { path: { id: "cs-1" } } }),
+    );
+    expect(confirmMessage).toMatch(/stops future agent reads/i);
+    expect(confirmMessage).toMatch(/cannot recall/i);
+    expect(screen.queryByText("/docs/runbooks")).toBeNull();
   });
 });
