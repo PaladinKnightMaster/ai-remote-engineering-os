@@ -148,6 +148,11 @@ services:
       # capstone's expiry leg proves in seconds instead of the 2-minute production
       # default. e2e-only override — the installed stack keeps the default (OI-15).
       AIREOS_MEMORY_SWEEP_SECONDS: "2"
+      # ADR-0066 (T-101): lower the context-index sweep cadence so the WD-10 capstone's
+      # indexer/freshness/staleness legs prove in seconds instead of the 60s production
+      # default (ctxindex.DefaultIndexInterval). e2e-only override — the installed stack
+      # keeps the default (OI-17).
+      AIREOS_CONTEXT_INDEX_SECONDS: "6"
     command: ["bash", "-c", "go run ./services/api serve"]
 
   # connector-service: sole credential custodian + egress chokepoint (ADR-0053).

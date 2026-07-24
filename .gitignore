@@ -28,6 +28,12 @@ dist/
 # Task (ADR-0042)
 .task/
 
+# WD-10 e2e scratch context-source roots (T-101): real temp directories the live
+# harness registers as context sources over the shared /work bind mount so both the
+# tester and api containers see the same files; removed in t.Cleanup, ignored here
+# as a second line of defense against a failed run leaving litter.
+tests/e2e/.wd10-scratch/
+
 # Env files
 .env
 .env.local
