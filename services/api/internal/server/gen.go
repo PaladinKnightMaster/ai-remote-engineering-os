@@ -29,6 +29,17 @@ const (
 	ServiceService     AuditEventEdge = "service-service"
 )
 
+// Defines values for ContextSourceScopeType.
+const (
+	ContextSourceScopeTypeWorkstream ContextSourceScopeType = "workstream"
+)
+
+// Defines values for ContextSourceStatus.
+const (
+	ContextSourceStatusActive  ContextSourceStatus = "active"
+	ContextSourceStatusErrored ContextSourceStatus = "errored"
+)
+
 // Defines values for InvocationResolveDecision.
 const (
 	InvocationResolveDecisionApprove InvocationResolveDecision = "approve"
@@ -87,11 +98,11 @@ const (
 
 // Defines values for SessionStatus.
 const (
-	Active          SessionStatus = "active"
-	Closed          SessionStatus = "closed"
-	Pending         SessionStatus = "pending"
-	PendingApproval SessionStatus = "pending_approval"
-	Terminated      SessionStatus = "terminated"
+	SessionStatusActive          SessionStatus = "active"
+	SessionStatusClosed          SessionStatus = "closed"
+	SessionStatusPending         SessionStatus = "pending"
+	SessionStatusPendingApproval SessionStatus = "pending_approval"
+	SessionStatusTerminated      SessionStatus = "terminated"
 )
 
 // Defines values for SessionCreateMode.
@@ -166,6 +177,32 @@ type AuditEvent struct {
 
 // AuditEventEdge defines model for AuditEvent.Edge.
 type AuditEventEdge string
+
+// ContextSource defines model for ContextSource.
+type ContextSource struct {
+	CreatedAt time.Time `json:"createdAt"`
+	Id        string    `json:"id"`
+
+	// LastIndexedAt Nil until the first sweep completes — its absence/staleness is the source's freshness signal (CTX-3).
+	LastIndexedAt *time.Time `json:"lastIndexedAt,omitempty"`
+	RootPath      string     `json:"rootPath"`
+
+	// ScopeId The bound workstream (charter) id.
+	ScopeId string `json:"scopeId"`
+
+	// ScopeType Charter-bound is the only v0.10 scope (ADR-0066 §1); operator-shared/run-scoped sources are deferred.
+	ScopeType ContextSourceScopeType `json:"scopeType"`
+
+	// Status errored surfaces an unreadable/absent root (CTX-5) rather than crashing the sweep.
+	Status    ContextSourceStatus `json:"status"`
+	UpdatedAt time.Time           `json:"updatedAt"`
+}
+
+// ContextSourceScopeType Charter-bound is the only v0.10 scope (ADR-0066 §1); operator-shared/run-scoped sources are deferred.
+type ContextSourceScopeType string
+
+// ContextSourceStatus errored surfaces an unreadable/absent root (CTX-5) rather than crashing the sweep.
+type ContextSourceStatus string
 
 // Error defines model for Error.
 type Error struct {
@@ -315,6 +352,15 @@ type PendingInvocation struct {
 	// StepIndex The zero-based step position within the Run (FE-16). Absent for a non-Run invocation.
 	StepIndex *int   `json:"stepIndex,omitempty"`
 	Tool      string `json:"tool"`
+}
+
+// RegisterContextSourceRequest defines model for RegisterContextSourceRequest.
+type RegisterContextSourceRequest struct {
+	// RootPath The local/mounted directory the indexer may read (SEC-33 confines the reader to this root). Registration is data-only — never stat'd/validated here (ADR-0066 §1; an unreadable root is marked errored on the next sweep, CTX-5).
+	RootPath string `json:"rootPath"`
+
+	// WorkstreamId The charter this source is bound to (ADR-0066 §1) — must be a workstream the caller owns; a foreign or unknown id is rejected (404).
+	WorkstreamId string `json:"workstreamId"`
 }
 
 // Resource defines model for Resource.
@@ -523,6 +569,11 @@ type ListAuditEventsParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListContextSourcesParams defines parameters for ListContextSources.
+type ListContextSourcesParams struct {
+	WorkstreamId *string `form:"workstreamId,omitempty" json:"workstreamId,omitempty"`
+}
+
 // ListGrantsParams defines parameters for ListGrants.
 type ListGrantsParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -569,6 +620,9 @@ type IssueAgentTokenJSONRequestBody = AgentTokenRequest
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// CreateContextSourceJSONRequestBody defines body for CreateContextSource for application/json ContentType.
+type CreateContextSourceJSONRequestBody = RegisterContextSourceRequest
+
 // CreateGrantJSONRequestBody defines body for CreateGrant for application/json ContentType.
 type CreateGrantJSONRequestBody = GrantCreate
 
@@ -613,6 +667,15 @@ type ServerInterface interface {
 	// The verified capability of the current token (capability-edge UI, ADR-0047)
 	// (GET /v1/auth/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
+	// List the caller's context sources, optionally narrowed to one charter (owner-scoped; ADR-0066 §1)
+	// (GET /v1/context-sources)
+	ListContextSources(w http.ResponseWriter, r *http.Request, params ListContextSourcesParams)
+	// Register a charter-bound context source (data-only; the indexer marks an unreadable root errored on sweep, ADR-0066 §1/CTX-5)
+	// (POST /v1/context-sources)
+	CreateContextSource(w http.ResponseWriter, r *http.Request)
+	// Remove a context source (owner-scoped; stops future agent reads — cannot recall past ones, GOV-11)
+	// (DELETE /v1/context-sources/{id})
+	DeleteContextSource(w http.ResponseWriter, r *http.Request, id string)
 	// List the caller's delegation grants (operator-scoped)
 	// (GET /v1/grants)
 	ListGrants(w http.ResponseWriter, r *http.Request, params ListGrantsParams)
@@ -751,6 +814,24 @@ func (_ Unimplemented) Logout(w http.ResponseWriter, r *http.Request) {
 // The verified capability of the current token (capability-edge UI, ADR-0047)
 // (GET /v1/auth/me)
 func (_ Unimplemented) GetMe(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List the caller's context sources, optionally narrowed to one charter (owner-scoped; ADR-0066 §1)
+// (GET /v1/context-sources)
+func (_ Unimplemented) ListContextSources(w http.ResponseWriter, r *http.Request, params ListContextSourcesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Register a charter-bound context source (data-only; the indexer marks an unreadable root errored on sweep, ADR-0066 §1/CTX-5)
+// (POST /v1/context-sources)
+func (_ Unimplemented) CreateContextSource(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Remove a context source (owner-scoped; stops future agent reads — cannot recall past ones, GOV-11)
+// (DELETE /v1/context-sources/{id})
+func (_ Unimplemented) DeleteContextSource(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1073,6 +1154,90 @@ func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListContextSources operation middleware
+func (siw *ServerInterfaceWrapper) ListContextSources(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListContextSourcesParams
+
+	// ------------- Optional query parameter "workstreamId" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "workstreamId", r.URL.Query(), &params.WorkstreamId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "workstreamId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListContextSources(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateContextSource operation middleware
+func (siw *ServerInterfaceWrapper) CreateContextSource(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateContextSource(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteContextSource operation middleware
+func (siw *ServerInterfaceWrapper) DeleteContextSource(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteContextSource(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2299,6 +2464,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/auth/me", wrapper.GetMe)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/context-sources", wrapper.ListContextSources)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/context-sources", wrapper.CreateContextSource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/context-sources/{id}", wrapper.DeleteContextSource)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/grants", wrapper.ListGrants)

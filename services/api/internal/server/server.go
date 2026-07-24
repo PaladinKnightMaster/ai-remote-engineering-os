@@ -172,10 +172,10 @@ type apiHandlers struct {
 	// /v1/memories routes answer 503. Accrual (AccrueRunTerminal) is wired directly into
 	// the run store (main.go) — the routes here only ever call List/CreateAuthored.
 	memories memoryStore
-	// contextIndex is the Layer 1 Live/Context Index store (ADR-0066 / T-099); nil →
-	// /v1/internal/context-searches is not mounted (context.search answers a tool
-	// error, the memory.read unconfigured precedent). The operator /v1/context-sources*
-	// surface + its own store wiring land at T-100 — out of scope here.
+	// contextIndex is the Layer 1 Live/Context Index store (ADR-0066 / T-099, T-100);
+	// nil → /v1/internal/context-searches is not mounted (context.search answers a tool
+	// error, the memory.read unconfigured precedent) AND the operator
+	// /v1/context-sources* routes answer 503 (the memories unconfigured precedent).
 	contextIndex contextSearchStore
 }
 
@@ -300,21 +300,29 @@ func WithMemoryStore(ms memoryStore) Option {
 }
 
 // contextSearchStore is the slice of the Layer 1 context-index store the
-// context.search forward needs (ADR-0066, T-098/T-099). nil → the
-// /v1/internal/context-searches route is not mounted.
+// context.search forward AND the operator /v1/context-sources* routes need (ADR-0066,
+// T-098/T-099/T-100). nil → the /v1/internal/context-searches route is not mounted and
+// the operator routes answer 503.
 type contextSearchStore interface {
 	// SearchForAgent (D4, SEC-33, ADR-0066 §4) is context.search's forward target
 	// (SearchContext, adaptive_internal.go): the readable set is derived ENTIRELY
 	// server-side from the caller's own live grants → charter-bound context sources.
 	SearchForAgent(ctx context.Context, agentSubject, workstreamID, query string, limit int) ([]ctxindex.ChunkResult, error)
+	// ListSources/CreateSource/RemoveSource (ADR-0066 §1, T-100) back the operator
+	// register/list/remove surface (context_sources.go) — owner-scoped, mirroring the
+	// memoryStore's List/CreateAuthored/Get shape.
+	ListSources(ctx context.Context, owner, scopeType, scopeID string) ([]ctxindex.Source, error)
+	CreateSource(ctx context.Context, in ctxindex.CreateSourceInput) (ctxindex.Source, error)
+	RemoveSource(ctx context.Context, owner, id string) error
 }
 
-// WithContextStore wires the Layer 1 Live/Context Index store (ADR-0066, T-099): the
-// gateway's context.search forward target (POST /v1/internal/context-searches). nil/
-// absent → the route is not mounted. Context is api-local (no gateway needed for the
-// search itself — the gateway forward carries no egress), so like memory it is wired
-// unconditionally; the SAME store instance the indexer sweep uses (main.go) is passed
-// here, not a divergent second construction.
+// WithContextStore wires the Layer 1 Live/Context Index store (ADR-0066, T-099/T-100):
+// the gateway's context.search forward target (POST /v1/internal/context-searches) AND
+// the operator /v1/context-sources* routes. nil/absent → the internal route is not
+// mounted and the operator routes answer 503. Context is api-local (no gateway needed
+// for the search itself — the gateway forward carries no egress), so like memory it is
+// wired unconditionally; the SAME store instance the indexer sweep uses (main.go) is
+// passed here, not a divergent second construction.
 func WithContextStore(cs contextSearchStore) Option {
 	return func(h *apiHandlers) { h.contextIndex = cs }
 }

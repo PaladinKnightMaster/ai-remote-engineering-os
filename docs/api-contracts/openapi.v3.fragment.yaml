@@ -40,6 +40,8 @@ tags:
     description: Chartered Workstreams on services/api (T-071, ADR-0063; the standing operator-chartered objective whose immutable template fires governed Runs on a schedule, bounded by its auto-issued delegation grant).
   - name: memories
     description: Persistent Scoped Memory on services/api (T-080, ADR-0064; the mutable, forgettable projection beside the immutable audit chain — accrued content-free evidence pointers plus operator-authored sealed notes, scoped to {workstream, run, operator}).
+  - name: context-sources
+    description: Layer 1 Live/Context Index operator surface on services/api (T-100, ADR-0066; charter-bound, operator-registered local context sources the agent-plane context.search tool reads at plan time — registration/list/remove only; the agent read path is a separate internal RPC, not in this fragment).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -1235,6 +1237,93 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # /v1/context-sources — Layer 1 Live/Context Index operator surface (ADR-0066 §1;
+  # v0.10.0, T-100). human-agent + double-submit CSRF; owner-scoped (permission_scope =
+  # the caller, bound server-side — never a param), the memories pattern exactly.
+  # Charter-bound is the only v0.10 scope: registration binds a source to ONE
+  # workstream, validated to be owned by the caller (a foreign/unknown charter answers
+  # 404 — a source can never be bound to someone else's charter). The agent-plane read
+  # (context.search) is a SEPARATE internal RPC (ADR-0056/0058 rule) — not in this
+  # fragment.
+  /v1/context-sources:
+    get:
+      tags: [context-sources]
+      operationId: listContextSources
+      summary: List the caller's context sources, optionally narrowed to one charter (owner-scoped; ADR-0066 §1)
+      parameters:
+        - name: workstreamId
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The caller's context sources, id-ascending (unfiltered when workstreamId is omitted).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ContextSource'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [context-sources]
+      operationId: createContextSource
+      summary: Register a charter-bound context source (data-only; the indexer marks an unreadable root errored on sweep, ADR-0066 §1/CTX-5)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterContextSourceRequest'
+      responses:
+        '201':
+          description: The context source was registered (owner = the authenticated caller, bound server-side).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextSource'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: The named workstream does not exist or is not owned by the caller (existence-hiding) — a source cannot be bound to someone else's charter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: A validation failure — an empty rootPath or workstreamId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: The context-index store is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/context-sources/{id}:
+    delete:
+      tags: [context-sources]
+      operationId: deleteContextSource
+      summary: Remove a context source (owner-scoped; stops future agent reads — cannot recall past ones, GOV-11)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: The context source was removed (its chunks cascade-deleted, CTX-5).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: The context-index store is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -1822,6 +1911,47 @@ components:
           format: date-time
           description: Set once a redact tombstones the row (T-081); the fact, never the erased content.
         createdAt:
+          type: string
+          format: date-time
+    RegisterContextSourceRequest:
+      type: object
+      additionalProperties: false
+      required: [rootPath, workstreamId]
+      properties:
+        rootPath:
+          type: string
+          description: The local/mounted directory the indexer may read (SEC-33 confines the reader to this root). Registration is data-only — never stat'd/validated here (ADR-0066 §1; an unreadable root is marked errored on the next sweep, CTX-5).
+        workstreamId:
+          type: string
+          description: The charter this source is bound to (ADR-0066 §1) — must be a workstream the caller owns; a foreign or unknown id is rejected (404).
+    ContextSource:
+      type: object
+      additionalProperties: false
+      required: [id, rootPath, scopeType, scopeId, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        rootPath:
+          type: string
+        scopeType:
+          type: string
+          enum: [workstream]
+          description: Charter-bound is the only v0.10 scope (ADR-0066 §1); operator-shared/run-scoped sources are deferred.
+        scopeId:
+          type: string
+          description: The bound workstream (charter) id.
+        status:
+          type: string
+          enum: [active, errored]
+          description: errored surfaces an unreadable/absent root (CTX-5) rather than crashing the sweep.
+        lastIndexedAt:
+          type: string
+          format: date-time
+          description: Nil until the first sweep completes — its absence/staleness is the source's freshness signal (CTX-3).
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
           type: string
           format: date-time
     AuditEvent:

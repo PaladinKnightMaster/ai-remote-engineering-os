@@ -41,16 +41,32 @@ func NewStore(pool *pgxpool.Pool, outboxTable string) *Store {
 	return &Store{pool: pool, writer: outbox.Writer{Table: outboxTable}}
 }
 
+// operatorContextEdge is the bracket edge for OPERATOR context-source lifecycle events
+// (T-100, AUD-21) — the human-agent authorization act, mirroring memory.memoryEdge /
+// workstream.charterEdge. Distinct from agentWorkspaceEdge below, which is the
+// agent-plane read edge context.read chains.
+const operatorContextEdge = "human-agent"
+
 // CreateSource inserts a charter-bound context source (ADR-0066 §1). id is minted here
 // (UUID v7, time-ordered) — never a DB default, the house convention every other store
-// follows.
+// follows. Runs in its own transaction (the memory.CreateAuthored precedent): the
+// insert and its content-free context.source.registered event (T-100, AUD-21) commit
+// or roll back together — no event, no row. The event's Actor is the registering
+// operator, Target is "context-source:<id>", EvidencePacketID is "workstream:<scopeID>"
+// (the charter anchor, the CreateAuthored scope-anchor convention) — never rootPath.
 func (s *Store) CreateSource(ctx context.Context, in CreateSourceInput) (Source, error) {
 	if in.Owner == "" || in.RootPath == "" || in.ScopeType == "" || in.ScopeID == "" {
 		return Source{}, errors.New("context source requires an owner, root path, and scope")
 	}
 	id := uuid.Must(uuid.NewV7())
 
-	row := s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Source{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO context_sources (id, root_path, scope_type, scope_id, permission_scope)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING `+selectCols,
@@ -58,6 +74,18 @@ func (s *Store) CreateSource(ctx context.Context, in CreateSourceInput) (Source,
 	src, err := s.scan(row)
 	if err != nil {
 		return Source{}, fmt.Errorf("insert context source: %w", err)
+	}
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: in.Owner, Edge: operatorContextEdge,
+		Target: "context-source:" + id.String(), Outcome: "context.source.registered",
+		EvidencePacketID: "workstream:" + in.ScopeID,
+	}); err != nil {
+		return Source{}, fmt.Errorf("enqueue context.source.registered: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Source{}, fmt.Errorf("commit create context source: %w", err)
 	}
 	return src, nil
 }
@@ -114,15 +142,40 @@ func (s *Store) ListSources(ctx context.Context, owner, scopeType, scopeID strin
 
 // RemoveSource deletes one owner-scoped context source. ON DELETE CASCADE (migration
 // 0014) removes its chunks in the same statement — no orphaned index rows (CTX-5).
-// ErrNotFound when the id does not exist or belongs to a different owner.
+// ErrNotFound when the id does not exist or belongs to a different owner — a no-op
+// delete enqueues NO event (event-only-when-changed, the memory.flip precedent).
+// A real delete runs in its own transaction (T-100, AUD-21): the delete and its
+// content-free context.source.removed event commit or roll back together. Shape
+// mirrors CreateSource's event exactly (same actor/edge/target/evidence convention);
+// scope_id is read back via RETURNING since the row is already gone.
 func (s *Store) RemoveSource(ctx context.Context, owner, id string) error {
-	ct, err := s.pool.Exec(ctx, `
-		DELETE FROM context_sources WHERE id = $1 AND permission_scope = $2`, id, owner)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	var scopeID string
+	row := tx.QueryRow(ctx, `
+		DELETE FROM context_sources WHERE id = $1 AND permission_scope = $2
+		RETURNING scope_id`, id, owner)
+	if err := row.Scan(&scopeID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
 		return fmt.Errorf("remove context source: %w", err)
 	}
-	if ct.RowsAffected() == 0 {
-		return ErrNotFound
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: owner, Edge: operatorContextEdge,
+		Target: "context-source:" + id, Outcome: "context.source.removed",
+		EvidencePacketID: "workstream:" + scopeID,
+	}); err != nil {
+		return fmt.Errorf("enqueue context.source.removed: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit remove context source: %w", err)
 	}
 	return nil
 }

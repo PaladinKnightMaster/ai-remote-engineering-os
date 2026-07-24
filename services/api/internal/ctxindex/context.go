@@ -23,11 +23,13 @@
 // confined-root file reader (root.go, SEC-33/K5). T-097 adds the per-file incremental
 // state (migration 0015, context_files), the deterministic chunker (chunker.go, K2),
 // and the in-process incremental indexer (indexer.go, CTX-3/K6) that rides the api's
-// existing background goroutine. No outbox/events here — the operator audit events
-// (context.source.registered/removed) land with the routes at T-100; the per-agent-read
-// context.read chaining lands with SearchForAgent at T-098. It is deliberately
-// self-contained (the internal/run / internal/memory extraction seam precedent):
-// nothing outside this package imports it yet.
+// existing background goroutine. The per-agent-read context.read chaining lands with
+// SearchForAgent at T-098; the operator register/remove audit events
+// (context.source.registered/removed, content-free, in-tx) land on CreateSource/
+// RemoveSource at T-100, alongside the operator /v1/context-sources* routes
+// (services/api/internal/server/context_sources.go). It is deliberately self-contained
+// (the internal/run / internal/memory extraction seam precedent): nothing outside this
+// package imports it yet.
 package ctxindex
 
 import "time"

@@ -229,7 +229,10 @@ func TestReadMemoryRequiresAgentSubject(t *testing.T) {
 // --- context.search (D4, ADR-0066 §4, T-099) ----------------------------------------
 
 // fakeContextStore captures the last SearchForAgent call (the fakeMemoryStore
-// readItems/lastReadAgent shape, applied to the context-index forward).
+// readItems/lastReadAgent shape, applied to the context-index forward) AND the
+// operator ListSources/CreateSource/RemoveSource calls (T-100, context_sources_test.go)
+// — one fake satisfying the full widened contextSearchStore interface, the
+// fakeWorkstreamStore precedent of one fake per store.
 type fakeContextStore struct {
 	results   []ctxindex.ChunkResult
 	err       error
@@ -237,11 +240,64 @@ type fakeContextStore struct {
 	lastWS    string
 	lastQuery string
 	lastLimit int
+
+	// T-100 operator-route fixtures.
+	items                                             []ctxindex.Source
+	lastListOwner, lastListScopeType, lastListScopeID string
+	lastCreate                                        *ctxindex.CreateSourceInput
+	createErr                                         error
+	rows                                              map[string]ctxindex.Source // id -> row, seeded via seed() for remove tests
+	removeCalls                                       int
+	lastRemoveOwner, lastRemoveID                     string
 }
 
 func (f *fakeContextStore) SearchForAgent(_ context.Context, agentSubject, workstreamID, query string, limit int) ([]ctxindex.ChunkResult, error) {
 	f.lastAgent, f.lastWS, f.lastQuery, f.lastLimit = agentSubject, workstreamID, query, limit
 	return f.results, f.err
+}
+
+// ListSources mirrors the store's owner+scope filtered list (T-100).
+func (f *fakeContextStore) ListSources(_ context.Context, owner, scopeType, scopeID string) ([]ctxindex.Source, error) {
+	f.lastListOwner, f.lastListScopeType, f.lastListScopeID = owner, scopeType, scopeID
+	return f.items, nil
+}
+
+// CreateSource mirrors the store's minted-id insert (T-100); createErr simulates a
+// store-level failure (e.g. an unknown-source edge case) distinct from the handler's
+// own pre-store validation.
+func (f *fakeContextStore) CreateSource(_ context.Context, in ctxindex.CreateSourceInput) (ctxindex.Source, error) {
+	cp := in
+	f.lastCreate = &cp
+	if f.createErr != nil {
+		return ctxindex.Source{}, f.createErr
+	}
+	return ctxindex.Source{
+		ID: "ctx-00001", RootPath: in.RootPath, ScopeType: in.ScopeType, ScopeID: in.ScopeID,
+		PermissionScope: in.Owner, Status: ctxindex.StatusActive, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, nil
+}
+
+// seed installs a row directly into rows (bypassing CreateSource) so RemoveSource tests
+// can start from a known owner-scoped state — the fakeMemoryStore.seed precedent.
+func (f *fakeContextStore) seed(src ctxindex.Source) {
+	if f.rows == nil {
+		f.rows = map[string]ctxindex.Source{}
+	}
+	f.rows[src.ID] = src
+}
+
+// RemoveSource mirrors the store's owner-scoped delete (T-100): ErrNotFound when the id
+// is unknown or belongs to a different owner (SEC-31/N3); removeCalls only increments
+// on an actual delete.
+func (f *fakeContextStore) RemoveSource(_ context.Context, owner, id string) error {
+	f.lastRemoveOwner, f.lastRemoveID = owner, id
+	src, ok := f.rows[id]
+	if !ok || src.PermissionScope != owner {
+		return ctxindex.ErrNotFound
+	}
+	delete(f.rows, id)
+	f.removeCalls++
+	return nil
 }
 
 // contextHandler builds a handler wired ONLY with the context-index store: context.search

@@ -11,6 +11,7 @@ package ctxindex
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -283,6 +284,115 @@ func TestReplaceSourceChunks(t *testing.T) {
 	if n := countChunks(t, pool, src.ID); n != 0 {
 		t.Fatalf("chunk count after empty sweep = %d, want 0", n)
 	}
+}
+
+// TestCreateSourceChainsRegisteredEvent — T-100/AUD-21: CreateSource chains EXACTLY ONE
+// content-free context.source.registered event in the SAME transaction as the insert.
+// Actor = the registering operator, Edge = human-agent (operatorContextEdge), Target =
+// "context-source:<id>", EvidencePacketID = the charter anchor "workstream:<scopeID>" —
+// never the rootPath (content-free).
+func TestCreateSourceChainsRegisteredEvent(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	wsID := freshID(t)
+	owner := "operator:registrar-" + freshID(t)
+
+	src, err := s.CreateSource(ctx, CreateSourceInput{
+		Owner: owner, RootPath: "/srv/secret-docs/" + wsID, ScopeType: ScopeWorkstream, ScopeID: wsID,
+	})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	if n := countOutcomeByActor(t, pool, owner, "context.source.registered"); n != 1 {
+		t.Fatalf("context.source.registered count for owner = %d, want 1", n)
+	}
+	tgt := eventTarget(t, pool, owner, "context.source.registered", src.ID)
+	if tgt != "context-source:"+src.ID {
+		t.Fatalf("event target = %q, want %q", tgt, "context-source:"+src.ID)
+	}
+	if strings.Contains(tgt, "secret-docs") {
+		t.Fatal("context.source.registered event leaked the rootPath — must be content-free")
+	}
+	if edge := eventEdge(t, pool, owner, "context.source.registered", src.ID); edge != operatorContextEdge {
+		t.Fatalf("event edge = %q, want %q", edge, operatorContextEdge)
+	}
+	if evd := eventEvidence(t, pool, owner, "context.source.registered", src.ID); evd != "workstream:"+wsID {
+		t.Fatalf("event evidencePacketId = %q, want %q", evd, "workstream:"+wsID)
+	}
+}
+
+// TestRemoveSourceChainsRemovedEvent — T-100/AUD-21: RemoveSource of a REAL row chains
+// EXACTLY ONE content-free context.source.removed event (same actor/edge/target/
+// evidence shape as CreateSource's); a foreign or unknown id's remove is ErrNotFound and
+// chains NOTHING (event-only-when-changed, the memory.flip precedent).
+func TestRemoveSourceChainsRemovedEvent(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	wsID := freshID(t)
+	owner := "operator:remover-evt-" + freshID(t)
+
+	src, err := s.CreateSource(ctx, CreateSourceInput{
+		Owner: owner, RootPath: "/srv/rm-evt", ScopeType: ScopeWorkstream, ScopeID: wsID,
+	})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	// Clear the registered-event count baseline is unnecessary — we assert the
+	// REMOVED outcome specifically below, a disjoint outcome string.
+
+	// A foreign owner's remove is ErrNotFound and chains nothing.
+	if err := s.RemoveSource(ctx, "operator:stranger-evt", src.ID); err != ErrNotFound {
+		t.Fatalf("stranger remove: got %v, want ErrNotFound", err)
+	}
+	if n := countOutcomeByActor(t, pool, "operator:stranger-evt", "context.source.removed"); n != 0 {
+		t.Fatalf("stranger's failed remove must chain nothing, got %d events", n)
+	}
+
+	// An unknown id's remove is likewise ErrNotFound and chains nothing.
+	if err := s.RemoveSource(ctx, owner, "00000000-0000-0000-0000-000000000000"); err != ErrNotFound {
+		t.Fatalf("unknown id remove: got %v, want ErrNotFound", err)
+	}
+
+	// The real, owner-scoped remove chains exactly one event.
+	if err := s.RemoveSource(ctx, owner, src.ID); err != nil {
+		t.Fatalf("owner remove: %v", err)
+	}
+	if n := countOutcomeByActor(t, pool, owner, "context.source.removed"); n != 1 {
+		t.Fatalf("context.source.removed count for owner = %d, want 1", n)
+	}
+	tgt := eventTarget(t, pool, owner, "context.source.removed", src.ID)
+	if tgt != "context-source:"+src.ID {
+		t.Fatalf("event target = %q, want %q", tgt, "context-source:"+src.ID)
+	}
+	if edge := eventEdge(t, pool, owner, "context.source.removed", src.ID); edge != operatorContextEdge {
+		t.Fatalf("event edge = %q, want %q", edge, operatorContextEdge)
+	}
+	if evd := eventEvidence(t, pool, owner, "context.source.removed", src.ID); evd != "workstream:"+wsID {
+		t.Fatalf("event evidencePacketId = %q, want %q", evd, "workstream:"+wsID)
+	}
+
+	// A re-remove of the now-absent id is ErrNotFound and chains nothing further.
+	if err := s.RemoveSource(ctx, owner, src.ID); err != ErrNotFound {
+		t.Fatalf("re-remove: got %v, want ErrNotFound", err)
+	}
+	if n := countOutcomeByActor(t, pool, owner, "context.source.removed"); n != 1 {
+		t.Fatalf("context.source.removed count after re-remove = %d, want still 1 (no duplicate)", n)
+	}
+}
+
+// eventEvidence is eventTarget/eventEdge's sibling for the evidencePacketId column
+// (search_agent_integration_test.go).
+func eventEvidence(t *testing.T, pool *pgxpool.Pool, actor, outcome, chunkID string) string {
+	t.Helper()
+	var evd string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT payload->>'evidencePacketId' FROM api_outbox
+		 WHERE payload->>'actor' = $1 AND payload->>'outcome' = $2 AND payload->>'target' LIKE '%' || $3 || '%'
+		 LIMIT 1`, actor, outcome, chunkID).Scan(&evd); err != nil {
+		t.Fatalf("event evidence: %v", err)
+	}
+	return evd
 }
 
 func countChunks(t *testing.T, pool *pgxpool.Pool, sourceID string) int {
