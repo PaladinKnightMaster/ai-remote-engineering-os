@@ -144,17 +144,35 @@ fix, not a containment bug.
 
 ---
 
-## Part 4 — proposed Beta-1 sequence (for the Step 2 consult)
+## Part 4 — the Beta-1 path — **RATIFIED 2026-07-24 (CEO)**
 
-A recommendation, **not a decision** — Step 2 sets the actual v1.0 line.
+| Release | Theme | Contents | Gate |
+|---|---|---|---|
+| **v0.11** | **Operator Experience** | E-01 audit read surface *(v1.0-BLOCKING)* · E-07 live refresh · E-08 charter-scope accrual | **No new WD** — WD-1..10 regression + smoke + a §human spot-check |
+| **v0.12** | **Access & Onboarding** | E-02 mobile/QR · E-03 deployment profiles · E-04 onboarding · E-05 consent modals | **WD-11** for pairing (new security semantics) · profiles ride `task wd1` · the rest ride smoke + §human |
+| **v1.0.0** | **MVP Beta 1** | **E-06 only** — OpenAPI freeze, security-audit capstone, compat policy, single-operator posture stated, full WD regression sweep | The **security audit is the gate** |
 
-1. **v0.11 — "Operator Experience"**: E-01 (audit read surface, the blocking one) + E-07 +
-   E-08. Rationale: the blocking item ships first and the two small UX fixes ride along.
-2. **v0.12 — "Beta-1 Readiness"**: E-02 (mobile/QR) + E-03 (deployment profiles) + E-04
-   (onboarding). Rationale: the three unmet-promise gaps, all operator-facing.
-3. **v1.0.0 — "MVP Beta 1"**: E-06 (stability posture) + E-05 (consent modals, if the design
-   decision has landed) + the release capstone.
+### The two ratified structural rules
 
-**Open question for Step 2:** whether E-05 belongs in Beta-1 at all. It is UX polish on a
-gate that already *works correctly*; the argument for including it is that consent surfaces
-are the product's face to a commercial buyer.
+**1. v1.0 adds NOTHING functional.** E-05 moved out of v1.0 into v0.12. Rationale: *if you
+are still shipping UI changes in the release where you freeze the API, the freeze is
+theatre.* A 1.0 that changes nothing and spends itself proving stability is a credible 1.0 —
+the version a commercial buyer can be pointed at.
+
+**2. Gates are right-sized: a new WD-N is minted only when a release adds new GOVERNED
+capability** — not once per release out of habit. E-01 changes a read surface (no new edge,
+no new governance semantics) → no new WD. E-03 is install-level → rides `wd1`. Only E-02's
+pairing token introduces new security semantics → earns **WD-11**. This saves roughly a
+release's worth of ceremony across the path without weakening a single real gate.
+
+### Recorded risks
+
+- **v0.12 is the fattest release** (four epics). **E-05 is the designated drop candidate** if
+  it strains — polish on a gate that already works correctly; dropping it does not touch the
+  Beta-1 thesis.
+- **E-01 carries an ADR question, not just tickets:** the ticker-noise policy
+  (`plan.requested`/`plan.expired` are content-free lifecycle facts; suppressing or
+  collapsing them changes the evidence record). Budget a consult inside v0.11.
+- **E-03 depth is bounded:** `lan-only` proven end-to-end + an honest support statement for
+  VPN/DMZ. **No ZTNA dependency is adopted in Beta-1** (the four v3 candidates stay
+  undispositioned Tier-1 watch items).
