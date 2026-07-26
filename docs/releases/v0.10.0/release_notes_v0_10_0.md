@@ -1,9 +1,26 @@
 # AI Remote Engineering OS — v0.10.0 release notes
 
-**Status: release-candidate** — the CEO §human WD-10 walkthrough is the
-remaining gate (lands at T-104 closure; only then do these artifacts flip to
-**released** and a local annotated tag `v0.10.0` lands — no remote, per repo
-doctrine). v0.10.0 — **"Live/Context Index"** — is the release where the
+**Status: released** — local annotated tag `v0.10.0` (no remote, per repo
+doctrine); the CEO §human WD-10 walkthrough was driven **live and hands-on**
+(2026-07-24) and signed off — chartering an adaptive Workstream in the rendered
+cockpit, registering a charter-bound context source over a real directory behind
+the GOV-11 consent dialog, watching the in-process indexer sweep it (76 chunks
+across 11 files), the composer reading that context over the gateway
+(`context.search` → 5 ranked chunks, one content-free `context.read` chained on
+the `agent-workspace` edge), a plan composed from it parking as a `proposed` Run,
+the operator reading the agent's verbatim command in the informed preview and
+approving it, the unchanged engine driving it to `completed` with a content-free
+accrual, a live source edit **and** a deletion each reflected on the very next
+`context.search` with no rebuild call, and the **N1 cross-grant containment
+negative proven with a positive control** (charter B reads its own source;
+charter A gets an empty result for B's content *and* for B's own `workstreamId`
+— no oracle; containment symmetric both directions; all nine `context.read`
+events chained, including the empty ones). WD-10 is green on the compose e2e
+stack (`task e2e`, PASS 366.8s, chain intact 616 events) and on the real
+installed stack (`task wd1`, PASS 651.6s against the 1500s ceiling, chain intact
+222 events, at the true production posture — the 60s indexer floor and the 60s
+schedule floor, neither overridden). v0.10.0 — **"Live/Context Index"** — is the
+release where the
 composer's read plane completes: it already read accrued **memory** (Layer 2,
 v0.8/v0.9); v0.10 adds a fresh, deterministic view of the operator's **project
 context** (docs/runbooks/repo/tickets) — the reserved `agent-workspace` edge is
@@ -199,12 +216,56 @@ reconciled above) — no ADR/criteria divergence.
 - **The `internal/*` extraction; cron; DAG; the gateway exec worker; SSH
   pooling; full rate-limiting; TR-2** — unchanged prior deferrals.
 
+## §human findings (CEO, 2026-07-24) — UX debt, none v0.10 defects
+
+The live walkthrough raised three UX findings. **None is a v0.10.0 defect** — every
+surface this release shipped behaved as specified — and none blocked sign-off. All
+three are on **pre-existing** surfaces, recorded here so they are not rediscovered:
+
+1. **Replace the native `window.confirm` consent modals with a design-system modal.**
+   GOV-11 (context-source register/remove), GOV-10 (the `proposed`-Run approve/deny and
+   the memory share/unshare flips), and the memory redact verbs all gate on
+   `window.confirm(...)`. The copy is correct and the gate works — it is the presentation
+   that should be ours. Because these are *consent* surfaces, this needs a design pass, a
+   re-verified browser-evidence DoD, and a smoke re-run; it is not a silent refactor.
+   **Decision recorded: discuss and confirm the approach before implementing.**
+2. **Auto-refresh the charter-detail lists** (plan requests / context sources / run
+   history). Today there is deliberately **no auto-poll** (`Workstreams.tsx`: "the FE-22
+   memory precedent"), so a live-ticking charter reads as stale — during the walkthrough
+   the context source still showed "never indexed / pending" while the indexer had
+   already written 76 chunks. Trade-off at implementation: polling is cheap at the
+   production 60s floor and thrashes at a 5s demo interval; targeted polling while a
+   detail panel is open, or an event push, are the candidates.
+3. **`/audit` is unusable at volume — flagged V1.0-BLOCKING (not v0.10-blocking).**
+   The store reads `WHERE seq > $1 ORDER BY seq ASC LIMIT $2` (a forward cursor
+   mirroring the append-only chain) and the page has `PAGE_LIMIT=50` with **no
+   filtering** — a principled v0.1 decision ("filtering a partial page would
+   misrepresent the chain") that has aged badly now that the platform generates its own
+   high-volume events. Measured live: **635 events, 601 of them (95%) adaptive-ticker
+   noise** (`plan.requested`/`plan.expired` at a 5s interval), leaving the newest entries
+   **13 "next page" clicks deep**. Wanted: a **newest-first default** plus per-column
+   asc/desc sorters. Implementation note: a descending default needs a **reverse cursor
+   in the audit-service store + API params + codegen + UI** — not a UI-only patch — and it
+   touches the evidence surface, so it warrants its own consult (the chain-integrity
+   semantics of paging backwards; possibly server-side actor/outcome filtering; possibly
+   de-noising the ticker's lifecycle events, itself an ADR question). Rationale for the
+   v1.0 flag: the audit trail **is** this product's core evidence surface, and an
+   operator who cannot reach recent events undermines the governance claim a commercial
+   Beta 1 makes.
+
+**Environment note (the v0.9-TLS-note class, for future testers):** the Claude Desktop
+Browser pane **auto-dismisses `window.confirm` (returns `false`)**, so every
+confirm-gated consent action silently cancels there — zero `/v1/context-sources`
+requests reached the api while it was used. The §human walkthrough **must** be driven in
+a real host browser (Chrome/Edge at `http://localhost:5173`); the same click there
+showed the GOV-11 dialog and registered correctly.
+
 ## Next (T-104 — release closure, then v1.0-candidate scoping)
 
-**T-104** is the remaining gate: the VER legs re-run at the RC tree, the CEO
-§human WD-10 walkthrough (script in `verification_runbook.md` Step 6),
-sign-off, the artifacts flip to **released**, and the local annotated tag
-`v0.10.0` lands. Beyond that, the v1.0-candidate scan carries forward: agent
+**T-104 is complete** — the CEO §human WD-10 walkthrough was driven live and signed off
+(2026-07-24), these artifacts flipped to **released**, and the local annotated tag
+`v0.10.0` landed (no remote). Beyond that, the v1.0-candidate scan carries forward: the
+three §human UX findings above (the `/audit` ordering one flagged v1.0-blocking); agent
 memory writes; unattended adaptive execution; tree-sitter (trigger above);
 `agent-repo` / Git Intelligence (REQ-015); Layer 3 (hard-gated); computed
 `confidence`; a retention default on accrued rows; multi-operator ACL +

@@ -218,10 +218,63 @@ else in the browser.
    surfaces a chunk from it (N1, no oracle — the query simply returns
    whatever the caller's own charter is entitled to).
 
-**Recorded result:** pending — this is the T-104 gate. This section is the
-script the CEO drives; sign-off flips `release_notes_v0_10_0.md` and
-`release_manifest_v0_10_0.json` from **release-candidate** to **released** and
-applies the local annotated tag.
+**Recorded result: PASSED — driven live and hands-on by the CEO, 2026-07-24, and
+signed off.** All nine legs on the rendered cockpit:
+
+1. **Adaptive charter** `wd10-context-demo` — composer `agent:wd10-composer`, scope
+   `e2e-target-workstream`, interval 5s; the consent copy naming *who composes* and the
+   always-parks promise read before the click.
+2. **Context source** `/work/docs/architecture` registered behind the **GOV-11 dialog**
+   (prompt-injection + exfiltration risk named plainly); `context.source.registered`
+   chained content-free (`operator:admin` · `human-agent`, evidence anchor
+   `workstream:<id>`, the root path **never** in the event).
+3. **Staleness → indexed**: the in-process indexer swept it into **76 chunks across 11
+   files** (native PG FTS, no network, no embedding).
+4. **Tick** opened plan requests continuously (TTL = interval; expired ones superseded by
+   fresh ones — the never-wedges behavior visible live).
+5. **Composer read + submit**: `context.search "audit chain"` → **5 ranked chunks** from
+   3 real docs, chaining exactly one **content-free `context.read`** on the
+   **`agent-workspace`** edge (target = chunk ids only; the query text and document
+   content never entered the chain). `plan.submit` created a **`proposed`** Run —
+   verified inert: step `pending`, and **no `run.launched` / no `remote.exec`** at that
+   point.
+6. **Informed preview + approval**: the operator read the agent's **verbatim command**
+   and the "nothing runs until you decide / Deny is equally first-class" copy, then
+   approved → `pending` → the unchanged sequencer drove it to **`completed`**; the
+   terminal Run accrued **one content-free pointer** (`content IS NULL`).
+   **`run.launched` chained at approval (seq 516), well after `plan.submitted` (seq
+   458)** — the deferred-launch semantics proven in the chain.
+7. **Freshness, both directions**: a new file in the registered source was returned by
+   the very next `context.search` **~5s later with no rebuild call**; deleting it removed
+   it from the index on the next sweep.
+8. **Audit**: the full loop present, attributed, content-free — `context.source.registered`
+   → `plan.requested` → `context.read` → `plan.submitted` → `run.launched` →
+   `tool.invoked` → `credential.leased` → `remote.exec` (`sha256:…` stdout anchor, never
+   the output) → `tool.result` → `run.completed` → `memory.written`.
+9. **N1 cross-grant containment — proven with a positive control** (a second charter B
+   with its own composer and its own bound source): **B reads its own token (1 chunk)**;
+   **A gets empty for B's content**; **A gets empty — not an error — when passing B's own
+   `workstreamId`** (no oracle: A cannot even learn B's charter exists); **B gets empty
+   for A's content** (symmetric). All **9 `context.read` events chained**, including the
+   zero-result ones (`target = "context:"`, no ids) — fail-loud per-read auditing holds
+   even when nothing is returned.
+
+Fixtures created during the walkthrough (a freshness probe file and charter B's source
+directory) were deleted; the repo tree was clean and `main == dev` unchanged throughout.
+
+**Findings raised (three, none a v0.10 defect, none blocking sign-off)** — the native
+`window.confirm` consent modals should become a design-system modal; the charter-detail
+lists should auto-refresh; and **`/audit` needs a newest-first default + column sorters,
+flagged v1.0-blocking** (measured live: 635 events, 601 of them ticker noise, newest
+entries 13 pages deep). Full detail and implementation notes in
+`release_notes_v0_10_0.md` §"§human findings".
+
+> **Browser-pane caveat discovered during this session (record it — the v0.9-TLS-note
+> class).** The Claude Desktop **Browser pane auto-dismisses `window.confirm` (returns
+> `false`)**, so every confirm-gated consent action silently cancels there — zero
+> `/v1/context-sources` requests reached the api while it was in use, with no error shown.
+> Drive the §human walkthrough in a **real host browser** (Chrome/Edge at
+> `http://localhost:5173`), where the dialog renders and the action completes.
 
 ## Step 7 — tag (after sign-off) ⚠ local only, no remote
 
