@@ -27,7 +27,7 @@ import (
 type Appender interface {
 	Append(ctx context.Context, in audit.Ingest) (audit.Event, bool, error)
 	Get(ctx context.Context, id string) (audit.Event, error)
-	List(ctx context.Context, afterSeq int64, limit int) ([]audit.Event, int64, error)
+	List(ctx context.Context, q store.ListQuery) ([]audit.Event, int64, error)
 }
 
 // apiHandlers implements the generated ServerInterface (gen.go).
@@ -88,7 +88,15 @@ func (a *apiHandlers) ListEvents(w http.ResponseWriter, r *http.Request, params 
 		}
 		afterSeq = n
 	}
-	items, last, err := a.store.List(r.Context(), afterSeq, limit)
+	// T-105 is store-layer-only: ListEventsParams is generated from the
+	// fragment and does not yet carry direction/filter/preset params (T-106).
+	// This call site stays behavior-preserving — ascending, unfiltered, no
+	// preset — exactly as before this ticket.
+	items, last, err := a.store.List(r.Context(), store.ListQuery{
+		Direction: store.Asc,
+		Cursor:    afterSeq,
+		Limit:     limit,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "list failed")
 		return

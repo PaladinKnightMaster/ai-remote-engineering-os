@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -108,11 +109,104 @@ func (s *Store) Get(ctx context.Context, id string) (audit.Event, error) {
 	return e, err
 }
 
-// List returns up to limit events in ascending chain order with seq > afterSeq
-// (afterSeq=0 starts at the head). The returned cursor is the last seq, or 0
-// when the page is empty.
-func (s *Store) List(ctx context.Context, afterSeq int64, limit int) ([]audit.Event, int64, error) {
-	rows, err := s.pool.Query(ctx, selectCols+` WHERE seq > $1 ORDER BY seq ASC LIMIT $2`, afterSeq, limit)
+// Direction selects which way a keyset page walks the chain (AUD-22, AUD-27).
+// It is a closed, typed enum rather than a bool or a bare string: at this
+// boundary a stringly-typed direction is a bug waiting to happen (an
+// unrecognized value must fail loud, not silently pick a default).
+type Direction int
+
+const (
+	// Asc walks toward higher seq — the original, chain-order default.
+	Asc Direction = iota
+	// Desc walks toward lower seq — newest-first (AUD-24 is set by the
+	// caller; this store has no opinion on which direction is "default").
+	Desc
+)
+
+// ListQuery is the input to List: the keyset cursor and direction, plus the
+// optional equality filters and the lifecycle-noise preset (ADR-0067 §D3/D4).
+// Actor, Outcome, and Edge are nil when unset — an unset filter applies no
+// predicate. Preset and the filters compose freely with either direction
+// (AUD-25's "composition" requirement).
+type ListQuery struct {
+	// Cursor is the seq boundary to walk from. 0 means "no cursor": for Asc
+	// that is already the natural start (seq > 0 matches the whole chain);
+	// for Desc, List substitutes the natural sentinel (math.MaxInt64) so
+	// seq < sentinel also matches the whole chain — computed from the
+	// direction, never built by string concatenation.
+	Cursor    int64
+	Direction Direction
+	Actor     *string
+	Outcome   *string
+	Edge      *string
+	// Preset, when true, applies the governed-actions@1 lifecycle-noise
+	// preset: excludes exactly the outcomes in governedActionsV1ExcludedOutcomes.
+	Preset bool
+	Limit  int
+}
+
+// build renders q into one parameterized SQL statement and its bound args.
+// Split out from List so integration tests can EXPLAIN the exact statement
+// List executes (PERF-10) without duplicating the SQL text.
+//
+// Only the comparison operator and sort order vary by text (chosen in Go from
+// the closed Direction enum — never from a filter value); the cursor, every
+// filter, the preset's excluded-outcome list, and the limit are always bound
+// $n parameters (never interpolated).
+func (q ListQuery) build() (string, []any) {
+	cursor := q.Cursor
+	var cmp, order string
+	switch q.Direction {
+	case Desc:
+		if cursor == 0 {
+			cursor = math.MaxInt64 // natural sentinel: seq < MaxInt64 matches the whole chain
+		}
+		cmp, order = "seq < $1", "seq DESC"
+	default:
+		cmp, order = "seq > $1", "seq ASC"
+	}
+
+	query := selectCols + `
+		WHERE ` + cmp + `
+		  AND ($2::text IS NULL OR actor = $2)
+		  AND ($3::text IS NULL OR outcome = $3)
+		  AND ($4::text IS NULL OR edge = $4)
+		  AND ($5::text[] IS NULL OR COALESCE(outcome,'') <> ALL($5))
+		ORDER BY ` + order + `
+		LIMIT $6`
+
+	return query, []any{cursor, q.Actor, q.Outcome, q.Edge, presetExcludedOutcomes(q.Preset), q.Limit}
+}
+
+// List returns up to q.Limit events matching q, walking the keyset from
+// q.Cursor in q.Direction. Both directions are served by this one
+// parameterized query (AUD-22): ascending compares seq > $1 and orders ASC;
+// descending compares seq < $1 and orders DESC. Every filter value — the
+// cursor, the equality filters, the preset's excluded-outcome list, and the
+// limit — is always a bound parameter; only the comparison operator and sort
+// order are chosen in Go, from the closed Direction enum, never from a filter
+// value.
+//
+// The returned cursor is the seq of the last row visited in walked order —
+// pass it back as Cursor to fetch the next page in the SAME direction
+// (ascending: the highest seq in the page; descending: the lowest). This is
+// the pre-existing (events, cursor, error) shape, unchanged.
+//
+// AUD-31 (block-if-violated): the PRESET exclusion coalesces outcome to the
+// empty string before comparing, rather than filtering the raw nullable
+// column directly. Plain `outcome NOT IN (...)` evaluates to NULL — not true
+// — for a NULL outcome in SQL's three-valued logic, which would silently
+// exclude every event with no outcome from the default view. Coalescing to
+// the empty string first is never NULL, so `<> ALL(...)` always evaluates to
+// a real true/false. The Outcome equality FILTER, by contrast, compares the raw
+// column (`outcome = $3`): it is matching a caller-supplied concrete outcome
+// value, never NULL, so the raw comparison is both correct (a NULL outcome
+// legitimately fails to match a specific requested outcome) and — unlike a
+// COALESCE(...)-wrapped comparison — able to use the plain btree index built
+// by migration 0002 (PERF-7/PERF-10).
+func (s *Store) List(ctx context.Context, q ListQuery) ([]audit.Event, int64, error) {
+	query, args := q.build()
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -128,6 +222,17 @@ func (s *Store) List(ctx context.Context, afterSeq int64, limit int) ([]audit.Ev
 		last = e.Seq
 	}
 	return out, last, rows.Err()
+}
+
+// ChainHead returns MAX(seq), the newest chain position (AUD-29, PERF-9) —
+// O(1) on the primary key, never a COUNT(*) or a complement count. seq is
+// BIGSERIAL and nextval is non-transactional (a rolled-back Append still
+// burns a value), so gaps exist and ChainHead is deliberately a *position*,
+// not a row count. An empty table returns 0.
+func (s *Store) ChainHead(ctx context.Context) (int64, error) {
+	var head int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) FROM audit_events`).Scan(&head)
+	return head, err
 }
 
 const selectCols = `

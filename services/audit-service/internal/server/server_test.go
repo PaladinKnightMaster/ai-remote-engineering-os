@@ -53,14 +53,18 @@ func (f *fakeStore) Get(_ context.Context, id string) (audit.Event, error) {
 	return audit.Event{}, store.ErrNotFound
 }
 
-func (f *fakeStore) List(_ context.Context, afterSeq int64, limit int) ([]audit.Event, int64, error) {
+// List mimics only the ascending, unfiltered path the current handler drives
+// (T-105 is store-layer-only; the handler gains direction/filter/preset
+// params in T-106). It ignores q.Direction/Actor/Outcome/Edge/Preset because
+// no call site sets them yet.
+func (f *fakeStore) List(_ context.Context, q store.ListQuery) ([]audit.Event, int64, error) {
 	var out []audit.Event
 	var last int64
 	for _, e := range f.order {
-		if e.Seq > afterSeq {
+		if e.Seq > q.Cursor {
 			out = append(out, e)
 			last = e.Seq
-			if len(out) == limit {
+			if len(out) == q.Limit {
 				break
 			}
 		}

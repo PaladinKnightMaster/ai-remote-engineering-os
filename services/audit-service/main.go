@@ -84,7 +84,13 @@ func runVerify(dsn string) error {
 	var all []audit.Event
 	var after int64
 	for {
-		batch, last, err := st.List(ctx, after, page)
+		// Behavior-preserving (T-105 is store-layer-only): ascending,
+		// unfiltered, no preset — the chain-order walk this CLI has always done.
+		batch, last, err := st.List(ctx, store.ListQuery{
+			Direction: store.Asc,
+			Cursor:    after,
+			Limit:     page,
+		})
 		if err != nil {
 			return fmt.Errorf("list events: %w", err)
 		}
