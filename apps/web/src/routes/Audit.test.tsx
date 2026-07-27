@@ -8,6 +8,12 @@
 // change (direction/preset/actor/outcome/edge) issues a fresh request with the
 // cursor cleared and RESETS the accumulated list rather than appending onto it
 // (FE-33, AUD-26).
+//
+// Commander-review follow-up (post-02b37be): the actor/outcome text inputs must
+// NOT fetch per keystroke (a request storm on the evidence surface) and a
+// stale response racing a newer one must never win — otherwise the EVD-8
+// banner could describe a filter that did not produce the rows on screen.
+// Both are covered below.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -171,10 +177,14 @@ describe("Audit route", () => {
     await waitFor(() => expect(screen.getByText("session.open")).toBeTruthy());
     expect(screen.getByText("auth.login.success")).toBeTruthy();
 
-    // Now change the actor filter — a fresh request with the cursor cleared, and
-    // the accumulated two-item list is REPLACED by the new single-item page, not
-    // appended onto (which would misrepresent the chain per FE-33).
-    fireEvent.change(screen.getByLabelText("actor"), { target: { value: "operator:someone" } });
+    // Now change the actor filter and commit it (blur) — a fresh request with
+    // the cursor cleared, and the accumulated two-item list is REPLACED by the
+    // new single-item page, not appended onto (which would misrepresent the
+    // chain per FE-33). Typing alone (no blur/Enter) must not fetch — proven
+    // separately below — so this test commits explicitly.
+    const actorInput = screen.getByLabelText("actor");
+    fireEvent.change(actorInput, { target: { value: "operator:someone" } });
+    fireEvent.blur(actorInput);
 
     await waitFor(() => expect(screen.getByText("resource.created")).toBeTruthy());
     expect(screen.queryByText("auth.login.success")).toBeNull();
@@ -227,5 +237,119 @@ describe("Audit route", () => {
         },
       },
     });
+  });
+
+  it("typing in the actor filter issues no requests; committing (blur) issues exactly one with the trimmed value", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: { items: [evt("e1", "auth.login.success")], page: { preset: "governed-actions@1", chainHead: 1 } },
+      error: undefined,
+    } as never);
+
+    renderAudit();
+    await waitFor(() => expect(screen.getByText("auth.login.success")).toBeTruthy());
+    const callsAfterMount = vi.mocked(apiClient.GET).mock.calls.length;
+
+    // Several keystrokes — an onChange fires per character, and wiring that
+    // directly to a request would fire a filtered-chain-read + a MAX(seq) per
+    // character typed on the surface this release exists to make fast.
+    const actorInput = screen.getByLabelText("actor");
+    fireEvent.change(actorInput, { target: { value: "o" } });
+    fireEvent.change(actorInput, { target: { value: "op" } });
+    fireEvent.change(actorInput, { target: { value: "operator:admin" } });
+    expect(vi.mocked(apiClient.GET).mock.calls.length).toBe(callsAfterMount);
+
+    // Committing (blur) issues exactly one fresh request, with the trimmed value.
+    fireEvent.blur(actorInput);
+    await waitFor(() => expect(vi.mocked(apiClient.GET).mock.calls.length).toBe(callsAfterMount + 1));
+    expect(apiClient.GET).toHaveBeenLastCalledWith("/v1/audit/events", {
+      params: {
+        query: {
+          limit: 50,
+          cursor: undefined,
+          direction: "desc",
+          preset: "governed-actions@1",
+          actor: "operator:admin",
+          outcome: undefined,
+          edge: undefined,
+        },
+      },
+    });
+  });
+
+  it('submitting the "Apply" button also commits the text filters (the form\'s onSubmit, same path as Enter)', async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: { items: [evt("e1", "auth.login.success")], page: { preset: "governed-actions@1", chainHead: 1 } },
+      error: undefined,
+    } as never);
+
+    renderAudit();
+    await waitFor(() => expect(screen.getByText("auth.login.success")).toBeTruthy());
+    const callsAfterMount = vi.mocked(apiClient.GET).mock.calls.length;
+
+    fireEvent.change(screen.getByLabelText("outcome"), { target: { value: "session.open" } });
+    expect(vi.mocked(apiClient.GET).mock.calls.length).toBe(callsAfterMount); // still just a draft
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(vi.mocked(apiClient.GET).mock.calls.length).toBe(callsAfterMount + 1));
+    expect(apiClient.GET).toHaveBeenLastCalledWith("/v1/audit/events", {
+      params: {
+        query: {
+          limit: 50,
+          cursor: undefined,
+          direction: "desc",
+          preset: "governed-actions@1",
+          actor: undefined,
+          outcome: "session.open",
+          edge: undefined,
+        },
+      },
+    });
+  });
+
+  it("EVD-8: a stale response is discarded — the rendered rows and the banner both reflect the LATEST request, not arrival order", async () => {
+    let resolveFirst!: (v: unknown) => void;
+    let resolveSecond!: (v: unknown) => void;
+    const first = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+
+    vi.mocked(apiClient.GET)
+      .mockReturnValueOnce(first as never) // request #1: the initial mount load
+      .mockReturnValueOnce(second as never); // request #2: triggered by the edge filter below
+
+    renderAudit();
+    await waitFor(() => expect(apiClient.GET).toHaveBeenCalledTimes(1));
+
+    // Trigger request #2 (a discrete select change — no commit step needed)
+    // BEFORE #1 resolves.
+    fireEvent.change(screen.getByLabelText("edge"), { target: { value: "human-agent" } });
+    await waitFor(() => expect(apiClient.GET).toHaveBeenCalledTimes(2));
+
+    // Resolve #2 (the NEWER request) first.
+    resolveSecond({
+      data: { items: [evt("e2", "session.open")], page: { edge: "human-agent", chainHead: 2 } },
+      error: undefined,
+    });
+    await waitFor(() => expect(screen.getByText("session.open")).toBeTruthy());
+
+    // Resolve #1 (the STALE request) after. It must be discarded in full —
+    // events, page meta, and cursor move together — so the view stays exactly
+    // what #2 produced; it must not revert, and the banner must not describe
+    // #1's preset while #2's rows are on screen.
+    resolveFirst({
+      data: { items: [evt("e1", "auth.login.success")], page: { preset: "governed-actions@1", chainHead: 999 } },
+      error: undefined,
+    });
+    await new Promise((r) => setTimeout(r, 10)); // flush the resolved microtask queue
+
+    expect(screen.getByText("session.open")).toBeTruthy();
+    expect(screen.queryByText("auth.login.success")).toBeNull();
+    const banner = screen.getByRole("region", { name: "filtered view" });
+    expect(banner.textContent).toMatch(/human-agent/);
+    expect(banner.textContent).not.toMatch(/999/);
+    expect(banner.textContent).not.toMatch(/governed-actions@1/);
   });
 });

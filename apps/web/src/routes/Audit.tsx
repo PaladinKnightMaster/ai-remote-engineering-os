@@ -7,7 +7,14 @@
 // governed-actions@1 preset (AUD-24, FE-31) and composes server-side actor/outcome/
 // edge filters with the reverse-cursor keyset (AUD-25, FE-33); "Load more" still
 // appends, but only within the CURRENT direction+filter set — a direction, preset,
-// or filter change is a NEW request that RESETS the list (see `load` below).
+// or filter change is a NEW request that RESETS the list (see `load` below). The
+// actor/outcome text filters commit on blur or Enter, not per keystroke — an
+// `onChange` fires per character, and this is the audit surface whose whole
+// point this release is being fast at production volume. A `requestSeq` guard
+// discards any response that isn't from the LATEST request, because even a
+// committed-only cadence can still race (a slow response for an earlier filter
+// resolving after a fast one for a later filter) — without it the EVD-8 banner
+// could describe a filter that did not produce the rows on screen.
 //
 // No client-side filtering. This rule dates to v0.1.0: the harm it named was
 // precise — fetch 50 events, filter *those 50* in the browser, see 3 rows, and
@@ -24,7 +31,7 @@
 // server actually did — and "Show all events" always returns the canonical,
 // unfiltered, verifiable timeline in one interaction.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
@@ -57,9 +64,29 @@ export function Audit() {
   // AUD-24/FE-31: opens newest-first, on the preset.
   const [direction, setDirection] = useState<Direction>("desc");
   const [presetOn, setPresetOn] = useState(true);
+  // actor/outcome are COMMITTED filters — the values `load` closes over and
+  // requests are issued against. They are set on blur/Enter only (see
+  // actorDraft/outcomeDraft below), never on every keystroke: an `onChange` on a
+  // text input fires per keystroke, and wiring that directly to a request would
+  // fire one filtered-chain-read + one MAX(seq) per character typed. The select
+  // and checkbox controls have no such storm (one discrete event each), so they
+  // stay wired directly.
   const [actorFilter, setActorFilter] = useState("");
   const [outcomeFilter, setOutcomeFilter] = useState("");
   const [edgeFilter, setEdgeFilter] = useState<Edge | "">("");
+  const [actorDraft, setActorDraft] = useState("");
+  const [outcomeDraft, setOutcomeDraft] = useState("");
+
+  // requestSeq guards against a stale response landing after a newer one — even
+  // with the blur/Enter commit above, two committed requests can still race (a
+  // slow response for filter #1 resolving after a fast response for filter #2).
+  // Without this, `pageMeta` could be set from request #1 while the rows the
+  // operator is looking at came from #2, and the EVD-8 disclosure banner would
+  // then describe a filter that did not produce what's on screen — the banner
+  // asserting something the server did NOT do for the view currently rendered.
+  // Only the LATEST request's result is ever applied to events/pageMeta/
+  // nextCursor/error; they move together, as one.
+  const requestSeq = useRef(0);
 
   // load fetches one page under the CURRENT direction/filters/preset. reset=true
   // starts a fresh read (any control change, or Refresh); cursor is only ever
@@ -68,6 +95,7 @@ export function Audit() {
   // misrepresent the chain (FE-33).
   const load = useCallback(
     async (cursor?: string, reset = false) => {
+      const seq = ++requestSeq.current;
       setLoading(true);
       const { data, error: apiErr } = await apiClient.GET("/v1/audit/events", {
         params: {
@@ -82,6 +110,7 @@ export function Audit() {
           },
         },
       });
+      if (seq !== requestSeq.current) return; // EVD-8: a superseded request must never overwrite the current view
       if (apiErr || !data) {
         setError("Could not load the audit timeline.");
       } else {
@@ -109,11 +138,23 @@ export function Audit() {
   // state could assert something the server ignored or altered.
   const filtered = Boolean(pageMeta.preset || pageMeta.actor || pageMeta.outcome || pageMeta.edge);
 
+  // Commits both text-filter drafts to the values `load` requests against — on
+  // blur of either field, or Enter (the wrapping form's onSubmit). A no-op
+  // commit (draft already equals the committed value) does not re-trigger a
+  // fetch: React bails a setState of an equal primitive, so `load` isn't
+  // recreated and the effect below doesn't fire.
+  function commitTextFilters() {
+    setActorFilter(actorDraft.trim());
+    setOutcomeFilter(outcomeDraft.trim());
+  }
+
   function showAll() {
     setPresetOn(false);
     setActorFilter("");
     setOutcomeFilter("");
     setEdgeFilter("");
+    setActorDraft("");
+    setOutcomeDraft("");
   }
 
   return (
@@ -147,26 +188,50 @@ export function Audit() {
             <option value="asc">Oldest first</option>
           </select>
         </label>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Actor
-          <input
-            aria-label="actor"
-            value={actorFilter}
-            onChange={(e) => setActorFilter(e.target.value)}
-            placeholder="e.g. operator:admin"
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Outcome
-          <input
-            aria-label="outcome"
-            value={outcomeFilter}
-            onChange={(e) => setOutcomeFilter(e.target.value)}
-            placeholder="e.g. session.open"
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
-          />
-        </label>
+        {/* Text filters commit on blur or Enter, not per keystroke (FE-33): an
+            onChange on a text input fires per keystroke, and wiring that
+            directly to `load` would fire a filtered chain read + a MAX(seq)
+            per character typed. The <button type="submit"> is what makes Enter
+            reliable with TWO text fields — a browser's implicit-submission
+            fallback (Enter submits with no explicit button) only kicks in for a
+            form with exactly one text field, which this form is not. */}
+        <form
+          aria-label="text filters"
+          className="contents"
+          onSubmit={(e) => {
+            e.preventDefault();
+            commitTextFilters();
+          }}
+        >
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Actor
+            <input
+              aria-label="actor"
+              value={actorDraft}
+              onChange={(e) => setActorDraft(e.target.value)}
+              onBlur={commitTextFilters}
+              placeholder="e.g. operator:admin"
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Outcome
+            <input
+              aria-label="outcome"
+              value={outcomeDraft}
+              onChange={(e) => setOutcomeDraft(e.target.value)}
+              onBlur={commitTextFilters}
+              placeholder="e.g. session.open"
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
+            />
+          </label>
+          <button
+            type="submit"
+            className="rounded-md border border-border px-3 py-1.5 text-sm self-end"
+          >
+            Apply
+          </button>
+        </form>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Edge
           <select

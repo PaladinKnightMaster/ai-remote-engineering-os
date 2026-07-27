@@ -12,6 +12,13 @@
 // a reserved edge that currently matches zero rows in any environment, so filtering
 // to it must empty a list that was, a moment ago, non-empty — proving reset (not
 // append) without depending on seeded data volume.
+//
+// Commander-review follow-up (post-02b37be): the actor/outcome text filters
+// commit on blur/Enter, not per keystroke (a request storm on the evidence
+// surface, and a source of stale-response races). The actor-filter leg below
+// exercises that REAL commit path (fill() then Enter) — filling alone must
+// leave the view untouched, and Enter is what issues the request — rather than
+// relying on fill() happening to trigger a fetch on its own.
 
 import { test, expect, type Page } from "@playwright/test";
 
@@ -78,6 +85,23 @@ test("audit view opens newest-first on the preset, discloses it, and filters ser
   // not a one-way client filter over a fixed page.
   await page.getByLabel("edge").selectOption("");
   await expect(rows.first()).toContainText("auth.login.success", { timeout: 30_000 });
+  await expect(banner).toHaveCount(0);
 
   await testInfo.attach("audit-filter-cleared", { body: await page.screenshot(), contentType: "image/png" });
+
+  // FE-33 (the real commit path): the actor text filter commits on blur/Enter,
+  // never on keystroke. fill() alone changes only the draft — the view (no
+  // banner right now) must stay exactly as it is until the operator commits.
+  const actorInput = page.getByLabel("actor");
+  await actorInput.fill("operator:admin");
+  await expect(banner).toHaveCount(0); // uncommitted draft — nothing has changed yet
+
+  // Enter (the wrapping form's onSubmit) is the commit: a fresh request is
+  // issued and the banner + rows update together, from the response.
+  await actorInput.press("Enter");
+  await expect(banner).toBeVisible({ timeout: 30_000 });
+  await expect(banner).toContainText("operator:admin");
+  await expect(rows.first()).toContainText("auth.login.success", { timeout: 30_000 });
+
+  await testInfo.attach("audit-actor-filter-committed", { body: await page.screenshot(), contentType: "image/png" });
 });
