@@ -1,12 +1,28 @@
-// Audit route — the operator audit-timeline view (T-024-b). Reads the chained,
-// append-only evidence log through services/api's read-proxy
-// (GET /v1/audit/events → audit-service, T-024-a). Closes the "operator visits
-// the audit timeline" half of WD-1 step 8.
+// Audit route — the operator audit-timeline view (T-024-b; extended by T-107 for
+// ADR-0067's read semantics). Reads the chained, append-only evidence log through
+// services/api's read-proxy (GET /v1/audit/events → audit-service, T-024-a/T-106).
 //
-// Read-only by construction: the chain is append-only at the authority
-// (ADR-0045) and the proxy exposes only GET. Forward-only cursor pagination
-// ("Load more"); a manual "Refresh" re-reads from the head. No client-side
-// filtering at v0.1.0 — filtering a partial page would misrepresent the chain.
+// Read-only by construction: the chain is append-only at the authority (ADR-0045)
+// and the proxy exposes only GET. The surface now opens newest-first on the
+// governed-actions@1 preset (AUD-24, FE-31) and composes server-side actor/outcome/
+// edge filters with the reverse-cursor keyset (AUD-25, FE-33); "Load more" still
+// appends, but only within the CURRENT direction+filter set — a direction, preset,
+// or filter change is a NEW request that RESETS the list (see `load` below).
+//
+// No client-side filtering. This rule dates to v0.1.0: the harm it named was
+// precise — fetch 50 events, filter *those 50* in the browser, see 3 rows, and
+// believe those 3 are all the matches in the whole chain, when they are an
+// arbitrary window. Fetching a bigger page cannot close that harm; it is intrinsic
+// to filtering AFTER the page is drawn. The rule stands unamended (AUD-26). What
+// changes is its SCOPE: T-107 answers the underlying need with filtering applied
+// SERVER-SIDE, before the LIMIT, over the whole chain (ADR-0067 §D4) — a complete
+// answer to a well-posed question, not a partial one dressed up as complete. Any
+// view that is not the plain, contiguous seq-ordered window is disclosed as a
+// query result per the EVD-8 invariant (ADR-0067 §D1): the banner below is driven
+// ONLY by what the RESPONSE says was applied (page.preset/actor/outcome/edge/
+// chainHead) — never by local request state, so it can only ever report what the
+// server actually did — and "Show all events" always returns the canonical,
+// unfiltered, verifiable timeline in one interaction.
 
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -14,35 +30,91 @@ import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
 type AuditEvent = components["schemas"]["AuditEvent"];
+type AuditPageMeta = components["schemas"]["AuditPageMeta"];
+type Direction = components["parameters"]["DirectionParam"];
+type Edge = components["parameters"]["EdgeParam"];
 
 const PAGE_LIMIT = 50;
+const PRESET = "governed-actions@1" as const;
+const EDGES: Edge[] = [
+  "human-agent",
+  "agent-agent",
+  "agent-tool",
+  "agent-workspace",
+  "agent-repo",
+  "agent-memory",
+  "agent-remote-session",
+  "service-service",
+];
 
 export function Audit() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [pageMeta, setPageMeta] = useState<AuditPageMeta>({});
   const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // load fetches one page. reset=true starts a fresh read from the head
-  // (Refresh); otherwise the page is appended (Load more).
-  const load = useCallback(async (cursor?: string, reset = false) => {
-    setLoading(true);
-    const { data, error: apiErr } = await apiClient.GET("/v1/audit/events", {
-      params: { query: { limit: PAGE_LIMIT, cursor } },
-    });
-    if (apiErr || !data) {
-      setError("Could not load the audit timeline.");
-    } else {
-      setError(null);
-      setEvents((prev) => (reset ? data.items ?? [] : [...prev, ...(data.items ?? [])]));
-      setNextCursor(data.page?.nextCursor || undefined);
-    }
-    setLoading(false);
-  }, []);
+  // AUD-24/FE-31: opens newest-first, on the preset.
+  const [direction, setDirection] = useState<Direction>("desc");
+  const [presetOn, setPresetOn] = useState(true);
+  const [actorFilter, setActorFilter] = useState("");
+  const [outcomeFilter, setOutcomeFilter] = useState("");
+  const [edgeFilter, setEdgeFilter] = useState<Edge | "">("");
 
+  // load fetches one page under the CURRENT direction/filters/preset. reset=true
+  // starts a fresh read (any control change, or Refresh); cursor is only ever
+  // passed for "Load more" within that SAME direction+filter set — appending a
+  // page fetched under a different request onto the existing list would
+  // misrepresent the chain (FE-33).
+  const load = useCallback(
+    async (cursor?: string, reset = false) => {
+      setLoading(true);
+      const { data, error: apiErr } = await apiClient.GET("/v1/audit/events", {
+        params: {
+          query: {
+            limit: PAGE_LIMIT,
+            cursor,
+            direction,
+            preset: presetOn ? PRESET : undefined,
+            actor: actorFilter.trim() || undefined,
+            outcome: outcomeFilter.trim() || undefined,
+            edge: edgeFilter || undefined,
+          },
+        },
+      });
+      if (apiErr || !data) {
+        setError("Could not load the audit timeline.");
+      } else {
+        setError(null);
+        setEvents((prev) => (reset ? data.items ?? [] : [...prev, ...(data.items ?? [])]));
+        setNextCursor(data.page?.nextCursor || undefined);
+        setPageMeta(data.page ?? {});
+      }
+      setLoading(false);
+    },
+    [direction, presetOn, actorFilter, outcomeFilter, edgeFilter],
+  );
+
+  // AUD-26/FE-33: a change to direction, preset, or any filter is a NEW request —
+  // `load` is recreated (it closes over those values), so this effect fires once
+  // per change and always resets. This is correctness, not polish: appending a
+  // `desc` page onto an `asc`-accumulated list, or a filtered page onto an
+  // unfiltered one, would render a view that misrepresents the chain.
   useEffect(() => {
     void load(undefined, true);
   }, [load]);
+
+  // FE-32/EVD-8: filtered iff the RESPONSE says something was applied. Never
+  // derived from direction/presetOn/actorFilter/etc — a banner driven by request
+  // state could assert something the server ignored or altered.
+  const filtered = Boolean(pageMeta.preset || pageMeta.actor || pageMeta.outcome || pageMeta.edge);
+
+  function showAll() {
+    setPresetOn(false);
+    setActorFilter("");
+    setOutcomeFilter("");
+    setEdgeFilter("");
+  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
@@ -61,6 +133,97 @@ export function Audit() {
           </Link>
         </div>
       </header>
+
+      <section aria-label="filters" className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3">
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Direction
+          <select
+            aria-label="direction"
+            value={direction}
+            onChange={(e) => setDirection(e.target.value as Direction)}
+            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
+          >
+            <option value="desc">Newest first</option>
+            <option value="asc">Oldest first</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Actor
+          <input
+            aria-label="actor"
+            value={actorFilter}
+            onChange={(e) => setActorFilter(e.target.value)}
+            placeholder="e.g. operator:admin"
+            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Outcome
+          <input
+            aria-label="outcome"
+            value={outcomeFilter}
+            onChange={(e) => setOutcomeFilter(e.target.value)}
+            placeholder="e.g. session.open"
+            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Edge
+          <select
+            aria-label="edge"
+            value={edgeFilter}
+            onChange={(e) => setEdgeFilter(e.target.value as Edge | "")}
+            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
+          >
+            <option value="">All edges</option>
+            {EDGES.map((edge) => (
+              <option key={edge} value={edge}>
+                {edge}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 pb-1.5 text-sm">
+          <input
+            type="checkbox"
+            aria-label="preset"
+            checked={presetOn}
+            onChange={(e) => setPresetOn(e.target.checked)}
+          />
+          Governed actions only
+        </label>
+      </section>
+
+      {filtered && (
+        <div role="region" aria-label="filtered view" className="space-y-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <p>
+            {pageMeta.preset && (
+              <>
+                Showing the <strong>{pageMeta.preset}</strong> preset (governed actions only).{" "}
+              </>
+            )}
+            {pageMeta.actor && (
+              <>
+                Filtered to actor <strong>{pageMeta.actor}</strong>.{" "}
+              </>
+            )}
+            {pageMeta.outcome && (
+              <>
+                Filtered to outcome <strong>{pageMeta.outcome}</strong>.{" "}
+              </>
+            )}
+            {pageMeta.edge && (
+              <>
+                Filtered to edge <strong>{pageMeta.edge}</strong>.{" "}
+              </>
+            )}
+            The full chain has {pageMeta.chainHead ?? "an unknown number of"} positions.
+          </p>
+          <button onClick={showAll} className="rounded-md border border-border px-3 py-1.5 text-sm">
+            Show all events
+          </button>
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
