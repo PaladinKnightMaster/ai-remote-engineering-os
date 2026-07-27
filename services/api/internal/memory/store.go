@@ -197,6 +197,25 @@ const (
 // defaultListLimit — D3's pushed-down limit). Non-owner rows never appear — the
 // caller's owner param IS the filter (no separate authorization check needed; a
 // foreign scope simply returns no rows).
+//
+// MEM-9..13 (ADR-0067 §D7, T-109): when scopeType is "workstream", the result is
+// WIDENED to also include run-scoped rows for Runs bound to that charter's own
+// delegation grant — mirroring the CTE shape ReadForAgent already uses to reach
+// run-scoped memory via runs.grant_id. This closes the inversion where an adaptive
+// Run's memory (actor = "agent:<composer>", scopeForActor sends it to run:<id>) never
+// showed up in the charter-detail view even though the agent read plane already
+// reached it. "run" and "operator" scopeType values are UNCHANGED exact literal
+// matches — only "workstream" widens.
+//
+// Containment stays exact: a charter auto-issues its OWN grant at creation
+// (grant_id is 1:1 with the charter, workstream.CreateWorkstream), so the
+// charter_grant -> bound_runs join can never reach a sibling charter's Runs, and
+// permission_scope = $1 still gates every row regardless of scope. This is
+// DELIBERATELY NOT the same filter set as ReadForAgent: that agent-plane read also
+// applies "redacted_at IS NULL" and "(content IS NULL OR agent_visible)" because it
+// feeds the agent; this operator path keeps neither — the operator surface must keep
+// showing tombstoned/redacted rows (governed forgetting stays visible to its owner)
+// and must not gate authored content on agent_visible.
 func (s *Store) List(ctx context.Context, owner, scopeType, scopeID string, limit int) ([]Memory, error) {
 	switch {
 	case limit <= 0:
@@ -205,8 +224,16 @@ func (s *Store) List(ctx context.Context, owner, scopeType, scopeID string, limi
 		limit = maxListLimit
 	}
 	rows, err := s.pool.Query(ctx, `
+		WITH charter_grant AS (
+			SELECT grant_id FROM workstreams WHERE id::text = $3
+		),
+		bound_runs AS (
+			SELECT id::text AS scope_id FROM runs WHERE grant_id IN (SELECT grant_id FROM charter_grant)
+		)
 		SELECT `+selectCols+` FROM memories
-		 WHERE permission_scope = $1 AND scope_type = $2 AND scope_id = $3
+		 WHERE permission_scope = $1
+		   AND ( (scope_type = $2 AND scope_id = $3)
+		      OR ($2 = 'workstream' AND scope_type = 'run' AND scope_id IN (SELECT scope_id FROM bound_runs)) )
 		 ORDER BY id ASC
 		 LIMIT $4`, owner, scopeType, scopeID, limit)
 	if err != nil {

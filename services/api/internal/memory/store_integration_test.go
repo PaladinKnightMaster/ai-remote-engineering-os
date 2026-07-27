@@ -872,6 +872,269 @@ func TestReadForAgent(t *testing.T) {
 	}
 }
 
+// --- T-109 (MEM-9..13, ADR-0067 §D7) shared fixtures ---
+//
+// testCharter mints one adaptive charter (its own 1:1-bound grant, CreateWorkstream)
+// owned by owner and composed by composer. testBoundRun launches+terminally-accrues
+// one Run bound to grantID with an AGENT actor (adaptive_internal.go's AgentSubject
+// shape — no "workstream:" prefix, so scopeForActor sends the accrual to run:<id>,
+// unchanged, MEM-10) — the exact fixture the ADR-0067 finding-7 defect requires.
+
+func testCharter(t *testing.T, ctx context.Context, wsStore *workstream.Store, owner, composer, resource string) workstream.Workstream {
+	t.Helper()
+	ws, err := wsStore.Create(ctx, workstream.Input{
+		Principal: owner, Label: "adaptive", Objective: "learn and adapt",
+		IntervalSeconds: 3600, Kind: workstream.KindAdaptive, Composer: composer,
+		Grant: grant.Input{
+			Resources: []string{resource}, Verbs: []string{"exec"},
+			ExpiresAt: time.Now().Add(24 * time.Hour), MaxStepsPerRun: 5,
+			MaxConcurrentRuns: 2, StepBudget: 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create charter: %v", err)
+	}
+	return ws
+}
+
+func testBoundRun(t *testing.T, ctx context.Context, pool *pgxpool.Pool, s *Store, runStore *run.Store, operator, actor, grantID, resource string) run.Run {
+	t.Helper()
+	r, err := runStore.Create(ctx, run.Input{
+		Operator: operator, Actor: actor, GrantID: grantID,
+		Steps: []run.StepInput{{ResourceID: resource, Command: "uptime"}},
+	})
+	if err != nil {
+		t.Fatalf("create bound run: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := s.AccrueRunTerminal(ctx, tx, r.ID, "completed", operator, actor, grantID); err != nil {
+		t.Fatalf("accrue bound run terminal: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	return r
+}
+
+func byRowID(rows []Memory, id string) (Memory, bool) {
+	for _, m := range rows {
+		if m.ID == id {
+			return m, true
+		}
+	}
+	return Memory{}, false
+}
+
+// TestListWorkstreamScopeAccrualWidening — MEM-9/MEM-11: List(owner, "workstream", X)
+// now also returns an adaptive Run's memory (stored scope_type="run") when the Run is
+// bound to X's grant, alongside X's own charter-scoped rows — closing ADR-0067 finding
+// 7 (the operator saw less than the composer). MEM-11: the row's stored scope is
+// UNCHANGED by the read (still run/<id>, agreeing with its own already-chained
+// memory.written event) — proven both on the returned struct and by a direct re-fetch.
+func TestListWorkstreamScopeAccrualWidening(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	wsStore := workstream.NewStore(pool, nil, grant.NewStore(pool, "api_outbox"), "api_outbox")
+	runStore := run.NewStore(pool, nil, "api_outbox", nil)
+
+	owner, composer := "operator:mem9-"+freshID(t), "agent:mem9-composer-"+freshID(t)
+	ws := testCharter(t, ctx, wsStore, owner, composer, "res-a")
+	adaptiveRun := testBoundRun(t, ctx, pool, s, runStore, owner, composer, ws.GrantID, "res-a")
+
+	// A charter-scoped row too, proving the widened query returns BOTH kinds.
+	charterNote, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: owner, ScopeType: ScopeWorkstream, ScopeID: ws.ID, Content: "a charter-scoped note",
+	})
+	if err != nil {
+		t.Fatalf("create charter-scoped authored row: %v", err)
+	}
+
+	rows, err := s.List(ctx, owner, ScopeWorkstream, ws.ID, 0)
+	if err != nil {
+		t.Fatalf("list widened: %v", err)
+	}
+	adaptiveRow, ok := byRowMatchingRef(rows, "run:"+adaptiveRun.ID)
+	if !ok {
+		t.Fatalf("adaptive run's memory (stored scope_type=run) missing from workstream-scope list: %+v", rows)
+	}
+	if _, ok := byRowID(rows, charterNote.ID); !ok {
+		t.Fatal("charter-scoped row missing from the widened list")
+	}
+	if adaptiveRow.ScopeType != ScopeRun || adaptiveRow.ScopeID != adaptiveRun.ID {
+		t.Fatalf("MEM-11 violated: returned row scope_type=%q scope_id=%q, want run/%s", adaptiveRow.ScopeType, adaptiveRow.ScopeID, adaptiveRun.ID)
+	}
+	direct, err := s.Get(ctx, owner, adaptiveRow.ID)
+	if err != nil || direct.ScopeType != ScopeRun || direct.ScopeID != adaptiveRun.ID {
+		t.Fatalf("MEM-11 violated on persisted row: scope_type=%q scope_id=%q err=%v", direct.ScopeType, direct.ScopeID, err)
+	}
+}
+
+// TestListWorkstreamScopeContainment — MEM-12: the widened query reaches ONLY Runs
+// bound to THIS charter's own grant (1:1 by construction), and permission_scope still
+// gates every row. Both boundaries are asserted independently — a Run bound to a
+// SIBLING charter's grant, and a row owned by a DIFFERENT operator, are different
+// failure modes and both must be closed.
+func TestListWorkstreamScopeContainment(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	wsStore := workstream.NewStore(pool, nil, grant.NewStore(pool, "api_outbox"), "api_outbox")
+	runStore := run.NewStore(pool, nil, "api_outbox", nil)
+
+	owner := "operator:mem12-" + freshID(t)
+	composerX, composerY := "agent:mem12-x-"+freshID(t), "agent:mem12-y-"+freshID(t)
+	wsX := testCharter(t, ctx, wsStore, owner, composerX, "res-x")
+	wsY := testCharter(t, ctx, wsStore, owner, composerY, "res-y")
+	runY := testBoundRun(t, ctx, pool, s, runStore, owner, composerY, wsY.GrantID, "res-y")
+
+	foreignOwner := "operator:mem12-foreign-" + freshID(t)
+	runForeignOwner := testBoundRun(t, ctx, pool, s, runStore, foreignOwner, composerX, wsX.GrantID, "res-x")
+
+	rows, err := s.List(ctx, owner, ScopeWorkstream, wsX.ID, 0)
+	if err != nil {
+		t.Fatalf("list X: %v", err)
+	}
+	if _, ok := byRowMatchingRef(rows, "run:"+runY.ID); ok {
+		t.Fatal("MEM-12 violated: a Run bound to a DIFFERENT charter's grant leaked into X's list")
+	}
+	if _, ok := byRowMatchingRef(rows, "run:"+runForeignOwner.ID); ok {
+		t.Fatal("MEM-12 violated: a different operator's row leaked via the grant join")
+	}
+}
+
+// TestListWorkstreamScopeTombstoneVisible — the operator path must NOT inherit
+// ReadForAgent's redacted_at IS NULL filter: a redacted run-scoped row bound to the
+// charter's grant still appears for the operator (governed forgetting stays visible to
+// its owner — the tombstone itself is evidence of what was forgotten).
+func TestListWorkstreamScopeTombstoneVisible(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	wsStore := workstream.NewStore(pool, nil, grant.NewStore(pool, "api_outbox"), "api_outbox")
+	runStore := run.NewStore(pool, nil, "api_outbox", nil)
+
+	owner, composer := "operator:memtomb-"+freshID(t), "agent:memtomb-composer-"+freshID(t)
+	ws := testCharter(t, ctx, wsStore, owner, composer, "res-a")
+	boundRun, err := runStore.Create(ctx, run.Input{
+		Operator: owner, Actor: composer, GrantID: ws.GrantID,
+		Steps: []run.StepInput{{ResourceID: "res-a", Command: "uptime"}},
+	})
+	if err != nil {
+		t.Fatalf("create bound run: %v", err)
+	}
+
+	// Authored (not accrued) so redaction's content-erasure is meaningful.
+	authored, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: owner, ScopeType: ScopeRun, ScopeID: boundRun.ID, Content: "a note that will be redacted",
+	})
+	if err != nil {
+		t.Fatalf("create authored run-scoped row: %v", err)
+	}
+	if _, err := s.Redact(ctx, owner, authored.ID); err != nil {
+		t.Fatalf("redact: %v", err)
+	}
+
+	rows, err := s.List(ctx, owner, ScopeWorkstream, ws.ID, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found, ok := byRowID(rows, authored.ID)
+	if !ok {
+		t.Fatal("a tombstoned run-scoped row bound to the charter's grant must still appear for the operator")
+	}
+	if found.RedactedAt == nil || found.HasContent {
+		t.Fatalf("returned row must show tombstoned state and erased content: RedactedAt=%v HasContent=%v", found.RedactedAt, found.HasContent)
+	}
+}
+
+// TestListNonWidening — the widening applies ONLY to scopeType="workstream"; "run" and
+// "operator" queries stay exact literal matches, exactly as before this ticket.
+func TestListNonWidening(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	wsStore := workstream.NewStore(pool, nil, grant.NewStore(pool, "api_outbox"), "api_outbox")
+	runStore := run.NewStore(pool, nil, "api_outbox", nil)
+
+	owner, composer := "operator:memnowiden-"+freshID(t), "agent:memnowiden-composer-"+freshID(t)
+	ws := testCharter(t, ctx, wsStore, owner, composer, "res-a")
+	boundRun := testBoundRun(t, ctx, pool, s, runStore, owner, composer, ws.GrantID, "res-a")
+	charterNote, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: owner, ScopeType: ScopeWorkstream, ScopeID: ws.ID, Content: "a charter-scoped note",
+	})
+	if err != nil {
+		t.Fatalf("create charter-scoped authored row: %v", err)
+	}
+
+	runScoped, err := s.List(ctx, owner, ScopeRun, boundRun.ID, 0)
+	if err != nil {
+		t.Fatalf("list run-scoped: %v", err)
+	}
+	if _, ok := byRowID(runScoped, charterNote.ID); ok || len(runScoped) != 1 {
+		t.Fatalf("scopeType=run must stay an exact match (no reverse widening): rows=%d containsCharterNote=%v", len(runScoped), ok)
+	}
+
+	opScopeID := freshID(t)
+	opNote, err := s.CreateAuthored(ctx, CreateInput{
+		Owner: owner, ScopeType: ScopeOperator, ScopeID: opScopeID, Content: "an operator-scoped note",
+	})
+	if err != nil {
+		t.Fatalf("create operator-scoped row: %v", err)
+	}
+	opScoped, err := s.List(ctx, owner, ScopeOperator, opScopeID, 0)
+	if err != nil || len(opScoped) != 1 || opScoped[0].ID != opNote.ID {
+		t.Fatalf("scopeType=operator exact match: rows=%v err=%v, want exactly the 1 seeded row", opScoped, err)
+	}
+}
+
+// TestListWorkstreamScopeHistoricRunRow — MEM-13: a run-scoped row inserted directly
+// (simulating an accrual predating this release — the same fixture shape
+// TestReadForAgent already uses) still appears for the charter its Run is bound to.
+// The read-side fix covers past accruals as well as future ones — no backfill needed.
+func TestListWorkstreamScopeHistoricRunRow(t *testing.T) {
+	s, pool := testStore(t)
+	ctx := context.Background()
+	wsStore := workstream.NewStore(pool, nil, grant.NewStore(pool, "api_outbox"), "api_outbox")
+	runStore := run.NewStore(pool, nil, "api_outbox", nil)
+
+	owner, composer := "operator:mem13-"+freshID(t), "agent:mem13-composer-"+freshID(t)
+	ws := testCharter(t, ctx, wsStore, owner, composer, "res-a")
+	preexistingRun, err := runStore.Create(ctx, run.Input{
+		Operator: owner, Actor: composer, GrantID: ws.GrantID,
+		Steps: []run.StepInput{{ResourceID: "res-a", Command: "uptime"}},
+	})
+	if err != nil {
+		t.Fatalf("create bound run: %v", err)
+	}
+
+	histID := freshID(t)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO memories (id, scope_type, scope_id, ref, source_trace, permission_scope)
+		VALUES ($1, $2, $3, 'run:x', 'run:x:completed', $4)`,
+		histID, ScopeRun, preexistingRun.ID, owner); err != nil {
+		t.Fatalf("insert historic run-scoped fixture: %v", err)
+	}
+
+	rows, err := s.List(ctx, owner, ScopeWorkstream, ws.ID, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if _, ok := byRowID(rows, histID); !ok {
+		t.Fatal("MEM-13 violated: a pre-existing run-scoped row bound to the charter's grant must appear under the widened workstream-scope read")
+	}
+}
+
+// byRowMatchingRef locates the memory row whose Ref matches ref (the
+// AccrueRunTerminal-produced "run:<id>" pointer), disambiguating same-scope fixtures.
+func byRowMatchingRef(rows []Memory, ref string) (Memory, bool) {
+	for _, m := range rows {
+		if m.Ref == ref {
+			return m, true
+		}
+	}
+	return Memory{}, false
+}
+
 func countOutcomeByActor(t *testing.T, pool *pgxpool.Pool, actor, outcome string) int {
 	t.Helper()
 	var n int
