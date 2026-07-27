@@ -147,7 +147,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List audit events in chain order (forward-only cursor) */
+        /** List audit events (bidirectional seq-keyset cursor, server-side actor/outcome/edge filters, the governed-actions@1 preset; ADR-0067) */
         get: operations["listEvents"];
         put?: never;
         /** Append an audit event (append-only; chain authority assigns the hashes) */
@@ -182,7 +182,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Operator audit timeline — a page of chained events (via the api read-proxy) */
+        /** Operator audit timeline — a page of chained events, bidirectional cursor + server-side filters + the governed-actions@1 preset (via the api read-proxy; ADR-0067) */
         get: operations["listAuditEvents"];
         put?: never;
         post?: never;
@@ -787,6 +787,26 @@ export interface components {
             nextCursor?: string;
             total?: number;
         };
+        AuditPageMeta: {
+            nextCursor?: string;
+            total?: number;
+            /**
+             * Format: int64
+             * @description MAX(seq) — the newest position in the whole chain, O(1) (AUD-29, PERF-9). Always populated, filtered or not (EVD-8 requires the chain's size be disclosed whenever the view is reduced; always-on is simpler and equally honest for the unfiltered case).
+             */
+            chainHead?: number;
+            /**
+             * @description The named preset applied to this read, when one was requested (AUD-28). Absent when no preset was applied.
+             * @enum {string}
+             */
+            preset?: "governed-actions@1";
+            /** @description The actor filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered. */
+            actor?: string;
+            /** @description The outcome filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered. */
+            outcome?: string;
+            /** @description The edge filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered. */
+            edge?: string;
+        };
         AgentTokenRequest: {
             /** @description Logical agent id; the token subject is agent:<agentId>. */
             agentId: string;
@@ -1160,6 +1180,16 @@ export interface components {
     parameters: {
         LimitParam: number;
         CursorParam: string;
+        /** @description Which way the seq-keyset cursor walks. The contract default is `asc` (chain order — ADR-0067 §D2 keeps this the canonical read-side default); the operator UI (T-107) requests `desc` explicitly for its newest-first default (AUD-24). */
+        DirectionParam: "asc" | "desc";
+        /** @description Equality filter on actor, applied server-side over the whole chain (AUD-25). */
+        ActorParam: string;
+        /** @description Equality filter on outcome, applied server-side over the whole chain (AUD-25). */
+        OutcomeParam: string;
+        /** @description Equality filter on edge, applied server-side over the whole chain (AUD-25). The enum is the closed, stable set of capability edges (ADR-0046) — the same set as AuditEvent.edge. */
+        EdgeParam: "human-agent" | "agent-agent" | "agent-tool" | "agent-workspace" | "agent-repo" | "agent-memory" | "agent-remote-session" | "service-service";
+        /** @description A named, versioned read-time lens (ADR-0067 §D3). A string enum, not a boolean, so the applied lens can be named and reported back in the envelope (AUD-28) — currently the sole value is `governed-actions@1`, which excludes the content-free charter-lifecycle outcomes `plan.requested` and `plan.expired`. */
+        PresetParam: "governed-actions@1";
     };
     requestBodies: never;
     headers: never;
@@ -1172,6 +1202,16 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["LimitParam"];
                 cursor?: components["parameters"]["CursorParam"];
+                /** @description Which way the seq-keyset cursor walks. The contract default is `asc` (chain order — ADR-0067 §D2 keeps this the canonical read-side default); the operator UI (T-107) requests `desc` explicitly for its newest-first default (AUD-24). */
+                direction?: components["parameters"]["DirectionParam"];
+                /** @description Equality filter on actor, applied server-side over the whole chain (AUD-25). */
+                actor?: components["parameters"]["ActorParam"];
+                /** @description Equality filter on outcome, applied server-side over the whole chain (AUD-25). */
+                outcome?: components["parameters"]["OutcomeParam"];
+                /** @description Equality filter on edge, applied server-side over the whole chain (AUD-25). The enum is the closed, stable set of capability edges (ADR-0046) — the same set as AuditEvent.edge. */
+                edge?: components["parameters"]["EdgeParam"];
+                /** @description A named, versioned read-time lens (ADR-0067 §D3). A string enum, not a boolean, so the applied lens can be named and reported back in the envelope (AUD-28) — currently the sole value is `governed-actions@1`, which excludes the content-free charter-lifecycle outcomes `plan.requested` and `plan.expired`. */
+                preset?: components["parameters"]["PresetParam"];
             };
             header?: never;
             path?: never;
@@ -1179,7 +1219,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A page of audit events in ascending chain order. */
+            /** @description A page of audit events, contiguous in seq order for the requested direction (ascending by default; EVD-8). Filtered or preset reads return the newest/oldest N matches over the whole chain, not over a page (AUD-25). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1187,10 +1227,11 @@ export interface operations {
                 content: {
                     "application/json": {
                         items: components["schemas"]["AuditEvent"][];
-                        page: components["schemas"]["PageMeta"];
+                        page: components["schemas"]["AuditPageMeta"];
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };
@@ -1252,6 +1293,16 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["LimitParam"];
                 cursor?: components["parameters"]["CursorParam"];
+                /** @description Which way the seq-keyset cursor walks. The contract default is `asc` (chain order — ADR-0067 §D2 keeps this the canonical read-side default); the operator UI (T-107) requests `desc` explicitly for its newest-first default (AUD-24). */
+                direction?: components["parameters"]["DirectionParam"];
+                /** @description Equality filter on actor, applied server-side over the whole chain (AUD-25). */
+                actor?: components["parameters"]["ActorParam"];
+                /** @description Equality filter on outcome, applied server-side over the whole chain (AUD-25). */
+                outcome?: components["parameters"]["OutcomeParam"];
+                /** @description Equality filter on edge, applied server-side over the whole chain (AUD-25). The enum is the closed, stable set of capability edges (ADR-0046) — the same set as AuditEvent.edge. */
+                edge?: components["parameters"]["EdgeParam"];
+                /** @description A named, versioned read-time lens (ADR-0067 §D3). A string enum, not a boolean, so the applied lens can be named and reported back in the envelope (AUD-28) — currently the sole value is `governed-actions@1`, which excludes the content-free charter-lifecycle outcomes `plan.requested` and `plan.expired`. */
+                preset?: components["parameters"]["PresetParam"];
             };
             header?: never;
             path?: never;
@@ -1259,7 +1310,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A page of audit events in ascending chain order. */
+            /** @description A page of audit events, contiguous in seq order for the requested direction (ascending by default; EVD-8). Filtered or preset reads return the newest/oldest N matches over the whole chain, not over a page (AUD-25). Passed through verbatim from audit-service (AUD-30) — same envelope shape as GET /v1/events. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1267,10 +1318,11 @@ export interface operations {
                 content: {
                     "application/json": {
                         items: components["schemas"]["AuditEvent"][];
-                        page: components["schemas"]["PageMeta"];
+                        page: components["schemas"]["AuditPageMeta"];
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };

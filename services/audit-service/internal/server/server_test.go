@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,15 +55,49 @@ func (f *fakeStore) Get(_ context.Context, id string) (audit.Event, error) {
 	return audit.Event{}, store.ErrNotFound
 }
 
-// List mimics only the ascending, unfiltered path the current handler drives
-// (T-105 is store-layer-only; the handler gains direction/filter/preset
-// params in T-106). It ignores q.Direction/Actor/Outcome/Edge/Preset because
-// no call site sets them yet.
+// List honors direction, the three equality filters, and the preset (T-106) —
+// enough for handler-level tests of param mapping and the cursor guard. It is
+// deliberately a simple linear scan, not a index-aware query planner; the
+// real predicate composition and index-friendliness are proven against live
+// Postgres in internal/store's integration suite (T-105), which this test
+// double does not replace.
 func (f *fakeStore) List(_ context.Context, q store.ListQuery) ([]audit.Event, int64, error) {
+	matches := func(e audit.Event) bool {
+		if q.Actor != nil && e.Actor != *q.Actor {
+			return false
+		}
+		if q.Outcome != nil && e.Outcome != *q.Outcome {
+			return false
+		}
+		if q.Edge != nil && e.Edge != *q.Edge {
+			return false
+		}
+		if q.Preset && (e.Outcome == "plan.requested" || e.Outcome == "plan.expired") {
+			return false
+		}
+		return true
+	}
 	var out []audit.Event
 	var last int64
+	if q.Direction == store.Desc {
+		cursor := q.Cursor
+		if cursor == 0 {
+			cursor = math.MaxInt64
+		}
+		for i := len(f.order) - 1; i >= 0; i-- {
+			e := f.order[i]
+			if e.Seq < cursor && matches(e) {
+				out = append(out, e)
+				last = e.Seq
+				if len(out) == q.Limit {
+					break
+				}
+			}
+		}
+		return out, last, nil
+	}
 	for _, e := range f.order {
-		if e.Seq > q.Cursor {
+		if e.Seq > q.Cursor && matches(e) {
 			out = append(out, e)
 			last = e.Seq
 			if len(out) == q.Limit {
@@ -70,6 +106,15 @@ func (f *fakeStore) List(_ context.Context, q store.ListQuery) ([]audit.Event, i
 		}
 	}
 	return out, last, nil
+}
+
+// ChainHead mirrors store.Store.ChainHead: MAX(seq) over the in-memory
+// order, or 0 for an empty chain (T-106, AUD-29).
+func (f *fakeStore) ChainHead(_ context.Context) (int64, error) {
+	if len(f.order) == 0 {
+		return 0, nil
+	}
+	return f.order[len(f.order)-1].Seq, nil
 }
 
 type allowAll struct{}
@@ -173,5 +218,144 @@ func TestUnauthorizedWithoutBearer(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401 without bearer, got %d", rec.Code)
+	}
+}
+
+// mustAppend appends one event with the given actor/edge/outcome directly on
+// the fake, bypassing the HTTP layer, so list tests can seed a chain with a
+// controlled shape (mixed actors/outcomes) cheaply.
+func mustAppend(t *testing.T, f *fakeStore, actor, edge, target, outcome string) audit.Event {
+	t.Helper()
+	e, _, err := f.Append(context.Background(), audit.Ingest{
+		Timestamp:      "2026-05-20T00:00:00Z",
+		Actor:          actor,
+		Edge:           edge,
+		Target:         target,
+		Outcome:        outcome,
+		IdempotencyKey: fmt.Sprintf("k-%d", f.nextID+1),
+	})
+	if err != nil {
+		t.Fatalf("seed append: %v", err)
+	}
+	return e
+}
+
+// TestListEventsParamMapping exercises T-106's param plumbing end to end
+// through the real handler (New + ServeHTTP), not buildListQuery directly:
+// direction, actor/outcome/edge filters, and the preset all reach
+// store.ListQuery, and chainHead is always present in the envelope.
+func TestListEventsParamMapping(t *testing.T) {
+	f := newFake()
+	mustAppend(t, f, "agent:composer", "human-agent", "t1", "plan.requested")
+	mustAppend(t, f, "svc:policy-service", "service-service", "t2", "decision.granted")
+	mustAppend(t, f, "agent:composer", "agent-tool", "t3", "plan.expired")
+	h := New(f, allowAll{})
+
+	// Default direction is asc (ADR-0067 §D2) and chainHead is always present.
+	rec := do(t, h, http.MethodGet, "/v1/events", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"chainHead":3`) {
+		t.Fatalf("expected chainHead:3 always populated, got %s", body)
+	}
+	if idx1, idx3 := strings.Index(body, `"id":"id-k-1"`), strings.Index(body, `"id":"id-k-3"`); idx1 == -1 || idx3 == -1 || idx1 > idx3 {
+		t.Fatalf("default direction should be asc (k-1 before k-3), got %s", body)
+	}
+
+	// direction=desc walks newest-first.
+	rec = do(t, h, http.MethodGet, "/v1/events?direction=desc", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("desc: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	items := rec.Body.String()
+	if idx1, idx3 := strings.Index(items, `"id":"id-k-1"`), strings.Index(items, `"id":"id-k-3"`); idx3 == -1 || idx1 == -1 || idx3 > idx1 {
+		t.Fatalf("desc should list k-3 before k-1, got %s", items)
+	}
+
+	// actor filter.
+	rec = do(t, h, http.MethodGet, "/v1/events?actor=agent%3Acomposer", "")
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "k-2") {
+		t.Fatalf("actor filter should exclude svc:policy-service's event, got %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"actor":"agent:composer"`) {
+		t.Fatalf("disclosure envelope should echo the applied actor filter, got %s", rec.Body)
+	}
+
+	// edge filter.
+	rec = do(t, h, http.MethodGet, "/v1/events?edge=agent-tool", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "k-3") || strings.Contains(rec.Body.String(), `"id":"id-k-1"`) {
+		t.Fatalf("edge filter should return only the agent-tool event, got %d %s", rec.Code, rec.Body)
+	}
+
+	// preset excludes plan.requested/plan.expired and reports its name.
+	rec = do(t, h, http.MethodGet, "/v1/events?preset=governed-actions%401", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preset: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	presetBody := rec.Body.String()
+	if strings.Contains(presetBody, "k-1") || strings.Contains(presetBody, `"id":"id-k-3"`) {
+		t.Fatalf("preset should exclude plan.requested/plan.expired outcomes, got %s", presetBody)
+	}
+	if !strings.Contains(presetBody, `"preset":"governed-actions@1"`) {
+		t.Fatalf("disclosure envelope should echo the applied preset name, got %s", presetBody)
+	}
+}
+
+// TestListEventsBadDirectionAndPreset asserts the 400 shape for an unknown
+// direction or preset value, matching how limit/cursor already validate.
+func TestListEventsBadDirectionAndPreset(t *testing.T) {
+	h := New(newFake(), allowAll{})
+	for _, path := range []string{
+		"/v1/events?direction=sideways",
+		"/v1/events?preset=unknown-lens@1",
+	} {
+		rec := do(t, h, http.MethodGet, path, "")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d: %s", path, rec.Code, rec.Body)
+		}
+		if !strings.Contains(rec.Body.String(), `"bad_request"`) {
+			t.Fatalf("%s: expected bad_request error code, got %s", path, rec.Body)
+		}
+	}
+}
+
+// TestListEventsCursorGuardBothDirections proves the full-page nextCursor
+// guard (kept verbatim from before T-106) holds in BOTH directions: a
+// partial page and an empty page must never emit nextCursor. This matters
+// more after T-106 than before it, because store.List returns cursor 0 for
+// an empty page, and in Desc that value is the "no cursor" sentinel — fed
+// back it would restart the walk from the head instead of terminating.
+func TestListEventsCursorGuardBothDirections(t *testing.T) {
+	f := newFake()
+	mustAppend(t, f, "a", "service-service", "t1", "")
+	mustAppend(t, f, "a", "service-service", "t2", "")
+	h := New(f, allowAll{})
+
+	// Ascending: a partial page (2 events, limit 50) must carry no cursor.
+	rec := do(t, h, http.MethodGet, "/v1/events?limit=50", "")
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "nextCursor") {
+		t.Fatalf("asc partial page must not emit nextCursor, got %d %s", rec.Code, rec.Body)
+	}
+
+	// Descending: an empty page (cursor before the oldest event) must carry
+	// no cursor either — this is the exact case the guard exists to prevent
+	// from looping back to the head.
+	rec = do(t, h, http.MethodGet, "/v1/events?direction=desc&cursor=1", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("desc empty page: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "nextCursor") {
+		t.Fatalf("desc empty page must not emit nextCursor, got %s", rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"items":null`) && !strings.Contains(rec.Body.String(), `"items":[]`) {
+		t.Fatalf("expected an empty items page, got %s", rec.Body)
+	}
+
+	// Descending: a full page (limit=1) DOES emit a cursor.
+	rec = do(t, h, http.MethodGet, "/v1/events?direction=desc&limit=1", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"nextCursor":"2"`) {
+		t.Fatalf("desc full page should emit nextCursor:2, got %d %s", rec.Code, rec.Body)
 	}
 }

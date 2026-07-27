@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -479,6 +480,47 @@ func TestListAuditEventsProxies(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotAuth, "Bearer ") {
 		t.Fatalf("upstream did not receive a service token: %q", gotAuth)
+	}
+}
+
+// TestListAuditEventsForwardsNewParams (T-106) — direction/actor/outcome/edge/
+// preset all reach audit-service on the upstream query string, forwarded
+// verbatim alongside limit/cursor. AUD-30 requires the proxy posture stay
+// byte-identical (operator gated by the shared capability middleware, api
+// reads upstream with its own service token, body passed through verbatim);
+// this test only asserts the forwarded query set grows, not that behavior.
+func TestListAuditEventsForwardsNewParams(t *testing.T) {
+	var gotQuery url.Values
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[],"page":{"chainHead":42}}`))
+	}))
+	defer upstream.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	h := New(newFake(), nil, signer, allowAll{}, upstream.URL, "")
+
+	rec := req(t, h, http.MethodGet,
+		"/v1/audit/events?direction=desc&actor=agent%3Acomposer&outcome=plan.expired&edge=human-agent&preset=governed-actions%401",
+		"", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	for param, want := range map[string]string{
+		"direction": "desc",
+		"actor":     "agent:composer",
+		"outcome":   "plan.expired",
+		"edge":      "human-agent",
+		"preset":    "governed-actions@1",
+	} {
+		if got := gotQuery.Get(param); got != want {
+			t.Fatalf("upstream %s = %q, want %q (full query: %v)", param, got, want, gotQuery)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), `"chainHead":42`) {
+		t.Fatalf("proxied body should pass chainHead through verbatim, got %s", rec.Body.String())
 	}
 }
 

@@ -19,14 +19,19 @@ const (
 
 // Defines values for AuditEventEdge.
 const (
-	AgentAgent         AuditEventEdge = "agent-agent"
-	AgentMemory        AuditEventEdge = "agent-memory"
-	AgentRemoteSession AuditEventEdge = "agent-remote-session"
-	AgentRepo          AuditEventEdge = "agent-repo"
-	AgentTool          AuditEventEdge = "agent-tool"
-	AgentWorkspace     AuditEventEdge = "agent-workspace"
-	HumanAgent         AuditEventEdge = "human-agent"
-	ServiceService     AuditEventEdge = "service-service"
+	AuditEventEdgeAgentAgent         AuditEventEdge = "agent-agent"
+	AuditEventEdgeAgentMemory        AuditEventEdge = "agent-memory"
+	AuditEventEdgeAgentRemoteSession AuditEventEdge = "agent-remote-session"
+	AuditEventEdgeAgentRepo          AuditEventEdge = "agent-repo"
+	AuditEventEdgeAgentTool          AuditEventEdge = "agent-tool"
+	AuditEventEdgeAgentWorkspace     AuditEventEdge = "agent-workspace"
+	AuditEventEdgeHumanAgent         AuditEventEdge = "human-agent"
+	AuditEventEdgeServiceService     AuditEventEdge = "service-service"
+)
+
+// Defines values for AuditPageMetaPreset.
+const (
+	AuditPageMetaPresetGovernedActions1 AuditPageMetaPreset = "governed-actions@1"
 )
 
 // Defines values for ContextSourceScopeType.
@@ -128,6 +133,52 @@ const (
 	WorkstreamCreateKindTemplate WorkstreamCreateKind = "template"
 )
 
+// Defines values for DirectionParam.
+const (
+	DirectionParamAsc  DirectionParam = "asc"
+	DirectionParamDesc DirectionParam = "desc"
+)
+
+// Defines values for EdgeParam.
+const (
+	EdgeParamAgentAgent         EdgeParam = "agent-agent"
+	EdgeParamAgentMemory        EdgeParam = "agent-memory"
+	EdgeParamAgentRemoteSession EdgeParam = "agent-remote-session"
+	EdgeParamAgentRepo          EdgeParam = "agent-repo"
+	EdgeParamAgentTool          EdgeParam = "agent-tool"
+	EdgeParamAgentWorkspace     EdgeParam = "agent-workspace"
+	EdgeParamHumanAgent         EdgeParam = "human-agent"
+	EdgeParamServiceService     EdgeParam = "service-service"
+)
+
+// Defines values for PresetParam.
+const (
+	PresetParamGovernedActions1 PresetParam = "governed-actions@1"
+)
+
+// Defines values for ListAuditEventsParamsDirection.
+const (
+	ListAuditEventsParamsDirectionAsc  ListAuditEventsParamsDirection = "asc"
+	ListAuditEventsParamsDirectionDesc ListAuditEventsParamsDirection = "desc"
+)
+
+// Defines values for ListAuditEventsParamsEdge.
+const (
+	AgentAgent         ListAuditEventsParamsEdge = "agent-agent"
+	AgentMemory        ListAuditEventsParamsEdge = "agent-memory"
+	AgentRemoteSession ListAuditEventsParamsEdge = "agent-remote-session"
+	AgentRepo          ListAuditEventsParamsEdge = "agent-repo"
+	AgentTool          ListAuditEventsParamsEdge = "agent-tool"
+	AgentWorkspace     ListAuditEventsParamsEdge = "agent-workspace"
+	HumanAgent         ListAuditEventsParamsEdge = "human-agent"
+	ServiceService     ListAuditEventsParamsEdge = "service-service"
+)
+
+// Defines values for ListAuditEventsParamsPreset.
+const (
+	GovernedActions1 ListAuditEventsParamsPreset = "governed-actions@1"
+)
+
 // Defines values for ListMemoriesParamsScopeType.
 const (
 	ListMemoriesParamsScopeTypeOperator   ListMemoriesParamsScopeType = "operator"
@@ -177,6 +228,29 @@ type AuditEvent struct {
 
 // AuditEventEdge defines model for AuditEvent.Edge.
 type AuditEventEdge string
+
+// AuditPageMeta defines model for AuditPageMeta.
+type AuditPageMeta struct {
+	// Actor The actor filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+	Actor *string `json:"actor,omitempty"`
+
+	// ChainHead MAX(seq) — the newest position in the whole chain, O(1) (AUD-29, PERF-9). Always populated, filtered or not (EVD-8 requires the chain's size be disclosed whenever the view is reduced; always-on is simpler and equally honest for the unfiltered case).
+	ChainHead *int64 `json:"chainHead,omitempty"`
+
+	// Edge The edge filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+	Edge       *string `json:"edge,omitempty"`
+	NextCursor *string `json:"nextCursor,omitempty"`
+
+	// Outcome The outcome filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+	Outcome *string `json:"outcome,omitempty"`
+
+	// Preset The named preset applied to this read, when one was requested (AUD-28). Absent when no preset was applied.
+	Preset *AuditPageMetaPreset `json:"preset,omitempty"`
+	Total  *int                 `json:"total,omitempty"`
+}
+
+// AuditPageMetaPreset The named preset applied to this read, when one was requested (AUD-28). Absent when no preset was applied.
+type AuditPageMetaPreset string
 
 // ContextSource defines model for ContextSource.
 type ContextSource struct {
@@ -545,11 +619,26 @@ type WorkstreamStep struct {
 	ResourceId string `json:"resourceId"`
 }
 
+// ActorParam defines model for ActorParam.
+type ActorParam = string
+
 // CursorParam defines model for CursorParam.
 type CursorParam = string
 
+// DirectionParam defines model for DirectionParam.
+type DirectionParam string
+
+// EdgeParam defines model for EdgeParam.
+type EdgeParam string
+
 // LimitParam defines model for LimitParam.
 type LimitParam = int
+
+// OutcomeParam defines model for OutcomeParam.
+type OutcomeParam = string
+
+// PresetParam defines model for PresetParam.
+type PresetParam string
 
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
@@ -567,7 +656,31 @@ type Unauthorized = Error
 type ListAuditEventsParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Direction Which way the seq-keyset cursor walks. The contract default is `asc` (chain order — ADR-0067 §D2 keeps this the canonical read-side default); the operator UI (T-107) requests `desc` explicitly for its newest-first default (AUD-24).
+	Direction *ListAuditEventsParamsDirection `form:"direction,omitempty" json:"direction,omitempty"`
+
+	// Actor Equality filter on actor, applied server-side over the whole chain (AUD-25).
+	Actor *ActorParam `form:"actor,omitempty" json:"actor,omitempty"`
+
+	// Outcome Equality filter on outcome, applied server-side over the whole chain (AUD-25).
+	Outcome *OutcomeParam `form:"outcome,omitempty" json:"outcome,omitempty"`
+
+	// Edge Equality filter on edge, applied server-side over the whole chain (AUD-25). The enum is the closed, stable set of capability edges (ADR-0046) — the same set as AuditEvent.edge.
+	Edge *ListAuditEventsParamsEdge `form:"edge,omitempty" json:"edge,omitempty"`
+
+	// Preset A named, versioned read-time lens (ADR-0067 §D3). A string enum, not a boolean, so the applied lens can be named and reported back in the envelope (AUD-28) — currently the sole value is `governed-actions@1`, which excludes the content-free charter-lifecycle outcomes `plan.requested` and `plan.expired`.
+	Preset *ListAuditEventsParamsPreset `form:"preset,omitempty" json:"preset,omitempty"`
 }
+
+// ListAuditEventsParamsDirection defines parameters for ListAuditEvents.
+type ListAuditEventsParamsDirection string
+
+// ListAuditEventsParamsEdge defines parameters for ListAuditEvents.
+type ListAuditEventsParamsEdge string
+
+// ListAuditEventsParamsPreset defines parameters for ListAuditEvents.
+type ListAuditEventsParamsPreset string
 
 // ListContextSourcesParams defines parameters for ListContextSources.
 type ListContextSourcesParams struct {
@@ -655,7 +768,7 @@ type ServerInterface interface {
 	// Mint a scoped agent-tool capability token for an autonomous agent (AG-1..3; ADR-0056/0057)
 	// (POST /v1/agent-tokens)
 	IssueAgentToken(w http.ResponseWriter, r *http.Request)
-	// Operator audit timeline — a page of chained events (via the api read-proxy)
+	// Operator audit timeline — a page of chained events, bidirectional cursor + server-side filters + the governed-actions@1 preset (via the api read-proxy; ADR-0067)
 	// (GET /v1/audit/events)
 	ListAuditEvents(w http.ResponseWriter, r *http.Request, params ListAuditEventsParams)
 	// Operator login — exchange credentials for a session cookie
@@ -793,7 +906,7 @@ func (_ Unimplemented) IssueAgentToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Operator audit timeline — a page of chained events (via the api read-proxy)
+// Operator audit timeline — a page of chained events, bidirectional cursor + server-side filters + the governed-actions@1 preset (via the api read-proxy; ADR-0067)
 // (GET /v1/audit/events)
 func (_ Unimplemented) ListAuditEvents(w http.ResponseWriter, r *http.Request, params ListAuditEventsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1101,6 +1214,46 @@ func (siw *ServerInterfaceWrapper) ListAuditEvents(w http.ResponseWriter, r *htt
 	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "direction" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "direction", r.URL.Query(), &params.Direction)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "direction", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "actor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "actor", r.URL.Query(), &params.Actor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "actor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "outcome" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "outcome", r.URL.Query(), &params.Outcome)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "outcome", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "edge" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "edge", r.URL.Query(), &params.Edge)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "edge", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "preset" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "preset", r.URL.Query(), &params.Preset)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "preset", Err: err})
 		return
 	}
 

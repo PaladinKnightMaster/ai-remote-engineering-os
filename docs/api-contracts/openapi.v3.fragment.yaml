@@ -104,13 +104,22 @@ paths:
     get:
       tags: [audit]
       operationId: listEvents
-      summary: List audit events in chain order (forward-only cursor)
+      summary: List audit events (bidirectional seq-keyset cursor, server-side actor/outcome/edge filters, the governed-actions@1 preset; ADR-0067)
       parameters:
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/DirectionParam'
+        - $ref: '#/components/parameters/ActorParam'
+        - $ref: '#/components/parameters/OutcomeParam'
+        - $ref: '#/components/parameters/EdgeParam'
+        - $ref: '#/components/parameters/PresetParam'
       responses:
         '200':
-          description: A page of audit events in ascending chain order.
+          description: >-
+            A page of audit events, contiguous in seq order for the requested
+            direction (ascending by default; EVD-8). Filtered or preset reads
+            return the newest/oldest N matches over the whole chain, not over
+            a page (AUD-25).
           content:
             application/json:
               schema:
@@ -122,7 +131,8 @@ paths:
                     items:
                       $ref: '#/components/schemas/AuditEvent'
                   page:
-                    $ref: '#/components/schemas/PageMeta'
+                    $ref: '#/components/schemas/AuditPageMeta'
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
   /v1/events/{id}:
@@ -155,13 +165,23 @@ paths:
     get:
       tags: [audit-read]
       operationId: listAuditEvents
-      summary: Operator audit timeline — a page of chained events (via the api read-proxy)
+      summary: Operator audit timeline — a page of chained events, bidirectional cursor + server-side filters + the governed-actions@1 preset (via the api read-proxy; ADR-0067)
       parameters:
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/CursorParam'
+        - $ref: '#/components/parameters/DirectionParam'
+        - $ref: '#/components/parameters/ActorParam'
+        - $ref: '#/components/parameters/OutcomeParam'
+        - $ref: '#/components/parameters/EdgeParam'
+        - $ref: '#/components/parameters/PresetParam'
       responses:
         '200':
-          description: A page of audit events in ascending chain order.
+          description: >-
+            A page of audit events, contiguous in seq order for the requested
+            direction (ascending by default; EVD-8). Filtered or preset reads
+            return the newest/oldest N matches over the whole chain, not over
+            a page (AUD-25). Passed through verbatim from audit-service
+            (AUD-30) — same envelope shape as GET /v1/events.
           content:
             application/json:
               schema:
@@ -173,7 +193,8 @@ paths:
                     items:
                       $ref: '#/components/schemas/AuditEvent'
                   page:
-                    $ref: '#/components/schemas/PageMeta'
+                    $ref: '#/components/schemas/AuditPageMeta'
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -1347,6 +1368,72 @@ components:
       required: false
       schema:
         type: string
+    # --- audit read params (T-106, ADR-0067 §D9/CON-1) --------------------
+    # New named components, referenced ONLY by GET /v1/events and GET
+    # /v1/audit/events — never added to LimitParam/CursorParam above, which
+    # are shared by every list route in the product (resources, runs, grants,
+    # workstreams, memories, context-sources). Editing those would silently
+    # change every list surface; these five are additive and scoped to the
+    # two audit operations.
+    DirectionParam:
+      name: direction
+      in: query
+      required: false
+      description: >-
+        Which way the seq-keyset cursor walks. The contract default is `asc`
+        (chain order — ADR-0067 §D2 keeps this the canonical read-side
+        default); the operator UI (T-107) requests `desc` explicitly for its
+        newest-first default (AUD-24).
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: asc
+    ActorParam:
+      name: actor
+      in: query
+      required: false
+      description: Equality filter on actor, applied server-side over the whole chain (AUD-25).
+      schema:
+        type: string
+    OutcomeParam:
+      name: outcome
+      in: query
+      required: false
+      description: Equality filter on outcome, applied server-side over the whole chain (AUD-25).
+      schema:
+        type: string
+    EdgeParam:
+      name: edge
+      in: query
+      required: false
+      description: >-
+        Equality filter on edge, applied server-side over the whole chain
+        (AUD-25). The enum is the closed, stable set of capability edges
+        (ADR-0046) — the same set as AuditEvent.edge.
+      schema:
+        type: string
+        enum:
+          - human-agent
+          - agent-agent
+          - agent-tool
+          - agent-workspace
+          - agent-repo
+          - agent-memory
+          - agent-remote-session
+          - service-service
+    PresetParam:
+      name: preset
+      in: query
+      required: false
+      description: >-
+        A named, versioned read-time lens (ADR-0067 §D3). A string enum, not
+        a boolean, so the applied lens can be named and reported back in the
+        envelope (AUD-28) — currently the sole value is `governed-actions@1`,
+        which excludes the content-free charter-lifecycle outcomes
+        `plan.requested` and `plan.expired`.
+      schema:
+        type: string
+        enum: [governed-actions@1]
   responses:
     BadRequest:
       description: Request failed validation.
@@ -1396,6 +1483,43 @@ components:
           type: string
         total:
           type: integer
+    # AuditPageMeta (T-106, ADR-0067 §D9/CON-1) is a NEW schema, not an
+    # extension of PageMeta above. PageMeta is referenced by eight operations
+    # (resources, runs, grants, workstreams, memories, context-sources, and
+    # both audit routes) — adding chainHead/preset/filter-echo fields there
+    # would leak audit-only concepts onto every list response in the product.
+    # This is a superset of PageMeta's shape (nextCursor is repeated, not
+    # $ref'd, so the two schemas independently satisfy CON-2's "additive
+    # only, nothing removed or narrowed"); it is referenced ONLY by GET
+    # /v1/events and GET /v1/audit/events.
+    AuditPageMeta:
+      type: object
+      properties:
+        nextCursor:
+          type: string
+        total:
+          type: integer
+        chainHead:
+          type: integer
+          format: int64
+          description: >-
+            MAX(seq) — the newest position in the whole chain, O(1) (AUD-29,
+            PERF-9). Always populated, filtered or not (EVD-8 requires the
+            chain's size be disclosed whenever the view is reduced; always-on
+            is simpler and equally honest for the unfiltered case).
+        preset:
+          type: string
+          enum: [governed-actions@1]
+          description: The named preset applied to this read, when one was requested (AUD-28). Absent when no preset was applied.
+        actor:
+          type: string
+          description: The actor filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+        outcome:
+          type: string
+          description: The outcome filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+        edge:
+          type: string
+          description: The edge filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
     AgentTokenRequest:
       type: object
       required: [agentId, resourceId]

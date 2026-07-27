@@ -28,6 +28,9 @@ type Appender interface {
 	Append(ctx context.Context, in audit.Ingest) (audit.Event, bool, error)
 	Get(ctx context.Context, id string) (audit.Event, error)
 	List(ctx context.Context, q store.ListQuery) ([]audit.Event, int64, error)
+	// ChainHead returns MAX(seq), always populated in the list envelope (T-106,
+	// AUD-29/EVD-8) regardless of whether the read is filtered or preset.
+	ChainHead(ctx context.Context) (int64, error)
 }
 
 // apiHandlers implements the generated ServerInterface (gen.go).
@@ -68,44 +71,140 @@ func (a *apiHandlers) AppendEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, e)
 }
 
-// ListEvents handles GET /v1/events with the generated query params.
+// ListEvents handles GET /v1/events with the generated query params (T-106:
+// direction, actor, outcome, edge, preset now reach the store via ListQuery;
+// see buildListQuery).
 func (a *apiHandlers) ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams) {
-	limit := 50
-	if params.Limit != nil {
-		n := int(*params.Limit)
-		if n < 1 || n > 200 {
-			writeError(w, http.StatusBadRequest, "bad_request", "limit must be an integer in [1,200]")
-			return
-		}
-		limit = n
-	}
-	var afterSeq int64
-	if params.Cursor != nil && string(*params.Cursor) != "" {
-		n, err := strconv.ParseInt(string(*params.Cursor), 10, 64)
-		if err != nil || n < 0 {
-			writeError(w, http.StatusBadRequest, "bad_request", "invalid cursor")
-			return
-		}
-		afterSeq = n
-	}
-	// T-105 is store-layer-only: ListEventsParams is generated from the
-	// fragment and does not yet carry direction/filter/preset params (T-106).
-	// This call site stays behavior-preserving — ascending, unfiltered, no
-	// preset — exactly as before this ticket.
-	items, last, err := a.store.List(r.Context(), store.ListQuery{
-		Direction: store.Asc,
-		Cursor:    afterSeq,
-		Limit:     limit,
+	q, code, msg, ok := buildListQuery(rawListParams{
+		Limit:     params.Limit,
+		Cursor:    params.Cursor,
+		Direction: (*string)(params.Direction),
+		Actor:     params.Actor,
+		Outcome:   params.Outcome,
+		Edge:      (*string)(params.Edge),
+		Preset:    (*string)(params.Preset),
 	})
+	if !ok {
+		writeError(w, http.StatusBadRequest, code, msg)
+		return
+	}
+	a.listEvents(w, r, q)
+}
+
+// listEvents runs q and writes the disclosure envelope (AUD-29/EVD-8): items,
+// chainHead (always populated), and the applied preset/filter state echoed
+// back so a caller can render "you are on a filtered view" from the response
+// alone, without re-deriving it from the request it sent.
+func (a *apiHandlers) listEvents(w http.ResponseWriter, r *http.Request, q store.ListQuery) {
+	items, last, err := a.store.List(r.Context(), q)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "list failed")
 		return
 	}
+	head, err := a.store.ChainHead(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "chain head failed")
+		return
+	}
 	page := eventPage{Items: items}
-	if len(items) == limit { // a full page implies there may be more
+	page.Page.ChainHead = head
+	// KEEP the full-page nextCursor guard (pre-existing, now load-bearing for
+	// a second reason): store.List returns cursor 0 for an EMPTY page, and in
+	// Desc that value is ambiguous — fed back as Cursor it hits the
+	// math.MaxInt64 sentinel in ListQuery.build() and restarts the walk from
+	// the head instead of correctly signaling "nothing more in this
+	// direction". Only emit nextCursor when a full page came back, in EITHER
+	// direction, so an empty or partial page never produces a cursor that
+	// would loop the caller back to the start.
+	if len(items) == q.Limit {
 		page.Page.NextCursor = strconv.FormatInt(last, 10)
 	}
+	if q.Preset {
+		page.Page.Preset = store.PresetName
+	}
+	if q.Actor != nil {
+		page.Page.Actor = *q.Actor
+	}
+	if q.Outcome != nil {
+		page.Page.Outcome = *q.Outcome
+	}
+	if q.Edge != nil {
+		page.Page.Edge = *q.Edge
+	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+// rawListParams is buildListQuery's input, adapted from the generated
+// ListEventsParams (whose Direction/Edge/Preset fields carry oapi-codegen's
+// per-operation enum types rather than plain strings) so the validation below
+// has one plain-string shape to work with.
+type rawListParams struct {
+	Limit     *int
+	Cursor    *string
+	Direction *string
+	Actor     *string
+	Outcome   *string
+	Edge      *string
+	Preset    *string
+}
+
+// buildListQuery validates p and maps it onto a store.ListQuery. direction
+// and preset are the only fields that can be malformed (limit/cursor already
+// validated the same way pre-T-106); an unknown value on either is a 400,
+// matching the existing limit/cursor validation shape. The contract default
+// direction is asc (ADR-0067 §D2) — the operator UI, not this handler, is
+// responsible for requesting desc.
+func buildListQuery(p rawListParams) (store.ListQuery, string, string, bool) {
+	limit := 50
+	if p.Limit != nil {
+		n := int(*p.Limit)
+		if n < 1 || n > 200 {
+			return store.ListQuery{}, "bad_request", "limit must be an integer in [1,200]", false
+		}
+		limit = n
+	}
+	var afterSeq int64
+	if p.Cursor != nil && *p.Cursor != "" {
+		n, err := strconv.ParseInt(*p.Cursor, 10, 64)
+		if err != nil || n < 0 {
+			return store.ListQuery{}, "bad_request", "invalid cursor", false
+		}
+		afterSeq = n
+	}
+	direction := store.Asc
+	if p.Direction != nil && *p.Direction != "" {
+		switch *p.Direction {
+		case "asc":
+			direction = store.Asc
+		case "desc":
+			direction = store.Desc
+		default:
+			return store.ListQuery{}, "bad_request", "direction must be asc or desc", false
+		}
+	}
+	preset := false
+	if p.Preset != nil && *p.Preset != "" {
+		if *p.Preset != store.PresetName {
+			return store.ListQuery{}, "bad_request", "unknown preset", false
+		}
+		preset = true
+	}
+	q := store.ListQuery{
+		Direction: direction,
+		Cursor:    afterSeq,
+		Limit:     limit,
+		Preset:    preset,
+	}
+	if p.Actor != nil && *p.Actor != "" {
+		q.Actor = p.Actor
+	}
+	if p.Outcome != nil && *p.Outcome != "" {
+		q.Outcome = p.Outcome
+	}
+	if p.Edge != nil && *p.Edge != "" {
+		q.Edge = p.Edge
+	}
+	return q, "", "", true
 }
 
 // GetEvent handles GET /v1/events/{id}.
@@ -127,8 +226,18 @@ type eventPage struct {
 	Page  pageMeta      `json:"page"`
 }
 
+// pageMeta is the wire shape of the generated AuditPageMeta schema (T-106,
+// AUD-29/EVD-8): chainHead is always populated; preset/actor/outcome/edge are
+// only set when the corresponding filter or preset was applied to this read,
+// so the caller can tell a filtered view from an unfiltered one from the
+// envelope alone.
 type pageMeta struct {
 	NextCursor string `json:"nextCursor,omitempty"`
+	ChainHead  int64  `json:"chainHead"`
+	Preset     string `json:"preset,omitempty"`
+	Actor      string `json:"actor,omitempty"`
+	Outcome    string `json:"outcome,omitempty"`
+	Edge       string `json:"edge,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

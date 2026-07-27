@@ -41,6 +41,57 @@ const (
 	AuditEventIngestEdgeServiceService     AuditEventIngestEdge = "service-service"
 )
 
+// Defines values for AuditPageMetaPreset.
+const (
+	AuditPageMetaPresetGovernedActions1 AuditPageMetaPreset = "governed-actions@1"
+)
+
+// Defines values for DirectionParam.
+const (
+	DirectionParamAsc  DirectionParam = "asc"
+	DirectionParamDesc DirectionParam = "desc"
+)
+
+// Defines values for EdgeParam.
+const (
+	EdgeParamAgentAgent         EdgeParam = "agent-agent"
+	EdgeParamAgentMemory        EdgeParam = "agent-memory"
+	EdgeParamAgentRemoteSession EdgeParam = "agent-remote-session"
+	EdgeParamAgentRepo          EdgeParam = "agent-repo"
+	EdgeParamAgentTool          EdgeParam = "agent-tool"
+	EdgeParamAgentWorkspace     EdgeParam = "agent-workspace"
+	EdgeParamHumanAgent         EdgeParam = "human-agent"
+	EdgeParamServiceService     EdgeParam = "service-service"
+)
+
+// Defines values for PresetParam.
+const (
+	PresetParamGovernedActions1 PresetParam = "governed-actions@1"
+)
+
+// Defines values for ListEventsParamsDirection.
+const (
+	ListEventsParamsDirectionAsc  ListEventsParamsDirection = "asc"
+	ListEventsParamsDirectionDesc ListEventsParamsDirection = "desc"
+)
+
+// Defines values for ListEventsParamsEdge.
+const (
+	ListEventsParamsEdgeAgentAgent         ListEventsParamsEdge = "agent-agent"
+	ListEventsParamsEdgeAgentMemory        ListEventsParamsEdge = "agent-memory"
+	ListEventsParamsEdgeAgentRemoteSession ListEventsParamsEdge = "agent-remote-session"
+	ListEventsParamsEdgeAgentRepo          ListEventsParamsEdge = "agent-repo"
+	ListEventsParamsEdgeAgentTool          ListEventsParamsEdge = "agent-tool"
+	ListEventsParamsEdgeAgentWorkspace     ListEventsParamsEdge = "agent-workspace"
+	ListEventsParamsEdgeHumanAgent         ListEventsParamsEdge = "human-agent"
+	ListEventsParamsEdgeServiceService     ListEventsParamsEdge = "service-service"
+)
+
+// Defines values for ListEventsParamsPreset.
+const (
+	GovernedActions1 ListEventsParamsPreset = "governed-actions@1"
+)
+
 // AuditEvent defines model for AuditEvent.
 type AuditEvent struct {
 	Actor string `json:"actor"`
@@ -82,6 +133,29 @@ type AuditEventIngest struct {
 // AuditEventIngestEdge defines model for AuditEventIngest.Edge.
 type AuditEventIngestEdge string
 
+// AuditPageMeta defines model for AuditPageMeta.
+type AuditPageMeta struct {
+	// Actor The actor filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+	Actor *string `json:"actor,omitempty"`
+
+	// ChainHead MAX(seq) — the newest position in the whole chain, O(1) (AUD-29, PERF-9). Always populated, filtered or not (EVD-8 requires the chain's size be disclosed whenever the view is reduced; always-on is simpler and equally honest for the unfiltered case).
+	ChainHead *int64 `json:"chainHead,omitempty"`
+
+	// Edge The edge filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+	Edge       *string `json:"edge,omitempty"`
+	NextCursor *string `json:"nextCursor,omitempty"`
+
+	// Outcome The outcome filter applied to this read, when one was requested (AUD-25/EVD-8 disclosure). Absent when unfiltered.
+	Outcome *string `json:"outcome,omitempty"`
+
+	// Preset The named preset applied to this read, when one was requested (AUD-28). Absent when no preset was applied.
+	Preset *AuditPageMetaPreset `json:"preset,omitempty"`
+	Total  *int                 `json:"total,omitempty"`
+}
+
+// AuditPageMetaPreset The named preset applied to this read, when one was requested (AUD-28). Absent when no preset was applied.
+type AuditPageMetaPreset string
+
 // Error defines model for Error.
 type Error struct {
 	Code    string                  `json:"code"`
@@ -89,17 +163,26 @@ type Error struct {
 	Message string                  `json:"message"`
 }
 
-// PageMeta defines model for PageMeta.
-type PageMeta struct {
-	NextCursor *string `json:"nextCursor,omitempty"`
-	Total      *int    `json:"total,omitempty"`
-}
+// ActorParam defines model for ActorParam.
+type ActorParam = string
 
 // CursorParam defines model for CursorParam.
 type CursorParam = string
 
+// DirectionParam defines model for DirectionParam.
+type DirectionParam string
+
+// EdgeParam defines model for EdgeParam.
+type EdgeParam string
+
 // LimitParam defines model for LimitParam.
 type LimitParam = int
+
+// OutcomeParam defines model for OutcomeParam.
+type OutcomeParam = string
+
+// PresetParam defines model for PresetParam.
+type PresetParam string
 
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
@@ -117,14 +200,38 @@ type Unauthorized = Error
 type ListEventsParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Direction Which way the seq-keyset cursor walks. The contract default is `asc` (chain order — ADR-0067 §D2 keeps this the canonical read-side default); the operator UI (T-107) requests `desc` explicitly for its newest-first default (AUD-24).
+	Direction *ListEventsParamsDirection `form:"direction,omitempty" json:"direction,omitempty"`
+
+	// Actor Equality filter on actor, applied server-side over the whole chain (AUD-25).
+	Actor *ActorParam `form:"actor,omitempty" json:"actor,omitempty"`
+
+	// Outcome Equality filter on outcome, applied server-side over the whole chain (AUD-25).
+	Outcome *OutcomeParam `form:"outcome,omitempty" json:"outcome,omitempty"`
+
+	// Edge Equality filter on edge, applied server-side over the whole chain (AUD-25). The enum is the closed, stable set of capability edges (ADR-0046) — the same set as AuditEvent.edge.
+	Edge *ListEventsParamsEdge `form:"edge,omitempty" json:"edge,omitempty"`
+
+	// Preset A named, versioned read-time lens (ADR-0067 §D3). A string enum, not a boolean, so the applied lens can be named and reported back in the envelope (AUD-28) — currently the sole value is `governed-actions@1`, which excludes the content-free charter-lifecycle outcomes `plan.requested` and `plan.expired`.
+	Preset *ListEventsParamsPreset `form:"preset,omitempty" json:"preset,omitempty"`
 }
+
+// ListEventsParamsDirection defines parameters for ListEvents.
+type ListEventsParamsDirection string
+
+// ListEventsParamsEdge defines parameters for ListEvents.
+type ListEventsParamsEdge string
+
+// ListEventsParamsPreset defines parameters for ListEvents.
+type ListEventsParamsPreset string
 
 // AppendEventJSONRequestBody defines body for AppendEvent for application/json ContentType.
 type AppendEventJSONRequestBody = AuditEventIngest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// List audit events in chain order (forward-only cursor)
+	// List audit events (bidirectional seq-keyset cursor, server-side actor/outcome/edge filters, the governed-actions@1 preset; ADR-0067)
 	// (GET /v1/events)
 	ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams)
 	// Append an audit event (append-only; chain authority assigns the hashes)
@@ -139,7 +246,7 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
-// List audit events in chain order (forward-only cursor)
+// List audit events (bidirectional seq-keyset cursor, server-side actor/outcome/edge filters, the governed-actions@1 preset; ADR-0067)
 // (GET /v1/events)
 func (_ Unimplemented) ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -193,6 +300,46 @@ func (siw *ServerInterfaceWrapper) ListEvents(w http.ResponseWriter, r *http.Req
 	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "direction" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "direction", r.URL.Query(), &params.Direction)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "direction", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "actor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "actor", r.URL.Query(), &params.Actor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "actor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "outcome" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "outcome", r.URL.Query(), &params.Outcome)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "outcome", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "edge" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "edge", r.URL.Query(), &params.Edge)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "edge", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "preset" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "preset", r.URL.Query(), &params.Preset)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "preset", Err: err})
 		return
 	}
 

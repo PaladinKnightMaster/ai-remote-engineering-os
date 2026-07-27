@@ -1226,11 +1226,13 @@ func (a *apiHandlers) ResolveInvocation(w http.ResponseWriter, r *http.Request, 
 }
 
 // ListAuditEvents (GET /v1/audit/events) is the operator audit-timeline read-proxy
-// (T-024). The operator is authenticated by the shared capability gate (human-agent
-// edge); api then reads audit-service with its OWN service token, so the chain
-// authority's write gate stays strict service-only and never accepts operator
-// tokens. The chain-authority page response is passed through verbatim (same
-// {items, page} envelope as audit-service's /v1/events).
+// (T-024; params extended at T-106). The operator is authenticated by the shared
+// capability gate (human-agent edge); api then reads audit-service with its OWN
+// service token, so the chain authority's write gate stays strict service-only
+// and never accepts operator tokens. The chain-authority page response is passed
+// through VERBATIM (same {items, page} envelope as audit-service's /v1/events) —
+// AUD-30 requires this posture stay byte-identical, so this handler only builds
+// the upstream query string; it never parses or re-shapes the response body.
 func (a *apiHandlers) ListAuditEvents(w http.ResponseWriter, r *http.Request, params ListAuditEventsParams) {
 	if _, ok := operatorSubject(r); !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
@@ -1246,6 +1248,24 @@ func (a *apiHandlers) ListAuditEvents(w http.ResponseWriter, r *http.Request, pa
 	}
 	if params.Cursor != nil && string(*params.Cursor) != "" {
 		q.Set("cursor", string(*params.Cursor))
+	}
+	// T-106: direction/actor/outcome/edge/preset forwarded verbatim, same as
+	// limit/cursor above — audit-service validates them (400 on an unknown
+	// direction/preset); this proxy neither validates nor interprets them.
+	if params.Direction != nil {
+		q.Set("direction", string(*params.Direction))
+	}
+	if params.Actor != nil && *params.Actor != "" {
+		q.Set("actor", *params.Actor)
+	}
+	if params.Outcome != nil && *params.Outcome != "" {
+		q.Set("outcome", *params.Outcome)
+	}
+	if params.Edge != nil {
+		q.Set("edge", string(*params.Edge))
+	}
+	if params.Preset != nil {
+		q.Set("preset", string(*params.Preset))
 	}
 	upstream := strings.TrimRight(a.auditURL, "/") + "/v1/events"
 	if len(q) > 0 {
