@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -149,10 +150,28 @@ type ListQuery struct {
 // Split out from List so integration tests can EXPLAIN the exact statement
 // List executes (PERF-10) without duplicating the SQL text.
 //
-// Only the comparison operator and sort order vary by text (chosen in Go from
-// the closed Direction enum — never from a filter value); the cursor, every
-// filter, the preset's excluded-outcome list, and the limit are always bound
-// $n parameters (never interpolated).
+// Each filter clause is appended to the statement text ONLY when that filter
+// is set — a bare `AND actor = $n`, not an `($n IS NULL OR actor = $n)`
+// OR-guard. This is load-bearing, not a style choice (Commander review after
+// the initial cut): an OR-guarded predicate can only ever become a Filter
+// applied after rows are fetched, because the planner cannot know at PREPARE
+// time whether the parameter will be NULL — under a GENERIC plan (as opposed
+// to a custom plan, which folds in the literal value) migration 0002's
+// composite indexes are then unreachable, and every filtered read silently
+// degrades to exactly the backward-PK-scan-with-Filter PERF-7 exists to rule
+// out. Appending the clause only when the Go field is set keeps the *value*
+// a bound parameter (never interpolated) while making the clause's
+// *presence* — which is a code-time, not a data-time, fact — decide the
+// statement shape. At most a handful of shapes result (each of the three
+// equality filters present/absent, the preset present/absent, either
+// direction), which is well within any statement cache's normal working set.
+//
+// Only the comparison operator, sort order, and which filter clauses are
+// present vary by text — all chosen in Go from the closed Direction enum and
+// from whether a field is nil, never from a filter *value*. The cursor,
+// every filter value, the preset's excluded-outcome list, and the limit are
+// always bound $n parameters (never interpolated), renumbered as clauses are
+// appended.
 func (q ListQuery) build() (string, []any) {
 	cursor := q.Cursor
 	var cmp, order string
@@ -161,49 +180,71 @@ func (q ListQuery) build() (string, []any) {
 		if cursor == 0 {
 			cursor = math.MaxInt64 // natural sentinel: seq < MaxInt64 matches the whole chain
 		}
-		cmp, order = "seq < $1", "seq DESC"
+		cmp, order = "seq <", "seq DESC"
 	default:
-		cmp, order = "seq > $1", "seq ASC"
+		cmp, order = "seq >", "seq ASC"
 	}
 
-	query := selectCols + `
-		WHERE ` + cmp + `
-		  AND ($2::text IS NULL OR actor = $2)
-		  AND ($3::text IS NULL OR outcome = $3)
-		  AND ($4::text IS NULL OR edge = $4)
-		  AND ($5::text[] IS NULL OR COALESCE(outcome,'') <> ALL($5))
-		ORDER BY ` + order + `
-		LIMIT $6`
+	args := []any{cursor}
+	var b strings.Builder
+	b.WriteString(selectCols)
+	b.WriteString("\n\t\tWHERE ")
+	b.WriteString(cmp)
+	b.WriteString(" $1")
 
-	return query, []any{cursor, q.Actor, q.Outcome, q.Edge, presetExcludedOutcomes(q.Preset), q.Limit}
+	// The Outcome equality FILTER compares the raw column (never COALESCE) so
+	// it can use the plain btree index migration 0002 builds — unlike the
+	// PRESET exclusion below, it is matching a caller-supplied concrete
+	// value, never NULL, so the raw comparison is both correct and
+	// index-friendly (PERF-7/PERF-10).
+	if q.Actor != nil {
+		args = append(args, *q.Actor)
+		fmt.Fprintf(&b, " AND actor = $%d", len(args))
+	}
+	if q.Outcome != nil {
+		args = append(args, *q.Outcome)
+		fmt.Fprintf(&b, " AND outcome = $%d", len(args))
+	}
+	if q.Edge != nil {
+		args = append(args, *q.Edge)
+		fmt.Fprintf(&b, " AND edge = $%d", len(args))
+	}
+	// AUD-31 (block-if-violated): the PRESET exclusion coalesces outcome to
+	// the empty string before comparing. Plain `outcome NOT IN (...)`
+	// evaluates to NULL — not true — for a NULL outcome in SQL's
+	// three-valued logic, which would silently exclude every event with no
+	// outcome from the default view. Coalescing first is never NULL, so
+	// `<> ALL(...)` always evaluates to a real true/false.
+	if excluded := presetExcludedOutcomes(q.Preset); excluded != nil {
+		args = append(args, excluded)
+		fmt.Fprintf(&b, " AND COALESCE(outcome,'') <> ALL($%d)", len(args))
+	}
+
+	args = append(args, q.Limit)
+	fmt.Fprintf(&b, "\n\t\tORDER BY %s\n\t\tLIMIT $%d", order, len(args))
+
+	return b.String(), args
 }
 
 // List returns up to q.Limit events matching q, walking the keyset from
-// q.Cursor in q.Direction. Both directions are served by this one
-// parameterized query (AUD-22): ascending compares seq > $1 and orders ASC;
-// descending compares seq < $1 and orders DESC. Every filter value — the
-// cursor, the equality filters, the preset's excluded-outcome list, and the
-// limit — is always a bound parameter; only the comparison operator and sort
-// order are chosen in Go, from the closed Direction enum, never from a filter
-// value.
+// q.Cursor in q.Direction. Both directions are served by build()'s one
+// query-rendering path (AUD-22): ascending compares seq > $1 and orders ASC;
+// descending compares seq < $1 and orders DESC — see build() for how filters,
+// the preset, and index-friendliness are handled.
 //
 // The returned cursor is the seq of the last row visited in walked order —
 // pass it back as Cursor to fetch the next page in the SAME direction
 // (ascending: the highest seq in the page; descending: the lowest). This is
 // the pre-existing (events, cursor, error) shape, unchanged.
 //
-// AUD-31 (block-if-violated): the PRESET exclusion coalesces outcome to the
-// empty string before comparing, rather than filtering the raw nullable
-// column directly. Plain `outcome NOT IN (...)` evaluates to NULL — not true
-// — for a NULL outcome in SQL's three-valued logic, which would silently
-// exclude every event with no outcome from the default view. Coalescing to
-// the empty string first is never NULL, so `<> ALL(...)` always evaluates to
-// a real true/false. The Outcome equality FILTER, by contrast, compares the raw
-// column (`outcome = $3`): it is matching a caller-supplied concrete outcome
-// value, never NULL, so the raw comparison is both correct (a NULL outcome
-// legitimately fails to match a specific requested outcome) and — unlike a
-// COALESCE(...)-wrapped comparison — able to use the plain btree index built
-// by migration 0002 (PERF-7/PERF-10).
+// Caveat: List returns cursor 0 for an EMPTY page (no rows visited). In Asc,
+// feeding that back as Cursor is harmless (0 is already "no cursor"). In
+// Desc, it is NOT: build() reads Cursor==0 as "no cursor" and substitutes the
+// math.MaxInt64 sentinel, which would restart the walk from the head instead
+// of correctly signaling "nothing more in this direction". Callers MUST NOT
+// feed an empty page's cursor back in Desc — rely on the full-page guard
+// (only advance the cursor when len(page) == q.Limit) instead, exactly as
+// today's handler and CLI callers already do by construction.
 func (s *Store) List(ctx context.Context, q ListQuery) ([]audit.Event, int64, error) {
 	query, args := q.build()
 	rows, err := s.pool.Query(ctx, query, args...)
