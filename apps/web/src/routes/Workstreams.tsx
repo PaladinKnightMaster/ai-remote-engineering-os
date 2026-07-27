@@ -8,8 +8,22 @@
 // Runs (last fire + history — the EVD-4 scoped-memory read) CLIENT-SIDE from one page of
 // /v1/grants and /v1/runs (the ?grantId server filter is deferred; trigger: history
 // beyond one page). This UI drives only the audited control plane.
+//
+// FE-27..30 (ADR-0067 §D6, T-108): while the detail panel is open, its four reads
+// (workstream detail, scoped memory, context sources, and the shared /v1/runs the
+// list already joins) refresh on a fixed 10s poll — TARGETED, never `loadAll`, which
+// also refetches the workstreams list + grants (the GLOBAL polling the epic catalog
+// warned thrashes at a demo-fast interval; one open panel is bounded, PERF-11). The
+// poll runs only while a charter is selected, `active` (not paused/retired), and the
+// tab is visible (FE-28) — an unattended cockpit left open overnight does not poll
+// until morning, and returning to the tab refreshes immediately rather than showing
+// up to 10s of stale data. `refreshPanel` is shared by the initial fetch-on-select
+// and every poll tick, and is guarded on BOTH a monotonic sequence and the selected
+// charter's id (the T-107 requestSeq pattern, made stricter because this panel HAS
+// identity — a stale response for charter A landing after the operator has already
+// selected charter B must never populate B's panel with A's data).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
@@ -43,6 +57,17 @@ function relativeAgo(iso: string): string {
   const diffHr = Math.round(diffMin / 60);
   if (diffHr < 24) return `${diffHr}h ago`;
   return `${Math.round(diffHr / 24)}d ago`;
+}
+
+// FE-27/FE-29 (T-108): the panel's fixed poll interval — not configurable, not
+// adaptive, per ADR-0067 §D6.
+const POLL_INTERVAL_MS = 10_000;
+
+/** FE-29: the detail panel's freshness affordance — second-level resolution (unlike
+ * relativeAgo's coarse minutes above), since the poll interval itself is 10s. */
+function updatedAgoLabel(lastFetchedAt: number, now: number): string {
+  const diffSec = Math.max(0, Math.round((now - lastFetchedAt) / 1000));
+  return diffSec < 2 ? "just now" : `${diffSec}s ago`;
 }
 
 export function Workstreams() {
@@ -116,48 +141,107 @@ export function Workstreams() {
     })();
   }, []);
 
-  // Detail: the immutable template rides GET /v1/workstreams/{id} only.
+  // FE-27..30 (T-108): `selectedRef` mirrors `selected` synchronously so an in-flight
+  // fetch can check who is CURRENTLY selected when it completes, not who was selected
+  // when it started — a plain closure over `selected` inside an already-running async
+  // function would still see the OLD value.
+  const selectedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selected) {
-      setDetail(null);
-      return;
-    }
-    void (async () => {
-      const { data } = await apiClient.GET("/v1/workstreams/{id}", { params: { path: { id: selected } } });
-      if (data) setDetail(data);
-    })();
+    selectedRef.current = selected;
   }, [selected]);
 
-  // FE-22: the charter's scoped memory (accrued pointers + any authored notes) — the
-  // v0.7 EVD-1 read-time slice promoted to read the persisted store, fetched once when
-  // the detail opens (no auto-poll; visit /memories for the full operator surface).
-  useEffect(() => {
-    if (!selected) {
-      setMemories([]);
-      return;
-    }
-    void (async () => {
-      const { data } = await apiClient.GET("/v1/memories", {
-        params: { query: { scopeType: "workstream", scopeId: selected } },
-      });
-      setMemories(data ?? []);
-    })();
-  }, [selected]);
+  const panelSeq = useRef(0); // the monotonic response guard
+  const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null); // FE-29
+  const [freshnessNow, setFreshnessNow] = useState(() => Date.now()); // ticks the label
 
-  // FE-26: the charter's bound context sources (CTX-1) — same fetch-on-select shape as
-  // the FE-22 scoped-memory effect above.
-  const loadContextSources = useCallback(async (workstreamId: string) => {
-    const { data } = await apiClient.GET("/v1/context-sources", { params: { query: { workstreamId } } });
-    setContextSources(data ?? []);
+  // Exactly the open panel's four reads (FE-27): the immutable template + plan
+  // requests (GET /v1/workstreams/{id}), the FE-22 scoped-memory promotion, the
+  // FE-26 bound context sources, and the SAME /v1/runs the outer list already joins
+  // client-side by grantId. Shared by the initial fetch-on-select AND every poll
+  // tick below, so both paths get the identical stale/misdirected-response guard.
+  const refreshPanel = useCallback(async (id: string) => {
+    const seq = ++panelSeq.current;
+    const [wsResp, memResp, csResp, runsResp] = await Promise.all([
+      apiClient.GET("/v1/workstreams/{id}", { params: { path: { id } } }),
+      apiClient.GET("/v1/memories", { params: { query: { scopeType: "workstream", scopeId: id } } }),
+      apiClient.GET("/v1/context-sources", { params: { query: { workstreamId: id } } }),
+      apiClient.GET("/v1/runs", {}),
+    ]);
+    // A stale or misdirected response must never land. Guard on BOTH the monotonic
+    // sequence (a slower earlier request resolving after a faster later one for the
+    // SAME charter) and the charter's identity (the operator selected a DIFFERENT
+    // charter while this request was in flight) — unlike a list, this panel HAS
+    // identity, so a sequence guard alone isn't enough: it stops an old response
+    // from stomping a newer one for charter A, but not A's response landing after
+    // the operator has already moved on to B. Every piece of panel state is gated
+    // by this SAME check, together, so the panel can never render a mix of two
+    // charters.
+    if (seq !== panelSeq.current || id !== selectedRef.current) return;
+    if (wsResp.data) setDetail(wsResp.data);
+    setMemories(memResp.data ?? []);
+    setContextSources(csResp.data ?? []);
+    setRuns(runsResp.data?.items ?? []);
+    setLastFetchedAt(Date.now());
   }, []);
 
+  // The initial fetch when a charter is (de)selected — the FE-22/FE-26 "fetch fresh
+  // on open" precedent, now sharing the guarded path above with the poll below.
+  // `detail`/`memories`/`contextSources` are reset on EVERY selection change, not
+  // only deselection: without this, switching straight from charter A to charter B
+  // would briefly render B's row with A's still-in-state detail (kind/objective/
+  // steps/planRequests) until B's fetch resolves — the JSX's `detail?.x ?? ws.x`
+  // fallbacks already handle a null detail gracefully (they fall back to the
+  // selected ROW's own denormalized fields, which are always correct for that row),
+  // so resetting to null is a correct "loading" state, not a regression.
   useEffect(() => {
-    if (!selected) {
-      setContextSources([]);
-      return;
+    setDetail(null);
+    setMemories([]);
+    setContextSources([]);
+    setLastFetchedAt(null);
+    if (!selected) return;
+    void refreshPanel(selected);
+  }, [selected, refreshPanel]);
+
+  // FE-28: poll ONLY while the panel is open, the charter is `active` (not paused,
+  // not retired), and the tab is visible — an unattended cockpit left open overnight
+  // must not poll until morning. Any of those going false tears the interval and the
+  // visibilitychange listener down via this effect's cleanup; a fresh one starts only
+  // if the (possibly new) conditions still hold. On becoming visible again, refresh
+  // immediately (no up-to-10s-stale window) and then resume the interval.
+  useEffect(() => {
+    if (!selected || detail?.status !== "active") return;
+    const id = selected;
+    let pollId: ReturnType<typeof setInterval> | undefined;
+    let tickId: ReturnType<typeof setInterval> | undefined;
+
+    function start() {
+      if (pollId !== undefined) return;
+      pollId = setInterval(() => void refreshPanel(id), POLL_INTERVAL_MS);
+      tickId = setInterval(() => setFreshnessNow(Date.now()), 1_000); // FE-29: ticks between polls
     }
-    void loadContextSources(selected);
-  }, [selected, loadContextSources]);
+    function stop() {
+      if (pollId !== undefined) clearInterval(pollId);
+      if (tickId !== undefined) clearInterval(tickId);
+      pollId = undefined;
+      tickId = undefined;
+    }
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void refreshPanel(id);
+        start();
+      } else {
+        stop();
+      }
+    }
+
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [selected, detail?.status, refreshPanel]);
 
   const grantOf = (ws: Workstream) => grants.find((g) => g.id === ws.grantId);
   const runsOf = (ws: Workstream) => runs.filter((r) => r.grantId === ws.grantId);
@@ -579,6 +663,12 @@ export function Workstreams() {
 
                   {selected === ws.id && (
                     <div className="space-y-2 rounded-md border border-border p-3">
+                      {/* FE-29: the freshness affordance — so the operator can tell
+                          live from stale rather than inferring it (E-07's motivating
+                          defect: a live charter reading as stale). */}
+                      {lastFetchedAt !== null && (
+                        <p className="text-xs text-muted-foreground">Updated {updatedAgoLabel(lastFetchedAt, freshnessNow)}</p>
+                      )}
                       <div className="flex items-center gap-2">
                         <span className="rounded-md border border-border px-2 py-0.5 text-xs font-medium">{detail?.kind ?? ws.kind ?? "template"}</span>
                         {(detail?.kind ?? ws.kind) === "adaptive" && (detail?.composer ?? ws.composer) ? (

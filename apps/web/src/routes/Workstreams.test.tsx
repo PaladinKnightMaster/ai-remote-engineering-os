@@ -3,7 +3,7 @@
 // workstreams.smoke.spec.ts (CLAUDE.md DoD: jsdom unit tests do not satisfy it).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 vi.mock("../api", () => ({
@@ -444,5 +444,138 @@ describe("Workstreams route", () => {
     expect(confirmMessage).toMatch(/stops future agent reads/i);
     expect(confirmMessage).toMatch(/cannot recall/i);
     expect(screen.queryByText("/docs/runbooks")).toBeNull();
+  });
+
+  // --- T-108: FE-27..30 (the live detail-refresh response guard) ---
+
+  // Fake timers + a real (unfaked) microtask queue: our mocked GET calls resolve via
+  // plain already-resolved Promises, which drain on the microtask queue regardless of
+  // fake timers (only setInterval/setTimeout/Date are faked) — so a couple of awaited
+  // ticks inside `act` is enough to flush a render's effects and their fetches,
+  // without needing @testing-library's real-timer-based `waitFor` (which vitest's fake
+  // timers are not reliably detected by — see @testing-library/dom's
+  // jestFakeTimersAreEnabled(), which only recognizes a global `jest`).
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it("shows the FE-29 freshness affordance and polls the panel's targeted reads (never loadAll) on the fixed 10s interval", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGET({ workstreams: [sampleWS], grants: [sampleGrant], detail: { ...sampleWS, steps: [] } });
+      renderRoute();
+      await flush();
+      expect(screen.getByText("nightly health")).toBeTruthy();
+
+      fireEvent.click(screen.getByText("nightly health"));
+      await flush();
+      expect(screen.getByText(/^updated /i)).toBeTruthy();
+
+      const callsBeforePoll = vi.mocked(apiClient.GET).mock.calls.length;
+      // /v1/workstreams (the list) + /v1/grants are the loadAll reads — a poll tick
+      // must not touch either (PERF-11/FE-27: targeted, never global).
+      const listCallsBefore = vi.mocked(apiClient.GET).mock.calls.filter((c) => c[0] === "/v1/workstreams").length;
+      const grantsCallsBefore = vi.mocked(apiClient.GET).mock.calls.filter((c) => c[0] === "/v1/grants").length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      const callsAfterPoll = vi.mocked(apiClient.GET).mock.calls.length;
+      expect(callsAfterPoll).toBeGreaterThan(callsBeforePoll); // the poll fired
+      expect(vi.mocked(apiClient.GET).mock.calls.filter((c) => c[0] === "/v1/workstreams").length).toBe(listCallsBefore);
+      expect(vi.mocked(apiClient.GET).mock.calls.filter((c) => c[0] === "/v1/grants").length).toBe(grantsCallsBefore);
+      // Exactly the panel's four reads polled: detail, memories, context-sources, runs.
+      const pollPaths = vi.mocked(apiClient.GET).mock.calls.slice(callsBeforePoll).map((c) => c[0]);
+      expect(new Set(pollPaths)).toEqual(new Set(["/v1/workstreams/{id}", "/v1/memories", "/v1/context-sources", "/v1/runs"]));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling when the panel closes or the tab is hidden, and resumes with an immediate refresh when the tab becomes visible again (FE-28)", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGET({ workstreams: [sampleWS], grants: [sampleGrant], detail: { ...sampleWS, steps: [] } });
+      renderRoute();
+      await flush();
+      fireEvent.click(screen.getByText("nightly health"));
+      await flush();
+      expect(screen.getByText(/^updated /i)).toBeTruthy();
+
+      // Hide the tab — the poll must stop; nothing fires for 3 whole cycles.
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await flush();
+      const callsWhileHidden = vi.mocked(apiClient.GET).mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(vi.mocked(apiClient.GET).mock.calls.length).toBe(callsWhileHidden);
+
+      // Becoming visible again refreshes immediately — no up-to-10s-stale window.
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await flush();
+      expect(vi.mocked(apiClient.GET).mock.calls.length).toBeGreaterThan(callsWhileHidden);
+
+      // Closing the panel (deselecting) stops polling entirely.
+      fireEvent.click(screen.getByText("nightly health"));
+      await flush();
+      const callsAfterClose = vi.mocked(apiClient.GET).mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(vi.mocked(apiClient.GET).mock.calls.length).toBe(callsAfterClose);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("switching selection from A to B before A's fetch resolves: A's late response must not populate B's panel (FE-27/FE-30 identity guard)", async () => {
+    const wsA = { ...sampleWS, id: "ws-a", label: "Charter A", objective: "objective A", grantId: "grant-a" };
+    const wsB = { ...sampleWS, id: "ws-b", label: "Charter B", objective: "objective B", grantId: "grant-b" };
+
+    let resolveADetail!: (v: unknown) => void;
+    const aDetailPromise = new Promise((res) => {
+      resolveADetail = res;
+    });
+
+    vi.mocked(apiClient.GET).mockImplementation(((path: string, opts?: { params?: { path?: { id?: string } } }) => {
+      if (path === "/v1/resources") return Promise.resolve({ data: { items: [], page: {} }, error: undefined });
+      if (path === "/v1/grants") return Promise.resolve({ data: { items: [sampleGrant], page: {} }, error: undefined });
+      if (path === "/v1/runs") return Promise.resolve({ data: { items: [], page: {} }, error: undefined });
+      if (path === "/v1/workstreams/{id}") {
+        if (opts?.params?.path?.id === "ws-a") return aDetailPromise; // never resolves until the test says so
+        return Promise.resolve({ data: { ...wsB, steps: [] }, error: undefined });
+      }
+      if (path === "/v1/memories") return Promise.resolve({ data: [], error: undefined });
+      if (path === "/v1/context-sources") return Promise.resolve({ data: [], error: undefined });
+      return Promise.resolve({ data: { items: [wsA, wsB], page: {} }, error: undefined });
+    }) as never);
+
+    renderRoute();
+    await waitFor(() => expect(screen.getByText("Charter A")).toBeTruthy());
+
+    // Select A — its detail fetch is now in flight and will NOT resolve yet.
+    fireEvent.click(screen.getByText("Charter A"));
+    await waitFor(() => expect(screen.getByText("objective A")).toBeTruthy()); // the ws.objective fallback (detail still null)
+
+    // Switch to B before A resolves.
+    fireEvent.click(screen.getByText("Charter B"));
+    await waitFor(() => expect(screen.getByText("objective B")).toBeTruthy());
+
+    // A's late response lands NOW, after B is already selected.
+    resolveADetail({ data: { ...wsA, steps: [], objective: "STALE FROM A" }, error: undefined });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The panel must still show ONLY B's data — A's stale response must not land.
+    expect(screen.getByText("objective B")).toBeTruthy();
+    expect(screen.queryByText("STALE FROM A")).toBeNull();
   });
 });

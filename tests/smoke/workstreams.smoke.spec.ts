@@ -134,3 +134,85 @@ test("operator charters an adaptive workstream; its first tick opens a plan requ
 
   await testInfo.attach("adaptive-plan-request-opened", { body: await page.screenshot(), contentType: "image/png" });
 });
+
+// FE-27..30 (T-108; ADR-0067 §D6) — the live detail-refresh capstone. FE-30 is the
+// interesting assertion: an open, POLLING detail panel must add ZERO audit events
+// over its lifetime (operator read routes are bare SELECTs; the chained
+// memory.read/context.read events are agent-plane only — a regression here would
+// quietly feed the exact noise E-01 fixed). This does NOT assert on the global
+// chainHead: the adaptive-charter test above leaves its charter ACTIVE for the rest
+// of the suite, and its ticker chains plan.requested/plan.expired on its own 60s
+// schedule — a whole-chain assertion would be flaky for reasons that have nothing
+// to do with polling. Instead it scopes the assertion with the server-side actor
+// filter (dogfooding T-105/106/107): the events matching this operator, and the
+// events matching THIS charter's own actor. This charter's intervalSeconds is a
+// long 3600 — active (so FE-27/28 polling runs) but it will not tick during the
+// test window, isolating the assertion from its OWN ticker too.
+test("an open, polling detail panel adds ZERO audit events over its lifetime (FE-30)", async ({ page }, testInfo) => {
+  await login(page);
+  await page.goto("/workstreams");
+
+  const objective = `smoke-fe30-${Date.now()}`;
+  await page.getByLabel("objective").fill(objective);
+  await page.getByLabel("scope resource", { exact: true }).selectOption({ label: RESOURCE });
+  await page.getByRole("button", { name: /add to scope/i }).click();
+  await page.getByLabel("step resource", { exact: true }).selectOption({ label: RESOURCE });
+  await page.getByLabel("step command", { exact: true }).fill("uptime");
+  await page.getByRole("button", { name: /add step/i }).click();
+  // Well above the 60s floor and long enough it will not tick in this test's window.
+  await page.getByLabel("Interval seconds").fill("3600");
+  await page.getByRole("button", { name: /charter workstream/i }).click();
+
+  const row = page.locator("li").filter({ hasText: objective });
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  await expect(row.getByText("active")).toBeVisible();
+
+  // The charter's id is not rendered in the DOM — resolve it via the same read the
+  // SPA itself uses, so the actor filters below can target this charter exactly.
+  const listResp = await page.request.get("/v1/workstreams");
+  expect(listResp.ok()).toBeTruthy();
+  const items = ((await listResp.json()).items ?? []) as { id: string; objective: string }[];
+  const charter = items.find((w) => w.objective === objective);
+  expect(charter, "charter resolvable via GET /v1/workstreams").toBeTruthy();
+  const charterId = charter!.id;
+
+  await row.getByText(objective).click();
+  const freshness = row.getByText(/^updated /i);
+  await expect(freshness).toBeVisible({ timeout: 15_000 }); // FE-29: the initial fetch lands
+
+  async function auditEventsFor(actor: string) {
+    const resp = await page.request.get(`/v1/audit/events?limit=200&actor=${encodeURIComponent(actor)}`);
+    expect(resp.ok()).toBeTruthy();
+    return ((await resp.json()).items ?? []) as unknown[];
+  }
+  async function freshnessSeconds(): Promise<number> {
+    const text = (await freshness.textContent()) ?? "";
+    if (/just now/i.test(text)) return 0;
+    const m = text.match(/(\d+)s ago/i);
+    return m ? Number(m[1]) : Number.POSITIVE_INFINITY;
+  }
+
+  // Baseline AFTER one poll cycle has passed — absorbs any immediate first tick, so
+  // the baseline reflects the panel's steady, already-polling state.
+  await page.waitForTimeout(13_000);
+  expect(await freshnessSeconds(), "a poll landed recently at the baseline point").toBeLessThan(9);
+  const operatorBaseline = await auditEventsFor("operator:admin");
+  const charterBaseline = await auditEventsFor(`workstream:${charterId}`);
+
+  // The positive control: ANOTHER full cycle resets the freshness affordance back
+  // down rather than growing to ~26s — this proves polling actually WORKS (a
+  // broken poller would otherwise pass the silence-only assertion below for the
+  // wrong reason: nothing refreshing is also "zero new audit events").
+  await page.waitForTimeout(13_000);
+  expect(await freshnessSeconds(), "the freshness affordance reset across a cycle, proving polling works").toBeLessThan(9);
+
+  await testInfo.attach("fe30-panel-polling-live", { body: await page.screenshot(), contentType: "image/png" });
+
+  // At least 3 MORE poll cycles, panel open, no operator interaction.
+  await page.waitForTimeout(39_000);
+
+  expect(await auditEventsFor("operator:admin")).toEqual(operatorBaseline);
+  expect(await auditEventsFor(`workstream:${charterId}`)).toEqual(charterBaseline);
+
+  await testInfo.attach("fe30-zero-audit-events", { body: await page.screenshot(), contentType: "image/png" });
+});
