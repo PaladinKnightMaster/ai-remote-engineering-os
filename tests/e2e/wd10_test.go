@@ -86,6 +86,18 @@ func TestWD10HappyPath(t *testing.T) {
 		t.Fatalf("memory.read count for composer %s = %d, want exactly 1", composer, len(memReads))
 	}
 
+	// T-110 flake diagnosis: leg 2's waitForSearchHit already polled context.search
+	// under this SAME composer actor while it waited for the sweep to surface term1
+	// (SearchForAgent chains a context.read on every call, hit or miss — store.go's
+	// "an empty-result search must still chain its own context.read event" N4 rule).
+	// The original "== 1" assertion here counted ALL context.read events for the
+	// composer since the actor was first used, so it silently depended on leg 2
+	// happening to settle in exactly one poll iteration before this call ran — a
+	// harness race (outbox-relay visibility), not a chain defect: baseline against the
+	// count immediately before THIS call and assert exactly one NEW event, which is
+	// the actual SEC-33 invariant under test ("exactly one context.read per
+	// context.search call").
+	ctxReadBaseline := countActorOutcome(t, auditURL, auditTok, composer, "context.read")
 	chunks := searchContextMCP(t, client, mcpURL, tok, term1, ws.ID)
 	if len(chunks) == 0 {
 		t.Fatalf("context.search(%q) returned zero chunks", term1)
@@ -102,9 +114,9 @@ func TestWD10HappyPath(t *testing.T) {
 	if !sawTerm {
 		t.Fatalf("context.search(%q) chunks = %+v, none carried the term", term1, chunks)
 	}
-	ctxReads := pollActorOutcomeCount(t, auditURL, auditTok, composer, "context.read", 1, 30*time.Second)
-	if len(ctxReads) != 1 {
-		t.Fatalf("context.read count for composer %s = %d, want exactly 1", composer, len(ctxReads))
+	ctxReads := pollActorOutcomeCount(t, auditURL, auditTok, composer, "context.read", ctxReadBaseline+1, 30*time.Second)
+	if len(ctxReads) != ctxReadBaseline+1 {
+		t.Fatalf("context.read count for composer %s = %d, want exactly %d (baseline %d before this call + the one event this call chains)", composer, len(ctxReads), ctxReadBaseline+1, ctxReadBaseline)
 	}
 	if ctxReads[0].Edge != "agent-workspace" {
 		t.Fatalf("context.read edge = %q, want agent-workspace (SEC-33)", ctxReads[0].Edge)
