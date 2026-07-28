@@ -306,6 +306,32 @@ describe("Audit route", () => {
     });
   });
 
+  it("T-111/FE-32/EVD-8: an empty FILTERED response says no matches, not 'no events yet'", async () => {
+    // The banner above already reports the chain size (`chainHead: 2413` here);
+    // this empty-state message must not restate it — only the banner does.
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: { items: [], page: { preset: "governed-actions@1", chainHead: 2413 } },
+      error: undefined,
+    } as never);
+
+    renderAudit();
+
+    await waitFor(() => expect(screen.getByText("No events match this filter.")).toBeTruthy());
+    expect(screen.queryByText("No audit events yet.")).toBeNull();
+  });
+
+  it("T-111: an empty UNFILTERED response keeps the v0.1.0 copy byte-for-byte", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: { items: [], page: {} },
+      error: undefined,
+    } as never);
+
+    renderAudit();
+
+    await waitFor(() => expect(screen.getByText("No audit events yet.")).toBeTruthy());
+    expect(screen.queryByText("No events match this filter.")).toBeNull();
+  });
+
   it("EVD-8: a stale response is discarded — the rendered rows and the banner both reflect the LATEST request, not arrival order", async () => {
     let resolveFirst!: (v: unknown) => void;
     let resolveSecond!: (v: unknown) => void;

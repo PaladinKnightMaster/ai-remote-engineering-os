@@ -76,7 +76,10 @@ test("audit view opens newest-first on the preset, discloses it, and filters ser
   await page.getByLabel("edge").selectOption("agent-repo");
   await expect(banner).toBeVisible({ timeout: 30_000 });
   await expect(banner).toContainText("agent-repo");
-  await expect(page.getByText(/no audit events/i)).toBeVisible({ timeout: 30_000 });
+  // T-111/FE-32/EVD-8: a FILTERED empty result must say so, not imply the whole
+  // chain (which the banner right above just reported as non-empty) is empty.
+  await expect(page.getByText("No events match this filter.")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("No audit events yet.")).toHaveCount(0);
 
   await testInfo.attach("audit-filtered-to-zero-match-edge", { body: await page.screenshot(), contentType: "image/png" });
 

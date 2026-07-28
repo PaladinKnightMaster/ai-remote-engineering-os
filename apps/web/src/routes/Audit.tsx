@@ -298,7 +298,15 @@ export function Audit() {
 
       <section className="overflow-hidden rounded-md border border-border">
         {events.length === 0 && !loading ? (
-          <p className="p-4 text-sm text-muted-foreground">No audit events yet.</p>
+          <p className="p-4 text-sm text-muted-foreground">
+            {/* FE-32/EVD-8: derived from `filtered` (the RESPONSE), not local
+                request state — this message describes what the server did, the
+                same way the banner above it does. "No audit events yet." is the
+                v0.1.0 copy and is only honest when nothing was filtered; once a
+                filter narrows the chain, an empty result means no matches, not
+                an empty chain, and this branch must say so instead. */}
+            {filtered ? "No events match this filter." : "No audit events yet."}
+          </p>
         ) : (
           <table className="w-full table-fixed text-left text-sm">
             <thead className="border-b border-border bg-muted/40 text-xs uppercase text-muted-foreground">
