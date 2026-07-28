@@ -259,6 +259,60 @@ T-108 (343) and T-109 (291) stayed within budget.
 - OpenAPI freeze, security-audit capstone, compat policy — **v1.0** (E-06
   only).
 
+## §human findings (GATE-3, driven 2026-07-27/28)
+
+Driven live by the CEO in a real host browser against the review stack
+(`docker-compose.e2e.yml` + `docker-compose.review.yml` + the ADR-0047 dev proxy),
+per `verification_runbook.md` Step 6. An adaptive `gate3-noise` charter at
+`intervalSeconds=5` generated the lifecycle volume; **no agent driver was needed —
+nobody answering the plan requests is the scenario.**
+
+**Observed.** The chain reached **2,049 → 2,413 positions** during the session
+against a handful of real governed actions — a **~99.7% noise ratio, worse than
+the 95% that got this finding flagged v1.0-BLOCKING**, and a correspondingly
+stronger demonstration.
+
+| Criterion | Result |
+|---|---|
+| FE-31 / AUD-24 | ✅ `workstream.chartered` on the **first screen** of a 2,049-position chain, no paging (was ~41 pages) |
+| FE-32 / EVD-8 | ✅ Banner named `governed-actions@1` + "2049 positions"; "Show all events" flooded the noise back in one interaction, banner correctly absent when unfiltered |
+| FE-33 / AUD-25 | ✅ Actor `operator:admin` returned `auth.login.success` rows from the chain's **oldest** end, thousands of rows below the loaded page; `agent-repo` composed to a correct empty result with both filters still disclosed |
+| FE-27..30 | ✅ 4-request poll burst per 10s cycle with **no `workstreams`/`grants` fetch** (initiators on consecutive `Workstreams.tsx` lines — one `Promise.all`); "Updated Xs ago" resetting; plan requests accruing unattended; **zero** `/v1/` traffic once the panel closed |
+
+**Two UI findings, dispositioned differently — the distinction is the point:**
+
+1. **Filtered empty state said "No audit events yet."** over a 2,413-position
+   chain — the table asserting the chain was empty when it was not. That copy is
+   the v0.1.0 original and was **always accurate then** (no filtering existed);
+   **v0.11's own filtering is what made it false.** Audit-surface-specific,
+   one conditional, and squarely against FE-32/EVD-8 — the criteria this release
+   is *about*. **Fixed in-release at T-111** (`0ec5059`): the message is derived
+   from the **response**'s `filtered` state, same as the banner, so it describes
+   what the server did. `task smoke` 14/14 re-run.
+
+2. **No `<button>` in the product has a hover or active state**, and the same
+   verb is styled inconsistently across routes (`/audit`'s Refresh is a bordered
+   button, `/workstreams`' is borderless text). Verified app-wide: of 27 `hover:`
+   styles across the routes, **every one is on a `Link` or an underline — none on
+   a button.** Surfaced when the CEO could not tell whether **Apply** had fired.
+   *Not a v0.11 regression* — T-107 faithfully matched the existing idiom, which
+   is what the FE-35 preflight required; the idiom itself is the gap. Fixing one
+   button would make the product *more* inconsistent, and a shared `Button` in
+   `packages/ui` is exactly **E-05**'s scope, which the CEO already reserved for
+   discussion before implementation. **Carried to v0.12/E-05.**
+
+The first was fixed because v0.11 broke it and it contradicts this release's own
+thesis; the second was carried because it predates v0.11, is app-wide, and its
+correct fix is a design decision already reserved. *(Apply and Refresh were both
+confirmed functional — the difficulty was affordance, not behaviour.)*
+
+**T-111 gate scope.** `task smoke` was re-run (14/14). `task e2e` and `task wd1`
+were **not** — T-111 is a frontend-only copy change in `apps/web`, and neither
+gate exercises that surface (`task e2e` drives the Go services directly;
+`task wd1` drives the installed systemd stack). GATE-1's evidence stands at
+`4e6c0e2`; `task smoke` is the gate covering this surface and it is green at
+`0ec5059`.
+
 ## Process note
 
 Built on the Commander–Implementer split: the opener (ADR-0067 + criteria,

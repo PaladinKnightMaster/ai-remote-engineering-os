@@ -155,27 +155,131 @@ third-party dependency, two independent ways.
 
 ## Step 6 — CEO §human GATE-3 walkthrough (the remaining gate)
 
-**Placeholder.** This step is authored separately by the War Room Commander
-at Phase B and will script the four operator-visible behaviors from
-`v0.11.0-release-criteria.md` §2 GATE-3:
+GATE-3 is a **spot-check, not a new walkthrough demo** — v0.11 adds no governed
+capability (structural rule #2), so no WD-11 is minted. It covers the four
+operator-visible behaviors in `v0.11.0-release-criteria.md` §2 GATE-3.
 
-1. `/audit` opens newest-first with the most recent governed action on the
-   first screen, no paging, on a stack carrying production-shaped lifecycle
-   volume.
-2. The preset is disclosed — the operator can see they are on a filtered
-   view, see the total chain length, and reach the complete unfiltered
-   chain in one interaction.
-3. A server-side filter (actor/outcome/edge) returns matches from the whole
-   chain, not the loaded page — demonstrated on a value whose matches are
-   deep in the chain.
-4. An open charter-detail panel refreshes itself as the charter ticks, and
-   stops when the panel closes or the tab is hidden.
+### The walkthrough generates its own defect condition
 
-Driven live in a real host browser (Chrome/Edge at `http://localhost:5173`
-via the ADR-0047 dev proxy) — the Windows-host TLS route recorded in the
-v0.9.0/v0.10.0 runbook Step 6 applies unchanged. The Commander supplies the
-full script text and the recorded result at Phase B; this file is updated in
-the closure commit alongside the artifact flip to *released*.
+The finding this release closes was measured at **635 events, 601 (95%)
+adaptive-charter lifecycle noise**. That condition is reproducible on demand: an
+**adaptive charter nobody answers** opens a plan request each tick and expires it
+at its TTL — two content-free events per cycle, indefinitely.
+
+The e2e stack sets `AIREOS_WORKSTREAM_MIN_INTERVAL_SECONDS: "5"`, so a 5-second
+charter produces ~24 lifecycle events/minute. **No agent driver is needed** —
+nobody answering *is* the scenario. (Contrast WD-9/WD-10, which need the
+agent-driver helper because the composer must actually answer.)
+
+### Setup
+
+From `infra/docker-compose/`:
+
+```bash
+MSYS_NO_PATHCONV=1 docker compose -f docker-compose.e2e.yml -f docker-compose.review.yml up -d --build api audit broker connector policy mcp-gateway sshd
+```
+
+Then from `apps/web/`:
+
+```bash
+pnpm exec vite --host 127.0.0.1
+```
+
+`--host 127.0.0.1` is **required**: Vite defaults to `::1`-only on this host and
+IPv6 loopback TCP is broken here. `pnpm --filter @aireos/web dev -- --host` does
+**not** forward the flag. Vite's defaults (`http://localhost:8080` /
+`http://localhost:8082`) already match the review overlay's published ports, so no
+env vars are needed.
+
+Browse **`http://localhost:5173`** in a **real host browser** (Chrome/Edge).
+Login: **`admin` / `e2e-operator-pw`**.
+
+> **Windows-host access (v0.9 lesson, unchanged).** Docker Desktop's WSL2 HTTPS
+> port-forwarding corrupts the TLS handshake for OS-native clients
+> (`ERR_SSL_PROTOCOL_ERROR`) while in-network clients work. The review overlay +
+> dev-proxy route above keeps TLS off the host path entirely.
+>
+> **Do not drive this in the Claude Desktop Browser pane** — it auto-dismisses
+> `window.confirm` (returns false), so consent-gated actions silently cancel.
+
+### Step A — start the noise clock (first)
+
+`/workstreams` → charter an **adaptive** workstream:
+
+| Field | Value |
+|---|---|
+| Label | `gate3-noise` |
+| Objective | `spot-check the audit read surface` |
+| Kind | **adaptive** |
+| Composer | `gate3-composer` |
+| Resource (scope) | `e2e-target` (= `01900000-0000-7000-8000-0000000000e2`) |
+| **Interval seconds** | **`5`** |
+| Rest | defaults |
+
+Leave it ticking. Give it **10 minutes minimum** before Step B, and spend that
+window on Step D — which needs the charter live anyway, so the wait is absorbed
+rather than added.
+
+### Step D — live detail refresh (during Step A's accumulation)
+
+Select the charter to open its detail panel. Open DevTools → **Network**, filter
+`v1/`.
+
+- **D1** — the **"Updated Xs ago"** label counts up and resets to "just now"
+  every **10 seconds**.
+- **D2** — new plan requests appear every ~5s unattended; each expires at TTL and
+  a fresh one opens. That loop is what generates the Step B volume.
+- **D3** — switch to a **different browser tab** ~30s and return. The Network log
+  shows a **clean gap** (nothing polled while hidden) and **one immediate burst**
+  on return, with "Updated" reading "just now" — not "30s ago".
+- **D4** — deselect the charter (click its name; it toggles). Polling stops —
+  **zero** further `/v1/` rows.
+
+The poll signature is **exactly 4 requests per burst**, ~10s apart:
+`workstreams/{id}` · `memories?scopeType=workstream&scopeId=…` ·
+`context-sources?workstreamId=…` · `runs` — all from consecutive `Workstreams.tsx`
+initiator lines (one `Promise.all`). **No `workstreams` list fetch and no `grants`
+fetch** — that absence is FE-27's "targeted, never `loadAll`" holding. Don't
+confuse it with the header **Refresh** button, which calls `loadAll` and fires a
+different, larger 3-request signature.
+
+### Step B — the audit surface opens usable
+
+`/audit`, after ~10 minutes of ticking.
+
+- **B1** — the most recent governed action is on the **first screen**, no "Load
+  more". *(Before v0.11: 13 pages deep.)*
+- **B2** — the banner names the preset **`governed-actions@1`** and reports the
+  chain size as **"N positions"**. "Positions", not "events", is deliberate:
+  it is `MAX(seq)`, and `seq` is `BIGSERIAL` with a non-transactional `nextval`,
+  so a rolled-back append leaves a gap. Calling it a row count would overstate it.
+- **B3** — **"Show all events"** (one interaction) floods the noise back and the
+  banner disappears. Nothing was ever suppressed. Toggle back on.
+
+### Step C — filtering reaches the whole chain
+
+- **C1** — Outcome → `auth.login.success`, **Enter** (filters commit on blur or
+  Enter, or the **Apply** button — not per keystroke). Login events are among the
+  oldest in the chain, far past the 50 rows loaded; they return anyway.
+- **C2** — the banner echoes the filter back **from the response**, so it can only
+  report what the server actually did.
+- **C3** — Actor → `operator:admin`.
+- **C4** — Edge → `agent-repo` (a reserved edge, zero rows by construction). List
+  empties, banner still reports every applied filter and the chain size, and the
+  table reads **"No events match this filter."** — not the unfiltered
+  "No audit events yet." copy (T-111).
+- **C5** — toggle direction and back. There are **no per-column sorters**; this is
+  intentional (EVD-8/AUD-27), not missing.
+
+### Tear down
+
+```bash
+MSYS_NO_PATHCONV=1 docker compose -f docker-compose.e2e.yml -f docker-compose.review.yml down -v
+```
+
+Screenshots are captured at the CEO's discretion; per v0.9/v0.10 precedent they
+are **not** git-archived. The recorded result is in
+`release_notes_v0_11_0.md` §"§human findings".
 
 ## Step 7 — tag (after sign-off) ⚠ local only, no remote
 
