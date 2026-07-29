@@ -1,14 +1,16 @@
 # v0.11.0 — verification runbook
 
-How to verify the v0.11.0 "Operator Experience" release candidate end to end,
-with the recorded results from the T-110 Phase A verification run
-(2026-07-27). Commands assume the repo root on a Windows host with Docker
-Desktop + WSL2 (prefix Docker invocations with `MSYS_NO_PATHCONV=1` under
-git-bash); a Linux host drops the prefix. The host in this run lacked
-`go`/`python3`; every Go step below ran inside `golang:1.23`.
+How to verify the **released** v0.11.0 "Operator Experience" end to end, with
+the recorded results from the T-110 Phase A verification run (2026-07-27) and
+the GATE-3 §human session (2026-07-27/29). Commands assume the repo root on a
+Windows host with Docker Desktop + WSL2 (prefix Docker invocations with
+`MSYS_NO_PATHCONV=1` under git-bash); a Linux host drops the prefix. The host
+in this run lacked `go`; every Go step below ran inside `golang:1.23`.
 
-Recorded RC state: `main` = `dev` at `c9ad30b` before this ticket's commits;
-local tags `v0.1.0..v0.10.0`, no remote. Baseline `v0.10.0` → `e0fee10`.
+Released state: `main` = `dev` = **`bcb4a8e`**, local annotated tag **`v0.11.0`**,
+no remote. Baseline `v0.10.0` → `e0fee10`. (Phase A's gates ran at `c9ad30b`;
+T-111 landed after, frontend-only — see the release notes for why `task e2e` /
+`task wd1` were not re-run for it.)
 
 ## Step 0 — sync the RC
 
