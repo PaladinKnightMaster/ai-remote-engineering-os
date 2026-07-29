@@ -194,6 +194,23 @@ env vars are needed.
 Browse **`http://localhost:5173`** in a **real host browser** (Chrome/Edge).
 Login: **`admin` / `e2e-operator-pw`**.
 
+> **⚠ Do not run `task smoke` (or any repo-bind-mounting container) while this
+> Vite dev server is up.** Learned the hard way at the v0.11 §human: the smoke
+> stack's `webbuild` container bind-mounts the repo and reinstalls
+> `node_modules` with **Linux** binaries, which pulls the chunk files out from
+> under the already-running **Windows** Vite process. The dev server then dies
+> with `Cannot find module '…/vite/dist/node/chunks/dep-*.js'`. Recovery: stop
+> Vite (`Get-NetTCPConnection -LocalPort 5173` → `Stop-Process`), re-run
+> `CI=true pnpm install --frozen-lockfile` on the host, restart Vite. The
+> hazard is symmetric — a host `pnpm install` mid-`task smoke` breaks that run
+> the same way. Finish the container gates first, then bring up the §human
+> stack.
+
+> **TTL:** charter the walkthrough's noise generator with a **short TTL**
+> (`3600`), not the 86400 default. A charter that outlives the session goes
+> `retired`, and a retired charter correctly polls not at all (FE-28) — which
+> looks identical to a broken poll if you come back to it the next day.
+
 > **Windows-host access (v0.9 lesson, unchanged).** Docker Desktop's WSL2 HTTPS
 > port-forwarding corrupts the TLS handshake for OS-native clients
 > (`ERR_SSL_PROTOCOL_ERROR`) while in-network clients work. The review overlay +

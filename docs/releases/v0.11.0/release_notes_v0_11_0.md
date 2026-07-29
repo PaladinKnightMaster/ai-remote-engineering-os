@@ -1,12 +1,9 @@
 # AI Remote Engineering OS — v0.11.0 release notes
 
-**Status: release candidate** — GATE-1 (full WD-1..10 regression, both stacks) and
-GATE-2 (browser smoke) are **green**; OI-18..20 hold; the CEO §human GATE-3
-spot-check (the four operator-visible behaviors, driven live in a real host
-browser) is the **remaining gate**, scripted separately by the War Room
-Commander and captured at Phase B. These artifacts stay at **release-candidate**
-status until GATE-3 is signed off — do not treat this document as a released
-record until the companion closure commit flips it.
+**Status: RELEASED** — 2026-07-29. GATE-1 (full WD-1..10 regression, both stacks),
+GATE-2 (browser smoke) and GATE-3 (the CEO §human spot-check, all four
+operator-visible behaviors driven live in a real host browser) are **green**;
+OI-18..20 hold. Local annotated tag **`v0.11.0`** (no remote, per repo doctrine).
 
 Baseline: **v0.10.0** (local annotated tag `v0.10.0` → `e0fee10`, no remote)
 on v3.0.1.
@@ -277,7 +274,25 @@ stronger demonstration.
 | FE-31 / AUD-24 | ✅ `workstream.chartered` on the **first screen** of a 2,049-position chain, no paging (was ~41 pages) |
 | FE-32 / EVD-8 | ✅ Banner named `governed-actions@1` + "2049 positions"; "Show all events" flooded the noise back in one interaction, banner correctly absent when unfiltered |
 | FE-33 / AUD-25 | ✅ Actor `operator:admin` returned `auth.login.success` rows from the chain's **oldest** end, thousands of rows below the loaded page; `agent-repo` composed to a correct empty result with both filters still disclosed |
-| FE-27..30 | ✅ 4-request poll burst per 10s cycle with **no `workstreams`/`grants` fetch** (initiators on consecutive `Workstreams.tsx` lines — one `Promise.all`); "Updated Xs ago" resetting; plan requests accruing unattended; **zero** `/v1/` traffic once the panel closed |
+| FE-27..30 | ✅ 4-request poll burst per 10s cycle with **no `workstreams`/`grants` fetch** (initiators on consecutive `Workstreams.tsx` lines — one `Promise.all`); "Updated Xs ago" resetting; plan requests accruing unattended; **zero** `/v1/` traffic once the panel closed; **both halves of the FE-28 visibility guard driven live** (below) |
+
+**FE-28's visibility guard — driven live, both directions.** Over a ~120s window
+spanning a real tab switch, the panel issued **4 poll bursts where an unpaused 10s
+cycle would have issued ~12** — polling was inactive for roughly the two-thirds of
+the window the tab was hidden, and the DevTools waterfall shows the corresponding
+empty band. On return the label read **"Updated just now"**, not ~80s — the
+`visibilitychange` handler's immediate refresh firing rather than the operator
+waiting out the next tick. The **charter-status** half of the same guard was
+observed independently: `gate3-noise` had gone `retired` on its 86400s TTL
+overnight and correctly polled not at all.
+
+*(Commander-side corroboration: driven separately through the Claude browser
+extension, `document.visibilityState` read `"hidden"` with the panel open on an
+**active** charter — the initial fetch-on-select fired its 4 requests and the poll
+never started, i.e. the guard read directly at the source rather than inferred
+from absent network rows. The resume direction is not observable from that pane —
+it does not composite frames, so it can never report `visible` — which is why the
+§human tab switch above is what closes the criterion.)*
 
 **Two UI findings, dispositioned differently — the distinction is the point:**
 
