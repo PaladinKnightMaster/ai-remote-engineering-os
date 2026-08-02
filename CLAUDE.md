@@ -67,7 +67,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 Relevant specs/docs updated; tests/evals run or gaps stated; UI/accessibility reviewed when applicable; risks and next actions stated.
 - Changes to `packages/ui` or `apps/web` rendering output require browser-rendered evidence (a screenshot or a passing Playwright assertion against the rendered DOM) before "done" — jsdom unit tests do not satisfy this.
 
-## v4 Kit modules (live in sibling agency-kit/)
+## Kit modules — v4.6.0 (live in sibling agency-kit/)
 Use these modules when relevant:
 - `../agency-kit/ai/core/grounded-code.md`
 - `../agency-kit/ai/core/agent-reader-architecture.md`
@@ -75,6 +75,16 @@ Use these modules when relevant:
 - `../agency-kit/ai/core/context-checkpoint-protocol.md`
 - `../agency-kit/ai/core/sandbox-permission-matrix.md`
 - `../agency-kit/ai/core/war-room-doctrine.md`
+
+Cost, routing, and response shape — added at the v4.6.0 kit bump, and the modules where v4.6.0's behavior actually changed:
+- `../agency-kit/ai/core/token-management.md` — effort is the primary cost lever; mode carries effort. Effort changes reasoning depth, **not** visible response length.
+- `../agency-kit/ai/war-room/output-contracts.md` — output contracts scale by mode. A contract is the most a response should contain, not a form to fill in.
+- `../agency-kit/ai/core/agent-harness.md` — gates are checks, not re-runs. A gate reads evidence that already exists rather than re-running the check. Directly relevant to this repo's stacked G1/G2 + WD gates.
+- `../agency-kit/ai/models/MODEL_ROUTING.md` — routing aliases and per-role effort. Cards declare `model: haiku|sonnet|opus`, never a pinned model id.
+- `../agency-kit/ai/engines/context/CONTEXT_GOVERNOR_V2.md` — delegation caps; do not delegate verification of your own work.
+- `../agency-kit/ai/engines/context/TOOL_OUTPUT_POLICY.md` — narration cadence and large-output handling.
+
+**Effort is a session-level setting, not an agent-card field.** `MODEL_ROUTING.md` records intended effort per role as doctrine; whoever dispatches applies it. Agent cards carry `model:` only.
 
 ## Project agency overlays (live in this repo)
 - Project specialist role cards: `ai/roles/specialists/*.md` (6 cards).
