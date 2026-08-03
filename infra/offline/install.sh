@@ -83,10 +83,39 @@ aireos_site_is_loopback() {
 # pattern run-wd1.sh already writes for AIREOS_SITE_ADDRESS).
 aireos_site_all_loopback() {
   local value="$1" tok
+  local -; set -f   # scope shell options locally, then disable pathname expansion (a "*" in $value must not glob against the cwd)
   for tok in $value; do
     aireos_site_is_loopback "$tok" || return 1
   done
   return 0
+}
+
+# aireos_persisted_profile <env-file> — echoes the AIREOS_DEPLOYMENT_PROFILE
+# line's value from <env-file>, or nothing if the file is absent or carries no
+# such line. No side effects; always "succeeds" so it is safe to capture via
+# command substitution under this file's own `set -e`.
+aireos_persisted_profile() {
+  local env_file="$1"
+  if [ -f "$env_file" ]; then
+    sed -n 's/^AIREOS_DEPLOYMENT_PROFILE=//p' "$env_file" | head -n1
+  fi
+  return 0
+}
+
+# aireos_resolve_profile <env-value> <persisted> <answer> — pure precedence,
+# no I/O, no prompting (prompting is genuinely interactive and stays in the
+# installer body): env wins; else a non-empty prompt answer; else persisted;
+# else empty (aireos_assert_profile then refuses on empty — never a silent
+# default).
+aireos_resolve_profile() {
+  local env_value="$1" persisted="$2" answer="$3"
+  if [ -n "$env_value" ]; then
+    printf '%s' "$env_value"
+  elif [ -n "$answer" ]; then
+    printf '%s' "$answer"
+  else
+    printf '%s' "$persisted"
+  fi
 }
 
 # aireos_assert_profile <profile> <site> — die() (never silently default) if
@@ -120,21 +149,18 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
 # --- 1a. deployment profile (ADR-0068 §D1; OI-21..23) ------------------------
 # Env beats persisted beats prompt. A refusal here must create no user, no
 # directories, and deploy nothing — hence this runs before every other step.
-PERSISTED_PROFILE=""
-if [ -f "$ENV_FILE" ]; then
-  PERSISTED_PROFILE="$(sed -n 's/^AIREOS_DEPLOYMENT_PROFILE=//p' "$ENV_FILE" | head -n1)"
-fi
-DEPLOYMENT_PROFILE="${AIREOS_DEPLOYMENT_PROFILE:-}"
-if [ -z "$DEPLOYMENT_PROFILE" ]; then
+# Resolution is the two testable helpers above (aireos_persisted_profile,
+# aireos_resolve_profile); only the interactive `read` stays here.
+PERSISTED_PROFILE="$(aireos_persisted_profile "$ENV_FILE")"
+ANSWER=""
+if [ -z "${AIREOS_DEPLOYMENT_PROFILE:-}" ]; then
   if [ -n "$PERSISTED_PROFILE" ]; then
-    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first] (default: $PERSISTED_PROFILE): " DEPLOYMENT_PROFILE || true
+    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first] (default: $PERSISTED_PROFILE): " ANSWER || true
   else
-    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first]: " DEPLOYMENT_PROFILE || true
+    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first]: " ANSWER || true
   fi
-  # An empty answer takes the persisted value — never a silent default when
-  # there is no persisted value either (falls through to the assertion below).
-  [ -n "$DEPLOYMENT_PROFILE" ] || DEPLOYMENT_PROFILE="$PERSISTED_PROFILE"
 fi
+DEPLOYMENT_PROFILE="$(aireos_resolve_profile "${AIREOS_DEPLOYMENT_PROFILE:-}" "$PERSISTED_PROFILE" "$ANSWER")"
 aireos_assert_profile "$DEPLOYMENT_PROFILE" "${AIREOS_SITE_ADDRESS:-}"
 log "deployment profile: $DEPLOYMENT_PROFILE"
 

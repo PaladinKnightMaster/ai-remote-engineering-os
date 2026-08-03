@@ -81,6 +81,8 @@ expect_refuse "vpn-first + [::1]:8443"            "vpn-first" "[::1]:8443"      
 expect_refuse "vpn-first + https://localhost:8443" "vpn-first" "https://localhost:8443" "vpn-first"
 expect_refuse "vpn-first + cockpit.localhost"     "vpn-first" "cockpit.localhost"    "vpn-first"
 expect_refuse "vpn-first + 'localhost 127.0.0.1' (all loopback)" "vpn-first" "localhost 127.0.0.1" "vpn-first"
+expect_refuse "vpn-first + localhost.localdomain" "vpn-first" "localhost.localdomain" "vpn-first"
+expect_refuse "vpn-first + 0:0:0:0:0:0:0:1"       "vpn-first" "0:0:0:0:0:0:0:1"      "vpn-first"
 expect_refuse "dmz-first + localhost"             "dmz-first" "localhost"            "dmz-first"
 
 echo "== must pass =="
@@ -94,6 +96,68 @@ expect_pass "vpn-first + 10.10.0.4"                            "vpn-first" "10.1
 expect_pass "vpn-first + :443 (bare port, binds every interface)" "vpn-first" ":443"
 expect_pass "vpn-first + 0.0.0.0 (unspecified, not loopback)"  "vpn-first" "0.0.0.0"
 expect_pass "dmz-first + gw.example.com"                       "dmz-first" "gw.example.com"
+
+# expect_resolve <name> <env-value> <persisted> <answer> <want> — asserts
+# aireos_resolve_profile's pure precedence (env > answer > persisted > empty).
+expect_resolve() {
+  local name="$1" env_value="$2" persisted="$3" answer="$4" want="$5" got
+  got="$(aireos_resolve_profile "$env_value" "$persisted" "$answer")"
+  if [ "$got" = "$want" ]; then
+    echo "PASS $name -- resolved '$got'"
+    pass=$((pass + 1))
+  else
+    echo "FAIL $name -- expected '$want', got '$got'"
+    fail=$((fail + 1))
+  fi
+}
+
+echo "== aireos_resolve_profile (pure precedence: env > answer > persisted > empty) =="
+expect_resolve "env-only"                                    "vpn-first" ""          ""           "vpn-first"
+expect_resolve "persisted-only, empty answer (OI-23 no-op)"  ""          "lan-only"  ""           "lan-only"
+expect_resolve "env set, persisted set, differ -- env wins"  "dmz-first" "lan-only"  ""           "dmz-first"
+expect_resolve "nothing set anywhere -- empty"                ""          ""          ""           ""
+
+echo "== OI-23 re-assert: a changed profile on re-run is re-checked against OI-22 =="
+CHANGED="$(aireos_resolve_profile "" "lan-only" "vpn-first")"
+if [ "$CHANGED" = "vpn-first" ]; then
+  echo "PASS resolve: persisted='lan-only' answer='vpn-first' -- answer wins ('vpn-first')"
+  pass=$((pass + 1))
+else
+  echo "FAIL resolve: persisted='lan-only' answer='vpn-first' -- expected 'vpn-first', got '$CHANGED'"
+  fail=$((fail + 1))
+fi
+expect_refuse "changed profile (persisted lan-only -> answer vpn-first) + loopback site re-asserts OI-22" "$CHANGED" "localhost" "vpn-first"
+
+echo "== resolved-empty profile is refused, never silently installed =="
+EMPTY="$(aireos_resolve_profile "" "" "")"
+expect_refuse "resolve('','','') -> empty -> assertion refuses" "$EMPTY" "" "lan-only"
+
+echo "== aireos_persisted_profile =="
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+
+printf 'AIREOS_SITE_ADDRESS=localhost\nAIREOS_DEPLOYMENT_PROFILE=vpn-first\n' > "$TMPD/present.env"
+GOT="$(aireos_persisted_profile "$TMPD/present.env")"
+if [ "$GOT" = "vpn-first" ]; then
+  echo "PASS persisted-profile: line present -- got 'vpn-first'"; pass=$((pass + 1))
+else
+  echo "FAIL persisted-profile: line present -- got '$GOT'"; fail=$((fail + 1))
+fi
+
+printf 'AIREOS_SITE_ADDRESS=localhost\n' > "$TMPD/absent.env"
+GOT="$(aireos_persisted_profile "$TMPD/absent.env")"
+if [ -z "$GOT" ]; then
+  echo "PASS persisted-profile: file present, line absent -- got empty"; pass=$((pass + 1))
+else
+  echo "FAIL persisted-profile: file present, line absent -- got '$GOT'"; fail=$((fail + 1))
+fi
+
+GOT="$(aireos_persisted_profile "$TMPD/does-not-exist.env")"
+if [ -z "$GOT" ]; then
+  echo "PASS persisted-profile: file missing entirely -- got empty"; pass=$((pass + 1))
+else
+  echo "FAIL persisted-profile: file missing entirely -- got '$GOT'"; fail=$((fail + 1))
+fi
 
 echo
 echo "$pass passed, $fail failed"
