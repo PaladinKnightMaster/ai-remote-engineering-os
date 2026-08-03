@@ -146,6 +146,9 @@ func serve(dsn string) error {
 	opts := []server.Option{
 		server.WithGateway(os.Getenv("GATEWAY_URL")),
 		server.WithAgentSigner(agentPlaneSigner()),
+		// The active deployment profile (ADR-0068 §D2, OI-24): echoed verbatim on
+		// GetMe, no validation here — install.sh is the sole validation authority.
+		server.WithDeploymentProfile(os.Getenv("AIREOS_DEPLOYMENT_PROFILE")),
 	}
 
 	// The delegation-grant engine (ADR-0062, T-063): the operator issue/list/revoke

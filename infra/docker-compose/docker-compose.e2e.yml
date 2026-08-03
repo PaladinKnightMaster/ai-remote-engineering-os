@@ -153,6 +153,9 @@ services:
       # default (ctxindex.DefaultIndexInterval). e2e-only override — the installed stack
       # keeps the default (OI-17).
       AIREOS_CONTEXT_INDEX_SECONDS: "6"
+      # E-03/OI-24 (ADR-0068 §D2): the compose stack is a loopback dev stack reached
+      # directly, not through install.sh, so lan-only is the honest active profile.
+      AIREOS_DEPLOYMENT_PROFILE: lan-only
     command: ["bash", "-c", "go run ./services/api serve"]
 
   # connector-service: sole credential custodian + egress chokepoint (ADR-0053).

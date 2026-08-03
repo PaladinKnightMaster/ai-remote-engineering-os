@@ -33,6 +33,13 @@ import {
 export interface Capability {
   subject: string;
   edge: string;
+  /**
+   * The active AIREOS_DEPLOYMENT_PROFILE (lan-only / vpn-first / dmz-first),
+   * or "unknown" when the stack was not installed through install.sh.
+   * Additive per ADR-0068 §D2 (OI-24) — optional so older callers/tests that
+   * don't set it keep compiling.
+   */
+  deploymentProfile?: string;
 }
 
 export interface CapabilityContextValue {

@@ -19,7 +19,8 @@ export function Dashboard() {
         <h1 className="text-2xl font-semibold">AI Remote Engineering OS</h1>
         <p className="text-sm text-muted-foreground">
           Signed in as <span className="font-mono">{capability?.subject ?? "—"}</span> on
-          edge <span className="font-mono">{capability?.edge ?? "—"}</span>.
+          edge <span className="font-mono">{capability?.edge ?? "—"}</span>, deployment
+          profile <span className="font-mono">{capability?.deploymentProfile ?? "—"}</span>.
         </p>
       </header>
 

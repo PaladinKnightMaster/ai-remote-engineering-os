@@ -122,6 +122,39 @@ describe("CapabilityProvider — fetch lifecycle", () => {
   });
 });
 
+describe("CapabilityProvider — deploymentProfile (ADR-0068 §D2, OI-24)", () => {
+  it("carries the additive deploymentProfile field through to consumers", () => {
+    function ShowProfile() {
+      const { capability } = useCapability();
+      return <span data-testid="profile">{capability?.deploymentProfile ?? "none"}</span>;
+    }
+
+    render(
+      <CapabilityProvider
+        fetchCapability={ANY}
+        initialValue={{ subject: "operator:admin", edge: "human-agent", deploymentProfile: "vpn-first" }}
+      >
+        <ShowProfile />
+      </CapabilityProvider>,
+    );
+    expect(screen.getByTestId("profile").textContent).toBe("vpn-first");
+  });
+
+  it("does not require deploymentProfile (optional field, additive contract)", () => {
+    render(
+      <CapabilityProvider
+        fetchCapability={ANY}
+        initialValue={{ subject: "operator:admin", edge: "human-agent" }}
+      >
+        <CapabilityGate edge="human-agent">
+          <span data-testid="protected">visible</span>
+        </CapabilityGate>
+      </CapabilityProvider>,
+    );
+    expect(screen.getByTestId("protected")).toBeTruthy();
+  });
+});
+
 describe("useCapability — usage guard", () => {
   it("throws when used outside <CapabilityProvider>", () => {
     function NoProvider() {

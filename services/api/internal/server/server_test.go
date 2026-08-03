@@ -729,6 +729,56 @@ func TestAuthorizationHeaderStillWorks(t *testing.T) {
 	}
 }
 
+// TestGetMeDeploymentProfileConfigured — WithDeploymentProfile echoes the configured
+// value verbatim on Identity, with no validation against the three legal values
+// (install.sh is the sole validation authority; ADR-0068 §D2, OI-24).
+func TestGetMeDeploymentProfileConfigured(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "cluster-test")
+	verifier := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "cluster-test", "api"))
+	h := New(newFake(), nil, signer, verifier, "", "", WithDeploymentProfile("vpn-first"))
+
+	tok, err := signer.IssueOperator("operator:admin", "api")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("me: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"deploymentProfile":"vpn-first"`) {
+		t.Fatalf("me: want deploymentProfile=vpn-first, got %s", rec.Body)
+	}
+}
+
+// TestGetMeDeploymentProfileUnknown — an unset/empty profile emits the literal string
+// "unknown", never a blank (a blank in the cockpit is indistinguishable from a
+// rendering bug; ADR-0068 §D2, OI-24).
+func TestGetMeDeploymentProfileUnknown(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "cluster-test")
+	verifier := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "cluster-test", "api"))
+	h := New(newFake(), nil, signer, verifier, "", "") // no WithDeploymentProfile
+
+	tok, err := signer.IssueOperator("operator:admin", "api")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("me: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"deploymentProfile":"unknown"`) {
+		t.Fatalf("me: want deploymentProfile=unknown, got %s", rec.Body)
+	}
+}
+
 // TestCSRFRequiredOnMutationsWithCookie — POST/PUT/DELETE with a session cookie
 // must carry a matching X-CSRF-Token header. No header / mismatch → 403.
 func TestCSRFRequiredOnMutationsWithCookie(t *testing.T) {

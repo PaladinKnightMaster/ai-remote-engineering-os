@@ -321,8 +321,10 @@ type GrantCreate struct {
 
 // Identity defines model for Identity.
 type Identity struct {
-	Edge    string `json:"edge"`
-	Subject string `json:"subject"`
+	// DeploymentProfile The active AIREOS_DEPLOYMENT_PROFILE (lan-only / vpn-first / dmz-first), echoed verbatim from installer configuration; unknown when the stack was not installed through install.sh. A read-only installation property — it carries no audit event (ADR-0068 §D2).
+	DeploymentProfile *string `json:"deploymentProfile,omitempty"`
+	Edge              string  `json:"edge"`
+	Subject           string  `json:"subject"`
 }
 
 // InvocationResolve defines model for InvocationResolve.

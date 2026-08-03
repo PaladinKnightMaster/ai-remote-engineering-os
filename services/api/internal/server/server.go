@@ -177,6 +177,11 @@ type apiHandlers struct {
 	// error, the memory.read unconfigured precedent) AND the operator
 	// /v1/context-sources* routes answer 503 (the memories unconfigured precedent).
 	contextIndex contextSearchStore
+	// deploymentProfile is the active AIREOS_DEPLOYMENT_PROFILE (ADR-0068 §D2, OI-24);
+	// set by WithDeploymentProfile. GetMe echoes it verbatim on Identity — api performs
+	// no validation of the three legal values (install.sh is the sole validation
+	// authority) — and defaults to "unknown" when unset, never emitting a blank string.
+	deploymentProfile string
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -325,6 +330,13 @@ type contextSearchStore interface {
 // passed here, not a divergent second construction.
 func WithContextStore(cs contextSearchStore) Option {
 	return func(h *apiHandlers) { h.contextIndex = cs }
+}
+
+// WithDeploymentProfile wires the active AIREOS_DEPLOYMENT_PROFILE (ADR-0068 §D2, OI-24)
+// for GetMe to echo on Identity. An empty value is a no-op here — GetMe itself defaults
+// the emitted string to "unknown" so a blank is never confused with a rendering bug.
+func WithDeploymentProfile(profile string) Option {
+	return func(h *apiHandlers) { h.deploymentProfile = profile }
 }
 
 // WithGatewayVerifier wires the route-scoped verifier for the inbound delegated-launch
@@ -680,7 +692,11 @@ func (a *apiHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"subject": c.Subject, "edge": c.Edge})
+	profile := a.deploymentProfile
+	if profile == "" {
+		profile = "unknown"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"subject": c.Subject, "edge": c.Edge, "deploymentProfile": profile})
 }
 
 func (a *apiHandlers) decodeInput(w http.ResponseWriter, r *http.Request) (resource.Input, bool) {

@@ -38,11 +38,11 @@ export const apiClient = createApiClient({
 /**
  * Adapter for <CapabilityProvider fetchCapability={...}>.
  * Maps the typed Identity from /v1/auth/me into the packages/ui
- * `Capability` shape (subject + edge). Returns null on any error so the
- * provider treats the user as unauthenticated.
+ * `Capability` shape (subject + edge + deploymentProfile). Returns null on
+ * any error so the provider treats the user as unauthenticated.
  */
 export async function fetchCurrentCapability(): Promise<Capability | null> {
   const { data, error } = await apiClient.GET("/v1/auth/me");
   if (error || !data) return null;
-  return { subject: data.subject, edge: data.edge };
+  return { subject: data.subject, edge: data.edge, deploymentProfile: data.deploymentProfile };
 }

@@ -1137,6 +1137,8 @@ export interface components {
         Identity: {
             subject: string;
             edge: string;
+            /** @description The active AIREOS_DEPLOYMENT_PROFILE (lan-only / vpn-first / dmz-first), echoed verbatim from installer configuration; unknown when the stack was not installed through install.sh. A read-only installation property — it carries no audit event (ADR-0068 §D2). */
+            deploymentProfile?: string;
         };
     };
     responses: {
