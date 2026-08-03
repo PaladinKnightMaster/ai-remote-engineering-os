@@ -19,6 +19,11 @@
 #   AIREOS_BOOTSTRAP_OPERATOR_USER      operator username
 #   AIREOS_BOOTSTRAP_OPERATOR_PASSWORD  operator password (argon2id-hashed here)
 #   AIREOS_SITE_ADDRESS                 Caddy site address (default: localhost)
+#   AIREOS_DEPLOYMENT_PROFILE           lan-only | vpn-first | dmz-first (required,
+#                                        never defaulted — ADR-0068 §D1/OI-21). Persisted
+#                                        in aireos.env. vpn-first/dmz-first REFUSE a
+#                                        loopback-only AIREOS_SITE_ADDRESS (OI-22): Caddy
+#                                        is the product's only externally-bound process.
 #   AIREOS_SKIP_SYSTEMCTL=1             deploy + provision but don't enable units
 set -euo pipefail
 
@@ -32,9 +37,106 @@ BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log() { printf '\033[1;34m[install]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[install] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# --- deployment-profile helpers (ADR-0068 §D1; OI-21..23) -------------------
+# Kept free of every other section's state so install_profile_test.sh can
+# source this file and exercise them in isolation (see the sourceable guard
+# just below).
+
+# aireos_site_is_loopback <token> — true (0) iff the single host/URL token
+# resolves to a loopback address. Normalization order matters: strip scheme,
+# strip path, detect a bare port (binds every interface — NOT loopback),
+# unwrap a bracketed IPv6 literal, else strip a single :port (preserving a
+# bare IPv6 literal like ::1, which itself contains colons).
+aireos_site_is_loopback() {
+  local token="$1" host colons
+  token="$(printf '%s' "$token" | tr '[:upper:]' '[:lower:]')"
+  token="${token#http://}"
+  token="${token#https://}"
+  token="${token%%/*}"
+  # A bare port (":443": colon then digits only) binds every interface on the
+  # host — not loopback. Checked as ^:[0-9]+$ rather than a plain leading-colon
+  # test so a bare IPv6 literal like "::1" (also colon-led) falls through to
+  # the host-extraction rules below instead of being misread as a port.
+  [[ "$token" =~ ^:[0-9]+$ ]] && return 1
+  if [[ "$token" == \[* ]]; then
+    host="${token#\[}"
+    host="${host%%]*}"
+  else
+    colons="$(printf '%s' "$token" | tr -cd ':' | wc -c)"
+    if [ "$colons" -eq 1 ]; then
+      host="${token%%:*}"
+    else
+      host="$token"   # 0 or 2+ colons: whole token is the host (preserves bare ::1)
+    fi
+  fi
+  case "$host" in
+    ""|localhost|localhost.localdomain|*.localhost|::1|0:0:0:0:0:0:0:1) return 0 ;;
+  esac
+  [[ "$host" =~ ^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && return 0
+  return 1   # includes 0.0.0.0 / :: — unspecified, deliberately NOT loopback
+}
+
+# aireos_site_all_loopback <value> — true iff every whitespace-separated token
+# in <value> is loopback (an empty/whitespace-only value has no tokens, so the
+# loop never runs and this returns true — "no routable path configured"). One
+# routable token is enough to pass (e.g. "localhost cockpit.corp" — the exact
+# pattern run-wd1.sh already writes for AIREOS_SITE_ADDRESS).
+aireos_site_all_loopback() {
+  local value="$1" tok
+  for tok in $value; do
+    aireos_site_is_loopback "$tok" || return 1
+  done
+  return 0
+}
+
+# aireos_assert_profile <profile> <site> — die() (never silently default) if
+# the profile is missing/unrecognised, or if vpn-first/dmz-first is paired
+# with a site address that resolves to loopback-only.
+aireos_assert_profile() {
+  local profile="$1" site="$2"
+  case "$profile" in
+    lan-only|vpn-first|dmz-first) : ;;
+    "") die "AIREOS_DEPLOYMENT_PROFILE is required and is never defaulted — set it to one of: lan-only, vpn-first, dmz-first" ;;
+    *) die "invalid AIREOS_DEPLOYMENT_PROFILE '$profile' — must be exactly one of: lan-only, vpn-first, dmz-first" ;;
+  esac
+  [ "$profile" = "lan-only" ] && return 0
+  if aireos_site_all_loopback "$site"; then
+    die "profile '$profile' requires a routable AIREOS_SITE_ADDRESS, but got '${site:-<unset>}' — Caddy is the product's only externally-bound process, and a loopback edge reaches nothing from outside this host; either set AIREOS_SITE_ADDRESS to a routable hostname/IP, or install with AIREOS_DEPLOYMENT_PROFILE=lan-only instead"
+  fi
+  return 0
+}
+
+# Sourceable guard (install_profile_test.sh sources this file to reach the
+# helpers above without running the installer body). NOTE: `set -euo pipefail`
+# above already applies to the sourcing shell by the time this guard runs —
+# bash `set` options are shell-global, not scoped to the sourced file — so a
+# test that sources install.sh inherits -e/-u/pipefail too.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
+
 [ "$(id -u)" = "0" ] || die "must run as root"
 [ -d "$BUNDLE_DIR/bin" ] && [ -d "$BUNDLE_DIR/web" ] && [ -d "$BUNDLE_DIR/config" ] \
   || die "run this from the unpacked bundle directory (expected bin/ web/ config/)"
+
+# --- 1a. deployment profile (ADR-0068 §D1; OI-21..23) ------------------------
+# Env beats persisted beats prompt. A refusal here must create no user, no
+# directories, and deploy nothing — hence this runs before every other step.
+PERSISTED_PROFILE=""
+if [ -f "$ENV_FILE" ]; then
+  PERSISTED_PROFILE="$(sed -n 's/^AIREOS_DEPLOYMENT_PROFILE=//p' "$ENV_FILE" | head -n1)"
+fi
+DEPLOYMENT_PROFILE="${AIREOS_DEPLOYMENT_PROFILE:-}"
+if [ -z "$DEPLOYMENT_PROFILE" ]; then
+  if [ -n "$PERSISTED_PROFILE" ]; then
+    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first] (default: $PERSISTED_PROFILE): " DEPLOYMENT_PROFILE || true
+  else
+    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first]: " DEPLOYMENT_PROFILE || true
+  fi
+  # An empty answer takes the persisted value — never a silent default when
+  # there is no persisted value either (falls through to the assertion below).
+  [ -n "$DEPLOYMENT_PROFILE" ] || DEPLOYMENT_PROFILE="$PERSISTED_PROFILE"
+fi
+aireos_assert_profile "$DEPLOYMENT_PROFILE" "${AIREOS_SITE_ADDRESS:-}"
+log "deployment profile: $DEPLOYMENT_PROFILE"
 
 # --- 1. service user + state dirs -------------------------------------------
 if ! id "$SVC_USER" >/dev/null 2>&1; then
@@ -140,6 +242,7 @@ AIREOS_GATEWAY_PUBLIC_KEY=$GW_PK
 AIREOS_CAST_DIR=$STATE/sessions
 AIREOS_AUDIT_URL=http://127.0.0.1:8081
 AIREOS_SITE_ADDRESS=${AIREOS_SITE_ADDRESS:-localhost}
+AIREOS_DEPLOYMENT_PROFILE=$DEPLOYMENT_PROFILE
 AIREOS_BOOTSTRAP_OPERATOR_USER=$OP_USER
 AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH=$OP_HASH
 API_ADDR=127.0.0.1:8080
@@ -210,4 +313,4 @@ else
   systemctl enable --now aireos-api.service aireos-audit.service aireos-broker.service \
     aireos-connector.service aireos-policy.service aireos-mcp-gateway.service aireos-caddy.service
 fi
-log "DONE — cockpit installed. Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."
+log "DONE — cockpit installed (deployment profile: $DEPLOYMENT_PROFILE). Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."

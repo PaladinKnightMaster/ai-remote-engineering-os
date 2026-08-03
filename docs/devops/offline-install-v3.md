@@ -47,13 +47,35 @@ air-gapped host.
    AIREOS_SITE_ADDRESS=cockpit.example.com ./install.sh
    ```
    `install.sh` (interactive prompts by default; env-var overrides for unattended):
+   - **resolves + asserts the deployment profile first (v0.12.0, ADR-0068 §D1) — a
+     refusal here creates no user, no directories, and deploys nothing;**
    - creates the `aireos` user + `/opt/aireos`, `/etc/aireos`, `/var/lib/aireos`;
    - deploys binaries/SPA/config; mints the cluster PASETO key + the separate
      resource-secret key (offline, via the bundled `authctl`/`api`); provisions the
      bootstrap operator (argon2id);
    - prompts for the postgres connection string from step 1, writes the 0600
-     `/etc/aireos/aireos.env`, validates the DB + runs all migrations;
+     `/etc/aireos/aireos.env` (including the deployment profile), validates the DB +
+     runs all migrations;
    - enables + starts the systemd units (api, audit, broker, Caddy).
+
+   **Deployment profile (required, v0.12.0).** Set `AIREOS_DEPLOYMENT_PROFILE` to one
+   of `lan-only`, `vpn-first`, or `dmz-first` (see
+   `docs/deep-dive/03-network-topologies.md`) — env beats a previously persisted value
+   beats an interactive prompt (which shows the persisted value as its default). There
+   is **no silent default**: an unset value with nothing persisted, or an unrecognised
+   value, fails the install loudly. For `vpn-first`/`dmz-first`, the installer
+   additionally **refuses** to proceed if `AIREOS_SITE_ADDRESS` resolves to a
+   loopback-only address — those two profiles exist specifically to be reached from
+   outside this host, and Caddy is the product's only externally-bound process,
+   so a loopback edge would serve nothing reachable. The remedy is either of:
+   set `AIREOS_SITE_ADDRESS` to a routable hostname/IP, or install with
+   `AIREOS_DEPLOYMENT_PROFILE=lan-only` instead. **Re-running is idempotent**: an
+   unchanged profile is a no-op; supplying a different one updates `aireos.env` and
+   re-runs the same assertion. Note: `install.sh` does not (yet) preserve
+   `AIREOS_SITE_ADDRESS` across re-runs (it re-defaults to `localhost` unless
+   re-supplied) — a `vpn-first`/`dmz-first` host re-run without `AIREOS_SITE_ADDRESS`
+   will now correctly **fail loudly** rather than silently reverting to a loopback
+   edge; carrying the site address forward is a known follow-up, tracked separately.
 
 3. **TLS** — Caddy serves `https://<AIREOS_SITE_ADDRESS>` with a self-signed local
    CA (`tls internal`). Import the CA root (under `/var/lib/aireos/caddy`) into
@@ -74,5 +96,5 @@ systemctl status aireos-api aireos-audit aireos-broker aireos-caddy
 ```sh
 AIREOS_DB_URL='postgres://cockpit:pw@localhost:5432/cockpit?sslmode=disable' \
 AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=… \
-AIREOS_SITE_ADDRESS=cockpit.example.com ./install.sh
+AIREOS_SITE_ADDRESS=cockpit.example.com AIREOS_DEPLOYMENT_PROFILE=vpn-first ./install.sh
 ```

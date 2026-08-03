@@ -56,6 +56,10 @@ tasks:
       # Explicit per-module patterns: a bare ./... or ./packages/go/... does not
       # resolve from the workspace root (the modules live one level deeper).
       - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/connector-service/... ./services/mcp-gateway/... ./services/policy-service/... ./services/session-broker/...
+      # install.sh deployment-profile helpers (T-112a, OI-22's named live test).
+      # bash-only (no python3/go needed); needs bash, so run in golang:1.23 on
+      # the offline-only dev box (node:22-alpine has no bash).
+      - bash infra/offline/install_profile_test.sh
       # JS workspace unit tests (T-007a). `--if-present` skips packages
       # without a `test` script; packages/ui + packages/config have none yet.
       - pnpm -r --if-present run test

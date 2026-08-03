@@ -98,7 +98,7 @@ docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-
   cd \$(ls -d aireos-offline-*/ | head -1) &&
   AIREOS_DB_URL='postgres://cockpit:$DBPW@localhost:5432/cockpit?sslmode=disable' \
   AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW \
-  AIREOS_SITE_ADDRESS='localhost $HOST' ./install.sh"
+  AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh"
 
 # 8. seed the ssh resource into the installed DB. requires_approval=true: the
 #    installed walkthrough drives the GOVERNED wedge (WD-2.3) — the ungated path
@@ -139,6 +139,17 @@ docker exec "$HOST" bash -c '
   grep -q "^EnvironmentFile=/etc/aireos/gateway.env" /etc/systemd/system/aireos-mcp-gateway.service || { echo "gateway unit does not load gateway.env"; exit 1; }
   if grep -q "^EnvironmentFile=/etc/aireos/aireos.env" /etc/systemd/system/aireos-mcp-gateway.service; then echo "SEC-20 VIOLATION — gateway unit loads aireos.env (cluster key)"; exit 1; fi
   echo "SEC-20 OK — gateway keyless: own sign + F3 command + api-public; no cluster key; loads gateway.env only"
+'
+
+# 9d. E-03 (ADR-0068 §D1; OI-21/OI-23): assert the installed aireos.env
+#     persisted the deployment profile — the installed-stack proof that the
+#     profile survives past acceptance, not just that install.sh accepted it
+#     (that acceptance is proven separately by install_profile_test.sh).
+log "assert: the installed aireos.env persisted AIREOS_DEPLOYMENT_PROFILE=lan-only"
+docker exec "$HOST" bash -c '
+  grep -q "^AIREOS_DEPLOYMENT_PROFILE=lan-only$" /etc/aireos/aireos.env \
+    || { echo "aireos.env missing AIREOS_DEPLOYMENT_PROFILE=lan-only"; exit 1; }
+  echo "OI-21/OI-23 OK — deployment profile persisted in aireos.env"
 '
 
 # 9c. HYGIENE (T-084 security-hook flag): export Caddy's own local CA (`tls

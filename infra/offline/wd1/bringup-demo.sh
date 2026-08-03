@@ -66,7 +66,7 @@ docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-
   cd \$(ls -d aireos-offline-*/ | head -1) &&
   AIREOS_DB_URL='postgres://cockpit:$DBPW@localhost:5432/cockpit?sslmode=disable' \
   AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW \
-  AIREOS_SITE_ADDRESS='localhost $HOST' ./install.sh"
+  AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh"
 
 log "seed the flagged ssh resource (requires_approval=true)"
 HOSTKEY="$(docker exec "$HOST" cat /demokeys/ssh_host_key_pub)"
