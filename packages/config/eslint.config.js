@@ -171,11 +171,29 @@ const config = [
   // Direct fetch() / new Request() are not only allowed inside the wrapper —
   // they're required for it to do its job. Same exception for the wrapper's
   // own test file.
+  //
+  // The pattern must contain ONLY segments that appear in the path ESLint
+  // actually matches against. Flat-config `files` globs resolve against the
+  // config file ESLint loads for the run, and every package's own
+  // eslint.config.js is a one-line re-export of this shared array — so
+  // `pnpm --filter @aireos/shared-types run lint` runs `eslint .` from
+  // packages/shared-types/, where this file's relative path is plain
+  // `src/client.ts`. A "packages/shared-types/src/client.ts" pattern therefore
+  // never matches, and neither does "**/shared-types/src/client.ts" — the
+  // `shared-types` segment is not in the relative path at all. (The vendored-
+  // source block below works because `vendor/` IS in its relative path,
+  // `src/vendor/qrcodegen.ts`.) `**/src/client.ts` matches under both
+  // invocations: `**` absorbs zero segments per-package, and
+  // `packages/shared-types` from the repo root.
+  //
+  // This block was dead from the day it was written — verified via
+  // `eslint --print-config`, which reported no-restricted-syntax at severity 2
+  // (still fully enforced) — and went unnoticed only because client.ts reaches
+  // the network through openapi-fetch's createClient, which trips neither AST
+  // selector. Re-verify with --print-config after touching these patterns; a
+  // silently-dead exception looks identical to a working one.
   {
-    files: [
-      "packages/shared-types/src/client.ts",
-      "packages/shared-types/src/client.test.ts",
-    ],
+    files: ["**/src/client.ts", "**/src/client.test.ts"],
     rules: {
       "no-restricted-syntax": "off",
     },
@@ -207,6 +225,12 @@ const config = [
   // against the *importing* package's own eslint.config.js — packages/ui's is
   // a one-line re-export of this shared file — so a root-relative pattern
   // silently never matches; verified via `eslint --print-config`.)
+  //
+  // NB: the `**/` prefix is not itself the cure — this pattern works because
+  // `vendor/` really is a segment of the relative path ESLint matches against
+  // (`src/vendor/qrcodegen.ts`). A pattern naming a segment that is NOT in the
+  // relative path fails no matter how it is prefixed; see the SEC-7 block above,
+  // where `**/shared-types/src/client.ts` was tried and still never matched.
   {
     files: ["**/vendor/qrcodegen.ts"],
     rules: {
