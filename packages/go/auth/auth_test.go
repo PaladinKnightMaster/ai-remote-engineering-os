@@ -120,6 +120,66 @@ func TestTamperRejected(t *testing.T) {
 	}
 }
 
+// TestIssuePaired proves the paired-session tier (ADR-0068 §D4/§D5): the jti
+// is the supplied tokenID verbatim (the per-request liveness lookup key) and
+// the edge is human-agent (no eighth capability edge).
+func TestIssuePaired(t *testing.T) {
+	key, _ := GenerateKey()
+	tok, err := NewSigner(key, iss).IssuePaired("operator-1", "api", "sess-abc123", Scope{Resource: "approvals@1"})
+	if err != nil {
+		t.Fatalf("issue paired: %v", err)
+	}
+	ct, err := NewVerifier(key, iss, "api").Verify(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if ct.Edge != "human-agent" {
+		t.Fatalf("paired session must carry edge human-agent, got %q", ct.Edge)
+	}
+	if ct.TokenID != "sess-abc123" {
+		t.Fatalf("jti = %q, want the supplied tokenID", ct.TokenID)
+	}
+	if ct.Subject != "operator-1" {
+		t.Fatalf("unexpected subject: %+v", ct)
+	}
+	if d := time.Until(ct.Expiry); d <= 0 || d > PairedTTL+time.Second {
+		t.Fatalf("paired TTL = %s, want ~%s", d, PairedTTL)
+	}
+}
+
+// TestIssueParamsEmptyTokenIDStillRandom is the no-regression proof for every
+// existing caller (IssueOperator, IssueAgent, IssueService, and any direct
+// Issue call that never sets TokenID): buildToken's additive TokenID branch
+// must not change the prior random-uuid behavior when TokenID is left empty —
+// two mints produce two DIFFERENT jtis.
+func TestIssueParamsEmptyTokenIDStillRandom(t *testing.T) {
+	key, _ := GenerateKey()
+	signer := NewSigner(key, iss)
+	tok1, err := signer.Issue(IssueParams{Subject: "s", Edge: "service-service", Audience: aud, TTL: ServiceTTL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok2, err := signer.Issue(IssueParams{Subject: "s", Edge: "service-service", Audience: aud, TTL: ServiceTTL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := NewVerifier(key, iss, aud)
+	ct1, err := v.Verify(context.Background(), tok1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct2, err := v.Verify(context.Background(), tok2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct1.TokenID == "" || ct2.TokenID == "" {
+		t.Fatalf("jti must be set even with TokenID empty: %q / %q", ct1.TokenID, ct2.TokenID)
+	}
+	if ct1.TokenID == ct2.TokenID {
+		t.Fatalf("two mints with empty TokenID produced the SAME jti %q — random uuid regression", ct1.TokenID)
+	}
+}
+
 // The adapter yields a middleware.Capability carrying the verified edge.
 func TestAsMiddlewareVerifier(t *testing.T) {
 	key, _ := GenerateKey()

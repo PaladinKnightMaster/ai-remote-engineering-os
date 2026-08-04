@@ -21,6 +21,13 @@ const (
 	AgentTTL    = 5 * time.Minute
 	OperatorTTL = 8 * time.Hour
 	ServiceTTL  = 1 * time.Hour
+	// PairedTTL is the paired-session tier's lifetime (ADR-0068 §D4, the
+	// declared ADR-0046 divergence). Deliberately the SAME number as
+	// OperatorTTL: inventing a fifth TTL number would imply the TTL is the
+	// control, and it is not — revocability is. Unlike an operator session, a
+	// paired session gets NO sliding refresh (SEC-39): it expires hard and
+	// must be re-paired.
+	PairedTTL = 8 * time.Hour
 )
 
 // ErrInvalidToken is returned by Verify for any missing/expired/forged token or
@@ -87,6 +94,12 @@ type IssueParams struct {
 	Audience string
 	Scope    Scope
 	TTL      time.Duration
+	// TokenID, when non-empty, becomes the token's jti verbatim instead of a
+	// fresh random one (ADR-0068 §D4: the paired-session tier mints jti = the
+	// paired_sessions row id, so services/api's per-request liveness check has
+	// something to look up). Every existing caller leaves this empty and gets
+	// the prior random-uuid behavior unchanged (see buildToken).
+	TokenID string
 }
 
 // Issue mints a token for params. The chain-authority and other receivers verify
@@ -120,7 +133,11 @@ func buildToken(issuer string, p IssueParams) (paseto.Token, error) {
 	if p.Audience != "" {
 		t.SetAudience(p.Audience)
 	}
-	t.SetJti(uuid.NewString())
+	if p.TokenID != "" {
+		t.SetJti(p.TokenID)
+	} else {
+		t.SetJti(uuid.NewString())
+	}
 	t.SetString("edge", p.Edge)
 	if err := t.Set("scope", p.Scope); err != nil {
 		return paseto.Token{}, fmt.Errorf("auth: set scope claim: %w", err)
@@ -140,6 +157,20 @@ func (s *Signer) IssueService(subject, audience string) (string, error) {
 // the token is rejected by other services' verifiers.
 func (s *Signer) IssueOperator(subject, audience string) (string, error) {
 	return s.Issue(IssueParams{Subject: subject, Edge: "human-agent", Audience: audience, TTL: OperatorTTL})
+}
+
+// IssuePaired mints a paired-session token (ADR-0068 §D4/§D5): edge
+// human-agent — a narrowed operator session is a SCOPE within human-agent,
+// not an eighth capability edge, so the canonical seven-edge set
+// (docs/security/agent-permission-model.md) is unchanged — TTL PairedTTL,
+// and jti = tokenID (the paired_sessions row id services/api's per-request
+// liveness check looks up on every request; ADR-0046's stateless model is
+// the declared divergence here, not the edge set).
+func (s *Signer) IssuePaired(subject, audience, tokenID string, scope Scope) (string, error) {
+	return s.Issue(IssueParams{
+		Subject: subject, Edge: "human-agent", Audience: audience,
+		Scope: scope, TTL: PairedTTL, TokenID: tokenID,
+	})
 }
 
 // IssueAgent mints a scoped agent capability token (edge agent-tool, 5min TTL) for

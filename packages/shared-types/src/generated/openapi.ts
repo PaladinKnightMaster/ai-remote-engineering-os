@@ -772,6 +772,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pairing-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request a device pairing (desktop operator; ADR-0068 §D6) — the response carries the one-time secret exactly once */
+        post: operations["createPairingRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/pairing-requests/{id}/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Redeem a one-time pairing secret from the device being paired (ADR-0068 §D6) */
+        post: operations["redeemPairingRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/paired-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's paired sessions, live and revoked alike (desktop operator; ADR-0068 §D4) */
+        get: operations["listPairedSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/paired-sessions/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke a paired session the caller owns (ADR-0068 §D4 — the product's first revocable operator session) */
+        post: operations["revokePairedSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1140,6 +1208,51 @@ export interface components {
             /** @description The active AIREOS_DEPLOYMENT_PROFILE (lan-only / vpn-first / dmz-first), echoed verbatim from installer configuration; unknown when the stack was not installed through install.sh. A read-only installation property — it carries no audit event (ADR-0068 §D2). */
             deploymentProfile?: string;
         };
+        PairingRequestCreate: {
+            /** @description Operator-chosen name for the resulting session (never set by the redeeming device — ADR-0068 §D6). */
+            label?: string;
+        };
+        PairingRequestCreated: {
+            id: string;
+            /**
+             * Format: date-time
+             * @description The 120-second pairing window (ADR-0068 §D6).
+             */
+            expiresAt: string;
+            /** @description The one-time plaintext secret. Present in a response body ONLY here — only its hash is ever persisted, and no other pairing response (redeem, list, revoke) ever carries it or the stored hash. */
+            secret: string;
+        };
+        PairingRedeemRequest: {
+            /** @description The plaintext secret carried by the QR's URL fragment (never sent as a query param or logged — ADR-0068 §D6). */
+            secret: string;
+        };
+        PairingRedeemResponse: {
+            /**
+             * Format: date-time
+             * @description When the new paired session's cookie expires (RFC3339 UTC) — mirrors LoginResponse; the token itself stays opaque to JS.
+             */
+            expiresAt: string;
+        };
+        PairedSession: {
+            /** @description The session id (= the minted token's jti); needed so the desk can name a session to revoke. */
+            id: string;
+            label?: string;
+            /** @description Always approvals@1 at v0.12 (ADR-0068 §D5) — a versioned, single-sourced scope within the human-agent edge, never a new capability edge. */
+            scope: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: date-time
+             * @description Absent/null while the session is live.
+             */
+            revokedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        PairingSessionsPage: {
+            nextCursor?: string;
+            total?: number;
+        };
     };
     responses: {
         /** @description Request failed validation. */
@@ -1192,6 +1305,8 @@ export interface components {
         EdgeParam: "human-agent" | "agent-agent" | "agent-tool" | "agent-workspace" | "agent-repo" | "agent-memory" | "agent-remote-session" | "service-service";
         /** @description A named, versioned read-time lens (ADR-0067 §D3). A string enum, not a boolean, so the applied lens can be named and reported back in the envelope (AUD-28) — currently the sole value is `governed-actions@1`, which excludes the content-free charter-lifecycle outcomes `plan.requested` and `plan.expired`. */
         PresetParam: "governed-actions@1";
+        PairingSessionsLimit: number;
+        PairingSessionsCursor: string;
     };
     requestBodies: never;
     headers: never;
@@ -2656,6 +2771,150 @@ export interface operations {
             404: components["responses"]["NotFound"];
             /** @description The context-index store is not configured. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createPairingRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairingRequestCreate"];
+            };
+        };
+        responses: {
+            /** @description The pairing request was created. `secret` appears in a response body ONLY here — never on redeem, never on any list/get. The cockpit encodes it into the QR the phone scans (ADR-0068 §D6); only its hash is ever persisted. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairingRequestCreated"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Pairing is disabled on this deployment (AIREOS_PAIRING_ENABLED=0, the shipped default) — no oracle; identical to an unknown route (SEC-41, T-114a). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    redeemPairingRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairingRedeemRequest"];
+            };
+        };
+        responses: {
+            /** @description The secret was correct; a paired session was created and its cookie set via Set-Cookie (mirrors /v1/auth/login — the token itself stays opaque to JS). The body carries only the session's expiry, never the raw session id or the secret's hash. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairingRedeemResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description The request id is unknown, malformed, expired, already consumed, OR the secret was wrong — collapsed into one answer (no oracle, mirroring SEC-34's per-request liveness posture) — or pairing is disabled on this deployment (T-114a). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listPairedSessions: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["PairingSessionsLimit"];
+                cursor?: components["parameters"]["PairingSessionsCursor"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of the caller's paired sessions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["PairedSession"][];
+                        page: components["schemas"]["PairingSessionsPage"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Pairing is disabled on this deployment — no oracle; identical to an unknown route (SEC-41, T-114a). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    revokePairedSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session was revoked (idempotent — already-revoked answers the same way). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        status: string;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown session, not owned by the caller, or pairing is disabled on this deployment — no oracle (SEC-41, T-114a). */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

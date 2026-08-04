@@ -158,6 +158,12 @@ func serve(dsn string) error {
 		// The active deployment profile (ADR-0068 §D2, OI-24): echoed verbatim on
 		// GetMe, no validation here — install.sh is the sole validation authority.
 		server.WithDeploymentProfile(os.Getenv("AIREOS_DEPLOYMENT_PROFILE")),
+		// AIREOS_PAIRING_ENABLED (ADR-0068 §D10, SEC-41): truthy "1" enables the
+		// pairing capability; anything else — including unset, the value
+		// install.sh writes — is off. T-114a: the pairing routes 404 either way
+		// (see services/api/internal/server/pairing.go); T-114b makes this flag
+		// load-bearing.
+		server.WithPairingEnabled(os.Getenv("AIREOS_PAIRING_ENABLED") == "1"),
 	}
 
 	// The delegation-grant engine (ADR-0062, T-063): the operator issue/list/revoke

@@ -24,6 +24,12 @@
 #                                        in aireos.env. vpn-first/dmz-first REFUSE a
 #                                        loopback-only AIREOS_SITE_ADDRESS (OI-22): Caddy
 #                                        is the product's only externally-bound process.
+#   AIREOS_PAIRING_ENABLED              1 enables QR device pairing; unset/anything else
+#                                        is off (ADR-0068 §D10/SEC-41 — the shipped
+#                                        default). Never prompted: off is a safe default,
+#                                        and prompting would push a phone-pairing question
+#                                        at every air-gapped install. Persisted in
+#                                        aireos.env as 0 when unset.
 #   AIREOS_SKIP_SYSTEMCTL=1             deploy + provision but don't enable units
 set -euo pipefail
 
@@ -269,6 +275,7 @@ AIREOS_CAST_DIR=$STATE/sessions
 AIREOS_AUDIT_URL=http://127.0.0.1:8081
 AIREOS_SITE_ADDRESS=${AIREOS_SITE_ADDRESS:-localhost}
 AIREOS_DEPLOYMENT_PROFILE=$DEPLOYMENT_PROFILE
+AIREOS_PAIRING_ENABLED=0
 AIREOS_BOOTSTRAP_OPERATOR_USER=$OP_USER
 AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH=$OP_HASH
 API_ADDR=127.0.0.1:8080

@@ -408,6 +408,56 @@ type PageMeta struct {
 	Total      *int    `json:"total,omitempty"`
 }
 
+// PairedSession defines model for PairedSession.
+type PairedSession struct {
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Id The session id (= the minted token's jti); needed so the desk can name a session to revoke.
+	Id    string  `json:"id"`
+	Label *string `json:"label,omitempty"`
+
+	// RevokedAt Absent/null while the session is live.
+	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+
+	// Scope Always approvals@1 at v0.12 (ADR-0068 §D5) — a versioned, single-sourced scope within the human-agent edge, never a new capability edge.
+	Scope string `json:"scope"`
+}
+
+// PairingRedeemRequest defines model for PairingRedeemRequest.
+type PairingRedeemRequest struct {
+	// Secret The plaintext secret carried by the QR's URL fragment (never sent as a query param or logged — ADR-0068 §D6).
+	Secret string `json:"secret"`
+}
+
+// PairingRedeemResponse defines model for PairingRedeemResponse.
+type PairingRedeemResponse struct {
+	// ExpiresAt When the new paired session's cookie expires (RFC3339 UTC) — mirrors LoginResponse; the token itself stays opaque to JS.
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// PairingRequestCreate defines model for PairingRequestCreate.
+type PairingRequestCreate struct {
+	// Label Operator-chosen name for the resulting session (never set by the redeeming device — ADR-0068 §D6).
+	Label *string `json:"label,omitempty"`
+}
+
+// PairingRequestCreated defines model for PairingRequestCreated.
+type PairingRequestCreated struct {
+	// ExpiresAt The 120-second pairing window (ADR-0068 §D6).
+	ExpiresAt time.Time `json:"expiresAt"`
+	Id        string    `json:"id"`
+
+	// Secret The one-time plaintext secret. Present in a response body ONLY here — only its hash is ever persisted, and no other pairing response (redeem, list, revoke) ever carries it or the stored hash.
+	Secret string `json:"secret"`
+}
+
+// PairingSessionsPage defines model for PairingSessionsPage.
+type PairingSessionsPage struct {
+	NextCursor *string `json:"nextCursor,omitempty"`
+	Total      *int    `json:"total,omitempty"`
+}
+
 // PendingInvocation defines model for PendingInvocation.
 type PendingInvocation struct {
 	Agent   string `json:"agent"`
@@ -639,6 +689,12 @@ type LimitParam = int
 // OutcomeParam defines model for OutcomeParam.
 type OutcomeParam = string
 
+// PairingSessionsCursor defines model for PairingSessionsCursor.
+type PairingSessionsCursor = string
+
+// PairingSessionsLimit defines model for PairingSessionsLimit.
+type PairingSessionsLimit = int
+
 // PresetParam defines model for PresetParam.
 type PresetParam string
 
@@ -705,6 +761,12 @@ type ListMemoriesParams struct {
 // ListMemoriesParamsScopeType defines parameters for ListMemories.
 type ListMemoriesParamsScopeType string
 
+// ListPairedSessionsParams defines parameters for ListPairedSessions.
+type ListPairedSessionsParams struct {
+	Limit  *PairingSessionsLimit  `form:"limit,omitempty" json:"limit,omitempty"`
+	Cursor *PairingSessionsCursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // ListResourcesParams defines parameters for ListResources.
 type ListResourcesParams struct {
 	Limit  *LimitParam  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -746,6 +808,12 @@ type ResolveInvocationJSONRequestBody = InvocationResolve
 
 // CreateMemoryJSONRequestBody defines body for CreateMemory for application/json ContentType.
 type CreateMemoryJSONRequestBody = MemoryCreate
+
+// CreatePairingRequestJSONRequestBody defines body for CreatePairingRequest for application/json ContentType.
+type CreatePairingRequestJSONRequestBody = PairingRequestCreate
+
+// RedeemPairingRequestJSONRequestBody defines body for RedeemPairingRequest for application/json ContentType.
+type RedeemPairingRequestJSONRequestBody = PairingRedeemRequest
 
 // CreateResourceJSONRequestBody defines body for CreateResource for application/json ContentType.
 type CreateResourceJSONRequestBody = ResourceInput
@@ -830,6 +898,18 @@ type ServerInterface interface {
 	// Unshare a memory, stopping future agent-plane reads (idempotent; MEM-6, ADR-0065 §3)
 	// (POST /v1/memories/{id}/unshare)
 	UnshareMemory(w http.ResponseWriter, r *http.Request, id string)
+	// List the caller's paired sessions, live and revoked alike (desktop operator; ADR-0068 §D4)
+	// (GET /v1/paired-sessions)
+	ListPairedSessions(w http.ResponseWriter, r *http.Request, params ListPairedSessionsParams)
+	// Revoke a paired session the caller owns (ADR-0068 §D4 — the product's first revocable operator session)
+	// (POST /v1/paired-sessions/{id}/revoke)
+	RevokePairedSession(w http.ResponseWriter, r *http.Request, id string)
+	// Request a device pairing (desktop operator; ADR-0068 §D6) — the response carries the one-time secret exactly once
+	// (POST /v1/pairing-requests)
+	CreatePairingRequest(w http.ResponseWriter, r *http.Request)
+	// Redeem a one-time pairing secret from the device being paired (ADR-0068 §D6)
+	// (POST /v1/pairing-requests/{id}/redeem)
+	RedeemPairingRequest(w http.ResponseWriter, r *http.Request, id string)
 	// List resources
 	// (GET /v1/resources)
 	ListResources(w http.ResponseWriter, r *http.Request, params ListResourcesParams)
@@ -1025,6 +1105,30 @@ func (_ Unimplemented) UnpinMemory(w http.ResponseWriter, r *http.Request, id st
 // Unshare a memory, stopping future agent-plane reads (idempotent; MEM-6, ADR-0065 §3)
 // (POST /v1/memories/{id}/unshare)
 func (_ Unimplemented) UnshareMemory(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List the caller's paired sessions, live and revoked alike (desktop operator; ADR-0068 §D4)
+// (GET /v1/paired-sessions)
+func (_ Unimplemented) ListPairedSessions(w http.ResponseWriter, r *http.Request, params ListPairedSessionsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Revoke a paired session the caller owns (ADR-0068 §D4 — the product's first revocable operator session)
+// (POST /v1/paired-sessions/{id}/revoke)
+func (_ Unimplemented) RevokePairedSession(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Request a device pairing (desktop operator; ADR-0068 §D6) — the response carries the one-time secret exactly once
+// (POST /v1/pairing-requests)
+func (_ Unimplemented) CreatePairingRequest(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Redeem a one-time pairing secret from the device being paired (ADR-0068 §D6)
+// (POST /v1/pairing-requests/{id}/redeem)
+func (_ Unimplemented) RedeemPairingRequest(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1805,6 +1909,123 @@ func (siw *ServerInterfaceWrapper) UnshareMemory(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UnshareMemory(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListPairedSessions operation middleware
+func (siw *ServerInterfaceWrapper) ListPairedSessions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPairedSessionsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPairedSessions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokePairedSession operation middleware
+func (siw *ServerInterfaceWrapper) RevokePairedSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokePairedSession(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreatePairingRequest operation middleware
+func (siw *ServerInterfaceWrapper) CreatePairingRequest(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreatePairingRequest(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RedeemPairingRequest operation middleware
+func (siw *ServerInterfaceWrapper) RedeemPairingRequest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RedeemPairingRequest(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2667,6 +2888,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/memories/{id}/unshare", wrapper.UnshareMemory)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/paired-sessions", wrapper.ListPairedSessions)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/paired-sessions/{id}/revoke", wrapper.RevokePairedSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/pairing-requests", wrapper.CreatePairingRequest)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/pairing-requests/{id}/redeem", wrapper.RedeemPairingRequest)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources", wrapper.ListResources)

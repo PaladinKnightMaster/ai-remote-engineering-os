@@ -1364,3 +1364,63 @@ func TestResolveCSRFRequired(t *testing.T) {
 		t.Fatalf("resolve without csrf: want 403, got %d", rec.Code)
 	}
 }
+
+// --- pairing (T-114a, ADR-0068 §D10, SEC-41) --------------------------------
+//
+// The four pairing routes ship disabled by default and 404 unconditionally in
+// this ticket (no handler body exists yet — see pairing.go). These tests
+// prove: (1) 404 with pairing off, (2) 404 with pairing on (T-114a's honest
+// "not yet built" state), and (3) that 404 is byte-identical to an actually
+// unknown route's 404 — the no-oracle requirement (SEC-41).
+
+// unknownRouteRec hits a path that is registered nowhere in the fragment, so
+// it falls through to chi's own default NotFoundHandler (http.NotFound) — the
+// reference body/status/content-type every pairing-disabled response must
+// match exactly.
+func unknownRouteRec(t *testing.T, h http.Handler, method, path string, authHeader bool) *httptest.ResponseRecorder {
+	t.Helper()
+	return req(t, h, method, path, "", authHeader)
+}
+
+func assertNotFoundLikeUnknownRoute(t *testing.T, h http.Handler, got *httptest.ResponseRecorder, authHeader bool) {
+	t.Helper()
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", got.Code, got.Body)
+	}
+	want := unknownRouteRec(t, h, http.MethodGet, "/v1/this-route-does-not-exist", authHeader)
+	if want.Code != http.StatusNotFound {
+		t.Fatalf("setup: unknown route must itself 404, got %d", want.Code)
+	}
+	if got.Body.String() != want.Body.String() {
+		t.Fatalf("pairing 404 body diverges from an unknown route's 404 (oracle): got %q, want %q", got.Body.String(), want.Body.String())
+	}
+	if gotCT, wantCT := got.Header().Get("Content-Type"), want.Header().Get("Content-Type"); gotCT != wantCT {
+		t.Fatalf("pairing 404 Content-Type diverges from an unknown route's (oracle): got %q, want %q", gotCT, wantCT)
+	}
+}
+
+// TestPairingRoutesNotFoundWhenDisabled — the shipped default (no
+// WithPairingEnabled at all, mirroring install.sh's AIREOS_PAIRING_ENABLED=0):
+// all four routes 404, identically to an unknown route.
+func TestPairingRoutesNotFoundWhenDisabled(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "") // no WithPairingEnabled
+
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/pairing-requests", `{}`, true), true)
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/pairing-requests/req-1/redeem", `{"secret":"x"}`, false), false)
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodGet, "/v1/paired-sessions", "", true), true)
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/paired-sessions/sess-1/revoke", "", true), true)
+}
+
+// TestPairingRoutesNotFoundWhenEnabled — T-114a's honest state: turning the
+// flag on changes nothing yet, because no handler body exists (T-114b). Same
+// 404, same no-oracle body.
+func TestPairingRoutesNotFoundWhenEnabled(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", WithPairingEnabled(true))
+
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/pairing-requests", `{}`, true), true)
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/pairing-requests/req-1/redeem", `{"secret":"x"}`, false), false)
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodGet, "/v1/paired-sessions", "", true), true)
+	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/paired-sessions/sess-1/revoke", "", true), true)
+}

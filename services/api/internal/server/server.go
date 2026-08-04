@@ -182,6 +182,12 @@ type apiHandlers struct {
 	// no validation of the three legal values (install.sh is the sole validation
 	// authority) — and defaults to "unknown" when unset, never emitting a blank string.
 	deploymentProfile string
+	// pairingEnabled gates the four /v1/pairing-*/paired-sessions* routes (ADR-0068
+	// §D10, SEC-41). Set by WithPairingEnabled from AIREOS_PAIRING_ENABLED; the
+	// zero value (false) is the shipped default. T-114a: every pairing handler
+	// answers 404 regardless of this flag (see pairing.go) — the flag exists now
+	// so T-114b's real handlers have a place to read it from.
+	pairingEnabled bool
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -337,6 +343,16 @@ func WithContextStore(cs contextSearchStore) Option {
 // the emitted string to "unknown" so a blank is never confused with a rendering bug.
 func WithDeploymentProfile(profile string) Option {
 	return func(h *apiHandlers) { h.deploymentProfile = profile }
+}
+
+// WithPairingEnabled wires the active AIREOS_PAIRING_ENABLED flag (ADR-0068 §D10,
+// SEC-41): truthy ("1") enables the pairing capability, anything else (including
+// unset) is off — the shipped default. T-114a: this has no observable effect yet —
+// every pairing route answers 404 whether enabled or not (see pairing.go); the
+// option exists so T-114b's real handlers have a place to read the flag from
+// without another server.go change.
+func WithPairingEnabled(enabled bool) Option {
+	return func(h *apiHandlers) { h.pairingEnabled = enabled }
 }
 
 // WithGatewayVerifier wires the route-scoped verifier for the inbound delegated-launch

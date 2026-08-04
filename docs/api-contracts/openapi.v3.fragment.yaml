@@ -42,6 +42,8 @@ tags:
     description: Persistent Scoped Memory on services/api (T-080, ADR-0064; the mutable, forgettable projection beside the immutable audit chain — accrued content-free evidence pointers plus operator-authored sealed notes, scoped to {workstream, run, operator}).
   - name: context-sources
     description: Layer 1 Live/Context Index operator surface on services/api (T-100, ADR-0066; charter-bound, operator-registered local context sources the agent-plane context.search tool reads at plan time — registration/list/remove only; the agent read path is a separate internal RPC, not in this fragment).
+  - name: pairing
+    description: QR device pairing + revocable paired operator sessions on services/api (T-114, ADR-0068 §D4-§D6; the product's first server-side session revocation primitive, narrowed to the approvals@1 scope — a scope within human-agent, not a new capability edge). Ships disabled by default (AIREOS_PAIRING_ENABLED=0); every route answers 404 while off (SEC-41).
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -1345,6 +1347,156 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # /v1/pairing-requests, /v1/paired-sessions — QR device pairing + the product's
+  # first revocable operator session (ADR-0068 §D4-§D6/§D10-§D11; v0.12 "Access &
+  # Onboarding", E-02, T-114a). This ticket lands the CONTRACT only: every
+  # operation below is generated and wired to a handler that answers 404 while
+  # AIREOS_PAIRING_ENABLED is unset (the shipped default, SEC-41) — see
+  # services/api/internal/server/pairing.go. T-114b fills in the real bodies,
+  # the per-request liveness check, approvals@1 enforcement, and the three
+  # pairing.* audit events.
+  #
+  # New named components ONLY (CON-3, ADR-0068 §D11): the list route below does
+  # NOT reference the shared limit/cursor/page-envelope components used by
+  # seven other operations elsewhere in this file — it mints its own
+  # PairingSessionsLimit / PairingSessionsCursor / PairingSessionsPage
+  # instead, per the v0.11 T-106 lesson that a shared *schema* is as
+  # dangerous as a shared parameter.
+  /v1/pairing-requests:
+    post:
+      tags: [pairing]
+      operationId: createPairingRequest
+      summary: Request a device pairing (desktop operator; ADR-0068 §D6) — the response carries the one-time secret exactly once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairingRequestCreate'
+      responses:
+        '201':
+          description: >-
+            The pairing request was created. `secret` appears in a response
+            body ONLY here — never on redeem, never on any list/get. The
+            cockpit encodes it into the QR the phone scans (ADR-0068 §D6);
+            only its hash is ever persisted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairingRequestCreated'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Pairing is disabled on this deployment (AIREOS_PAIRING_ENABLED=0, the shipped default) — no oracle; identical to an unknown route (SEC-41, T-114a).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/pairing-requests/{id}/redeem:
+    post:
+      tags: [pairing]
+      operationId: redeemPairingRequest
+      summary: Redeem a one-time pairing secret from the device being paired (ADR-0068 §D6)
+      # Public: the redeeming device has no session yet — it holds only the
+      # fragment-carried secret (ADR-0068 §D6), never a bearer token. Mirrors
+      # /v1/auth/login's public posture.
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairingRedeemRequest'
+      responses:
+        '200':
+          description: >-
+            The secret was correct; a paired session was created and its
+            cookie set via Set-Cookie (mirrors /v1/auth/login — the token
+            itself stays opaque to JS). The body carries only the session's
+            expiry, never the raw session id or the secret's hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairingRedeemResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: >-
+            The request id is unknown, malformed, expired, already consumed,
+            OR the secret was wrong — collapsed into one answer (no oracle,
+            mirroring SEC-34's per-request liveness posture) — or pairing is
+            disabled on this deployment (T-114a).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/paired-sessions:
+    get:
+      tags: [pairing]
+      operationId: listPairedSessions
+      summary: List the caller's paired sessions, live and revoked alike (desktop operator; ADR-0068 §D4)
+      parameters:
+        - $ref: '#/components/parameters/PairingSessionsLimit'
+        - $ref: '#/components/parameters/PairingSessionsCursor'
+      responses:
+        '200':
+          description: A page of the caller's paired sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PairedSession'
+                  page:
+                    $ref: '#/components/schemas/PairingSessionsPage'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Pairing is disabled on this deployment — no oracle; identical to an unknown route (SEC-41, T-114a).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/paired-sessions/{id}/revoke:
+    post:
+      tags: [pairing]
+      operationId: revokePairedSession
+      summary: Revoke a paired session the caller owns (ADR-0068 §D4 — the product's first revocable operator session)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The session was revoked (idempotent — already-revoked answers the same way).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Unknown session, not owned by the caller, or pairing is disabled on this deployment — no oracle (SEC-41, T-114a).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -1434,6 +1586,27 @@ components:
       schema:
         type: string
         enum: [governed-actions@1]
+    # --- pairing params (T-114a, ADR-0068 §D11) ----------------------------
+    # New named components, referenced ONLY by GET /v1/paired-sessions — the
+    # shared limit/cursor parameters above are intentionally left untouched
+    # (CON-3): a page-shape param is as reusable-and-dangerous as a shared
+    # response envelope schema, per the same v0.11 T-106 lesson that stopped
+    # the page-envelope schema below from being extended.
+    PairingSessionsLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    PairingSessionsCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
   responses:
     BadRequest:
       description: Request failed validation.
@@ -2192,3 +2365,75 @@ components:
             verbatim from installer configuration; unknown when the stack was not installed
             through install.sh. A read-only installation property — it carries no audit event
             (ADR-0068 §D2).
+    # --- pairing (T-114a, ADR-0068 §D4-§D6/§D11) -------------------------------
+    # New named schemas ONLY — none of these extend Grant, Workstream, the
+    # shared page-envelope schema, or any other existing component (CON-3/CON-4).
+    PairingRequestCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+          description: Operator-chosen name for the resulting session (never set by the redeeming device — ADR-0068 §D6).
+    PairingRequestCreated:
+      type: object
+      required: [id, expiresAt, secret]
+      properties:
+        id:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+          description: The 120-second pairing window (ADR-0068 §D6).
+        secret:
+          type: string
+          description: >-
+            The one-time plaintext secret. Present in a response body ONLY
+            here — only its hash is ever persisted, and no other pairing
+            response (redeem, list, revoke) ever carries it or the stored
+            hash.
+    PairingRedeemRequest:
+      type: object
+      additionalProperties: false
+      required: [secret]
+      properties:
+        secret:
+          type: string
+          description: The plaintext secret carried by the QR's URL fragment (never sent as a query param or logged — ADR-0068 §D6).
+    PairingRedeemResponse:
+      type: object
+      required: [expiresAt]
+      properties:
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the new paired session's cookie expires (RFC3339 UTC) — mirrors LoginResponse; the token itself stays opaque to JS.
+    PairedSession:
+      type: object
+      required: [id, scope, expiresAt, createdAt]
+      properties:
+        id:
+          type: string
+          description: The session id (= the minted token's jti); needed so the desk can name a session to revoke.
+        label:
+          type: string
+        scope:
+          type: string
+          description: Always approvals@1 at v0.12 (ADR-0068 §D5) — a versioned, single-sourced scope within the human-agent edge, never a new capability edge.
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          description: Absent/null while the session is live.
+        createdAt:
+          type: string
+          format: date-time
+    PairingSessionsPage:
+      type: object
+      properties:
+        nextCursor:
+          type: string
+        total:
+          type: integer
