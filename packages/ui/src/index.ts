@@ -39,3 +39,9 @@ export type { TerminalViewProps } from "./components/TerminalView";
 
 export { ApprovalPrompt } from "./components/ApprovalPrompt";
 export type { ApprovalPromptProps } from "./components/ApprovalPrompt";
+
+// <QRCode> (T-115a; ADR-0068 §D7/FE-39) — the desk pairing surface
+// (apps/web's <Pairing> route) is its concrete consumer, satisfying
+// "search-before-create" (see the note atop components/QRCode.tsx).
+export { QRCode } from "./components/QRCode";
+export type { QRCodeProps } from "./components/QRCode";

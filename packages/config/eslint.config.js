@@ -193,6 +193,32 @@ const config = [
     },
   },
 
+  // === Vendored third-party source (ADR-0068 §D7, FE-39, T-115a). ===
+  // packages/ui/src/vendor/qrcodegen.ts is Nayuki's upstream QR encoder,
+  // vendored byte-faithful (see its header for provenance) rather than
+  // rewritten to this repo's style. It uses TS's namespace-merging feature
+  // (upstream's own module shape, predating ESM), carries a top-level
+  // `@ts-nocheck` (see the file header, adaptation note 2), reassigns some
+  // `let`s upstream never converted to `const`, and has one upstream regex
+  // with a redundant escape — every rule below is silenced ONLY for this one
+  // file so upstream's exact source needn't be reformatted to satisfy house
+  // lint rules it was never written against. (`**/vendor/qrcodegen.ts`, not a
+  // full repo-root-relative path: ESLint's flat-config `files` globs resolve
+  // against the *importing* package's own eslint.config.js — packages/ui's is
+  // a one-line re-export of this shared file — so a root-relative pattern
+  // silently never matches; verified via `eslint --print-config`.)
+  {
+    files: ["**/vendor/qrcodegen.ts"],
+    rules: {
+      "@typescript-eslint/no-namespace": "off",
+      "@typescript-eslint/no-unused-vars": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/ban-ts-comment": "off",
+      "prefer-const": "off",
+      "no-useless-escape": "off",
+    },
+  },
+
   // === Node-context files (vite.config.ts, vitest.config.ts, scripts). ===
   // These run in Node, not the browser; localStorage doesn't exist here,
   // and process.env is legitimate.

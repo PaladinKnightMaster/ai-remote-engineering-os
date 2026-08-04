@@ -78,6 +78,12 @@ export function Dashboard() {
             review the chained, append-only evidence log. The resource picker
             lands with its feature ticket.
           </p>
+          <p className="mt-2 text-sm">
+            <Link to="/pairing" className="font-medium text-primary hover:underline">
+              Device pairing →
+            </Link>{" "}
+            pair a phone with a scoped, revocable approval-only session via QR code.
+          </p>
         </CapabilityGate>
       </section>
     </div>

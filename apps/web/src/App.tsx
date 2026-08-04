@@ -12,6 +12,7 @@ import { Grants } from "./routes/Grants";
 import { Workstreams } from "./routes/Workstreams";
 import { Memories } from "./routes/Memories";
 import { Audit } from "./routes/Audit";
+import { Pairing } from "./routes/Pairing";
 
 /**
  * RequireAuth — route guard. The capability-edge security boundary is
@@ -102,6 +103,14 @@ export function App() {
             element={
               <RequireAuth>
                 <Audit />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/pairing"
+            element={
+              <RequireAuth>
+                <Pairing />
               </RequireAuth>
             }
           />

@@ -156,6 +156,11 @@ services:
       # E-03/OI-24 (ADR-0068 §D2): the compose stack is a loopback dev stack reached
       # directly, not through install.sh, so lan-only is the honest active profile.
       AIREOS_DEPLOYMENT_PROFILE: lan-only
+      # E-02/T-115a: a TEST-STACK-ONLY override so the smoke suite's pairing spec
+      # can exercise the real routes. install.sh's shipped default (SEC-41, off)
+      # is untouched by this — this env var only reaches the api process inside
+      # this compose file, never the installed stack.
+      AIREOS_PAIRING_ENABLED: "1"
     command: ["bash", "-c", "go run ./services/api serve"]
 
   # connector-service: sole credential custodian + egress chokepoint (ADR-0053).
