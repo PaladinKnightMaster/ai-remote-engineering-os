@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { QRCode } from "@aireos/ui";
+import { Button, QRCode } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -106,9 +106,9 @@ export function Pairing() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Device pairing</h1>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => void loadSessions()} className="text-sm text-muted-foreground hover:underline">
+          <Button type="button" variant="ghost" size="sm" onClick={() => void loadSessions()}>
             Refresh
-          </button>
+          </Button>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">
             ← Dashboard
           </Link>
@@ -146,13 +146,9 @@ export function Pairing() {
                   className="mt-1 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
                 />
               </label>
-              <button
-                type="submit"
-                disabled={creating || !label.trim()}
-                className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-              >
+              <Button type="submit" variant="primary" size="md" disabled={creating || !label.trim()}>
                 {creating ? "Creating…" : "Create pairing code"}
-              </button>
+              </Button>
             </form>
 
             {created && pairingUrl && (
@@ -170,13 +166,9 @@ export function Pairing() {
                   Single-use — expires at <span className="font-mono">{created.expiresAt}</span>. This code will
                   not be shown again; if it lapses, create a new one.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setCreated(null)}
-                  className="rounded-md border border-border px-2 py-1 text-xs"
-                >
+                <Button type="button" variant="default" size="xs" onClick={() => setCreated(null)}>
                   Done
-                </button>
+                </Button>
               </div>
             )}
           </section>
@@ -203,13 +195,15 @@ export function Pairing() {
                       <div className="flex items-center gap-3">
                         <span className="text-muted-foreground">{s.revokedAt ? "revoked" : "live"}</span>
                         {!s.revokedAt && (
-                          <button
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="xs"
                             onClick={() => void onRevoke(s.id)}
                             disabled={revokingId === s.id}
-                            className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-60"
                           >
                             {revokingId === s.id ? "Revoking…" : "Revoke"}
-                          </button>
+                          </Button>
                         )}
                       </div>
                     </div>

@@ -15,6 +15,27 @@
 
 @import "tailwindcss";
 
+/* T-116 finding: Tailwind v4's automatic content detection scans outward
+ * from this file's own directory (apps/web/src/) and does NOT reach sibling
+ * workspace packages. packages/ui/src/**\/*.{ts,tsx} is declared as a content
+ * root in packages/config/tailwind.config.ts (the ADR-0047-named Token Map
+ * location), but that file is a typed *mirror* only — apps/web's `@tailwindcss/vite`
+ * plugin reads tokens/build config from THIS file (CSS-first v4), which never
+ * referenced it. This was invisible until now because packages/ui's existing
+ * components (<ApprovalPrompt>, <QRCode>) only ever used utility classes that
+ * ALSO happen to appear as literal text somewhere in apps/web's own source
+ * (duplicated by every hand-styled call site) — Tailwind generated the CSS
+ * from those apps/web occurrences, never from packages/ui itself. <Button>
+ * (T-116) is the first component whose classes (bg-accent, ring-ring,
+ * disabled:pointer-events-none, ...) do NOT also appear as literal apps/web
+ * text once its call sites stop spelling out raw utility strings — so
+ * without this line, none of Button's four interactive states compile to
+ * CSS at all (caught by tests/smoke/button.smoke.spec.ts, FE-42's real-browser
+ * evidence; a jsdom test cannot see this, since jsdom never loads CSS).
+ * `@source` is Tailwind v4's explicit-scan directive (same heuristic as
+ * automatic detection, pointed at an extra root). No token changes below. */
+@source "../../../packages/ui/src";
+
 @theme {
   --color-background: hsl(0 0% 100%);
   --color-foreground: hsl(222.2 84% 4.9%);

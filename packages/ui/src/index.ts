@@ -45,3 +45,9 @@ export type { ApprovalPromptProps } from "./components/ApprovalPrompt";
 // "search-before-create" (see the note atop components/QRCode.tsx).
 export { QRCode } from "./components/QRCode";
 export type { QRCodeProps } from "./components/QRCode";
+
+// <Button> (T-116; ADR-0068 §D3/§D7, FE-36) — the affordance-defect fix.
+// apps/web's <Pairing> route (all four variants) is its concrete consumer,
+// satisfying "search-before-create"; T-117 migrates the rest of apps/web.
+export { Button } from "./components/Button";
+export type { ButtonProps, ButtonVariant, ButtonSize } from "./components/Button";
