@@ -156,10 +156,22 @@ func (s *Store) Redeem(ctx context.Context, id string, secret []byte) (Session, 
 // transaction (T-114 adds pairing.redeemed here without restructuring, the
 // T-058a→b lesson).
 //
-// ok=false, err=nil covers EVERY refusal alike — unknown id, wrong secret, expired,
-// already consumed — so a caller cannot distinguish reasons from the return value
-// (no oracle, mirroring SEC-34's per-request liveness posture). err is reserved for
-// genuine failures (a DB error), never for "wrong secret."
+// ok=false, err=nil covers EVERY refusal alike — a malformed id, an unknown id,
+// wrong secret, expired, already consumed — so a caller cannot distinguish reasons
+// from the return value (no oracle, mirroring SEC-34's per-request liveness
+// posture; the id here rides the URL fragment and is attacker-supplied at redeem,
+// unlike grant's operator-authenticated ids — Commander review finding A). A
+// malformed id is rejected by uuid.Parse BEFORE touching the database: passing it
+// straight into `id = $1` against a UUID column would make Postgres raise SQLSTATE
+// 22P02, which surfaces as a wrapped error distinguishable from "not found" — the
+// exact oracle this refusal shape exists to close. err is reserved for genuine
+// failures (a DB error), never for "wrong secret" or "malformed id."
+//
+// The expiry check compares against the DATABASE's now() (returned by the same
+// locking SELECT), not Go's time.Now() — Postgres is the single clock authority
+// for every row this package writes and every other read (GetLive); a second,
+// Go-side clock in this one comparison is a latent split-clock bug waiting for a
+// multi-host deployment (Commander review finding B).
 //
 // On a wrong secret, attempts increments in the SAME transaction; the
 // maxFailedAttempts-th wrong secret ALSO burns the request (consumed_at set) in
@@ -167,17 +179,22 @@ func (s *Store) Redeem(ctx context.Context, id string, secret []byte) (Session, 
 // MUST commit even when ok=false: the attempts increment (and possible burn) is
 // real state that has to persist.
 func (s *Store) RedeemInTx(ctx context.Context, tx pgx.Tx, id string, secret []byte) (Session, bool, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Session{}, false, nil
+	}
+
 	var (
 		operator, label string
 		secretHash      []byte
 		expiresAt       time.Time
 		consumedAt      *time.Time
 		attempts        int
+		dbNow           time.Time
 	)
 	err := tx.QueryRow(ctx, `
-		SELECT operator, label, secret_hash, expires_at, consumed_at, attempts
+		SELECT operator, label, secret_hash, expires_at, consumed_at, attempts, now()
 		  FROM pairing_requests WHERE id = $1 FOR UPDATE`, id).
-		Scan(&operator, &label, &secretHash, &expiresAt, &consumedAt, &attempts)
+		Scan(&operator, &label, &secretHash, &expiresAt, &consumedAt, &attempts, &dbNow)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, false, nil
 	}
@@ -186,8 +203,9 @@ func (s *Store) RedeemInTx(ctx context.Context, tx pgx.Tx, id string, secret []b
 	}
 
 	// Already consumed (a prior successful redeem, OR a prior attempt-cap burn) or
-	// past its 120s window: refuse without touching any state.
-	if consumedAt != nil || !expiresAt.After(time.Now()) {
+	// past its 120s window: refuse without touching any state. dbNow (not
+	// time.Now()) is the comparison clock — see the doc comment above.
+	if consumedAt != nil || !expiresAt.After(dbNow) {
 		return Session{}, false, nil
 	}
 
@@ -240,8 +258,16 @@ func (s *Store) RedeemInTx(ctx context.Context, tx pgx.Tx, id string, secret []b
 // GetLive returns the paired session by id, but ONLY when it is live — revoked_at
 // IS NULL AND expires_at > now() — a single indexed primary-key lookup (PERF-12).
 // This is the per-request liveness read T-114's middleware calls; ErrNotFound
-// covers unknown id, revoked, and expired alike (SEC-34 — no oracle).
+// covers a malformed id, unknown id, revoked, and expired alike (SEC-34 — no
+// oracle). uuid.Parse rejects a malformed id BEFORE the query: otherwise Postgres
+// would raise SQLSTATE 22P02 on a non-UUID string, a distinguishable error a
+// caller could map to a different response than "not found" (Commander review
+// finding A — this id is attacker-supplied at redeem/liveness-check time).
 func (s *Store) GetLive(ctx context.Context, id string) (Session, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Session{}, ErrNotFound
+	}
+
 	var sess Session
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, operator, label, scope, expires_at, created_at
@@ -311,10 +337,18 @@ func (s *Store) Revoke(ctx context.Context, id string) (bool, error) {
 
 // RevokeInTx flips a live session to revoked (the audited terminal flip, ADR-0068
 // §D4) inside the caller's transaction — T-114 adds pairing.revoked here without
-// restructuring. ok=false is a no-op (unknown id OR already revoked), making a
-// second Revoke on the same id idempotent by construction, mirroring
-// grant.RevokeInTx.
+// restructuring. ok=false is a no-op (a malformed id, an unknown id, OR an
+// already-revoked one), making a second Revoke on the same id idempotent by
+// construction, mirroring grant.RevokeInTx. uuid.Parse rejects a malformed id
+// BEFORE the UPDATE for the same no-oracle reason as GetLive/RedeemInTx
+// (Commander review finding A) — though the paired-session id here is desk-listed
+// rather than attacker-supplied, a single guard idiom across all three id-taking
+// methods is easier to keep correct than three different postures.
 func (s *Store) RevokeInTx(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return false, nil
+	}
+
 	ct, err := tx.Exec(ctx, `
 		UPDATE paired_sessions SET revoked_at = now()
 		 WHERE id = $1 AND revoked_at IS NULL`, id)

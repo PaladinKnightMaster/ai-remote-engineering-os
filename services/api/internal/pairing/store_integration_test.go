@@ -328,6 +328,65 @@ func TestCleanupRequests(t *testing.T) {
 	}
 }
 
+// TestGetLiveMalformedID — a malformed id (not a valid UUID at all) must be
+// REFUSED IDENTICALLY to a well-formed-but-unknown id: ErrNotFound, no other error
+// shape. Before the Commander review fix, a malformed id reached `WHERE id = $1`
+// against a UUID column and Postgres raised SQLSTATE 22P02, which surfaced as a
+// distinct wrapped error — a real oracle, since T-114's HTTP layer would map that
+// to a different status code than "not found" (finding A). This id rides the URL
+// fragment and is attacker-supplied at redeem/liveness-check time, unlike grant's
+// operator-authenticated ids.
+func TestGetLiveMalformedID(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	malformed, errMalformed := s.GetLive(ctx, "not-a-uuid-at-all")
+	unknown, errUnknown := s.GetLive(ctx, "00000000-0000-0000-0000-000000000000")
+
+	if errMalformed != ErrNotFound {
+		t.Fatalf("malformed id: got err=%v, want ErrNotFound", errMalformed)
+	}
+	if errUnknown != ErrNotFound {
+		t.Fatalf("unknown id: got err=%v, want ErrNotFound", errUnknown)
+	}
+	if malformed != unknown {
+		t.Fatalf("malformed and unknown id results differ: %+v vs %+v", malformed, unknown)
+	}
+}
+
+// TestRedeemMalformedID — a malformed request id is refused identically (ok=false,
+// err=nil) to a well-formed-but-unknown id, through BOTH Redeem and RedeemInTx
+// (Commander review finding A).
+func TestRedeemMalformedID(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	if _, ok, err := s.Redeem(ctx, "not-a-uuid-at-all", secret); err != nil || ok {
+		t.Fatalf("malformed id via Redeem: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	if _, ok, err := s.Redeem(ctx, "00000000-0000-0000-0000-000000000000", secret); err != nil || ok {
+		t.Fatalf("unknown id via Redeem: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+}
+
+// TestRevokeMalformedID — a malformed session id is refused identically (ok=false,
+// err=nil) to a well-formed-but-unknown id (Commander review finding A).
+func TestRevokeMalformedID(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	if ok, err := s.Revoke(ctx, "not-a-uuid-at-all"); err != nil || ok {
+		t.Fatalf("malformed id via Revoke: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	if ok, err := s.Revoke(ctx, "00000000-0000-0000-0000-000000000000"); err != nil || ok {
+		t.Fatalf("unknown id via Revoke: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+}
+
 // getRequest is a test-only direct read of pairing_requests (the package exposes
 // no public Get for requests — only the redeem path touches them by design).
 func getRequest(t *testing.T, s *Store, id string) (Request, error) {

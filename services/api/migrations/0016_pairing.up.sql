@@ -57,7 +57,11 @@ CREATE TABLE paired_sessions (
 -- The desktop cockpit's "your paired devices" list is operator-scoped.
 CREATE INDEX paired_sessions_operator_idx ON paired_sessions (operator);
 
--- The per-request liveness check (PERF-12) filters on revoked_at IS NULL; a partial
--- index keeps it cheap as revoked rows accumulate — the delegation_grants_agent_active_idx
--- precedent (migration 0008).
-CREATE INDEX paired_sessions_active_idx ON paired_sessions (id) WHERE revoked_at IS NULL;
+-- No separate partial index for the liveness check (PERF-12): unlike migration
+-- 0008's delegation_grants_agent_active_idx — which earns its keep by indexing a
+-- NON-PK column (agent) — a partial index on (id) WHERE revoked_at IS NULL here
+-- would only duplicate the primary key for the one query that uses it, while
+-- GetLive still needs heap columns (operator/label/scope/created_at) so it cannot
+-- index-only-scan anyway. The PK alone already satisfies PERF-12's "single indexed
+-- primary-key lookup"; a redundant index would just be write overhead for nothing
+-- (Commander review finding C).
