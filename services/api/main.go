@@ -37,6 +37,7 @@ import (
 	"aireos.local/services/api/internal/ctxindex"
 	"aireos.local/services/api/internal/grant"
 	"aireos.local/services/api/internal/memory"
+	"aireos.local/services/api/internal/pairing"
 	runengine "aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/server"
 	"aireos.local/services/api/internal/store"
@@ -128,13 +129,21 @@ func serve(dsn string) error {
 		memorySweepCadence = time.Duration(n) * time.Second
 	}
 
-	// Start the stuck-session reaper (T-032) + the memory expiry sweep (T-081): one
-	// in-process goroutine, two independent tickers. The reaper closes sessions
-	// stranded pre-open — a 'pending' that no broker attached to, or a
-	// 'pending_approval' whose approval was never resolved (policy auto-denies but
+	// The pairing-request cleanup sweep (ADR-0068 §D6, PERF-13, T-113): api-local
+	// like the memory store above, built here so it can be threaded into runReaper.
+	// It rides the SAME reaper tick as the stuck-session reap below — no new ticker,
+	// no new env var (T-113's consult). No route/handler is wired for it in this
+	// ticket; T-114 adds those plus the pairing.* audit events.
+	pairingStore := pairing.NewStore(pool, store.OutboxTable)
+
+	// Start the stuck-session reaper (T-032) + the memory expiry sweep (T-081) + the
+	// pairing-request cleanup (PERF-13): one in-process goroutine, independent
+	// tickers (the pairing cleanup shares the session-reap ticker). The reaper
+	// closes sessions stranded pre-open — a 'pending' that no broker attached to, or
+	// a 'pending_approval' whose approval was never resolved (policy auto-denies but
 	// cannot write the api session row). The sweep tombstones unpinned memories past
 	// expires_at (DUR-9: exactly-once by the row's redacted_at guard, not the timer).
-	go runReaper(context.Background(), store.New(pool), memStore, memorySweepCadence)
+	go runReaper(context.Background(), store.New(pool), memStore, pairingStore, memorySweepCadence)
 
 	// The Run engine (ADR-0061): the operator launch/status routes (T-057) + the
 	// sequencer that drives launched Runs through the gateway's governed /v1/steps
@@ -342,17 +351,19 @@ const (
 // memoryExpireBatch bounds ExpireDue's per-tick claim (PERF-9(3)).
 const memoryExpireBatch = 100
 
-// runReaper periodically closes stuck pre-open sessions (T-032) AND sweeps due
-// memory expiry (T-081, ADR-0064 §5/F-b — "no fourth goroutine": the sweep rides
-// this same loop on its own ticker, not a new goroutine). Both legs are
-// best-effort: an error logs and the loop continues — a stalled leg surfaces as
-// lingering rows (stuck sessions, or expired-but-untombstoned + absent
-// memory.expired events, DUR-9), not a failed serve. Runs for the life of the
-// process. memStore may be nil in tests that only exercise the session leg;
-// sweepCadence is resolved (and fail-loud validated) by the caller BEFORE this
-// goroutine starts (serve's AIREOS_MEMORY_SWEEP_SECONDS handling) — a bad override
-// stops serve at boot rather than surfacing later inside this goroutine.
-func runReaper(ctx context.Context, st *store.Store, memStore *memory.Store, sweepCadence time.Duration) {
+// runReaper periodically closes stuck pre-open sessions (T-032), cleans up lapsed
+// pairing_requests (PERF-13, T-113 — folded onto THIS same tick, not a new ticker
+// or env var), AND sweeps due memory expiry (T-081, ADR-0064 §5/F-b — "no fourth
+// goroutine": the memory sweep rides this same loop on its own ticker, not a new
+// goroutine). All legs are best-effort: an error logs and the loop continues — a
+// stalled leg surfaces as lingering rows (stuck sessions, un-swept pairing
+// requests, or expired-but-untombstoned memories + absent memory.expired events,
+// DUR-9), not a failed serve. Runs for the life of the process. memStore/
+// pairingStore may be nil in tests that only exercise the session leg; sweepCadence
+// is resolved (and fail-loud validated) by the caller BEFORE this goroutine starts
+// (serve's AIREOS_MEMORY_SWEEP_SECONDS handling) — a bad override stops serve at
+// boot rather than surfacing later inside this goroutine.
+func runReaper(ctx context.Context, st *store.Store, memStore *memory.Store, pairingStore *pairing.Store, sweepCadence time.Duration) {
 	pendingTTL := reapDuration("API_REAP_PENDING_MINUTES", defaultReapPendingTTL)
 	approvalTTL := reapDuration("API_REAP_APPROVAL_MINUTES", defaultReapApprovalTTL)
 
@@ -371,6 +382,17 @@ func runReaper(ctx context.Context, st *store.Store, memStore *memory.Store, swe
 				log.Printf("session reaper: %v", err)
 			} else if n > 0 {
 				log.Printf("session reaper: closed %d stuck session(s)", n)
+			}
+			// PERF-13: consumed/expired pairing_requests never accumulate
+			// unboundedly. Best-effort (a failure logs and never fails a
+			// request); chains NO audit event (AUD-33 — a lapsed request is a
+			// non-event by decision, ADR-0068 §D6).
+			if pairingStore != nil {
+				if n, err := pairingStore.CleanupRequests(ctx, now); err != nil {
+					log.Printf("pairing request cleanup: %v", err)
+				} else if n > 0 {
+					log.Printf("pairing request cleanup: removed %d request(s)", n)
+				}
 			}
 		case <-sweep.C:
 			if memStore == nil {

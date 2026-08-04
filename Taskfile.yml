@@ -65,8 +65,12 @@ tasks:
       - pnpm -r --if-present run test
 
   test-integration:
-    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_/CONNECTOR_/POLICY_/MCP_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody; ADR-0057 gateway invocations. Tests self-skip when their env var is unset."
+    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_/CONNECTOR_/POLICY_/MCP_/API_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody; ADR-0057 gateway invocations. Tests self-skip when their env var is unset."
     cmds:
+      # api's own -tags integration suites (grant/memory/run/workstream/ctxindex/store/
+      # pairing) were never listed here before T-113 — this line is what actually runs
+      # them; needs API_TEST_DATABASE_URL against a DB with api's migrations applied.
+      - go test -tags integration ./services/api/internal/...
       - go test -tags integration ./services/audit-service/internal/store/...
       # connector-service credential custody (ADR-0053; needs CONNECTOR_TEST_DATABASE_URL
       # against a DB with both api + connector migrations applied).
