@@ -103,15 +103,19 @@ func (s *Store) CreateInTx(ctx context.Context, tx pgx.Tx, in CreateInput) (Requ
 	if err != nil {
 		return Request{}, nil, fmt.Errorf("mint pairing request id: %w", err)
 	}
-	expiresAt := time.Now().Add(RequestTTL)
 
-	var createdAt time.Time
+	// expires_at is computed IN SQL (now() + RequestTTL), not with Go's time.Now():
+	// Postgres is the single clock authority for every row this package writes and
+	// every read that compares against a row (Commander review finding B). RETURNING
+	// hands back what was actually stored rather than a second, separately-computed
+	// Go value that could drift from it.
+	var createdAt, expiresAt time.Time
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO pairing_requests (id, operator, label, secret_hash, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING created_at`,
-		id.String(), in.Operator, in.Label, sum[:], expiresAt,
-	).Scan(&createdAt); err != nil {
+		VALUES ($1, $2, $3, $4, now() + ($5 * interval '1 second'))
+		RETURNING expires_at, created_at`,
+		id.String(), in.Operator, in.Label, sum[:], RequestTTL.Seconds(),
+	).Scan(&expiresAt, &createdAt); err != nil {
 		return Request{}, nil, fmt.Errorf("insert pairing request: %w", err)
 	}
 
@@ -168,10 +172,14 @@ func (s *Store) Redeem(ctx context.Context, id string, secret []byte) (Session, 
 // failures (a DB error), never for "wrong secret" or "malformed id."
 //
 // The expiry check compares against the DATABASE's now() (returned by the same
-// locking SELECT), not Go's time.Now() — Postgres is the single clock authority
-// for every row this package writes and every other read (GetLive); a second,
-// Go-side clock in this one comparison is a latent split-clock bug waiting for a
-// multi-host deployment (Commander review finding B).
+// locking SELECT), not Go's time.Now(). Postgres is the single clock authority for
+// every row this package writes — CreateInTx's request insert and this method's
+// session insert below both compute expires_at IN SQL (now() + TTL) rather than in
+// Go, and RETURNING hands back the stored value — and for every other read
+// (GetLive). A second, Go-side clock in any one of these spots is a latent
+// split-clock bug waiting for a multi-host deployment (Commander review finding B;
+// the write-side half of the fix landed after an initial pass left it comparison-
+// only — the claim in this comment is now backed by code, not just intent).
 //
 // On a wrong secret, attempts increments in the SAME transaction; the
 // maxFailedAttempts-th wrong secret ALSO burns the request (consumed_at set) in
@@ -237,15 +245,17 @@ func (s *Store) RedeemInTx(ctx context.Context, tx pgx.Tx, id string, secret []b
 	if err != nil {
 		return Session{}, false, fmt.Errorf("mint paired session id: %w", err)
 	}
-	sessExpiresAt := time.Now().Add(PairedTTL)
 
-	var createdAt time.Time
+	// expires_at is computed IN SQL (now() + PairedTTL), same reasoning as
+	// CreateInTx's request insert above — Postgres stays the single clock authority
+	// for every write, and RETURNING hands back the value actually stored.
+	var createdAt, sessExpiresAt time.Time
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO paired_sessions (id, operator, label, scope, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING created_at`,
-		sessID.String(), operator, label, ApprovalsScopeV1, sessExpiresAt,
-	).Scan(&createdAt); err != nil {
+		VALUES ($1, $2, $3, $4, now() + ($5 * interval '1 second'))
+		RETURNING expires_at, created_at`,
+		sessID.String(), operator, label, ApprovalsScopeV1, PairedTTL.Seconds(),
+	).Scan(&sessExpiresAt, &createdAt); err != nil {
 		return Session{}, false, fmt.Errorf("insert paired session: %w", err)
 	}
 
