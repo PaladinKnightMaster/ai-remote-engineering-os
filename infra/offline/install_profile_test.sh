@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # install_profile_test.sh — table-driven unit test for install.sh's deployment
-# profile helpers (ADR-0068 §D1; OI-21..23). This is the ticket's named live
-# test for OI-22 (VER-6): it proves the vpn-first/dmz-first loopback refusal
-# without ever standing up a VPN.
+# profile helpers (ADR-0068 §D1; OI-21..23) AND its pairing-enablement
+# resolution (ADR-0068 §D10; T-114a Commander-review addendum). This is the
+# ticket's named live test for OI-22 (VER-6): it proves the vpn-first/dmz-first
+# loopback refusal without ever standing up a VPN. It also proves
+# AIREOS_PAIRING_ENABLED's env > persisted > "0" precedence, closing the
+# defect where a hardcoded `0` in the aireos.env heredoc silently disabled a
+# deliberately-enabled pairing session on every re-run.
 #
 # Sources install.sh; install.sh's own sourceable guard (BASH_SOURCE[0] != $0)
 # returns before the root check / installer body, so this never touches a real
@@ -132,32 +136,63 @@ echo "== resolved-empty profile is refused, never silently installed =="
 EMPTY="$(aireos_resolve_profile "" "" "")"
 expect_refuse "resolve('','','') -> empty -> assertion refuses" "$EMPTY" "" "lan-only"
 
-echo "== aireos_persisted_profile =="
+echo "== aireos_persisted_value (generalized from aireos_persisted_profile) =="
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 
 printf 'AIREOS_SITE_ADDRESS=localhost\nAIREOS_DEPLOYMENT_PROFILE=vpn-first\n' > "$TMPD/present.env"
-GOT="$(aireos_persisted_profile "$TMPD/present.env")"
+GOT="$(aireos_persisted_value "AIREOS_DEPLOYMENT_PROFILE" "$TMPD/present.env")"
 if [ "$GOT" = "vpn-first" ]; then
-  echo "PASS persisted-profile: line present -- got 'vpn-first'"; pass=$((pass + 1))
+  echo "PASS persisted-value(profile): line present -- got 'vpn-first'"; pass=$((pass + 1))
 else
-  echo "FAIL persisted-profile: line present -- got '$GOT'"; fail=$((fail + 1))
+  echo "FAIL persisted-value(profile): line present -- got '$GOT'"; fail=$((fail + 1))
 fi
 
 printf 'AIREOS_SITE_ADDRESS=localhost\n' > "$TMPD/absent.env"
-GOT="$(aireos_persisted_profile "$TMPD/absent.env")"
+GOT="$(aireos_persisted_value "AIREOS_DEPLOYMENT_PROFILE" "$TMPD/absent.env")"
 if [ -z "$GOT" ]; then
-  echo "PASS persisted-profile: file present, line absent -- got empty"; pass=$((pass + 1))
+  echo "PASS persisted-value(profile): file present, line absent -- got empty"; pass=$((pass + 1))
 else
-  echo "FAIL persisted-profile: file present, line absent -- got '$GOT'"; fail=$((fail + 1))
+  echo "FAIL persisted-value(profile): file present, line absent -- got '$GOT'"; fail=$((fail + 1))
 fi
 
-GOT="$(aireos_persisted_profile "$TMPD/does-not-exist.env")"
+GOT="$(aireos_persisted_value "AIREOS_DEPLOYMENT_PROFILE" "$TMPD/does-not-exist.env")"
 if [ -z "$GOT" ]; then
-  echo "PASS persisted-profile: file missing entirely -- got empty"; pass=$((pass + 1))
+  echo "PASS persisted-value(profile): file missing entirely -- got empty"; pass=$((pass + 1))
 else
-  echo "FAIL persisted-profile: file missing entirely -- got '$GOT'"; fail=$((fail + 1))
+  echo "FAIL persisted-value(profile): file missing entirely -- got '$GOT'"; fail=$((fail + 1))
 fi
+
+# aireos_persisted_value reused for a SECOND key (AIREOS_PAIRING_ENABLED) in the
+# SAME file, proving the generalization actually generalized rather than just
+# renaming a still-profile-only function.
+printf 'AIREOS_SITE_ADDRESS=localhost\nAIREOS_DEPLOYMENT_PROFILE=lan-only\nAIREOS_PAIRING_ENABLED=1\n' > "$TMPD/both.env"
+GOT="$(aireos_persisted_value "AIREOS_PAIRING_ENABLED" "$TMPD/both.env")"
+if [ "$GOT" = "1" ]; then
+  echo "PASS persisted-value(pairing): line present alongside profile -- got '1'"; pass=$((pass + 1))
+else
+  echo "FAIL persisted-value(pairing): line present alongside profile -- got '$GOT'"; fail=$((fail + 1))
+fi
+
+# expect_pairing_resolve <name> <env-value> <persisted> <want> — asserts
+# aireos_resolve_pairing_enabled's precedence (env > persisted > "0", no
+# prompt leg — ADR-0068 §D10, T-114a Commander-review addendum).
+expect_pairing_resolve() {
+  local name="$1" env_value="$2" persisted="$3" want="$4" got
+  got="$(aireos_resolve_pairing_enabled "$env_value" "$persisted")"
+  if [ "$got" = "$want" ]; then
+    echo "PASS $name -- resolved '$got'"
+    pass=$((pass + 1))
+  else
+    echo "FAIL $name -- expected '$want', got '$got'"
+    fail=$((fail + 1))
+  fi
+}
+
+echo "== aireos_resolve_pairing_enabled (env > persisted > \"0\"; no prompt) =="
+expect_pairing_resolve "env wins over a differing persisted value" "1" "0" "1"
+expect_pairing_resolve "persisted survives when env is unset (the re-run fix)" "" "1" "1"
+expect_pairing_resolve "neither set -- safe default \"0\" (SEC-41, fresh install)" "" "" "0"
 
 echo
 echo "$pass passed, $fail failed"

@@ -77,6 +77,28 @@ air-gapped host.
    will now correctly **fail loudly** rather than silently reverting to a loopback
    edge; carrying the site address forward is a known follow-up, tracked separately.
 
+   **Pairing / QR device pairing (optional, v0.12.0, ADR-0068 §D10).** Set
+   `AIREOS_PAIRING_ENABLED=1` to turn on QR device pairing — a phone can then be
+   paired to a scope-narrowed, revocable operator session (`approvals@1`: read +
+   approve/deny pending approvals, nothing else). **Off by default**: a fresh
+   install with the variable unset writes `AIREOS_PAIRING_ENABLED=0` into
+   `aireos.env`, and some locked-down SOCs forbid phones on the floor entirely —
+   pairing enabled by default would be a posture regression shipped as a feature.
+   With pairing off, every pairing route answers `404` (not `403`) — a disabled
+   capability must not advertise its own existence.
+   Resolution is **env beats a previously persisted value beats `0`** — the same
+   precedence the deployment profile uses, minus the interactive prompt (a
+   phone-pairing question on every air-gapped install run would be worse than a
+   safe default, so this one is never prompted). Concretely:
+   - `AIREOS_PAIRING_ENABLED=1 ./install.sh` turns pairing on and **the choice
+     persists** — a later plain `./install.sh` re-run (with the variable unset)
+     reads the persisted `1` back out of `aireos.env` and keeps pairing on,
+     rather than silently reverting to disabled.
+   - Explicitly passing `AIREOS_PAIRING_ENABLED=0` on a re-run turns it back off,
+     the same way an explicit env value always wins for the deployment profile.
+   - A brand-new install with the variable unset and nothing yet persisted
+     writes `0` — the shipped default.
+
 3. **TLS** — Caddy serves `https://<AIREOS_SITE_ADDRESS>` with a self-signed local
    CA (`tls internal`). Import the CA root (under `/var/lib/aireos/caddy`) into
    operator browsers to remove warnings, or replace with an operator-supplied cert

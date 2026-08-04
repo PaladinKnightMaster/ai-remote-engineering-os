@@ -26,10 +26,13 @@
 #                                        is the product's only externally-bound process.
 #   AIREOS_PAIRING_ENABLED              1 enables QR device pairing; unset/anything else
 #                                        is off (ADR-0068 §D10/SEC-41 — the shipped
-#                                        default). Never prompted: off is a safe default,
-#                                        and prompting would push a phone-pairing question
-#                                        at every air-gapped install. Persisted in
-#                                        aireos.env as 0 when unset.
+#                                        default on a fresh install). Never prompted: a
+#                                        phone-pairing question at every air-gapped install
+#                                        would be worse than a safe default. Resolution is
+#                                        env > persisted (from a prior run's aireos.env) >
+#                                        "0" — so a deliberate enable SURVIVES a re-run
+#                                        instead of silently flipping back off (see
+#                                        docs/devops/offline-install-v3.md).
 #   AIREOS_SKIP_SYSTEMCTL=1             deploy + provision but don't enable units
 set -euo pipefail
 
@@ -43,7 +46,7 @@ BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log() { printf '\033[1;34m[install]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[install] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# --- deployment-profile helpers (ADR-0068 §D1; OI-21..23) -------------------
+# --- deployment-profile + pairing-enablement helpers (ADR-0068 §D1/§D10) ----
 # Kept free of every other section's state so install_profile_test.sh can
 # source this file and exercise them in isolation (see the sourceable guard
 # just below).
@@ -96,14 +99,18 @@ aireos_site_all_loopback() {
   return 0
 }
 
-# aireos_persisted_profile <env-file> — echoes the AIREOS_DEPLOYMENT_PROFILE
-# line's value from <env-file>, or nothing if the file is absent or carries no
-# such line. No side effects; always "succeeds" so it is safe to capture via
-# command substitution under this file's own `set -e`.
-aireos_persisted_profile() {
-  local env_file="$1"
+# aireos_persisted_value <var-name> <env-file> — echoes <var-name>'s line
+# value from <env-file>, or nothing if the file is absent or carries no such
+# line. No side effects; always "succeeds" so it is safe to capture via
+# command substitution under this file's own `set -e`. Generalized from a
+# profile-only aireos_persisted_profile (T-114a Commander-review addendum) so
+# AIREOS_PAIRING_ENABLED's resolution below reuses this same tested machinery
+# instead of a parallel implementation — both are "does a prior run's
+# aireos.env already say something" lookups, differing only in which key.
+aireos_persisted_value() {
+  local var_name="$1" env_file="$2"
   if [ -f "$env_file" ]; then
-    sed -n 's/^AIREOS_DEPLOYMENT_PROFILE=//p' "$env_file" | head -n1
+    sed -n "s/^${var_name}=//p" "$env_file" | head -n1
   fi
   return 0
 }
@@ -121,6 +128,27 @@ aireos_resolve_profile() {
     printf '%s' "$answer"
   else
     printf '%s' "$persisted"
+  fi
+}
+
+# aireos_resolve_pairing_enabled <env-value> <persisted> — env wins; else a
+# prior run's persisted value; else "0", the SEC-41 shipped default. No
+# `<answer>` leg: unlike the profile, this is deliberately never prompted
+# (ADR-0068 §D10 — prompting would push a phone-pairing question at every
+# air-gapped install), so the precedence collapses to two real sources plus a
+# safe literal fallback instead of aireos_resolve_profile's four-way one.
+# Fixes the T-114a defect the Commander review caught: a hardcoded `0` in the
+# aireos.env heredoc silently flipped a deliberately-enabled pairing session
+# back off on every re-run (ADR-0051's idempotence guarantee / OI-31 both
+# require a re-run to preserve existing configuration, not just existing rows).
+aireos_resolve_pairing_enabled() {
+  local env_value="$1" persisted="$2"
+  if [ -n "$env_value" ]; then
+    printf '%s' "$env_value"
+  elif [ -n "$persisted" ]; then
+    printf '%s' "$persisted"
+  else
+    printf '%s' "0"
   fi
 }
 
@@ -155,9 +183,9 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
 # --- 1a. deployment profile (ADR-0068 §D1; OI-21..23) ------------------------
 # Env beats persisted beats prompt. A refusal here must create no user, no
 # directories, and deploy nothing — hence this runs before every other step.
-# Resolution is the two testable helpers above (aireos_persisted_profile,
+# Resolution is the two testable helpers above (aireos_persisted_value,
 # aireos_resolve_profile); only the interactive `read` stays here.
-PERSISTED_PROFILE="$(aireos_persisted_profile "$ENV_FILE")"
+PERSISTED_PROFILE="$(aireos_persisted_value "AIREOS_DEPLOYMENT_PROFILE" "$ENV_FILE")"
 ANSWER=""
 if [ -z "${AIREOS_DEPLOYMENT_PROFILE:-}" ]; then
   if [ -n "$PERSISTED_PROFILE" ]; then
@@ -169,6 +197,18 @@ fi
 DEPLOYMENT_PROFILE="$(aireos_resolve_profile "${AIREOS_DEPLOYMENT_PROFILE:-}" "$PERSISTED_PROFILE" "$ANSWER")"
 aireos_assert_profile "$DEPLOYMENT_PROFILE" "${AIREOS_SITE_ADDRESS:-}"
 log "deployment profile: $DEPLOYMENT_PROFILE"
+
+# --- 1b. pairing enablement (ADR-0068 §D10; T-114a Commander-review addendum)
+# Env beats persisted beats "0" — no prompt (see aireos_resolve_pairing_enabled's
+# comment). This is the SAME env>persisted precedence OI-21 already gives the
+# deployment profile above, applied to a second variable — an ambient
+# AIREOS_PAIRING_ENABLED in someone's shell profile has no MORE power here than
+# an ambient AIREOS_DEPLOYMENT_PROFILE already has for the profile; a deliberate
+# enable (env this run, or persisted from a prior one) survives a re-run, and a
+# fresh install with neither set stays off (SEC-41's shipped default).
+PERSISTED_PAIRING="$(aireos_persisted_value "AIREOS_PAIRING_ENABLED" "$ENV_FILE")"
+PAIRING_ENABLED="$(aireos_resolve_pairing_enabled "${AIREOS_PAIRING_ENABLED:-}" "$PERSISTED_PAIRING")"
+log "pairing enabled: $PAIRING_ENABLED"
 
 # --- 1. service user + state dirs -------------------------------------------
 if ! id "$SVC_USER" >/dev/null 2>&1; then
@@ -275,7 +315,7 @@ AIREOS_CAST_DIR=$STATE/sessions
 AIREOS_AUDIT_URL=http://127.0.0.1:8081
 AIREOS_SITE_ADDRESS=${AIREOS_SITE_ADDRESS:-localhost}
 AIREOS_DEPLOYMENT_PROFILE=$DEPLOYMENT_PROFILE
-AIREOS_PAIRING_ENABLED=0
+AIREOS_PAIRING_ENABLED=$PAIRING_ENABLED
 AIREOS_BOOTSTRAP_OPERATOR_USER=$OP_USER
 AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH=$OP_HASH
 API_ADDR=127.0.0.1:8080
