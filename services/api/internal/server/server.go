@@ -807,7 +807,15 @@ func (a *apiHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 	if profile == "" {
 		profile = "unknown"
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"subject": c.Subject, "edge": c.Edge, "deploymentProfile": profile})
+	resp := map[string]string{"subject": c.Subject, "edge": c.Edge, "deploymentProfile": profile}
+	// scope (ADR-0068 §D5, T-115b): additive, and OMITTED entirely for an
+	// ordinary desktop capability (c.Scope.Name == "") rather than sent as an
+	// invented empty string — the SPA's only signal that it holds a narrowed
+	// paired session rather than a full desktop one.
+	if c.Scope.Name != "" {
+		resp["scope"] = c.Scope.Name
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *apiHandlers) decodeInput(w http.ResponseWriter, r *http.Request) (resource.Input, bool) {

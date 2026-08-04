@@ -520,6 +520,48 @@ func auditActorFilterMatches(filterActor, eventActor string) bool {
 	return filterActor == eventActor
 }
 
+// TestGetMeScopeAdditive — Identity.scope (T-115b, ADR-0068 §D5) is the SPA's
+// ONLY signal that it holds a narrowed paired session rather than a full
+// desktop one. GetMe must OMIT the field entirely for an ordinary desktop
+// capability (never invent an empty value) and emit it verbatim for a live
+// paired session. GET /v1/auth/me is itself one of the six approvals@1
+// routes (pairingRouteActions), so this also proves a live paired session can
+// read its own identity at all.
+func TestGetMeScopeAdditive(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "cluster-test")
+	verifier := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "cluster-test", "api"))
+	fp := newFakePairingStore()
+	sessID := fp.seedLive("operator:zelda")
+	h := New(newFake(), nil, signer, verifier, "", "", WithPairingStore(fp), WithPairingEnabled(true))
+
+	deskTok, err := signer.IssueOperator("operator:admin", "api")
+	if err != nil {
+		t.Fatalf("issue desk: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerRequest(http.MethodGet, "/v1/auth/me", "", deskTok))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("me via desk: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), `"scope"`) {
+		t.Fatalf("me via desk: scope must be OMITTED (not invented as empty), got %s", rec.Body)
+	}
+
+	pairedTok, err := signer.IssuePaired("operator:zelda", "api", sessID, auth.Scope{Name: pairing.ApprovalsScopeV1})
+	if err != nil {
+		t.Fatalf("issue paired: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, bearerRequest(http.MethodGet, "/v1/auth/me", "", pairedTok))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("me via paired: want 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"scope":"approvals@1"`) {
+		t.Fatalf("me via paired: want scope=approvals@1, got %s", rec.Body)
+	}
+}
+
 // TestResolveInvocationAUD34OriginMarker proves the marker is actually wired
 // into the real approve/deny wire call (gateway.Client.Resolve's resolvedBy
 // field — the only channel available without touching mcp-gateway/

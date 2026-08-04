@@ -2365,6 +2365,13 @@ components:
             verbatim from installer configuration; unknown when the stack was not installed
             through install.sh. A read-only installation property — it carries no audit event
             (ADR-0068 §D2).
+        scope:
+          type: string
+          description: >-
+            The current session's named, versioned scope (ADR-0068 §D5) — e.g. approvals@1
+            for a paired device session. A scope is a narrowing WITHIN the human-agent edge,
+            never a separate edge. Absent entirely for an ordinary desktop session — api
+            omits the field rather than sending an invented empty value (T-115b).
     # --- pairing (T-114a, ADR-0068 §D4-§D6/§D11) -------------------------------
     # New named schemas ONLY — none of these extend Grant, Workstream, the
     # shared page-envelope schema, or any other existing component (CON-3/CON-4).

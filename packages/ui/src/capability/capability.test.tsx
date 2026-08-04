@@ -155,6 +155,50 @@ describe("CapabilityProvider — deploymentProfile (ADR-0068 §D2, OI-24)", () =
   });
 });
 
+describe("CapabilityGate — deniedScopes (ADR-0068 §D5, T-115b)", () => {
+  it("hides children when the capability's scope is in the deny-list", () => {
+    render(
+      <CapabilityProvider
+        fetchCapability={ANY}
+        initialValue={{ subject: "operator:zelda", edge: "human-agent", scope: "approvals@1" }}
+      >
+        <CapabilityGate edge="human-agent" deniedScopes={["approvals@1"]}>
+          <span data-testid="protected">should not render for a paired session</span>
+        </CapabilityGate>
+      </CapabilityProvider>,
+    );
+    expect(screen.queryByTestId("protected")).toBeNull();
+  });
+
+  it("renders children when the capability has no scope at all (an ordinary desktop session)", () => {
+    render(
+      <CapabilityProvider
+        fetchCapability={ANY}
+        initialValue={{ subject: "operator:admin", edge: "human-agent" }}
+      >
+        <CapabilityGate edge="human-agent" deniedScopes={["approvals@1"]}>
+          <span data-testid="protected">visible on desktop</span>
+        </CapabilityGate>
+      </CapabilityProvider>,
+    );
+    expect(screen.getByTestId("protected")).toBeTruthy();
+  });
+
+  it("renders children when the scope does not match the deny-list", () => {
+    render(
+      <CapabilityProvider
+        fetchCapability={ANY}
+        initialValue={{ subject: "operator:zelda", edge: "human-agent", scope: "some-other-scope" }}
+      >
+        <CapabilityGate edge="human-agent" deniedScopes={["approvals@1"]}>
+          <span data-testid="protected">visible</span>
+        </CapabilityGate>
+      </CapabilityProvider>,
+    );
+    expect(screen.getByTestId("protected")).toBeTruthy();
+  });
+});
+
 describe("useCapability — usage guard", () => {
   it("throws when used outside <CapabilityProvider>", () => {
     function NoProvider() {

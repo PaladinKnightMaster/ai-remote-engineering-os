@@ -40,6 +40,13 @@ export interface Capability {
    * don't set it keep compiling.
    */
   deploymentProfile?: string;
+  /**
+   * The current session's named, versioned scope (ADR-0068 §D5) — e.g.
+   * "approvals@1" for a paired device session. A scope narrows WITHIN this
+   * `edge`, never a separate edge. Absent for an ordinary desktop session
+   * (mirrors Identity.scope, T-115b) — consumers must not invent "" here.
+   */
+  scope?: string;
 }
 
 export interface CapabilityContextValue {

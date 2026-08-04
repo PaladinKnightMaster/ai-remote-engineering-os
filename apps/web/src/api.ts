@@ -24,12 +24,22 @@ const BASE_URL =
     ? window.location.origin
     : "http://localhost";
 
+// Routes that are intentionally reachable with no session at all. A fresh
+// mount of ANY of them triggers <CapabilityProvider>'s own bootstrap
+// GET /v1/auth/me (App.tsx wraps the whole router in one provider instance,
+// not per-route) — which 401s by design there, since there is no cookie yet.
+// The 401 chokepoint below must not hard-redirect away from one of these
+// (T-115b: it did, for /pair — the hard redirect aborted the in-flight
+// redeem POST before it could complete, mid-flight, every time).
+const PUBLIC_PATHS = ["/login", "/pair"];
+
 export const apiClient = createApiClient({
   baseUrl: BASE_URL,
   onUnauthorized: () => {
-    // Avoid an infinite reload loop if the 401 lands on /login itself
-    // (e.g. login submission fails with stale CSRF cookies).
-    if (window.location.pathname !== "/login") {
+    // Avoid an infinite reload loop / an aborted in-flight request on a
+    // route that is public BY DESIGN (a 401 there is expected, not a signal
+    // to bounce the user — e.g. /login itself, or /pair mid-redeem).
+    if (!PUBLIC_PATHS.includes(window.location.pathname)) {
       window.location.assign("/login");
     }
   },
@@ -38,11 +48,16 @@ export const apiClient = createApiClient({
 /**
  * Adapter for <CapabilityProvider fetchCapability={...}>.
  * Maps the typed Identity from /v1/auth/me into the packages/ui
- * `Capability` shape (subject + edge + deploymentProfile). Returns null on
- * any error so the provider treats the user as unauthenticated.
+ * `Capability` shape (subject + edge + deploymentProfile + scope). Returns
+ * null on any error so the provider treats the user as unauthenticated.
  */
 export async function fetchCurrentCapability(): Promise<Capability | null> {
   const { data, error } = await apiClient.GET("/v1/auth/me");
   if (error || !data) return null;
-  return { subject: data.subject, edge: data.edge, deploymentProfile: data.deploymentProfile };
+  return {
+    subject: data.subject,
+    edge: data.edge,
+    deploymentProfile: data.deploymentProfile,
+    scope: data.scope,
+  };
 }

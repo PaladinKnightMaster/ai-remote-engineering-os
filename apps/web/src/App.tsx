@@ -13,6 +13,7 @@ import { Workstreams } from "./routes/Workstreams";
 import { Memories } from "./routes/Memories";
 import { Audit } from "./routes/Audit";
 import { Pairing } from "./routes/Pairing";
+import { Pair } from "./routes/Pair";
 
 /**
  * RequireAuth — route guard. The capability-edge security boundary is
@@ -34,6 +35,10 @@ export function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          {/* Unauthenticated by design (ADR-0068 §D6): the device redeeming a
+              pairing request has no session yet — outside RequireAuth, like
+              /login. */}
+          <Route path="/pair" element={<Pair />} />
           <Route
             path="/"
             element={

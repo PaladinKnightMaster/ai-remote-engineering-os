@@ -18,6 +18,15 @@ export interface CapabilityGateProps {
    * subject with the matching edge is allowed.
    */
   subjects?: string[];
+  /**
+   * Optional scope deny-list (ADR-0068 §D5). If the current capability's
+   * `scope` is a member of this list, the gate denies even though `edge`
+   * (and `subjects`) matched — e.g. hiding an operator-action affordance
+   * from a narrowed "approvals@1" paired session without threading an
+   * ad-hoc scope check through the route. An ordinary desktop session has
+   * no `scope` and is therefore never affected by this prop.
+   */
+  deniedScopes?: string[];
   children: ReactNode;
   /** Rendered when the gate denies. Defaults to nothing (collapse). */
   fallback?: ReactNode;
@@ -26,6 +35,7 @@ export interface CapabilityGateProps {
 export function CapabilityGate({
   edge,
   subjects,
+  deniedScopes,
   children,
   fallback = null,
 }: CapabilityGateProps) {
@@ -33,6 +43,9 @@ export function CapabilityGate({
   if (!capability) return <>{fallback}</>;
   if (capability.edge !== edge) return <>{fallback}</>;
   if (subjects && subjects.length > 0 && !subjects.includes(capability.subject)) {
+    return <>{fallback}</>;
+  }
+  if (deniedScopes && deniedScopes.length > 0 && capability.scope && deniedScopes.includes(capability.scope)) {
     return <>{fallback}</>;
   }
   return <>{children}</>;

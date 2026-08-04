@@ -1207,6 +1207,8 @@ export interface components {
             edge: string;
             /** @description The active AIREOS_DEPLOYMENT_PROFILE (lan-only / vpn-first / dmz-first), echoed verbatim from installer configuration; unknown when the stack was not installed through install.sh. A read-only installation property — it carries no audit event (ADR-0068 §D2). */
             deploymentProfile?: string;
+            /** @description The current session's named, versioned scope (ADR-0068 §D5) — e.g. approvals@1 for a paired device session. A scope is a narrowing WITHIN the human-agent edge, never a separate edge. Absent entirely for an ordinary desktop session — api omits the field rather than sending an invented empty value (T-115b). */
+            scope?: string;
         };
         PairingRequestCreate: {
             /** @description Operator-chosen name for the resulting session (never set by the redeeming device — ADR-0068 §D6). */
