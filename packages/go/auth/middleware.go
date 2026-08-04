@@ -37,12 +37,17 @@ func (a asMiddleware) Verify(ctx context.Context, bearer string) (mw.Capability,
 			Resource:   ct.Scope.Resource,
 			Operations: ct.Scope.Operations,
 			LeaseID:    ct.Scope.LeaseID,
+			Name:       ct.Scope.Name,
 		},
 		// ExpiresAt + Audience let services/api do sliding-refresh (ADR-0047 §6)
 		// without re-parsing the bearer. Adapters that don't expose these (e.g.
 		// the dev allow-all in services/api/main.go) leave them zero-valued.
 		ExpiresAt: ct.Expiry,
 		Audience:  ct.Audience,
+		// TokenID (jti) is the paired-session tier's per-request liveness
+		// lookup key (ADR-0068 §D4); every other edge simply carries it
+		// unused.
+		TokenID: ct.TokenID,
 	}, nil
 }
 

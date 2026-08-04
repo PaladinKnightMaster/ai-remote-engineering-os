@@ -160,10 +160,14 @@ func serve(dsn string) error {
 		server.WithDeploymentProfile(os.Getenv("AIREOS_DEPLOYMENT_PROFILE")),
 		// AIREOS_PAIRING_ENABLED (ADR-0068 §D10, SEC-41): truthy "1" enables the
 		// pairing capability; anything else — including unset, the value
-		// install.sh writes — is off. T-114a: the pairing routes 404 either way
-		// (see services/api/internal/server/pairing.go); T-114b makes this flag
-		// load-bearing.
+		// install.sh writes — is off.
 		server.WithPairingEnabled(os.Getenv("AIREOS_PAIRING_ENABLED") == "1"),
+		// The paired-session store (ADR-0068 §D4-§D6, T-114b): the same
+		// pairingStore instance the reaper's cleanup sweep already uses above —
+		// not a divergent second construction (the memStore/ctxStore precedent).
+		// Backs the four /v1/pairing-*/paired-sessions* handlers AND
+		// gateByDeclaredSecurity's per-request liveness check (SEC-34).
+		server.WithPairingStore(pairingStore),
 	}
 
 	// The delegation-grant engine (ADR-0062, T-063): the operator issue/list/revoke

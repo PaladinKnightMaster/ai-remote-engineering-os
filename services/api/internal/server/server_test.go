@@ -1365,13 +1365,17 @@ func TestResolveCSRFRequired(t *testing.T) {
 	}
 }
 
-// --- pairing (T-114a, ADR-0068 §D10, SEC-41) --------------------------------
+// --- pairing (T-114a/T-114b, ADR-0068 §D10, SEC-41) -------------------------
 //
-// The four pairing routes ship disabled by default and 404 unconditionally in
-// this ticket (no handler body exists yet — see pairing.go). These tests
-// prove: (1) 404 with pairing off, (2) 404 with pairing on (T-114a's honest
-// "not yet built" state), and (3) that 404 is byte-identical to an actually
-// unknown route's 404 — the no-oracle requirement (SEC-41).
+// The four pairing routes ship disabled by default and 404 unconditionally
+// regardless of how they are otherwise configured (SEC-41's no-oracle
+// requirement). These tests prove: (1) 404 with pairing off, (2) that 404 is
+// byte-identical to an actually unknown route's 404. T-114a additionally
+// proved (3) 404 with pairing on but no handler body — that claim is now
+// FALSE (T-114b implements the real bodies) and its test is replaced below by
+// one proving the honest T-114b equivalent: enabled-but-unconfigured (no
+// WithPairingStore) answers 503, not 404 — the SAME "not configured" posture
+// every other optional store in this file uses (grants/gateway/memories/...).
 
 // unknownRouteRec hits a path that is registered nowhere in the fragment, so
 // it falls through to chi's own default NotFoundHandler (http.NotFound) — the
@@ -1412,15 +1416,25 @@ func TestPairingRoutesNotFoundWhenDisabled(t *testing.T) {
 	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/paired-sessions/sess-1/revoke", "", true), true)
 }
 
-// TestPairingRoutesNotFoundWhenEnabled — T-114a's honest state: turning the
-// flag on changes nothing yet, because no handler body exists (T-114b). Same
-// 404, same no-oracle body.
-func TestPairingRoutesNotFoundWhenEnabled(t *testing.T) {
+// TestPairingRoutesUnavailableWhenEnabledButUnconfigured — T-114b: with
+// pairing ON but no WithPairingStore, the routes are REAL now (past the
+// pairingDisabled gate) and answer 503, the same "not configured" posture
+// every other optional store in this file uses — no longer a 404 (that claim
+// belonged to T-114a's placeholder state, before any handler body existed).
+func TestPairingRoutesUnavailableWhenEnabledButUnconfigured(t *testing.T) {
 	key, _ := auth.GenerateKey()
-	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", WithPairingEnabled(true))
+	h := New(newFake(), nil, auth.NewSigner(key, ""), allowAll{}, "", "", WithPairingEnabled(true)) // no WithPairingStore
 
-	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/pairing-requests", `{}`, true), true)
-	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/pairing-requests/req-1/redeem", `{"secret":"x"}`, false), false)
-	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodGet, "/v1/paired-sessions", "", true), true)
-	assertNotFoundLikeUnknownRoute(t, h, req(t, h, http.MethodPost, "/v1/paired-sessions/sess-1/revoke", "", true), true)
+	if rec := req(t, h, http.MethodPost, "/v1/pairing-requests", `{}`, true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("create pairing request unconfigured: want 503, got %d: %s", rec.Code, rec.Body)
+	}
+	if rec := req(t, h, http.MethodPost, "/v1/pairing-requests/req-1/redeem", `{"secret":"x"}`, false); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("redeem unconfigured: want 503, got %d: %s", rec.Code, rec.Body)
+	}
+	if rec := req(t, h, http.MethodGet, "/v1/paired-sessions", "", true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("list paired sessions unconfigured: want 503, got %d: %s", rec.Code, rec.Body)
+	}
+	if rec := req(t, h, http.MethodPost, "/v1/paired-sessions/sess-1/revoke", "", true); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("revoke paired session unconfigured: want 503, got %d: %s", rec.Code, rec.Body)
+	}
 }

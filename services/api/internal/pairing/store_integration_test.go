@@ -407,3 +407,127 @@ func containsSession(sessions []Session, id string) bool {
 	}
 	return false
 }
+
+// countOutcome mirrors grant's own test helper (services/api/internal/grant/
+// store_integration_test.go): a post-hoc count against api_outbox proves the
+// row landed — the SAME transaction that wrote the state change is what
+// guarantees it landed atomically with it (CreateInTx/RedeemInTx/RevokeInTx all
+// commit exactly once, via Create/Redeem/Revoke), not this read.
+func countOutcome(t *testing.T, s *Store, target, outcome string) int {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM api_outbox WHERE payload->>'target' = $1 AND payload->>'outcome' = $2`,
+		target, outcome).Scan(&n); err != nil {
+		t.Fatalf("count outcome: %v", err)
+	}
+	return n
+}
+
+// TestCreateChainsPairingRequested — AUD-32: Create's INSERT and the
+// pairing.requested event land together (Store.Create commits both in ONE
+// transaction; a crash between them is impossible by construction, not by
+// care).
+func TestCreateChainsPairingRequested(t *testing.T) {
+	s := testStore(t)
+	req, _ := mustCreate(t, s, "operator:judy", "laptop")
+
+	if n := countOutcome(t, s, "pairing:"+req.ID, "pairing.requested"); n != 1 {
+		t.Fatalf("pairing.requested count = %d, want 1", n)
+	}
+}
+
+// TestRedeemChainsPairingRedeemedOnlyOnSuccess — AUD-32/AUD-33: a successful
+// redeem chains exactly one pairing.redeemed in the SAME transaction as the
+// paired_sessions insert; a WRONG secret (a refusal, not a state change of the
+// kind AUD-32 names) chains NOTHING — mirroring AUD-33's "an unredeemed request
+// that lapses chains nothing," here for "a redeem attempt that fails chains
+// nothing" too.
+func TestRedeemChainsPairingRedeemedOnlyOnSuccess(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	req, secret := mustCreate(t, s, "operator:mallory", "phone")
+
+	wrong := make([]byte, 32)
+	if _, err := rand.Read(wrong); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	if _, ok, err := s.Redeem(ctx, req.ID, wrong); err != nil || ok {
+		t.Fatalf("wrong secret: ok=%v err=%v", ok, err)
+	}
+
+	sess, ok, err := s.Redeem(ctx, req.ID, secret)
+	if err != nil || !ok {
+		t.Fatalf("redeem: ok=%v err=%v", ok, err)
+	}
+
+	if n := countOutcome(t, s, "paired-session:"+sess.ID, "pairing.redeemed"); n != 1 {
+		t.Fatalf("pairing.redeemed count = %d, want exactly 1 (the wrong-secret attempt must chain nothing)", n)
+	}
+}
+
+// TestRevokeChainsPairingRevoked — AUD-32: Revoke's UPDATE and the
+// pairing.revoked event land together in ONE transaction (RevokeInTx), and the
+// actor is the session's OWN operator (read back from the row via RETURNING,
+// not trusted from the caller).
+func TestRevokeChainsPairingRevoked(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	req, secret := mustCreate(t, s, "operator:oscar", "phone")
+	sess, ok, err := s.Redeem(ctx, req.ID, secret)
+	if err != nil || !ok {
+		t.Fatalf("redeem: ok=%v err=%v", ok, err)
+	}
+
+	if ok, err := s.Revoke(ctx, sess.ID); err != nil || !ok {
+		t.Fatalf("revoke: ok=%v err=%v", ok, err)
+	}
+
+	if n := countOutcome(t, s, "paired-session:"+sess.ID, "pairing.revoked"); n != 1 {
+		t.Fatalf("pairing.revoked count = %d, want 1", n)
+	}
+
+	// A second (no-op) revoke chains NOTHING further (RevokeInTx returns
+	// ok=false without touching the writer) — the count stays at exactly 1.
+	if ok, err := s.Revoke(ctx, sess.ID); err != nil || ok {
+		t.Fatalf("second revoke: ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+	if n := countOutcome(t, s, "paired-session:"+sess.ID, "pairing.revoked"); n != 1 {
+		t.Fatalf("pairing.revoked count after no-op second revoke = %d, want still 1", n)
+	}
+}
+
+// TestGetRegardlessOfLiveness — Get (T-114b's addition for the owner-scoped,
+// idempotent-revoke read) returns a revoked OR expired row that GetLive would
+// refuse, and ErrNotFound only for a genuinely unknown/malformed id.
+func TestGetRegardlessOfLiveness(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	req, secret := mustCreate(t, s, "operator:peggy", "phone")
+	sess, ok, err := s.Redeem(ctx, req.ID, secret)
+	if err != nil || !ok {
+		t.Fatalf("redeem: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.Revoke(ctx, sess.ID); err != nil || !ok {
+		t.Fatalf("revoke: ok=%v err=%v", ok, err)
+	}
+
+	got, err := s.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get revoked: %v", err)
+	}
+	if got.ID != sess.ID || got.RevokedAt == nil {
+		t.Fatalf("get revoked: unexpected row: %+v", got)
+	}
+
+	if _, err := s.GetLive(ctx, sess.ID); err != ErrNotFound {
+		t.Fatalf("GetLive on a revoked row: want ErrNotFound, got %v", err)
+	}
+
+	if _, err := s.Get(ctx, "00000000-0000-0000-0000-000000000000"); err != ErrNotFound {
+		t.Fatalf("get unknown: want ErrNotFound, got %v", err)
+	}
+	if _, err := s.Get(ctx, "not-a-uuid-at-all"); err != ErrNotFound {
+		t.Fatalf("get malformed: want ErrNotFound, got %v", err)
+	}
+}

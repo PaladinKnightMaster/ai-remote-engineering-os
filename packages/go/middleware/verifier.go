@@ -22,6 +22,12 @@ type Capability struct {
 	Scope     Scope
 	ExpiresAt time.Time
 	Audience  string
+	// TokenID is the token's jti (ADR-0068 §D4). It is the paired-session
+	// tier's per-request liveness lookup key (services/api's own layer —
+	// see that package's gateByDeclaredSecurity; this package itself gains
+	// no store/database dependency, SEC-38). Adapters that cannot extract a
+	// jti (or an ordinary token with none) leave it "".
+	TokenID string
 }
 
 // Scope is the typed scope object from ADR-0046 (resource + operations, plus
@@ -30,6 +36,12 @@ type Scope struct {
 	Resource   string
 	Operations []string
 	LeaseID    string
+	// Name is the scope's own name, when the token carries a named, versioned
+	// scope rather than (or alongside) a resource+operations pair — e.g.
+	// ADR-0068 §D5's "approvals@1" paired-session scope. Empty for every
+	// token minted before ADR-0068 (IssueOperator/IssueService/IssueAgent
+	// never set it), so this addition is backward-compatible.
+	Name string
 }
 
 // ErrUnauthorized is returned by a Verifier when a token is missing, malformed,

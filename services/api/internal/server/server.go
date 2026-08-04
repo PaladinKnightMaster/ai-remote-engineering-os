@@ -47,6 +47,7 @@ import (
 	"aireos.local/services/api/internal/gateway"
 	"aireos.local/services/api/internal/grant"
 	"aireos.local/services/api/internal/memory"
+	"aireos.local/services/api/internal/pairing"
 	"aireos.local/services/api/internal/policy"
 	"aireos.local/services/api/internal/resource"
 	"aireos.local/services/api/internal/run"
@@ -188,6 +189,15 @@ type apiHandlers struct {
 	// answers 404 regardless of this flag (see pairing.go) — the flag exists now
 	// so T-114b's real handlers have a place to read it from.
 	pairingEnabled bool
+	// pairings is the paired-session store (ADR-0068 §D4-§D6, T-114b): the four
+	// /v1/pairing-*/paired-sessions* handlers' backing store AND the SEC-34
+	// per-request liveness read gateByDeclaredSecurity performs on every
+	// approvals@1-scoped request. nil → the pairing routes answer 503 when
+	// reached (pairing enabled but unconfigured); a paired-scope token then
+	// cannot be verified live either, so it is refused rather than trusted —
+	// though in practice no such token can exist without this store having
+	// minted the session whose row id it carries as its jti.
+	pairings pairingStore
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -355,6 +365,14 @@ func WithPairingEnabled(enabled bool) Option {
 	return func(h *apiHandlers) { h.pairingEnabled = enabled }
 }
 
+// WithPairingStore wires the paired-session store (ADR-0068 §D4-§D6, T-114b):
+// the four /v1/pairing-*/paired-sessions* handlers AND the SEC-34 per-request
+// liveness check in gateByDeclaredSecurity. nil/absent → those routes answer
+// 503 when pairing is enabled but the store is not configured.
+func WithPairingStore(ps pairingStore) Option {
+	return func(h *apiHandlers) { h.pairings = ps }
+}
+
 // WithGatewayVerifier wires the route-scoped verifier for the inbound delegated-launch
 // forward (ADR-0062, T-065a): it accepts ONLY the gateway's v4.public service token, so the
 // gateway's token reaches ONLY /v1/internal/delegated-runs and never the operator routes
@@ -470,7 +488,7 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 		BaseRouter: base,
 		Middlewares: []MiddlewareFunc{
 			slidingRefresh(signer, s),                                // innermost  (last to run, closest to handler)
-			gateByDeclaredSecurity(v),                                // middle
+			gateByDeclaredSecurity(v, h.pairings),                    // middle
 			MiddlewareFunc(mw.CookieToAuthHeader(sessionCookieName)), // outermost  (first to run)
 		},
 	})
@@ -482,12 +500,26 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 // double-submit CSRF token on mutating requests that authenticated via the
 // session cookie. Service-to-service callers (Authorization header, no cookie)
 // are exempt from CSRF — there's no browser to defend.
-func gateByDeclaredSecurity(v mw.Verifier) MiddlewareFunc {
+//
+// It is ALSO SEC-34/SEC-35's sole enforcement chokepoint (ADR-0068 §D4/§D5,
+// T-114b): once RequireCapability has populated the capability, and CSRF has
+// cleared, pairingSessionAllowed (pairing.go) runs the per-request liveness
+// check + the approvals@1 route allow-list for a paired-scope token ONLY — an
+// ordinary desktop token takes no extra work at all (PERF-12). This is why the
+// check sits HERE rather than in packages/go/middleware: RequireCapability is
+// imported by every P0 service, and a database dependency there would give
+// session-broker/policy-service/connector-service/audit-service a dependency on
+// an api-owned table (SEC-38). chi has already matched the route by the time
+// this runs, so chi.RouteContext(r.Context()).RoutePattern() is populated.
+func gateByDeclaredSecurity(v mw.Verifier, pairings pairingLiveChecker) MiddlewareFunc {
 	require := mw.RequireCapability(v, "human-agent", "service-service")
 	return func(next http.Handler) http.Handler {
 		afterAuth := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if needsCSRF(r) && !csrfValid(r) {
 				writeError(w, http.StatusForbidden, "forbidden", "csrf token missing or mismatched")
+				return
+			}
+			if !pairingSessionAllowed(w, r, pairings) {
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -533,6 +565,13 @@ func csrfValid(r *http.Request) bool {
 // ADR-0046 OperatorTTL = 8h ⇒ refresh window < 4h). Service-service tokens are
 // not refreshed (they self-refresh in-process). A nil signer (dev allow-all)
 // short-circuits.
+//
+// SEC-39: a paired session (Scope.Name == approvals@1) is EXCLUDED — it
+// carries the SAME human-agent edge as a desktop session by design (ADR-0068
+// §D5: a scope within human-agent, not an eighth edge), so without this guard
+// this function would silently refresh it too, directly violating "PairedTTL =
+// 8h with no server-side cookie rotation: the paired session expires hard and
+// must be re-paired." The desktop plane's refresh is otherwise unchanged.
 func slidingRefresh(signer *auth.Signer, s Store) MiddlewareFunc {
 	if signer == nil {
 		return func(next http.Handler) http.Handler { return next }
@@ -540,7 +579,7 @@ func slidingRefresh(signer *auth.Signer, s Store) MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cap, ok := mw.CapabilityFromContext(r.Context())
-			if ok && cap.Edge == "human-agent" && !cap.ExpiresAt.IsZero() {
+			if ok && cap.Edge == "human-agent" && cap.Scope.Name != pairing.ApprovalsScopeV1 && !cap.ExpiresAt.IsZero() {
 				remaining := time.Until(cap.ExpiresAt)
 				if remaining > 0 && remaining < auth.OperatorTTL/2 {
 					if newToken, err := signer.IssueOperator(cap.Subject, cap.Audience); err == nil {
@@ -572,6 +611,25 @@ func recordAuth(ctx context.Context, s Store, subject, outcome string) {
 	}); err != nil {
 		log.Printf("audit: enqueue %s for %s failed: %v", outcome, subject, err)
 	}
+}
+
+// pairingResolvedBy is AUD-34's origin marker: it returns resolvedBy UNCHANGED
+// for a desktop caller (so every desk-approval audit event stays byte-identical
+// to before this ticket — the existing tests that assert an exact resolvedBy
+// value are the proof), and resolvedBy+"#paired" for a live paired-scope
+// caller. That suffix is the ONLY provenance carried — never the raw
+// paired_sessions row id, never the operator-supplied pairing label (the
+// criterion asks only to distinguish desk from paired, and a label would route
+// operator-authored text into the audit chain for no gain). Both
+// ResolveSession and ResolveInvocation thread their call to
+// policy/gateway.Resolve's resolvedBy argument through this — resolvedBy is the
+// ONLY channel available without touching policy-service's/mcp-gateway's own
+// audit-chaining code, which SEC-38 requires stay byte-unchanged.
+func pairingResolvedBy(operator string, r *http.Request) string {
+	if c, ok := mw.CapabilityFromContext(r.Context()); ok && c.Scope.Name == pairing.ApprovalsScopeV1 {
+		return operator + "#paired"
+	}
+	return operator
 }
 
 // bearerFromHeader extracts the bearer token from Authorization (set from the
@@ -684,6 +742,16 @@ func (a *apiHandlers) Login(w http.ResponseWriter, r *http.Request) {
 // Logout (POST /v1/auth/logout) clears the session + CSRF cookies. Public:
 // callers with stale/expired cookies can recover. SameSite=Strict on the
 // session cookie blocks cross-site CSRF on this endpoint at the browser layer.
+//
+// GOV-14: when the caller's token is a paired session (Scope.Name ==
+// approvals@1), logout ALSO revokes its own paired_sessions row — "logout from
+// the phone revokes its own row... which, for the first time in this product,
+// makes logout mean something on the server" (ADR-0068 §D6). The desktop plane
+// is unchanged: logout there stays cosmetic (the token remains valid until
+// expiry), by decision — generalizing revocation to every operator session is
+// deferred past v0.12. pairing.RevokeInTx's own transaction chains
+// pairing.revoked atomically with the row flip (AUD-32); this handler makes no
+// transaction of its own.
 func (a *apiHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	// Best-effort actor attribution for the audit event: mw.CookieToAuthHeader has
 	// copied the session cookie into Authorization (it runs on every route), so
@@ -693,6 +761,15 @@ func (a *apiHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 		if bearer := bearerFromHeader(r); bearer != "" {
 			if c, err := a.verifier.Verify(r.Context(), bearer); err == nil && c.Subject != "" {
 				subject = c.Subject
+				if c.Scope.Name == pairing.ApprovalsScopeV1 && c.TokenID != "" && a.pairings != nil {
+					// Best-effort, like recordAuth below: logout must still clear the
+					// cookie and respond even if the revoke fails (e.g. a DB outage) —
+					// the row's own liveness (expiry) is the fallback, not a hard
+					// dependency of this handler succeeding.
+					if _, rerr := a.pairings.Revoke(r.Context(), c.TokenID); rerr != nil {
+						log.Printf("logout: revoke paired session %s failed: %v", c.TokenID, rerr)
+					}
+				}
 			}
 		}
 	}
@@ -1067,7 +1144,7 @@ func (a *apiHandlers) ResolveSession(w http.ResponseWriter, r *http.Request, id 
 	if body.Decision == "deny" {
 		polDecision = "denied"
 	}
-	if _, rerr := a.policy.Resolve(r.Context(), id, polDecision, operator); rerr != nil {
+	if _, rerr := a.policy.Resolve(r.Context(), id, polDecision, pairingResolvedBy(operator, r)); rerr != nil {
 		if errors.Is(rerr, policy.ErrNotPending) {
 			// The approval expired (policy auto-denied) before the operator acted —
 			// reconcile the parked session to closed and report the conflict.
@@ -1245,7 +1322,7 @@ func (a *apiHandlers) ResolveInvocation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	switch err := a.gateway.Resolve(r.Context(), id, polDecision, operator); {
+	switch err := a.gateway.Resolve(r.Context(), id, polDecision, pairingResolvedBy(operator, r)); {
 	case err == nil:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 	case errors.Is(err, gateway.ErrNotFound):

@@ -40,6 +40,12 @@ type Scope struct {
 	Resource   string   `json:"resource,omitempty"`
 	Operations []string `json:"operations,omitempty"`
 	LeaseID    string   `json:"leaseId,omitempty"`
+	// Name is a named, versioned scope carried instead of (or alongside)
+	// Resource/Operations — ADR-0068 §D5's "approvals@1" paired-session scope
+	// is the first and only user. omitempty is required: every mint before
+	// this ticket (IssueOperator/IssueService/IssueAgent) leaves it "", and
+	// the PASETO claim payload must stay byte-identical for them.
+	Name string `json:"name,omitempty"`
 }
 
 // CapabilityToken is the typed claim set carried by every token.

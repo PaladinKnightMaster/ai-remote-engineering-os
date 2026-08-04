@@ -45,6 +45,13 @@ const (
 	// the request — consumed_at is set in the SAME transaction as the increment
 	// ("a failed-attempt cap consumes the request").
 	maxFailedAttempts = 3
+
+	// pairingEdge is the audit bracket edge for all three pairing.* events
+	// (AUD-32): a paired session is a SCOPE within human-agent, not a new
+	// capability edge (ADR-0068 §D5), and the actor on every pairing event is
+	// always the operator — never the redeeming device, which authenticates
+	// with nothing but the one-time secret.
+	pairingEdge = "human-agent"
 )
 
 // Store persists pairing_requests + paired_sessions. It takes the pgx pool
@@ -117,6 +124,16 @@ func (s *Store) CreateInTx(ctx context.Context, tx pgx.Tx, in CreateInput) (Requ
 		id.String(), in.Operator, in.Label, sum[:], RequestTTL.Seconds(),
 	).Scan(&expiresAt, &createdAt); err != nil {
 		return Request{}, nil, fmt.Errorf("insert pairing request: %w", err)
+	}
+
+	// pairing.requested in the SAME transaction (AUD-32, T-114b): actor = the
+	// requesting desktop operator, target = the request itself. Content-free —
+	// never the secret, never its hash.
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: in.Operator, Edge: pairingEdge,
+		Target: "pairing:" + id.String(), Outcome: "pairing.requested",
+	}); err != nil {
+		return Request{}, nil, fmt.Errorf("enqueue pairing.requested: %w", err)
 	}
 
 	return Request{
@@ -259,6 +276,19 @@ func (s *Store) RedeemInTx(ctx context.Context, tx pgx.Tx, id string, secret []b
 		return Session{}, false, fmt.Errorf("insert paired session: %w", err)
 	}
 
+	// pairing.redeemed in the SAME transaction (AUD-32, T-114b) — ONLY on this
+	// success path, never on a refusal (a wrong secret, an attempt-cap burn, an
+	// expiry): those are non-events, mirroring AUD-33's "an unredeemed request
+	// that lapses chains nothing." Actor = the desk operator who requested the
+	// pairing (this redeem has no operator identity of its own — the redeeming
+	// device holds only the fragment-carried secret); target = the new session.
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: operator, Edge: pairingEdge,
+		Target: "paired-session:" + sessID.String(), Outcome: "pairing.redeemed",
+	}); err != nil {
+		return Session{}, false, fmt.Errorf("enqueue pairing.redeemed: %w", err)
+	}
+
 	return Session{
 		ID: sessID.String(), Operator: operator, Label: label, Scope: ApprovalsScopeV1,
 		ExpiresAt: sessExpiresAt, CreatedAt: createdAt,
@@ -289,6 +319,31 @@ func (s *Store) GetLive(ctx context.Context, id string) (Session, error) {
 	}
 	if err != nil {
 		return Session{}, fmt.Errorf("get live paired session: %w", err)
+	}
+	return sess, nil
+}
+
+// Get returns the paired session by id REGARDLESS of liveness (live, revoked, or
+// expired alike) — unlike GetLive, this is not SEC-34's liveness gate. T-114b's
+// RevokePairedSession handler needs it for the owner-scoped existence check the
+// contract requires (GOV-14: "idempotent — already-revoked answers the same
+// way"), which GetLive cannot serve since it would make a caller's OWN
+// already-revoked session look unknown to them. Callers that need liveness use
+// GetLive; callers that need ownership-then-idempotent-revoke use this.
+func (s *Store) Get(ctx context.Context, id string) (Session, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Session{}, ErrNotFound
+	}
+	var sess Session
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, operator, label, scope, expires_at, revoked_at, created_at
+		  FROM paired_sessions WHERE id = $1`, id).
+		Scan(&sess.ID, &sess.Operator, &sess.Label, &sess.Scope, &sess.ExpiresAt, &sess.RevokedAt, &sess.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("get paired session: %w", err)
 	}
 	return sess, nil
 }
@@ -359,13 +414,31 @@ func (s *Store) RevokeInTx(ctx context.Context, tx pgx.Tx, id string) (bool, err
 		return false, nil
 	}
 
-	ct, err := tx.Exec(ctx, `
+	var operator string
+	err := tx.QueryRow(ctx, `
 		UPDATE paired_sessions SET revoked_at = now()
-		 WHERE id = $1 AND revoked_at IS NULL`, id)
+		 WHERE id = $1 AND revoked_at IS NULL
+		RETURNING operator`, id).Scan(&operator)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("revoke paired session: %w", err)
 	}
-	return ct.RowsAffected() == 1, nil
+
+	// pairing.revoked in the SAME transaction (AUD-32, T-114b): actor = the
+	// session's own operator (RETURNING above — the caller's HTTP layer has
+	// already ownership-checked before reaching here, but the audit actor is
+	// read from the row itself rather than trusted from the caller, mirroring
+	// grant.RevokeInTx). Fires for BOTH revoke paths that share this method —
+	// the desk's explicit revoke and the phone's own logout (GOV-14).
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: operator, Edge: pairingEdge,
+		Target: "paired-session:" + id, Outcome: "pairing.revoked",
+	}); err != nil {
+		return false, fmt.Errorf("enqueue pairing.revoked: %w", err)
+	}
+	return true, nil
 }
 
 // CleanupRequests deletes consumed and expired pairing_requests whose expiry is at
