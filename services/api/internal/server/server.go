@@ -625,6 +625,24 @@ func recordAuth(ctx context.Context, s Store, subject, outcome string) {
 // policy/gateway.Resolve's resolvedBy argument through this — resolvedBy is the
 // ONLY channel available without touching policy-service's/mcp-gateway's own
 // audit-chaining code, which SEC-38 requires stay byte-unchanged.
+//
+// DOWNSTREAM CONSEQUENCE, load-bearing, do not "clean up" this suffix without
+// reading this: policy-service's Store.Resolve (services/policy-service/
+// internal/store/store.go) writes resolvedBy into the outbox event's Actor
+// field VERBATIM — this function's return value becomes the audit chain's
+// Actor. audit-service's actor query filter is an EXACT STRING MATCH. So an
+// operator filtering GET /v1/audit/events for actor=operator:admin will NOT
+// see their own paired approvals, which chain as
+// actor=operator:admin#paired. This is a genuine, disclosed tension between
+// two must-pass criteria, not an oversight: SEC-38 forbids touching
+// policy-service/audit-service (block if violated) and AUD-34 requires the
+// desk/paired distinction to be carried SOMEWHERE (must-pass) — resolvedBy is
+// the only field api controls on this path, so a suffix on it is the only
+// mechanism available under both constraints simultaneously. Recorded as a
+// v1.0 residual (T-114b Commander review): audit provenance should become a
+// structured field rather than an actor-string suffix, revisited when
+// generalized session revocation lands (already deferred to E-06/E-14 — see
+// ADR-0068's Deferred section).
 func pairingResolvedBy(operator string, r *http.Request) string {
 	if c, ok := mw.CapabilityFromContext(r.Context()); ok && c.Scope.Name == pairing.ApprovalsScopeV1 {
 		return operator + "#paired"

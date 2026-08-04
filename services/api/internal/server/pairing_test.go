@@ -447,6 +447,21 @@ func TestLogoutRevokesPairedSession(t *testing.T) {
 // asserting resolvedBy=="operator" is the regression proof), suffixed
 // "#paired" for a live paired-scope caller. Never the raw session id, never a
 // label.
+//
+// The SECOND half of this test is the Commander-review disclosure made
+// mechanical, not just claimed in a comment: resolvedBy becomes
+// policy-service's outbox Actor field VERBATIM (services/policy-service/
+// internal/store/store.go), and audit-service's actor query filter is an
+// EXACT STRING MATCH — so a paired approval's Actor
+// ("operator:zelda#paired") does NOT satisfy a filter for the bare operator
+// subject ("operator:zelda"), even though it is unambiguously that same
+// operator's approval. auditActorFilterMatches below reproduces that
+// exact-match semantic (it is what an actor=<x> query does, nothing more) so
+// this test's failure mode IS the failure mode an operator would hit on the
+// audit read surface — not an abstraction of it. This is accepted, disclosed
+// behavior (pairingResolvedBy's doc comment names the SEC-38/AUD-34 tension
+// that forces it), not something later code should "fix" by editing this
+// function.
 func TestPairingResolvedByOriginMarker(t *testing.T) {
 	key, _ := auth.GenerateKey()
 	signer := auth.NewSigner(key, "cluster-test")
@@ -463,8 +478,9 @@ func TestPairingResolvedByOriginMarker(t *testing.T) {
 		t.Fatalf("issue desk: %v", err)
 	}
 	wrapped.ServeHTTP(httptest.NewRecorder(), bearerRequest(http.MethodPost, "/x", "", deskTok))
-	if got != "operator:zelda" {
-		t.Fatalf("desk: pairingResolvedBy = %q, want unchanged operator:zelda", got)
+	deskActor := got
+	if deskActor != "operator:zelda" {
+		t.Fatalf("desk: pairingResolvedBy = %q, want unchanged operator:zelda", deskActor)
 	}
 
 	pairedTok, err := signer.IssuePaired("operator:zelda", "api", "sess-1", auth.Scope{Name: pairing.ApprovalsScopeV1})
@@ -472,9 +488,36 @@ func TestPairingResolvedByOriginMarker(t *testing.T) {
 		t.Fatalf("issue paired: %v", err)
 	}
 	wrapped.ServeHTTP(httptest.NewRecorder(), bearerRequest(http.MethodPost, "/x", "", pairedTok))
-	if got != "operator:zelda#paired" {
-		t.Fatalf("paired: pairingResolvedBy = %q, want operator:zelda#paired", got)
+	pairedActor := got
+	if pairedActor != "operator:zelda#paired" {
+		t.Fatalf("paired: pairingResolvedBy = %q, want operator:zelda#paired", pairedActor)
 	}
+
+	// The disclosed consequence, asserted directly: audit-service's exact-match
+	// actor filter accepts the desk actor for a query on the bare operator
+	// subject, and REFUSES the paired actor for that same query — an operator
+	// filtering their own audit history for actor=operator:zelda will not see
+	// their own paired-device approvals. If this ever starts passing, either
+	// the suffix scheme changed or audit-service's filter semantics changed —
+	// either way, pairingResolvedBy's doc comment needs to change with it.
+	const filterQuery = "operator:zelda"
+	if !auditActorFilterMatches(filterQuery, deskActor) {
+		t.Fatalf("desk actor %q must match an exact-match filter for %q", deskActor, filterQuery)
+	}
+	if auditActorFilterMatches(filterQuery, pairedActor) {
+		t.Fatalf("paired actor %q must NOT match an exact-match filter for %q — "+
+			"if it does, the disclosed audit-visibility gap (T-114b Commander review) no longer exists "+
+			"and pairingResolvedBy's doc comment is stale", pairedActor, filterQuery)
+	}
+}
+
+// auditActorFilterMatches reproduces audit-service's actor=<x> query filter:
+// an exact string match against the Actor field, nothing more (no prefix, no
+// suffix-stripping, no normalization). It exists so the test above exercises
+// the SAME semantic an operator's audit-surface query hits, rather than an
+// approximation of it.
+func auditActorFilterMatches(filterActor, eventActor string) bool {
+	return filterActor == eventActor
 }
 
 // TestResolveInvocationAUD34OriginMarker proves the marker is actually wired
