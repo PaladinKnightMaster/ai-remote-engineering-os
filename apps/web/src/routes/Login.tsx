@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { useCapability } from "@aireos/ui";
+import { Button, useCapability } from "@aireos/ui";
 import { apiClient } from "../api";
 
 /**
@@ -98,13 +98,11 @@ export function Login() {
           </div>
         )}
 
-        <button
-          type="submit"
-          disabled={submitting}
-          className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-        >
+        {/* className: w-full — spans the login card's width (layout, not a
+            visual restyle). */}
+        <Button variant="primary" size="md" type="submit" disabled={submitting} className="w-full">
           {submitting ? "Signing in…" : "Sign in"}
-        </button>
+        </Button>
       </form>
     </div>
   );

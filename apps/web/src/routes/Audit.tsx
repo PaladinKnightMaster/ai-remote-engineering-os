@@ -33,6 +33,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -162,13 +163,9 @@ export function Audit() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Audit timeline</h1>
         <div className="flex items-center gap-4">
-          <button
-            onClick={() => void load(undefined, true)}
-            disabled={loading}
-            className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-60"
-          >
+          <Button variant="default" size="sm" onClick={() => void load(undefined, true)} disabled={loading}>
             {loading ? "Loading…" : "Refresh"}
-          </button>
+          </Button>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">
             ← Dashboard
           </Link>
@@ -225,12 +222,11 @@ export function Audit() {
               className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
             />
           </label>
-          <button
-            type="submit"
-            className="rounded-md border border-border px-3 py-1.5 text-sm self-end"
-          >
+          {/* className: self-end — aligns the button to the form row's baseline
+              (a layout position, not a visual restyle). */}
+          <Button variant="default" size="sm" type="submit" className="self-end">
             Apply
-          </button>
+          </Button>
         </form>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Edge
@@ -284,9 +280,9 @@ export function Audit() {
             )}
             The full chain has {pageMeta.chainHead ?? "an unknown number of"} positions.
           </p>
-          <button onClick={showAll} className="rounded-md border border-border px-3 py-1.5 text-sm">
+          <Button variant="default" size="sm" onClick={showAll}>
             Show all events
-          </button>
+          </Button>
         </div>
       )}
 
@@ -346,13 +342,17 @@ export function Audit() {
 
       {nextCursor && (
         <div className="flex justify-center">
-          <button
+          {/* className: font-normal — this site's md-sized button was never
+              bold; cancels default/md's font-medium so weight is unchanged. */}
+          <Button
+            variant="default"
+            size="md"
             onClick={() => void load(nextCursor)}
             disabled={loading}
-            className="rounded-md border border-border px-3 py-2 text-sm disabled:opacity-60"
+            className="font-normal"
           >
             {loading ? "Loading…" : "Load more"}
-          </button>
+          </Button>
         </div>
       )}
     </div>

@@ -244,3 +244,49 @@ test("Button states are real: resting, hover, active and focus-visible paint on 
 
   await expect(row.getByText("revoked")).toBeVisible({ timeout: 30_000 });
 });
+
+// T-117/FE-42: the mechanism-level proof above (all four variants) was taken on
+// /pairing, the one route T-116 itself touched. This second test proves the
+// SAME mechanism travels with the component to a route T-117 migrated but never
+// built the component in — /audit's Refresh button (default/sm, a distinct
+// variant+size cell from anything exercised above: sm here vs. xs for "Done").
+// If this test is red while the suite above is green, the defect is in the
+// MIGRATION (a call site not actually wired to <Button>), not in <Button> itself.
+test("Button states travel with the component to a T-117-migrated route (/audit, outside Pairing.tsx)", async ({
+  page,
+}) => {
+  await login(page);
+  await page.goto("/audit");
+
+  const refresh = page.getByRole("button", { name: "Refresh" });
+  await expect(refresh).toBeVisible();
+
+  const resting = await refresh.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+  await refresh.hover();
+  await page.waitForTimeout(SETTLE_MS);
+  const hover = await refresh.evaluate((el) => getComputedStyle(el).backgroundColor);
+  expect(hover, "default/sm hover: background changes").not.toBe(resting);
+
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  for (let i = 0; i < 40; i++) {
+    await page.keyboard.press("Tab");
+    if (await refresh.evaluate((el) => el === document.activeElement)) break;
+  }
+  const tabRing = await refresh.evaluate((el) => getComputedStyle(el).boxShadow);
+  expect(tabRing, "default/sm keyboard focus: a ring paints").not.toBe("none");
+
+  await page.getByRole("heading", { name: "Audit timeline" }).click(); // blur
+  const box = (await refresh.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(SETTLE_MS);
+  const active = await refresh.evaluate((el) => ({
+    backgroundColor: getComputedStyle(el).backgroundColor,
+    boxShadow: getComputedStyle(el).boxShadow,
+  }));
+  expect(active.backgroundColor, "default/sm active: background changes").not.toBe(resting);
+  expect(active.boxShadow, "default/sm mouse-click focus: no ring").toBe("none");
+  await page.mouse.up(); // completes a harmless Refresh click
+});

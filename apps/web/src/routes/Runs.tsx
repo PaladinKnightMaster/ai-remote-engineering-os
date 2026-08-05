@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -178,9 +179,9 @@ export function Runs() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Runs</h1>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => void loadRuns()} className="text-sm text-muted-foreground hover:underline">
+          <Button variant="ghost" size="sm" type="button" onClick={() => void loadRuns()}>
             Refresh
-          </button>
+          </Button>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">
             ← Dashboard
           </Link>
@@ -222,13 +223,9 @@ export function Runs() {
             placeholder="command to run"
             className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
           />
-          <button
-            type="submit"
-            disabled={!resourceId || !command.trim()}
-            className="rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-60"
-          >
+          <Button variant="default" size="md" type="submit" disabled={!resourceId || !command.trim()}>
             Add step
-          </button>
+          </Button>
         </form>
 
         {plan.length > 0 && (
@@ -241,22 +238,18 @@ export function Runs() {
                   </span>
                   <pre className="mt-1 overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground">{s.command}</pre>
                 </div>
-                <button onClick={() => removeStep(i)} className="rounded-md border border-border px-2 py-1 text-xs">
+                <Button variant="default" size="xs" onClick={() => removeStep(i)}>
                   Remove
-                </button>
+                </Button>
               </li>
             ))}
           </ol>
         )}
 
         {plan.length > 0 && !reviewing && (
-          <button
-            type="button"
-            onClick={() => setReviewing(true)}
-            className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
-          >
+          <Button variant="primary" size="md" type="button" onClick={() => setReviewing(true)}>
             Review &amp; launch
-          </button>
+          </Button>
         )}
       </section>
 
@@ -282,22 +275,12 @@ export function Runs() {
             ))}
           </ol>
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => void onConfirmLaunch()}
-              disabled={launching}
-              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-            >
+            <Button variant="primary" size="md" type="button" onClick={() => void onConfirmLaunch()} disabled={launching}>
               {launching ? "Launching…" : "Confirm launch"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setReviewing(false)}
-              disabled={launching}
-              className="rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-60"
-            >
+            </Button>
+            <Button variant="default" size="md" type="button" onClick={() => setReviewing(false)} disabled={launching}>
               Back
-            </button>
+            </Button>
           </div>
         </section>
       )}
@@ -319,6 +302,11 @@ export function Runs() {
             {runs.map((r) => (
               <li key={r.id} className="space-y-2 p-3 text-sm">
                 <div className="flex items-center justify-between">
+                  {/* T-117/FE-37: excluded from the Button migration — this is a
+                      clickable table-row toggle (expand/collapse detail), not a
+                      button that PRESENTS as a button (no border/background/
+                      padding, mono id text). FE-37's own wording ("every
+                      <button> that presents as a button") does not reach it. */}
                   <button
                     type="button"
                     onClick={() => setSelected((cur) => (cur === r.id ? null : r.id))}
@@ -334,13 +322,14 @@ export function Runs() {
                       <span className="text-muted-foreground">{r.status}</span>
                     )}
                     {isCancelable(r.status) && (
-                      <button
+                      <Button
+                        variant="destructive"
+                        size="xs"
                         onClick={() => void onCancel(r.id)}
                         disabled={cancelingId === r.id}
-                        className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-60"
                       >
                         {cancelingId === r.id ? "Canceling…" : "Cancel"}
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -384,22 +373,24 @@ export function Runs() {
                       {(detail?.steps ?? []).length === 0 && <li className="text-xs text-muted-foreground">Loading plan…</li>}
                     </ol>
                     <div className="flex gap-2">
-                      <button
+                      <Button
+                        variant="primary"
+                        size="md"
                         type="button"
                         onClick={() => void onResolveProposed(r.id, "approve")}
                         disabled={resolvingId === r.id}
-                        className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
                       >
                         {resolvingId === r.id ? "Working…" : "Approve"}
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="md"
                         type="button"
                         onClick={() => void onResolveProposed(r.id, "deny")}
                         disabled={resolvingId === r.id}
-                        className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-60"
                       >
                         Deny
-                      </button>
+                      </Button>
                     </div>
                   </section>
                 ) : (

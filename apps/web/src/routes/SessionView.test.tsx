@@ -2,6 +2,12 @@
 // module-level apiClient (same pattern as Sessions.test.tsx) and stubs @aireos/ui
 // so the test asserts SessionView's branching + API wiring, not xterm/WS or the
 // real <ApprovalPrompt> (covered by its own test).
+//
+// T-117: SessionView now also imports <Button> from @aireos/ui (its Back/End
+// session/"start a new one" actions). The mock below previously replaced the
+// WHOLE module, which silently dropped Button along with everything else this
+// route doesn't use — importOriginal + spread keeps every real export (Button
+// included) and only overrides TerminalView/ApprovalPrompt.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -11,15 +17,19 @@ vi.mock("../api", () => ({
   apiClient: { GET: vi.fn(), POST: vi.fn() },
 }));
 
-vi.mock("@aireos/ui", () => ({
-  TerminalView: () => <div data-testid="terminal" />,
-  ApprovalPrompt: (props: { onApprove: () => void; onDeny: () => void }) => (
-    <div data-testid="approval-prompt">
-      <button onClick={props.onApprove}>Approve</button>
-      <button onClick={props.onDeny}>Deny</button>
-    </div>
-  ),
-}));
+vi.mock("@aireos/ui", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@aireos/ui")>();
+  return {
+    ...actual,
+    TerminalView: () => <div data-testid="terminal" />,
+    ApprovalPrompt: (props: { onApprove: () => void; onDeny: () => void }) => (
+      <div data-testid="approval-prompt">
+        <button onClick={props.onApprove}>Approve</button>
+        <button onClick={props.onDeny}>Deny</button>
+      </div>
+    ),
+  };
+});
 
 import { SessionView } from "./SessionView";
 import { apiClient } from "../api";

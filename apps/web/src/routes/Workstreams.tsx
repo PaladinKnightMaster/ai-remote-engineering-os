@@ -25,6 +25,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 import { MemoryRow, SHARE_CONFIRM_COPY, type MemoryView } from "./Memories";
@@ -428,9 +429,9 @@ export function Workstreams() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Workstreams</h1>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => void loadAll()} className="text-sm text-muted-foreground hover:underline">
+          <Button variant="ghost" size="sm" type="button" onClick={() => void loadAll()}>
             Refresh
-          </button>
+          </Button>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">
             ← Dashboard
           </Link>
@@ -490,25 +491,26 @@ export function Workstreams() {
           {/* The charter scope — becomes the auto-issued grant's resources. */}
           <div className="flex gap-2">
             {resourceSelect("scope resource", scopeResourceId, setScopeResourceId, resources)}
-            <button type="button" onClick={addScope} disabled={!scopeResourceId} className="rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-60">
+            <Button variant="default" size="md" type="button" onClick={addScope} disabled={!scopeResourceId}>
               Add to scope
-            </button>
+            </Button>
           </div>
           {scope.length > 0 && (
             <ul aria-label="charter scope" className="divide-y divide-border rounded-md border border-border">
               {scope.map((r) => (
                 <li key={r.id} className="flex items-center justify-between p-2 text-sm">
                   <span className="text-muted-foreground">{r.name}</span>
-                  <button
+                  <Button
+                    variant="default"
+                    size="xs"
                     type="button"
                     onClick={() => {
                       setScope((p) => p.filter((x) => x.id !== r.id));
                       setSteps((p) => p.filter((s) => s.resourceId !== r.id));
                     }}
-                    className="rounded-md border border-border px-2 py-1 text-xs"
                   >
                     Remove
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -530,9 +532,9 @@ export function Workstreams() {
                   placeholder="command to run each tick"
                   className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                 />
-                <button type="button" onClick={addStep} disabled={!stepResourceId || !command.trim()} className="rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-60">
+                <Button variant="default" size="md" type="button" onClick={addStep} disabled={!stepResourceId || !command.trim()}>
                   Add step
-                </button>
+                </Button>
               </div>
               {steps.length > 0 && (
                 <ol aria-label="template steps" className="divide-y divide-border rounded-md border border-border">
@@ -544,9 +546,9 @@ export function Workstreams() {
                         </span>
                         <pre className="mt-1 overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground">{s.command}</pre>
                       </div>
-                      <button type="button" onClick={() => setSteps((p) => p.filter((_, idx) => idx !== i))} className="rounded-md border border-border px-2 py-1 text-xs">
+                      <Button variant="default" size="xs" type="button" onClick={() => setSteps((p) => p.filter((_, idx) => idx !== i))}>
                         Remove
-                      </button>
+                      </Button>
                     </li>
                   ))}
                 </ol>
@@ -591,13 +593,9 @@ export function Workstreams() {
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={chartering || !charterReady}
-            className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-          >
+          <Button variant="primary" size="md" type="submit" disabled={chartering || !charterReady}>
             {chartering ? "Chartering…" : "Charter workstream"}
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -621,25 +619,50 @@ export function Workstreams() {
               return (
                 <li key={ws.id} className="space-y-2 p-3 text-sm">
                   <div className="flex items-center justify-between">
+                    {/* T-117/FE-37: excluded from the Button migration — a
+                        clickable row toggle (expand/collapse detail), not a
+                        button that presents as one (no border/background/
+                        padding). Same test as Runs.tsx's row selector. */}
                     <button type="button" onClick={() => setSelected((cur) => (cur === ws.id ? null : ws.id))} className="min-w-0 text-left hover:underline">
                       <span className="font-medium">{ws.label || ws.objective}</span>
                     </button>
                     <div className="flex items-center gap-3">
                       <span className="text-muted-foreground">{ws.status}</span>
                       {ws.status === "active" && (
-                        <button onClick={() => void onVerb(ws.id, "pause")} disabled={verbBusy === ws.id} className="rounded-md border border-border px-2 py-1 text-xs font-medium disabled:opacity-60">
+                        // className: font-medium — default/xs has no
+                        // font-medium in the grid; this site's verb buttons
+                        // were already bold, preserved.
+                        <Button
+                          variant="default"
+                          size="xs"
+                          onClick={() => void onVerb(ws.id, "pause")}
+                          disabled={verbBusy === ws.id}
+                          className="font-medium"
+                        >
                           Pause
-                        </button>
+                        </Button>
                       )}
                       {ws.status === "paused" && (
-                        <button onClick={() => void onVerb(ws.id, "resume")} disabled={verbBusy === ws.id} className="rounded-md border border-border px-2 py-1 text-xs font-medium disabled:opacity-60">
+                        // className: font-medium — see the Pause button above.
+                        <Button
+                          variant="default"
+                          size="xs"
+                          onClick={() => void onVerb(ws.id, "resume")}
+                          disabled={verbBusy === ws.id}
+                          className="font-medium"
+                        >
                           Resume
-                        </button>
+                        </Button>
                       )}
                       {ws.status !== "retired" && (
-                        <button onClick={() => void onVerb(ws.id, "retire")} disabled={verbBusy === ws.id} className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-60">
+                        <Button
+                          variant="destructive"
+                          size="xs"
+                          onClick={() => void onVerb(ws.id, "retire")}
+                          disabled={verbBusy === ws.id}
+                        >
                           {verbBusy === ws.id ? "Working…" : "Retire"}
-                        </button>
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -802,14 +825,15 @@ export function Workstreams() {
                                 </div>
                                 <div className="flex items-center justify-between gap-2 text-muted-foreground">
                                   <span>{cs.lastIndexedAt ? `last indexed ${relativeAgo(cs.lastIndexedAt)}` : "never indexed / pending"}</span>
-                                  <button
+                                  <Button
+                                    variant="destructive"
+                                    size="xs"
                                     type="button"
                                     onClick={() => void onRemoveContextSource(cs.id)}
                                     disabled={csVerbBusy === cs.id}
-                                    className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-60"
                                   >
                                     {csVerbBusy === cs.id ? "Working…" : "Remove"}
-                                  </button>
+                                  </Button>
                                 </div>
                               </li>
                             ))}
@@ -831,13 +855,17 @@ export function Workstreams() {
                             placeholder="/docs/runbooks (the directory to index)"
                             className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs font-mono"
                           />
-                          <button
+                          {/* className: px-3 — primary/xs is px-2; this site's
+                              register button is wider (px-3), preserved. */}
+                          <Button
+                            variant="primary"
+                            size="xs"
                             type="submit"
                             disabled={csRegistering || !csRootPath.trim()}
-                            className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-60"
+                            className="px-3"
                           >
                             {csRegistering ? "Registering…" : "Register"}
-                          </button>
+                          </Button>
                         </form>
                         {/* GOV-11: the consent copy stated at the surface, beside the
                             act (the confirm dialog restates it before the POST commits). */}

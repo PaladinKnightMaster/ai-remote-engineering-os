@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { useCapability } from "@aireos/ui";
+import { Button, useCapability } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -94,34 +94,42 @@ export function MemoryRow({
       {(onRedact || onTogglePin || (onToggleShare && m.hasContent && !tombstoned)) && (
         <div className="flex gap-2">
           {onTogglePin && (
-            <button
+            // className: font-medium — default/xs has no font-medium in the grid,
+            // but this site's pin/share verbs were already bold; preserved.
+            <Button
+              variant="default"
+              size="xs"
               type="button"
               onClick={() => onTogglePin(m.id, m.pinned)}
               disabled={busy}
-              className="rounded-md border border-border px-2 py-1 text-xs font-medium disabled:opacity-60"
+              className="font-medium"
             >
               {busy ? "Working…" : m.pinned ? "Unpin" : "Pin"}
-            </button>
+            </Button>
           )}
           {onToggleShare && m.hasContent && !tombstoned && (
-            <button
+            // className: font-medium — see the Pin/Unpin button above.
+            <Button
+              variant="default"
+              size="xs"
               type="button"
               onClick={() => onToggleShare(m.id, m.agentVisible)}
               disabled={busy}
-              className="rounded-md border border-border px-2 py-1 text-xs font-medium disabled:opacity-60"
+              className="font-medium"
             >
               {busy ? "Working…" : m.agentVisible ? "Unshare" : "Share"}
-            </button>
+            </Button>
           )}
           {onRedact && !tombstoned && (
-            <button
+            <Button
+              variant="destructive"
+              size="xs"
               type="button"
               onClick={() => onRedact(m.id)}
               disabled={busy}
-              className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-60"
             >
               {busy ? "Working…" : "Redact"}
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -296,9 +304,9 @@ export function Memories() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Memory</h1>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => void loadMemories()} className="text-sm text-muted-foreground hover:underline">
+          <Button variant="ghost" size="sm" type="button" onClick={() => void loadMemories()}>
             Refresh
-          </button>
+          </Button>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">
             ← Dashboard
           </Link>
@@ -385,13 +393,14 @@ export function Memories() {
             work completes) are content-free.
           </p>
 
-          <button
+          <Button
+            variant="primary"
+            size="md"
             type="submit"
             disabled={creating || !scopeId.trim() || !content.trim()}
-            className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
           >
             {creating ? "Authoring…" : "Author memory"}
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -407,14 +416,17 @@ export function Memories() {
           <h2 className="text-sm font-medium">
             Memories <span className="font-mono text-muted-foreground">({scopeType}:{scopeId || "—"})</span>
           </h2>
-          <button
+          {/* className: font-medium — see the MemoryRow Pin/Unpin note above. */}
+          <Button
+            variant="default"
+            size="xs"
             type="button"
             onClick={() => downloadManifest(scopeType, scopeId, memories)}
             disabled={memories.length === 0}
-            className="rounded-md border border-border px-2 py-1 text-xs font-medium disabled:opacity-60"
+            className="font-medium"
           >
             Export
-          </button>
+          </Button>
         </div>
         {loading ? (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>

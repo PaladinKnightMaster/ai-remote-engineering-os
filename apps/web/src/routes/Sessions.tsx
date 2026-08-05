@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { Button } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -97,13 +98,9 @@ export function Sessions() {
             </option>
           ))}
         </select>
-        <button
-          type="submit"
-          disabled={starting || !resourceId}
-          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-        >
+        <Button variant="primary" size="md" type="submit" disabled={starting || !resourceId}>
           {starting ? "Starting…" : "Start session"}
-        </button>
+        </Button>
       </form>
 
       {error && (
@@ -128,12 +125,9 @@ export function Sessions() {
                   <span className="ml-2 text-muted-foreground">{s.status}</span>
                 </div>
                 {(s.status === "pending" || s.status === "active") && (
-                  <button
-                    onClick={() => onEnd(s.id)}
-                    className="rounded-md border border-border px-2 py-1 text-xs"
-                  >
+                  <Button variant="default" size="xs" onClick={() => onEnd(s.id)}>
                     End
-                  </button>
+                  </Button>
                 )}
               </li>
             ))}

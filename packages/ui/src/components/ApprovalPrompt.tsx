@@ -11,6 +11,18 @@
 // v0.2.0 session copy; an invocation consumer also passes agent + command (the
 // persisted payload, shown verbatim so the operator gives INFORMED consent, ADR-0059)
 // and overrides title/description.
+//
+// T-117 migrates its Approve/Deny actions onto <Button>. This is a deliberate,
+// disclosed superset of FE-37's literal text ("every <button> in apps/web") — CEO
+// decision at the T-117 war room: ADR-0068 frames E-05a as a defect on already-
+// shipped functionality, product-wide, not directory-scoped; the as-built count of
+// 48 was taken across ROUTES, so packages/ui components were never excluded, only
+// never counted; FE-42's browser-evidence rule already names packages/ui; and this
+// is literally the approval surface the paired phone approves from (ADR-0068 §D4/
+// D5) — shipping a release about phone approval with stateless buttons on that exact
+// screen would be absurd. An intra-package import (Button lives in the same package).
+
+import { Button } from "./Button";
 
 export interface ApprovalPromptProps {
   /** The resource the parked action targets (shown for operator context). */
@@ -83,22 +95,12 @@ export function ApprovalPrompt({
       ) : null}
 
       <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onApprove}
-          disabled={busy}
-          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
-        >
+        <Button variant="primary" size="md" type="button" onClick={onApprove} disabled={busy}>
           {busy ? "Working…" : "Approve"}
-        </button>
-        <button
-          type="button"
-          onClick={onDeny}
-          disabled={busy}
-          className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-60"
-        >
+        </Button>
+        <Button variant="destructive" size="md" type="button" onClick={onDeny} disabled={busy}>
           Deny
-        </button>
+        </Button>
       </div>
     </section>
   );

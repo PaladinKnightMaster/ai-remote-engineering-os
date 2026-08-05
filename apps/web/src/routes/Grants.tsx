@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -126,9 +127,9 @@ export function Grants() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Delegation grants</h1>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => void loadGrants()} className="text-sm text-muted-foreground hover:underline">
+          <Button variant="ghost" size="sm" type="button" onClick={() => void loadGrants()}>
             Refresh
-          </button>
+          </Button>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">
             ← Dashboard
           </Link>
@@ -169,18 +170,18 @@ export function Grants() {
                 </option>
               ))}
             </select>
-            <button type="button" onClick={addResource} disabled={!resourceId} className="rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-60">
+            <Button variant="default" size="md" type="button" onClick={addResource} disabled={!resourceId}>
               Add resource
-            </button>
+            </Button>
           </div>
           {picked.length > 0 && (
             <ul aria-label="granted resources" className="divide-y divide-border rounded-md border border-border">
               {picked.map((r) => (
                 <li key={r.id} className="flex items-center justify-between p-2 text-sm">
                   <span className="text-muted-foreground">{r.name}</span>
-                  <button type="button" onClick={() => removeResource(r.id)} className="rounded-md border border-border px-2 py-1 text-xs">
+                  <Button variant="default" size="xs" type="button" onClick={() => removeResource(r.id)}>
                     Remove
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -204,13 +205,14 @@ export function Grants() {
             {numberField("Step budget", stepBudget, setStepBudget)}
           </div>
 
-          <button
+          <Button
+            variant="primary"
+            size="md"
             type="submit"
             disabled={issuing || !agent.trim() || picked.length === 0}
-            className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
           >
             {issuing ? "Issuing…" : "Issue grant"}
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -235,13 +237,14 @@ export function Grants() {
                   <div className="flex items-center gap-3">
                     <span className="text-muted-foreground">{g.status}</span>
                     {g.status === "active" && (
-                      <button
+                      <Button
+                        variant="destructive"
+                        size="xs"
                         onClick={() => void onRevoke(g.id)}
                         disabled={revokingId === g.id}
-                        className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-destructive-foreground disabled:opacity-60"
                       >
                         {revokingId === g.id ? "Revoking…" : "Revoke"}
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </div>

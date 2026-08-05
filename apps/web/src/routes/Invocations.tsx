@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ApprovalPrompt } from "@aireos/ui";
+import { ApprovalPrompt, Button } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -58,9 +58,9 @@ export function Invocations() {
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Pending tool invocations</h1>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => void load()} className="text-sm text-muted-foreground hover:underline">
+          <Button variant="ghost" size="sm" type="button" onClick={() => void load()}>
             Refresh
-          </button>
+          </Button>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">
             ← Dashboard
           </Link>

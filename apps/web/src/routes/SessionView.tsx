@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ApprovalPrompt, TerminalView, type WSStatus } from "@aireos/ui";
+import { ApprovalPrompt, Button, TerminalView, type WSStatus } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
 
@@ -79,9 +79,11 @@ export function SessionView() {
     return (
       <div className="space-y-3 p-6">
         <p className="text-sm text-muted-foreground">Session not found.</p>
-        <button type="button" onClick={() => navigate("/sessions")} className="rounded-md border border-border px-3 py-1 text-sm">
+        {/* className: py-1 — this route's Back buttons are tighter than
+            default/sm's py-1.5; preserved. */}
+        <Button variant="default" size="sm" type="button" onClick={() => navigate("/sessions")} className="py-1">
           Back to sessions
-        </button>
+        </Button>
       </div>
     );
   }
@@ -93,9 +95,10 @@ export function SessionView() {
           <div className="text-sm">
             Session <span className="font-mono">{id}</span> <span className="text-muted-foreground">· awaiting approval</span>
           </div>
-          <button type="button" onClick={() => navigate("/sessions")} className="rounded-md border border-border px-3 py-1 text-sm">
+          {/* className: py-1 — see the "Session not found" Back button above. */}
+          <Button variant="default" size="sm" type="button" onClick={() => navigate("/sessions")} className="py-1">
             Back
-          </button>
+          </Button>
         </header>
         <div className="flex flex-1 items-center justify-center p-6">
           <ApprovalPrompt
@@ -118,9 +121,10 @@ export function SessionView() {
           {notApproved ? "This session was not approved." : "This session has ended."}
           {session.closedReason ? <span className="text-muted-foreground"> ({session.closedReason})</span> : null}
         </p>
-        <button type="button" onClick={() => navigate("/sessions")} className="rounded-md border border-border px-3 py-1 text-sm">
+        {/* className: py-1 — see the "Session not found" Back button above. */}
+        <Button variant="default" size="sm" type="button" onClick={() => navigate("/sessions")} className="py-1">
           Back to sessions
-        </button>
+        </Button>
       </div>
     );
   }
@@ -133,26 +137,46 @@ export function SessionView() {
           Session <span className="font-mono">{id}</span> <span className="text-muted-foreground">· {status}</span>
         </div>
         <div className="flex gap-2">
-          <button type="button" onClick={() => navigate("/sessions")} className="rounded-md border border-border px-3 py-1 text-sm">
+          {/* className: py-1 — see the "Session not found" Back button above. */}
+          <Button variant="default" size="sm" type="button" onClick={() => navigate("/sessions")} className="py-1">
             Back
-          </button>
-          <button
+          </Button>
+          {/* className: py-1 font-normal — this destructive button is tighter
+              (py-1 vs sm's py-1.5) and was never bold; both preserved. */}
+          <Button
+            variant="destructive"
+            size="sm"
             type="button"
             onClick={onEnd}
             disabled={ending}
-            className="rounded-md bg-destructive px-3 py-1 text-sm text-destructive-foreground disabled:opacity-60"
+            className="py-1 font-normal"
           >
             {ending ? "Ending…" : "End session"}
-          </button>
+          </Button>
         </div>
       </header>
       {status === "closed" && (
         <div role="alert" className="border-b border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
           Session ended (the connection closed). At v0.1.0 a dropped connection ends
           the session —{" "}
-          <button type="button" onClick={() => navigate("/sessions")} className="font-medium text-primary hover:underline">
+          {/* variant="ghost" + className: text-primary font-medium — decision 3
+              (ADR-0068 §D3 migration ratification): this is the one pre-existing
+              link-styled site that deviates from the other six (text-primary
+              instead of text-muted-foreground, font-medium). Folding it into
+              plain ghost would recolour it (a visible change FE-37 forbids);
+              adding a fifth variant would contradict FE-36's exactly-four set.
+              A ghost carrying a colour override honestly records "this one
+              deviates" — pre-existing inconsistency, not a T-117 redesign.
+              v1.0 design-cleanup candidate. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            onClick={() => navigate("/sessions")}
+            className="text-primary font-medium"
+          >
             start a new one
-          </button>
+          </Button>
           .
         </div>
       )}
