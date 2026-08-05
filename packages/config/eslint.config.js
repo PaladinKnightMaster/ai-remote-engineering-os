@@ -211,6 +211,64 @@ const config = [
     },
   },
 
+  // === ADR-0068 §D8 scoped override: the E-04 first-run checklist's
+  // per-browser dismissal (ONB-1..2, T-118a). ===
+  // The SEC-7 localStorage ban above already names its own escape hatch:
+  // "For legitimate non-credential UI state, file a follow-up ADR and add a
+  // scoped override." ADR-0068 §D8 (Accepted) IS that follow-up ADR — it
+  // names localStorage, by name, as the mechanism for hiding the onboarding
+  // panel without the server recording anything about onboarding (ONB-2).
+  // This is presentation state, not a credential: no PASETO token, no
+  // session secret, nothing SEC-7 was written to keep out of client storage
+  // ever touches this key.
+  //
+  // Scoped to exactly the two files that use it — packages/ui and every
+  // other apps/web route are untouched, so the SEC-7 ban still applies to
+  // them in full. `**/components/...` (not a `apps/web/...`-rooted pattern)
+  // for the same reason the `src/client.ts` block above uses `**/src/...`:
+  // this shared array is re-exported as-is by apps/web's own
+  // eslint.config.js, so the pattern must match the path relative to THAT
+  // package's `eslint .` invocation (`src/components/OnboardingChecklist.tsx`),
+  // not a repo-root-relative one.
+  //
+  // Narrowed to exactly what ONB-2 needs (Commander review): re-declare the
+  // two rules rather than turn them fully off, so only `localStorage` is
+  // carved out here — `sessionStorage` stays banned even in these two files.
+  // ADR-0068 §D8 names localStorage specifically; sessionStorage was never
+  // part of that grant, and leaving it off entirely would silently permit a
+  // later addition to this same component to reach for session-scoped state
+  // without re-litigating SEC-7. Verified with `eslint --print-config` (see
+  // the T-118a implementation report) that `no-restricted-globals` still
+  // flags `sessionStorage` here while `localStorage` passes.
+  {
+    files: ["**/components/OnboardingChecklist.tsx", "**/components/OnboardingChecklist.test.tsx"],
+    rules: {
+      "no-restricted-globals": [
+        "error",
+        {
+          name: "sessionStorage",
+          message:
+            "sessionStorage is forbidden in apps/* and packages/ui/* — same reasoning as ADR-0047 SEC-7. Only localStorage is carved out here, for ONB-2's per-browser onboarding-panel dismissal (ADR-0068 §D8).",
+        },
+      ],
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "window",
+          property: "sessionStorage",
+          message:
+            "window.sessionStorage is forbidden — same reasoning as ADR-0047 SEC-7. Only localStorage is carved out here (ADR-0068 §D8).",
+        },
+        {
+          object: "globalThis",
+          property: "sessionStorage",
+          message:
+            "globalThis.sessionStorage is forbidden — same reasoning as ADR-0047 SEC-7. Only localStorage is carved out here (ADR-0068 §D8).",
+        },
+      ],
+    },
+  },
+
   // === Vendored third-party source (ADR-0068 §D7, FE-39, T-115a). ===
   // packages/ui/src/vendor/qrcodegen.ts is Nayuki's upstream QR encoder,
   // vendored byte-faithful (see its header for provenance) rather than

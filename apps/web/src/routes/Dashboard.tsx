@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { CapabilityGate, useCapability } from "@aireos/ui";
+import { OnboardingChecklist } from "../components/OnboardingChecklist";
 
 // ADR-0068 §D5: a live "approvals@1" paired session's capability denies
 // launching Runs, issuing/revoking grants, registering/removing context
@@ -40,6 +41,15 @@ export function Dashboard() {
           </p>
         )}
       </header>
+
+      {/* E-04 first-run checklist (T-118a; ADR-0068 §D8). Gated the same way as
+          the operator-action links below — a live "approvals@1" paired
+          session must never see it, since almost everything it points at
+          (registering a resource, running a governed action) is out of scope
+          for that session (ADR-0068 §D5). */}
+      <CapabilityGate edge="human-agent" deniedScopes={PAIRED_DENIED_SCOPES}>
+        <OnboardingChecklist />
+      </CapabilityGate>
 
       <section className="rounded-md border border-border bg-background p-4">
         <h2 className="text-sm font-medium">Operator actions</h2>
