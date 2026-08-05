@@ -60,6 +60,10 @@ tasks:
       # bash-only (no python3/go needed); needs bash, so run in golang:1.23 on
       # the offline-only dev box (node:22-alpine has no bash).
       - bash infra/offline/install_profile_test.sh
+      # setup-loopback-demo.sh's pure helpers (T-118b, ONB-3/ONB-4's named live
+      # test for the authorized_keys line construction — F4 from the E-04
+      # reconciliation pass: nothing else exercises this script automatically).
+      - bash infra/offline/setup_loopback_demo_test.sh
       # JS workspace unit tests (T-007a). `--if-present` skips packages
       # without a `test` script; packages/ui + packages/config have none yet.
       - pnpm -r --if-present run test

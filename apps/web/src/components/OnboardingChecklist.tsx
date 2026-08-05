@@ -46,7 +46,8 @@
 // presentation state. A dismissed panel on an un-seeded stack is still an
 // un-seeded stack — dismissal hides the reminder, not the fact.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "@aireos/ui";
 import { apiClient } from "../api";
 
@@ -71,21 +72,29 @@ interface DerivedState {
   resourceExists: boolean;
   actionCompleted: boolean;
   loading: boolean;
+  /** Re-runs both reads without a remount — used after the T-118b create
+   * action so item 1 flips the instant the operator's POST succeeds, instead
+   * of waiting for the next mount (ONB-1 stays mount-derived; this is just an
+   * on-demand extra derivation, not a cache). */
+  refresh: () => void;
 }
 
-// Recomputed fresh on every mount — see ONB-1 note above. Both reads fire
-// together; a fetch error on either leaves that condition unmet (fails safe
-// toward "still onboarding") rather than surfacing a route-level error state,
-// matching how Grants/Runs/Sessions already treat their own /v1/resources
-// picker fetch (ignore the error, default to empty).
+// Recomputed fresh on every mount (and on-demand via refresh()) — see ONB-1
+// note above. Both reads fire together; a fetch error on either leaves that
+// condition unmet (fails safe toward "still onboarding") rather than
+// surfacing a route-level error state, matching how Grants/Runs/Sessions
+// already treat their own /v1/resources picker fetch (ignore the error,
+// default to empty).
 function useDerivedOnboardingState(): DerivedState {
   const [resourceExists, setResourceExists] = useState(false);
   const [actionCompleted, setActionCompleted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [generation, setGeneration] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      setLoading(true);
       const [resources, actions] = await Promise.all([
         apiClient.GET("/v1/resources", {}),
         apiClient.GET("/v1/audit/events", {
@@ -100,9 +109,11 @@ function useDerivedOnboardingState(): DerivedState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [generation]);
 
-  return { resourceExists, actionCompleted, loading };
+  const refresh = useCallback(() => setGeneration((g) => g + 1), []);
+
+  return { resourceExists, actionCompleted, loading, refresh };
 }
 
 function ChecklistItem({ done, children }: { done: boolean; children: ReactNode }) {
@@ -117,9 +128,140 @@ function ChecklistItem({ done, children }: { done: boolean; children: ReactNode 
   );
 }
 
+// The loopback demo target's fixed coordinates (ADR-0068 §D8: "the host SSHing
+// to itself"). Only the account is the operator's own choice — whatever they
+// passed to `infra/offline/setup-loopback-demo.sh generate --account <name>`.
+const LOOPBACK_HOST = "127.0.0.1";
+const LOOPBACK_PORT = "22";
+
+// CreateLoopbackDemoTarget — the first UI call site for POST /v1/resources
+// (T-118b; ADR-0068 §D8/§D11, ONB-3/ONB-4). Deliberately a narrow demo-target
+// creator, not a general resource-management form: it collects exactly the
+// two values the setup script prints that the cockpit cannot already know
+// (the account the operator chose, and the host's own SSH host public key —
+// see the note below) and hardcodes everything else. A general "add any
+// resource" form is a real product gap (v1.x candidate), out of scope here.
+//
+// ssh_host_key note: the release criteria's field list for this action names
+// "host, port, username", but services/session-broker/internal/store/store.go
+// LoadTargetCoords treats the resource's ssh_host_key label as MANDATORY
+// (ErrTargetIncomplete without it) — host-key pinning via ssh.FixedHostKey
+// applies to both the interactive and the non-interactive (remote.exec) SSH
+// path. Omitting this field would create a resource that can never connect,
+// defeating ONB-3, so it is collected as a fourth field here alongside
+// host/port/username; setup-loopback-demo.sh's `generate` prints it for
+// exactly this reason. See the ticket report for this called out explicitly.
+function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
+  const [username, setUsername] = useState("");
+  const [hostKey, setHostKey] = useState("");
+  const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    const user = username.trim();
+    const key = hostKey.trim();
+    if (!user || !key) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { error: apiErr } = await apiClient.POST("/v1/resources", {
+        body: {
+          type: "ssh",
+          name: "loopback-demo",
+          labels: {
+            ssh_host: LOOPBACK_HOST,
+            ssh_port: LOOPBACK_PORT,
+            ssh_user: user,
+            ssh_host_key: key,
+            // requires_approval is deliberately OMITTED (unflagged): the
+            // approval moment is already demonstrated by WD-2/WD-11, and
+            // ONB-3 needs first-run to reach a COMPLETED governed action
+            // without stalling on a second operator step. Absent (or any
+            // value other than the literal string "true") reads as ungated —
+            // services/mcp-gateway/internal/catalog/catalog.go's
+            // RequiresApproval + services/api/internal/server/server.go's
+            // `res.Labels["requires_approval"] != "true"` both key off that
+            // exact string.
+          },
+        },
+      });
+      if (apiErr) {
+        setError(apiErr.message ? `Could not create the demo target: ${apiErr.message}` : "Could not create the demo target.");
+        return;
+      }
+      setUsername("");
+      setHostKey("");
+      setOpen(false);
+      onCreated(); // ONB-1 flips on its own from the next derived-state read — not special-cased here.
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <Button variant="default" size="xs" type="button" onClick={() => setOpen(true)}>
+        Create loopback demo target
+      </Button>
+    );
+  }
+
+  return (
+    <form aria-label="create loopback demo target" className="mt-2 space-y-2 rounded-md border border-border p-3" onSubmit={(e) => void onSubmit(e)}>
+      <p className="text-xs text-muted-foreground">
+        Run <code className="font-mono">infra/offline/setup-loopback-demo.sh generate --account &lt;name&gt;</code>{" "}
+        on this host first, then paste what it prints below.
+      </p>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>
+          host <span className="font-mono text-foreground">{LOOPBACK_HOST}</span>
+        </span>
+        <span>
+          port <span className="font-mono text-foreground">{LOOPBACK_PORT}</span>
+        </span>
+      </div>
+      <label className="block text-xs">
+        <span className="text-muted-foreground">username</span>
+        <input
+          aria-label="username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="the --account value you chose"
+          className="mt-1 w-full rounded-md border border-input bg-background px-2 py-1 text-sm font-mono"
+        />
+      </label>
+      <label className="block text-xs">
+        <span className="text-muted-foreground">ssh host key</span>
+        <input
+          aria-label="ssh host key"
+          value={hostKey}
+          onChange={(e) => setHostKey(e.target.value)}
+          placeholder="the ssh host key: line the script printed"
+          className="mt-1 w-full rounded-md border border-input bg-background px-2 py-1 text-sm font-mono"
+        />
+      </label>
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <Button variant="primary" size="xs" type="submit" disabled={submitting || !username.trim() || !hostKey.trim()}>
+          {submitting ? "Creating…" : "Create"}
+        </Button>
+        <Button variant="default" size="xs" type="button" onClick={() => setOpen(false)} disabled={submitting}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 export function OnboardingChecklist() {
   const [dismissed, setDismissed] = useState(readDismissed);
-  const { resourceExists, actionCompleted, loading } = useDerivedOnboardingState();
+  const { resourceExists, actionCompleted, loading, refresh } = useDerivedOnboardingState();
 
   if (dismissed) return null;
 
@@ -147,6 +289,16 @@ export function OnboardingChecklist() {
         <ChecklistItem done={resourceExists}>Register a resource</ChecklistItem>
         <ChecklistItem done={actionCompleted}>Complete a governed action</ChecklistItem>
       </ul>
+      {!loading && !resourceExists && <CreateLoopbackDemoTarget onCreated={refresh} />}
+      {!loading && resourceExists && !actionCompleted && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Next: launch a one-step command against it from{" "}
+          <Link to="/runs" className="underline">
+            Runs
+          </Link>
+          .
+        </p>
+      )}
       {loading && <p className="mt-2 text-xs text-muted-foreground">Checking current status…</p>}
       {!loading && allDone && (
         <p className="mt-2 text-xs text-muted-foreground">All set — dismiss whenever you&apos;re ready.</p>

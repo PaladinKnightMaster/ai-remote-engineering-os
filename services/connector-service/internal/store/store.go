@@ -80,6 +80,18 @@ func Get(ctx context.Context, pool *pgxpool.Pool, resourceID, key string) (Mater
 	return m, nil
 }
 
+// Delete removes the resource's stored credential row, if any. Unconditional
+// DELETE (no existence check) makes it naturally idempotent — a second call
+// against an already-deleted or never-set resource_id is a no-op, not an
+// error. Used by the T-118b loopback-demo setup script's `--undo` (ADR-0068
+// §D8/ONB-4): the same custody boundary as Set/Get, no second credential path.
+func Delete(ctx context.Context, pool *pgxpool.Pool, resourceID string) error {
+	if _, err := pool.Exec(ctx, `DELETE FROM connector_credentials WHERE resource_id = $1`, resourceID); err != nil {
+		return fmt.Errorf("delete credential: %w", err)
+	}
+	return nil
+}
+
 // BackfillFromResources copies existing ciphertext from the legacy api-owned
 // resources.connection_secret column into connector custody. This is the
 // "expand" leg of the ADR-0053 expand-migrate-contract relocation: a pure byte

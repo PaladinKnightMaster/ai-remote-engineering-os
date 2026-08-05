@@ -14,6 +14,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -64,6 +65,34 @@ func TestSetGetRoundTrip(t *testing.T) {
 	}
 	if out.PrivateKey != in.PrivateKey || out.Passphrase != in.Passphrase {
 		t.Fatalf("round-trip mismatch: %+v", out)
+	}
+}
+
+// TestDeleteRemovesAndIsIdempotent covers store.Delete (T-118b --undo): a set
+// credential is unreadable after delete, and a second delete against the same
+// (now-absent) resource_id succeeds rather than erroring.
+func TestDeleteRemovesAndIsIdempotent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	id := mintID(t)
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM connector_credentials WHERE resource_id=$1`, id) })
+
+	if err := Set(ctx, pool, id, testKey, Material{PrivateKey: "k"}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := Delete(ctx, pool, id); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := Get(ctx, pool, id, testKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+	// Idempotent: deleting again (nothing to delete) must not error.
+	if err := Delete(ctx, pool, id); err != nil {
+		t.Fatalf("second delete (idempotent) failed: %v", err)
+	}
+	// Deleting a resource-id that was never set must also not error.
+	if err := Delete(ctx, pool, mintID(t)); err != nil {
+		t.Fatalf("delete on never-set resource-id failed: %v", err)
 	}
 }
 

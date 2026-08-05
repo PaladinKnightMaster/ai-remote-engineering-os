@@ -18,6 +18,7 @@
 //	connector-service outbox relay          # run the outbox relay in the foreground
 //	connector-service credentials genkey    # print a fresh AIREOS_RESOURCE_SECRET_KEY (no DB)
 //	connector-service credentials set-secret <resource-id> --key-file <path> [--passphrase <pp>]
+//	connector-service credentials unset-secret <resource-id>   # remove a stored credential (T-118b --undo)
 //	connector-service credentials migrate-legacy   # backfill ciphertext from resources.connection_secret
 package main
 
@@ -227,10 +228,10 @@ func auditTokenSource() (func(context.Context) (string, error), error) {
 	return func(context.Context) (string, error) { return staticTok, nil }, nil
 }
 
-// runCredentials handles `connector-service credentials <set-secret|migrate-legacy>`.
+// runCredentials handles `connector-service credentials <set-secret|unset-secret|migrate-legacy>`.
 func runCredentials(dsn string, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: connector-service credentials genkey | set-secret <resource-id> --key-file <path> [--passphrase <pp>] | migrate-legacy")
+		return errors.New("usage: connector-service credentials genkey | set-secret <resource-id> --key-file <path> [--passphrase <pp>] | unset-secret <resource-id> | migrate-legacy")
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
@@ -242,6 +243,8 @@ func runCredentials(dsn string, args []string) error {
 	switch args[0] {
 	case "set-secret":
 		return setSecret(ctx, pool, args[1:])
+	case "unset-secret":
+		return unsetSecret(ctx, pool, args[1:])
 	case "migrate-legacy":
 		n, err := store.BackfillFromResources(ctx, pool)
 		if err != nil {
@@ -250,8 +253,22 @@ func runCredentials(dsn string, args []string) error {
 		fmt.Fprintf(os.Stderr, "connector-service: backfilled %d credential(s) from resources.connection_secret\n", n)
 		return nil
 	default:
-		return fmt.Errorf("unknown credentials subcommand %q (want set-secret|migrate-legacy)", args[0])
+		return fmt.Errorf("unknown credentials subcommand %q (want set-secret|unset-secret|migrate-legacy)", args[0])
 	}
+}
+
+// unsetSecret removes a resource's stored credential (T-118b --undo). Naturally
+// idempotent (store.Delete is an unconditional DELETE) — a repeat call against an
+// already-removed or never-bound resource-id succeeds silently.
+func unsetSecret(ctx context.Context, pool *pgxpool.Pool, args []string) error {
+	if len(args) == 0 {
+		return errors.New("unset-secret requires a <resource-id>")
+	}
+	if err := store.Delete(ctx, pool, args[0]); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "connector-service: removed credential for resource %s (if any)\n", args[0])
+	return nil
 }
 
 // setSecret pgcrypto-encrypts a target SSH private key onto the resource's
