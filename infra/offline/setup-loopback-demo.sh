@@ -257,29 +257,21 @@ case "$MODE" in
     chown "$ACCOUNT:$ACCOUNT" "$AUTHKEYS"; chmod 600 "$AUTHKEYS"
 
     HOST_KEY_LINE=""
-    OTHER_HOST_KEY_TYPES=0
     for f in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ecdsa_key.pub /etc/ssh/ssh_host_rsa_key.pub; do
-      if [ -r "$f" ]; then
-        if [ -z "$HOST_KEY_LINE" ]; then HOST_KEY_LINE="$(cat "$f")"; else OTHER_HOST_KEY_TYPES=$((OTHER_HOST_KEY_TYPES + 1)); fi
-      fi
+      if [ -r "$f" ] && [ -z "$HOST_KEY_LINE" ]; then HOST_KEY_LINE="$(cat "$f")"; fi
     done
     [ -n "$HOST_KEY_LINE" ] || die "no readable sshd host public key found under /etc/ssh (checked ed25519/ecdsa/rsa) — cannot pin ssh_host_key"
-    # KNOWN LIMITATION (found live-testing T-118b against a stock multi-key sshd,
-    # not something this script can fix): services/session-broker/internal/sshpty/
-    # sshpty.go's dialClient sets HostKeyCallback: ssh.FixedHostKey(pinnedKey) but
-    # does NOT set ssh.ClientConfig.HostKeyAlgorithms — so golang.org/x/crypto/ssh
-    # negotiates whichever host key type IT prefers (empirically ecdsa-sha2-nistp256
-    # over ssh-ed25519 at v0.33.0, even when the server offers both), independent of
-    # which type is pinned. If sshd offers more than one host key type, the broker's
-    # dial fails closed with a host-key mismatch UNLESS the pinned type happens to be
-    # the one x/crypto/ssh negotiates — every other resource in this product's test
-    # fixtures only ever offers a single (ed25519) host key, so this has never
-    # surfaced before. Out of scope for this script/ticket to fix (it is broker-wide
-    # SSH dial code, not onboarding); the real fix is a one-line
-    # `HostKeyAlgorithms: []string{hostKey.Type()}` in dialClient's ssh.ClientConfig.
-    if [ "$OTHER_HOST_KEY_TYPES" -gt 0 ]; then
-      log "WARNING: this sshd offers more than one host key type. The demo action may fail to connect (a known session-broker host-key-negotiation limitation, not this script) unless it happens to pin the type golang's SSH client negotiates. If the governed action fails with a host-key mismatch, restrict this host's sshd to ONLY the ed25519 host key (comment out the other HostKey lines in sshd_config) and re-run generate."
-    fi
+    # FIXED (was a KNOWN LIMITATION found live-testing T-118b against a stock
+    # multi-key sshd): services/session-broker/internal/sshpty/sshpty.go's
+    # dialClient used to set HostKeyCallback: ssh.FixedHostKey(pinnedKey) without
+    # constraining ssh.ClientConfig.HostKeyAlgorithms, so golang.org/x/crypto/ssh
+    # negotiated whichever host key type IT preferred (empirically
+    # ecdsa-sha2-nistp256 over ssh-ed25519), independent of which type this
+    # script pinned — a multi-key sshd could make the governed connection fail
+    # even with a correct pin. T-123 (already on dev) fixed dialClient to
+    # constrain HostKeyAlgorithms to the pinned key's own type, so this no
+    # longer needs a warning here regardless of how many host key types sshd
+    # offers.
 
     log "generating a fresh ed25519 client keypair in $STATE_DIR"
     install -d -m 750 -o root -g "$SVC_USER" "$STATE_DIR"

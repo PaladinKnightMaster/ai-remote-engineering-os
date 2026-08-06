@@ -63,20 +63,18 @@ The demo target is the installed host SSHing to itself (`ONB-3`) — an air-gapp
 single-host install cannot conjure a second machine, so the "remote" resource in this
 quickstart is the same box the stack runs on.
 
-**A note on where this script comes from.** `infra/offline/setup-loopback-demo.sh` is
-**not** part of `task offline-bundle`'s output (confirmed by reading
-`infra/offline/build-bundle.sh` — it stages `install.sh` and the SPA/binaries but
-never this script) — the install bundle you unpacked on the host does not contain
-it. Copy it to the host separately, from the same connected checkout you built the
-bundle from, e.g.:
+**A note on where this script comes from.** `infra/offline/setup-loopback-demo.sh`
+ships in the bundle's top level alongside `install.sh` (`infra/offline/build-bundle.sh`
+stages it, T-124 — an earlier bundle omitted it, which stalled a genuinely air-gapped
+install at this exact step; that gap is closed). If you unpacked the bundle at, say,
+`/opt/aireos-offline-<version>/` on the host, the script is already there:
 
 ```sh
-scp infra/offline/setup-loopback-demo.sh root@<host>:/root/setup-loopback-demo.sh
+/opt/aireos-offline-<version>/setup-loopback-demo.sh generate --account aireos-demo
 ```
 
-This is a real gap in the shipped bundle for a genuinely air-gapped install (see this
-ticket's report for the disclosure); it does not block this quickstart because the
-host you are walking this on already has a repo checkout to copy from.
+The commands below assume you copied or symlinked it to `/root/setup-loopback-demo.sh`
+for brevity — adjust the path to wherever you unpacked the bundle.
 
 **First, create a dedicated local account for the demo** (any name; the script only
 requires an account that already exists with a usable home directory — this is a
@@ -116,12 +114,12 @@ Copy the `username` and the full `ssh host key` line (including the `ssh-ed25519
 prefix) — you will paste both into the cockpit in the next step. The private key never
 leaves the host.
 
-The script may warn that "this sshd offers more than one host key type" — that
-warning predates a fix (`session-broker`'s `dialClient`, T-123, already on `dev`) that
-pins the SSH client's host-key algorithm negotiation to the pinned key's own type. As
-of this quickstart, the warning is **stale**: it no longer indicates the governed
-connection will fail. See [Honest limits](#honest-limits-read-this-before-you-file-a-bug)
-below.
+Earlier revisions of this script warned when sshd offered more than one host key
+type, because of a `session-broker` `dialClient` limitation. That limitation was
+fixed at T-123 (already on `dev`) and the stale warning was removed from the script
+at T-124 — the script prints nothing about this today, and the governed connection in
+step 5 succeeds regardless of how many host-key types your sshd offers. See
+[Honest limits](#honest-limits-read-this-before-you-file-a-bug) below for the history.
 
 ---
 
@@ -254,13 +252,12 @@ a **Run**, never a session — if you additionally open a terminal (`/sessions`)
 `loopback-demo` to poke around, step 7's removal will start failing with 409, and the
 fix is not obvious from the error alone. One sentence here beats a support ticket.
 
-**If your sshd offers more than one host key type**, step 2's script still prints a
-warning ("this sshd offers more than one host key type") — its own comment describes
-this as an unfixed `session-broker` limitation, but that comment is now **stale**:
-`services/session-broker/internal/sshpty/sshpty.go`'s `dialClient` was fixed at T-123
-(already on `dev` as of this ticket) to constrain `HostKeyAlgorithms` to the pinned
-key's own type, closing exactly the mismatch the script's comment warns about. The
-warning is safe to ignore; step 5's governed connection should succeed regardless of
-how many host-key types your sshd offers. (The script's own comment text was not
-updated by T-123 — a minor doc-hygiene gap flagged separately, not fixed by this
-docs-only ticket.)
+**A multi-host-key-type sshd used to require a workaround here; it no longer does.**
+`services/session-broker/internal/sshpty/sshpty.go`'s `dialClient` used to let
+`golang.org/x/crypto/ssh` negotiate its own preferred host-key algorithm instead of
+the one this script's `generate` step pinned, so a stock sshd offering more than one
+host key type (ed25519 + ecdsa + rsa, the OpenSSH default) could make step 5's
+governed connection fail even with a correctly pinned key. T-123 (already on `dev`)
+fixed `dialClient` to constrain `HostKeyAlgorithms` to the pinned key's own type, and
+T-124 removed the now-stale warning the script used to print about it. Nothing in
+this quickstart depends on restricting sshd to a single host-key type.

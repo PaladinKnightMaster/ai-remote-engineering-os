@@ -7,7 +7,9 @@
 #   bin/      api, audit-service, session-broker (static linux/amd64) + caddy
 #   web/      the built SPA static assets (apps/web/dist)
 #   config/   Caddyfile + systemd unit templates
-#   install.sh, postgres/   included when present (authored in §OI-b)
+#   install.sh, setup-loopback-demo.sh, postgres/   included when present
+#             (authored in §OI-b; setup-loopback-demo.sh is the ONB-3 demo
+#             quickstart's step 2, T-118b)
 #   VERSION, SHA256_MANIFEST.txt
 #
 # Enforces the OI-4 size cap (<=500 MB uncompressed / <=150 MB gzipped).
@@ -93,6 +95,16 @@ if [ -f "$SCRIPT_DIR/install.sh" ]; then
   cp "$SCRIPT_DIR/install.sh" "$STAGE/install.sh"; chmod +x "$STAGE/install.sh"
 else
   log "NOTE: infra/offline/install.sh not present — added by §OI-b"
+fi
+
+# --- 5b. include the ONB-3 loopback demo quickstart's step-2 script (T-118b).
+#         Same conditional-copy shape as install.sh above — this is the
+#         operator-run half of the demo target setup (T-124: it must ship in
+#         the bundle for a genuinely air-gapped install to reach it).
+if [ -f "$SCRIPT_DIR/setup-loopback-demo.sh" ]; then
+  cp "$SCRIPT_DIR/setup-loopback-demo.sh" "$STAGE/setup-loopback-demo.sh"; chmod +x "$STAGE/setup-loopback-demo.sh"
+else
+  log "NOTE: infra/offline/setup-loopback-demo.sh not present — added by T-118b"
 fi
 
 # --- 6. VERSION + SHA256 manifest (OI-5) ------------------------------------
