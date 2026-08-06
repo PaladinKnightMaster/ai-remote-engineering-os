@@ -32,6 +32,11 @@ type fakeStore struct {
 	sn       int
 
 	events []outbox.Event // RecordEvent captures auth/control-plane evidence (T-022)
+
+	// inUse simulates the store's referential guard (T-118c) for handler-level
+	// 409 mapping; the real guard (live sessions/runs/workstreams references) is
+	// proven only against a real Postgres — see store_integration_test.go.
+	inUse map[string]bool
 }
 
 // RecordEvent satisfies the Store interface (T-022); tests can assert f.events.
@@ -44,6 +49,7 @@ func newFake() *fakeStore {
 	return &fakeStore{
 		byID:     map[string]resource.Resource{},
 		sessByID: map[string]session.Session{},
+		inUse:    map[string]bool{},
 	}
 }
 
@@ -88,11 +94,22 @@ func (f *fakeStore) Update(_ context.Context, id string, in resource.Input) (res
 	return r, nil
 }
 
-func (f *fakeStore) Delete(_ context.Context, id string) error {
+func (f *fakeStore) Delete(ctx context.Context, actor, id string) error {
 	if _, ok := f.byID[id]; !ok {
 		return store.ErrNotFound
 	}
+	if f.inUse[id] {
+		return store.ErrInUse
+	}
 	delete(f.byID, id)
+	// Mirrors the real store's in-tx resource.deleted (T-118c) closely enough
+	// for a handler-level assertion; the transactional/referential guarantees
+	// themselves are proven only against a real Postgres.
+	_ = f.RecordEvent(ctx, outbox.Event{
+		Timestamp: time.Now(), Actor: actor, Edge: "human-agent",
+		Target: "resource:" + id, Outcome: "resource.deleted",
+		EvidencePacketID: "resource:" + id,
+	})
 	return nil
 }
 
@@ -570,6 +587,53 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 	}
 	if rec := req(t, h, http.MethodDelete, "/v1/resources/res-00001", "", true); rec.Code != http.StatusNotFound {
 		t.Fatalf("delete twice: want 404, got %d", rec.Code)
+	}
+}
+
+// TestDeleteResourceInUseRefused — the handler's mapping of store.ErrInUse to a
+// clean 409 (T-118c), naming only that the resource is in use, never what is
+// using it. The referential guard itself (real sessions/runs/workstreams
+// references) is proven live against Postgres in store_integration_test.go;
+// this only proves the HTTP-layer plumbing.
+func TestDeleteResourceInUseRefused(t *testing.T) {
+	f := newFake()
+	h := New(f, nil, nil, allowAll{}, "", "")
+
+	req(t, h, http.MethodPost, "/v1/resources", validBody, true)
+	f.inUse["res-00001"] = true
+
+	rec := req(t, h, http.MethodDelete, "/v1/resources/res-00001", "", true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete in-use: want 409, got %d: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "session") || strings.Contains(rec.Body.String(), "run") || strings.Contains(rec.Body.String(), "workstream") {
+		t.Fatalf("refusal leaked what is using the resource: %s", rec.Body)
+	}
+	if _, ok := f.byID["res-00001"]; !ok {
+		t.Fatal("in-use resource was deleted despite the refusal")
+	}
+}
+
+// TestDeleteResourceChainsAuditEvent — a resource.deleted event is recorded
+// with the operator actor from the request's capability (T-118c: deleting a
+// governed object is an operator action and must be attributable). No such
+// convention exists for Create/Update (server.go never calls RecordEvent for
+// them) — a disclosed v1.0 security-audit residual, not fixed here.
+func TestDeleteResourceChainsAuditEvent(t *testing.T) {
+	f := newFake()
+	h := New(f, nil, nil, allowAll{}, "", "")
+
+	req(t, h, http.MethodPost, "/v1/resources", validBody, true)
+	if rec := req(t, h, http.MethodDelete, "/v1/resources/res-00001", "", true); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: want 204, got %d", rec.Code)
+	}
+
+	if len(f.events) != 1 {
+		t.Fatalf("want 1 audit event, got %d: %+v", len(f.events), f.events)
+	}
+	evt := f.events[0]
+	if evt.Actor != "operator" || evt.Edge != "human-agent" || evt.Target != "resource:res-00001" || evt.Outcome != "resource.deleted" {
+		t.Fatalf("unexpected event: %+v", evt)
 	}
 }
 

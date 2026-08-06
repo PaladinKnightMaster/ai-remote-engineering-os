@@ -10,7 +10,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { MemoryRouter } from "react-router-dom";
 
 vi.mock("../api", () => ({
-  apiClient: { GET: vi.fn(), POST: vi.fn() },
+  apiClient: { GET: vi.fn(), POST: vi.fn(), DELETE: vi.fn() },
 }));
 
 import { OnboardingChecklist } from "./OnboardingChecklist";
@@ -22,7 +22,9 @@ const DISMISSED_KEY = "aireos.onboarding.dismissed";
 // /v1/resources succeeds, then the NEXT /v1/resources GET (triggered by
 // CreateLoopbackDemoTarget's onCreated -> refresh()) reflects it — no
 // special-cased "mark done", the same derived-state read T-118a already uses.
-function mockClient(opts: { resourceExists?: boolean; actionCompleted?: boolean }) {
+// deleteRefusal, when set, simulates the store's 409 in-use refusal (T-118c)
+// instead of letting the DELETE succeed — the resource stays `created`.
+function mockClient(opts: { resourceExists?: boolean; actionCompleted?: boolean; deleteRefusal?: boolean }) {
   let created = opts.resourceExists ?? false;
   vi.mocked(apiClient.GET).mockImplementation(((path: string) => {
     if (path === "/v1/resources") {
@@ -53,6 +55,16 @@ function mockClient(opts: { resourceExists?: boolean; actionCompleted?: boolean 
       });
     }
     throw new Error(`unexpected POST ${path}`);
+  }) as never);
+  vi.mocked(apiClient.DELETE).mockImplementation(((path: string) => {
+    if (path === "/v1/resources/{id}") {
+      if (opts.deleteRefusal) {
+        return Promise.resolve({ data: undefined, error: { message: "resource is in use" } });
+      }
+      created = false;
+      return Promise.resolve({ data: undefined, error: undefined });
+    }
+    throw new Error(`unexpected DELETE ${path}`);
   }) as never);
 }
 
@@ -217,5 +229,51 @@ describe("OnboardingChecklist — T-118b loopback demo target create action", ()
     // not a special case — the create action never sets a "done" flag itself.
     await waitFor(() => expect(screen.getByText("Register a resource").previousSibling?.textContent).toBe("✓"));
     expect(screen.queryByRole("form", { name: "create loopback demo target" })).toBeNull();
+  });
+});
+
+describe("OnboardingChecklist — T-118c loopback demo target remove action (ONB-4)", () => {
+  it("does not offer the remove action while no demo resource exists yet", async () => {
+    mockClient({ resourceExists: false, actionCompleted: false });
+    renderChecklist();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create loopback demo target" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Remove the demo target" })).toBeNull();
+  });
+
+  it("offers the remove action once the demo resource exists", async () => {
+    mockClient({ resourceExists: true, actionCompleted: false });
+    renderChecklist();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove the demo target" })).toBeTruthy());
+  });
+
+  it("removes the demo target through DELETE /v1/resources/{id} and flips the checklist back without a remount", async () => {
+    mockClient({ resourceExists: true, actionCompleted: false });
+    renderChecklist();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the demo target" }));
+
+    await waitFor(() =>
+      expect(apiClient.DELETE).toHaveBeenCalledWith("/v1/resources/{id}", expect.objectContaining({ params: { path: { id: "r1" } } })),
+    );
+
+    // ONB-1 flips back on its own from the next derived-state read — not
+    // special-cased, the same as the create action's own flip (T-118b).
+    await waitFor(() => expect(screen.getByText("Register a resource").previousSibling?.textContent).toBe("○"));
+    expect(screen.queryByRole("button", { name: "Remove the demo target" })).toBeNull();
+  });
+
+  it("surfaces the 409 in-use refusal honestly instead of pretending the removal worked", async () => {
+    mockClient({ resourceExists: true, actionCompleted: false, deleteRefusal: true });
+    renderChecklist();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the demo target" }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Could not remove the demo target: resource is in use"));
+    // Refused, so the checklist item stays exactly as it was — still done,
+    // the button still offered, nothing silently disappeared.
+    expect(screen.getByText("Register a resource").previousSibling?.textContent).toBe("✓");
+    expect(screen.getByRole("button", { name: "Remove the demo target" })).toBeTruthy();
   });
 });

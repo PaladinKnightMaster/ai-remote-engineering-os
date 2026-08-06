@@ -76,7 +76,10 @@ type Store interface {
 	Get(ctx context.Context, id string) (resource.Resource, error)
 	List(ctx context.Context, after string, limit int) ([]resource.Resource, string, error)
 	Update(ctx context.Context, id string, in resource.Input) (resource.Resource, error)
-	Delete(ctx context.Context, id string) error
+	// Delete removes a resource IF nothing non-terminal references it (T-118c's
+	// referential guard); actor is the operator subject recorded on the
+	// resource.deleted audit event the store chains in-tx with the row delete.
+	Delete(ctx context.Context, actor, id string) error
 
 	// Cockpit sessions (T-016b). All session reads/writes are operator-scoped:
 	// the caller's capability subject is the operator_id, so one operator can
@@ -911,10 +914,27 @@ func (a *apiHandlers) UpdateResource(w http.ResponseWriter, r *http.Request, id 
 	writeJSON(w, http.StatusOK, res)
 }
 
+// DeleteResource (DELETE /v1/resources/{id}) removes a resource through the
+// governed path (ONB-4: the demo target is "removable through the existing
+// surface"). Refused with 409 while a non-terminal session, run, or
+// workstream still references it (the store's referential guard) — a clean
+// refusal that names ONLY that the resource is in use, never what is using
+// it. The credential in connector custody is deliberately left in place
+// (ADR-0053's sole-decrypt-authority boundary; the operator's removal path is
+// the connector-service CLI, not this route).
 func (a *apiHandlers) DeleteResource(w http.ResponseWriter, r *http.Request, id string) {
-	err := a.store.Delete(r.Context(), id)
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
+	err := a.store.Delete(r.Context(), operator, id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
+	if errors.Is(err, store.ErrInUse) {
+		writeError(w, http.StatusConflict, "conflict", "resource is in use")
 		return
 	}
 	if err != nil {

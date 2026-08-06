@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/services/api/internal/resource"
@@ -75,13 +76,13 @@ func TestResourceCRUDRoundTrip(t *testing.T) {
 		t.Fatal("expected at least one resource")
 	}
 
-	if err := s.Delete(ctx, created.ID); err != nil {
+	if err := s.Delete(ctx, "operator:crud-test", created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := s.Get(ctx, created.ID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
 	}
-	if err := s.Delete(ctx, created.ID); err != ErrNotFound {
+	if err := s.Delete(ctx, "operator:crud-test", created.ID); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound deleting twice, got %v", err)
 	}
 }
@@ -159,6 +160,182 @@ func TestSessionCRUDRoundTrip(t *testing.T) {
 	if _, err := s.EndSession(ctx, opB, created.ID); err != ErrNotFound {
 		t.Fatalf("cross-operator end: want ErrNotFound, got %v", err)
 	}
+}
+
+// TestResourceDeleteReferentialGuard proves T-118c's guard end to end against
+// a real Postgres — a mocked FK/JOIN is not proof: a resource referenced by a
+// non-terminal session, run, or workstream is refused (ErrInUse), never the
+// raw FK-violation sessions would otherwise surface, and never the silent
+// Run/Workstream orphan runs/workstreams would otherwise leave. Once a Run or
+// a Workstream reaches its terminal state (verified against the CHECK
+// constraints — completed/failed/canceled, retired), deletion succeeds — but
+// NOT a session: this test caught a real gap in the brief's own framing
+// ("non-terminal blocks, terminal allows" uniformly across all three) that a
+// mocked test would have missed. sessions.resource_id has NO `ON DELETE`
+// clause (migration 0002), so even a TERMINAL (closed) session row still
+// physically blocks the DELETE at the database level — see the session
+// sub-test below and Delete's doc comment for why that residual is accepted
+// rather than "fixed" by deleting session history. Runs and workstreams carry
+// resource_id on their STEP tables (run_steps/workstream_steps), not on the
+// parent row, so those two legs are seeded with raw SQL directly against the
+// tables rather than through the run/workstream packages (avoiding a
+// resources->run/workstream package dependency for a test fixture only).
+func TestResourceDeleteReferentialGuard(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	const actor = "operator:guard-test"
+
+	t.Run("session", func(t *testing.T) {
+		res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "guard-session"})
+		if err != nil {
+			t.Fatalf("seed resource: %v", err)
+		}
+		sess, err := s.CreateSession(ctx, actor, session.CreateInput{ResourceID: res.ID, Mode: "terminal"})
+		if err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+
+		if err := s.Delete(ctx, actor, res.ID); err != ErrInUse {
+			t.Fatalf("delete referenced by a pending session: want ErrInUse, got %v", err)
+		}
+
+		if _, err := s.EndSession(ctx, actor, sess.ID); err != nil {
+			t.Fatalf("end session: %v", err)
+		}
+		// STILL ErrInUse, not success: the closed session row still holds the
+		// hard FK. The pre-check no longer flags it (it only screens
+		// non-terminal rows), so this proves the DELETE-attempt fallback
+		// (23503 -> ErrInUse) actually engages, not just the pre-check.
+		if err := s.Delete(ctx, actor, res.ID); err != ErrInUse {
+			t.Fatalf("delete referenced by a TERMINAL session (still FK-blocked): want ErrInUse, got %v", err)
+		}
+	})
+
+	t.Run("run", func(t *testing.T) {
+		res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "guard-run"})
+		if err != nil {
+			t.Fatalf("seed resource: %v", err)
+		}
+		runID := seedRun(t, s, "running", res.ID)
+
+		if err := s.Delete(ctx, actor, res.ID); err != ErrInUse {
+			t.Fatalf("delete referenced by a running Run: want ErrInUse, got %v", err)
+		}
+
+		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='completed' WHERE id=$1`, runID); err != nil {
+			t.Fatalf("terminalize run: %v", err)
+		}
+		if err := s.Delete(ctx, actor, res.ID); err != nil {
+			t.Fatalf("delete after the Run reached a terminal state: %v", err)
+		}
+	})
+
+	t.Run("workstream", func(t *testing.T) {
+		res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "guard-workstream"})
+		if err != nil {
+			t.Fatalf("seed resource: %v", err)
+		}
+		wsID := seedWorkstream(t, s, "active", res.ID)
+
+		if err := s.Delete(ctx, actor, res.ID); err != ErrInUse {
+			t.Fatalf("delete referenced by an active Workstream: want ErrInUse, got %v", err)
+		}
+
+		if _, err := s.pool.Exec(ctx, `UPDATE workstreams SET status='paused' WHERE id=$1`, wsID); err != nil {
+			t.Fatalf("pause workstream: %v", err)
+		}
+		if err := s.Delete(ctx, actor, res.ID); err != ErrInUse {
+			t.Fatalf("delete referenced by a paused Workstream: want ErrInUse, got %v", err)
+		}
+
+		if _, err := s.pool.Exec(ctx, `UPDATE workstreams SET status='retired' WHERE id=$1`, wsID); err != nil {
+			t.Fatalf("retire workstream: %v", err)
+		}
+		if err := s.Delete(ctx, actor, res.ID); err != nil {
+			t.Fatalf("delete after the Workstream reached a terminal state: %v", err)
+		}
+	})
+}
+
+// TestResourceDeleteChainsAuditEvent proves resource.deleted lands in the SAME
+// transaction as the row delete (T-118c): a newly minted convention (no
+// resource.* event exists anywhere else in production code — Create/Update
+// remain unaudited, a disclosed v1.0 residual).
+func TestResourceDeleteChainsAuditEvent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "audit-target"})
+	if err != nil {
+		t.Fatalf("seed resource: %v", err)
+	}
+	if err := s.Delete(ctx, "operator:audit-test", res.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	var n int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM api_outbox
+		 WHERE payload->>'target' = $1 AND payload->>'outcome' = $2 AND payload->>'actor' = $3 AND payload->>'edge' = $4`,
+		"resource:"+res.ID, "resource.deleted", "operator:audit-test", "human-agent").Scan(&n); err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 resource.deleted event, got %d", n)
+	}
+}
+
+// seedRun inserts a minimal runs + run_steps row pair directly (raw SQL, not
+// through internal/run) so the resources package need not depend on it just
+// for a test fixture. grant_id/other run_steps columns are irrelevant to the
+// guard, so only what the guard's query reads is populated.
+func seedRun(t *testing.T, s *Store, status, resourceID string) string {
+	t.Helper()
+	ctx := context.Background()
+	id, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("mint run id: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO runs (id, operator, status) VALUES ($1,$2,$3)`,
+		id.String(), "operator:guard-test", status); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO run_steps (run_id, step_index, resource_id, command) VALUES ($1,0,$2,$3)`,
+		id.String(), resourceID, []byte("noop")); err != nil {
+		t.Fatalf("insert run_step: %v", err)
+	}
+	return id.String()
+}
+
+// seedWorkstream inserts a minimal workstreams + workstream_steps row pair
+// directly (raw SQL, not through internal/workstream — same rationale as
+// seedRun). grant_id carries no FK (migration 0011), so a fresh UUID with no
+// backing delegation_grants row is sufficient for the guard's query.
+func seedWorkstream(t *testing.T, s *Store, status, resourceID string) string {
+	t.Helper()
+	ctx := context.Background()
+	id, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("mint workstream id: %v", err)
+	}
+	grantID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("mint grant id: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO workstreams (id, principal, objective, grant_id, interval_seconds, next_fire_at, status)
+		VALUES ($1,$2,$3,$4,$5, now() + interval '1 hour', $6)`,
+		id.String(), "operator:guard-test", "guard-test objective", grantID.String(), 3600, status); err != nil {
+		t.Fatalf("insert workstream: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO workstream_steps (workstream_id, step_index, resource_id, command) VALUES ($1,0,$2,$3)`,
+		id.String(), resourceID, []byte("noop")); err != nil {
+		t.Fatalf("insert workstream_step: %v", err)
+	}
+	return id.String()
 }
 
 // TestReapStale — the stuck-session reaper (T-032). A stale 'pending' and a stale

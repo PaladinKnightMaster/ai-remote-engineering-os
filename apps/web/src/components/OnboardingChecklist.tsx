@@ -71,11 +71,17 @@ function readDismissed(): boolean {
 interface DerivedState {
   resourceExists: boolean;
   actionCompleted: boolean;
+  /** The loopback demo resource's own id, found by name among the same
+   * /v1/resources read `resourceExists` already derives from — null when no
+   * such resource exists (T-118c: the Remove action's target, never a general
+   * resource picker). */
+  demoResourceId: string | null;
   loading: boolean;
   /** Re-runs both reads without a remount — used after the T-118b create
    * action so item 1 flips the instant the operator's POST succeeds, instead
    * of waiting for the next mount (ONB-1 stays mount-derived; this is just an
-   * on-demand extra derivation, not a cache). */
+   * on-demand extra derivation, not a cache). T-118c's remove action reuses
+   * it so item 1 flips back the same way. */
   refresh: () => void;
 }
 
@@ -88,6 +94,7 @@ interface DerivedState {
 function useDerivedOnboardingState(): DerivedState {
   const [resourceExists, setResourceExists] = useState(false);
   const [actionCompleted, setActionCompleted] = useState(false);
+  const [demoResourceId, setDemoResourceId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [generation, setGeneration] = useState(0);
 
@@ -102,7 +109,9 @@ function useDerivedOnboardingState(): DerivedState {
         }),
       ]);
       if (cancelled) return;
-      setResourceExists((resources.data?.items?.length ?? 0) > 0);
+      const items = resources.data?.items ?? [];
+      setResourceExists(items.length > 0);
+      setDemoResourceId(items.find((item) => item.name === "loopback-demo")?.id ?? null);
       setActionCompleted((actions.data?.items?.length ?? 0) > 0);
       setLoading(false);
     })();
@@ -113,7 +122,7 @@ function useDerivedOnboardingState(): DerivedState {
 
   const refresh = useCallback(() => setGeneration((g) => g + 1), []);
 
-  return { resourceExists, actionCompleted, loading, refresh };
+  return { resourceExists, actionCompleted, demoResourceId, loading, refresh };
 }
 
 function ChecklistItem({ done, children }: { done: boolean; children: ReactNode }) {
@@ -259,9 +268,55 @@ function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
   );
 }
 
+// RemoveLoopbackDemoTarget — T-118c's UI half of ONB-4 ("removable through
+// the existing surface"): a DELETE against the same governed
+// /v1/resources/{id} route CreateLoopbackDemoTarget's POST used, gated
+// identically (operator-only, per gateByDeclaredSecurity). Narrow by
+// construction — resourceId always comes from the derived-state lookup
+// above (never a general resource picker/manager), matching
+// CreateLoopbackDemoTarget's own scope discipline. Surfaces the store's 409
+// in-use refusal (a non-terminal session/Run/Workstream still references it)
+// honestly rather than pretending the click worked; ONB-1 flips item 1 back
+// on its own from the next derived-state read on success — not special-cased
+// here.
+function RemoveLoopbackDemoTarget({ resourceId, onRemoved }: { resourceId: string; onRemoved: () => void }) {
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onRemove() {
+    setRemoving(true);
+    setError(null);
+    try {
+      const { error: apiErr } = await apiClient.DELETE("/v1/resources/{id}", {
+        params: { path: { id: resourceId } },
+      });
+      if (apiErr) {
+        setError(apiErr.message ? `Could not remove the demo target: ${apiErr.message}` : "Could not remove the demo target.");
+        return;
+      }
+      onRemoved();
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 space-y-1">
+      <Button variant="destructive" size="xs" type="button" onClick={() => void onRemove()} disabled={removing}>
+        {removing ? "Removing…" : "Remove the demo target"}
+      </Button>
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function OnboardingChecklist() {
   const [dismissed, setDismissed] = useState(readDismissed);
-  const { resourceExists, actionCompleted, loading, refresh } = useDerivedOnboardingState();
+  const { resourceExists, actionCompleted, demoResourceId, loading, refresh } = useDerivedOnboardingState();
 
   if (dismissed) return null;
 
@@ -290,6 +345,7 @@ export function OnboardingChecklist() {
         <ChecklistItem done={actionCompleted}>Complete a governed action</ChecklistItem>
       </ul>
       {!loading && !resourceExists && <CreateLoopbackDemoTarget onCreated={refresh} />}
+      {!loading && demoResourceId && <RemoveLoopbackDemoTarget resourceId={demoResourceId} onRemoved={refresh} />}
       {!loading && resourceExists && !actionCompleted && (
         <p className="mt-2 text-xs text-muted-foreground">
           Next: launch a one-step command against it from{" "}
