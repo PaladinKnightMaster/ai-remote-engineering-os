@@ -95,10 +95,33 @@ func dialClient(cfg Config) (*ssh.Client, error) {
 		return nil, fmt.Errorf("parse pinned host key: %w", err)
 	}
 	conf := &ssh.ClientConfig{
-		User:            cfg.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.FixedHostKey(hostKey),
-		Timeout:         orDur(cfg.DialTimeout, 10*time.Second),
+		User: cfg.User,
+		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		// Without an explicit HostKeyAlgorithms, x/crypto/ssh negotiates the
+		// host-key algorithm from its own internal preference order, NOT from
+		// which key type we pinned below — it empirically prefers
+		// ecdsa-sha2-nistp256 over ssh-ed25519. Against any real sshd offering
+		// more than one host-key type (i.e. essentially every OpenSSH server,
+		// since `ssh-keygen -A` generates ed25519+ecdsa+rsa by default), the
+		// server hands back a key of the negotiated type, FixedHostKey compares
+		// it against the pinned key, and the handshake dies with "host key
+		// mismatch" even though the pinned key is present and correct. Pinning
+		// the algorithm list to the pinned key's own type closes that gap.
+		//
+		// RSA needs one more step, not just hostKey.Type(): that returns
+		// "ssh-rsa", but OpenSSH 8.8+ disables the legacy ssh-rsa (SHA-1)
+		// signature algorithm by default while still serving the SAME RSA key
+		// under rsa-sha2-256 / rsa-sha2-512. Restricting to "ssh-rsa" alone
+		// would then fail against every modern server for an operator who
+		// pinned an RSA host key. rsa-sha2-256/512 sign with the same
+		// "ssh-rsa"-typed key blob (only the signature algorithm differs), and
+		// ssh.FixedHostKey compares marshaled key bytes rather than the
+		// signature algorithm, so offering all three keeps the pin exact while
+		// restoring connectivity. Do not simplify this back to
+		// []string{hostKey.Type()} — that silently breaks RSA-pinned targets.
+		HostKeyAlgorithms: hostKeyAlgorithms(hostKey),
+		HostKeyCallback:   ssh.FixedHostKey(hostKey),
+		Timeout:           orDur(cfg.DialTimeout, 10*time.Second),
 	}
 	addr := net.JoinHostPort(cfg.Host, orStr(cfg.Port, "22"))
 	client, err := ssh.Dial("tcp", addr, conf)
@@ -106,6 +129,16 @@ func dialClient(cfg Config) (*ssh.Client, error) {
 		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
 	return client, nil
+}
+
+// hostKeyAlgorithms returns the HostKeyAlgorithms list to constrain negotiation
+// to the pinned key. See the comment at its call site in dialClient for why RSA
+// gets three algorithm names for one key type and everything else gets one.
+func hostKeyAlgorithms(hostKey ssh.PublicKey) []string {
+	if hostKey.Type() == ssh.KeyAlgoRSA {
+		return []string{ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSA}
+	}
+	return []string{hostKey.Type()}
 }
 
 func parseKey(cfg Config) (ssh.Signer, error) {
