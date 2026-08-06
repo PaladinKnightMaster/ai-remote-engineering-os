@@ -111,7 +111,7 @@ function useDerivedOnboardingState(): DerivedState {
       if (cancelled) return;
       const items = resources.data?.items ?? [];
       setResourceExists(items.length > 0);
-      setDemoResourceId(items.find((item) => item.name === "loopback-demo")?.id ?? null);
+      setDemoResourceId(items.find((item) => item.name === DEMO_RESOURCE_NAME)?.id ?? null);
       setActionCompleted((actions.data?.items?.length ?? 0) > 0);
       setLoading(false);
     })();
@@ -142,6 +142,20 @@ function ChecklistItem({ done, children }: { done: boolean; children: ReactNode 
 // passed to `infra/offline/setup-loopback-demo.sh generate --account <name>`.
 const LOOPBACK_HOST = "127.0.0.1";
 const LOOPBACK_PORT = "22";
+
+// The single source of truth for the demo resource's `name` field — used both
+// to CREATE it (CreateLoopbackDemoTarget's POST body) and to FIND it again
+// (useDerivedOnboardingState's lookup, T-118c's Remove action target). Before
+// T-118c review caught it, these were two independent string literals: diverge
+// them and the create still succeeds but the Remove action never appears,
+// leaving an undeletable demo resource with no affordance — a silent break on
+// the exact path that demonstrates ONB-4, which neither existing test would
+// catch (each asserts against its own literal). infra/offline/
+// setup-loopback-demo.sh's own "loopback-demo" strings (its state directory,
+// its SSH-key marker) are a DIFFERENT value for a different purpose — the
+// script never sets or reads this API field — so there is nothing on that
+// side for this constant to stay in sync with.
+const DEMO_RESOURCE_NAME = "loopback-demo";
 
 // CreateLoopbackDemoTarget — the first UI call site for POST /v1/resources
 // (T-118b; ADR-0068 §D8/§D11, ONB-3/ONB-4). Deliberately a narrow demo-target
@@ -178,7 +192,7 @@ function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
       const { error: apiErr } = await apiClient.POST("/v1/resources", {
         body: {
           type: "ssh",
-          name: "loopback-demo",
+          name: DEMO_RESOURCE_NAME,
           labels: {
             ssh_host: LOOPBACK_HOST,
             ssh_port: LOOPBACK_PORT,
