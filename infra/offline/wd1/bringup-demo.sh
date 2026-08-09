@@ -10,7 +10,7 @@
 #   # teardown:
 #   docker rm -f aireos-demo-host aireos-demo-sshd; docker network rm aireos-demo; docker volume rm aireos-demo-keys
 #
-# Prereqs: a from-HEAD bundle in dist/offline/aireos-offline-0.4.0.tar.gz (task
+# Prereqs: a from-HEAD bundle in dist/offline/aireos-offline-*.tar.gz (task
 # offline-bundle, or the Dockerized build-bundle) + the postgres companion.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
@@ -31,7 +31,7 @@ docker rm -f "$HOST" "$SSHD" >/dev/null 2>&1 || true
 docker volume rm "$KEYVOL" >/dev/null 2>&1 || true
 docker network rm "$NET" >/dev/null 2>&1 || true
 
-ls "$OUT"/aireos-offline-0.4.0.tar.gz >/dev/null || { echo "missing 0.4.0 bundle in $OUT — run task offline-bundle (or the Dockerized build-bundle) first"; exit 1; }
+ls "$OUT"/aireos-offline-*.tar.gz >/dev/null 2>&1 || { echo "missing a from-HEAD bundle in $OUT — run task offline-bundle (or the Dockerized build-bundle) first"; exit 1; }
 ls "$OUT"/aireos-postgres-ubuntu2404.tar.gz >/dev/null || { echo "missing postgres companion in $OUT"; exit 1; }
 
 docker network create "$NET" >/dev/null
@@ -62,7 +62,7 @@ docker exec "$HOST" bash -c "set -e; mkdir -p /root/inst && cd /root/inst &&
   COCKPIT_PW=$DBPW ./install-postgres.sh"
 
 log "install + start the app stack under systemd (real install.sh)"
-docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-offline-0.4.0.tar.gz &&
+docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-offline-*.tar.gz &&
   cd \$(ls -d aireos-offline-*/ | head -1) &&
   AIREOS_DB_URL='postgres://cockpit:$DBPW@localhost:5432/cockpit?sslmode=disable' \
   AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW \
