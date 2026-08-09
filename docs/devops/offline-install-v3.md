@@ -12,7 +12,7 @@ built on a connected machine and installed on a host with no public-internet egr
 
 | Artifact | Contents | Built by |
 |---|---|---|
-| `aireos-offline-<v>.tar.gz` (~28 MB gz) | static `linux/amd64` binaries (api, audit-service, session-broker, **authctl**) + **Caddy** + the SPA + `Caddyfile` + systemd units + `install.sh` + `SHA256_MANIFEST.txt` | `task offline-bundle` (T-021a/b) |
+| `aireos-offline-<v>.tar.gz` (~28 MB gz) | static `linux/amd64` binaries (api, audit-service, session-broker, **connector-service, policy-service, mcp-gateway** [P1, v0.3.0/v0.4.0 — this table was frozen at v0.1.0 and undercounted them until v0.12.0's DOC-24 pass], **authctl**) + **Caddy** + the SPA + `Caddyfile` + systemd units + `install.sh` + **`setup-loopback-demo.sh`** (the ONB-3 loopback demo target, when present in the source tree — v0.12.0) + `SHA256_MANIFEST.txt` | `task offline-bundle` (T-021a/b) |
 | `aireos-postgres-<ostag>.tar.gz` (~80 MB) | a self-contained postgres-16 + pgcrypto local repo (full closure) + `install-postgres.sh` | `build-postgres-companions.sh` (T-021c) |
 
 Postgres is a separate per-OS companion (ADR-0052), not in the core bundle.

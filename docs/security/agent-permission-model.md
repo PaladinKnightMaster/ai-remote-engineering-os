@@ -389,3 +389,68 @@ goroutine; `context.search` rides the already-installed gateway binary + Caddy
 `/mcp` route — **zero install-wiring diff again** (no new unit, route, env, or
 key; `AIREOS_CONTEXT_INDEX_SECONDS` is an optional e2e-only override, not
 written by the installer).
+
+## Paired operator sessions — a scope within `human-agent`, not an eighth edge (v0.12.0; ADR-0068)
+
+v0.12.0 ships the product's **first revocable session**: an operator pairs a phone (or
+any second browser) with a QR code and drives the approval surface from it. This adds
+**no capability edge**. `packages/go/auth`'s `PairedTTL` is a fifth **token tier**
+alongside the four ADR-0046 fixed (agent 5min / operator 8h / service 1h / lease =
+lease expiry) — the one declared divergence from an Accepted ADR this release makes
+(ADR-0068, filed as a new ADR; **ADR-0046 is not edited**, its seven-edge set, its
+tiered-TTL model, and its single-bootstrap-operator posture all stand). Read literally
+against the enforcement table above: the paired session travels the existing
+`human-agent` edge end to end (`services/api/internal/server`, operator cookie + CSRF,
+the same SPA) — it is **narrower**, not different. **The canonical seven-edge set is
+unchanged.**
+
+- **The scope: `approvals@1`.** A paired token's `Scope.Name` is the versioned string
+  `approvals@1` (`packages/go/auth`'s `Capability.Scope`). Membership is
+  **single-sourced in one place in `services/api`** — `services/api/internal/pairing`
+  (the `ApprovalsScopeV1` constant and its doc comment enumerating what the scope
+  permits) plus `services/api/internal/server/pairing.go`'s `pairingRouteActions` map,
+  which is the **only** place a route is mapped onto an `approvals@1` action and
+  therefore the sole enforcement chokepoint (SEC-35/SEC-36) — not the frontend, not
+  the database, not a migration. `approvals@1` **permits**: read pending
+  approvals/invocations, approve/deny, read the audit surface, read its own session.
+  It **denies**: launching a Run, issuing or revoking a delegation grant, registering
+  or removing a context source, minting an agent token, opening a terminal session,
+  and creating a further pairing. `TestPairingRouteWalkDenyByDefault` drives a live
+  paired session against every unmapped route and asserts the refusal — the capability
+  claim is proven by what it refuses (SEC-21's precedent). Widening `approvals@1` is a
+  criteria change and therefore requires a new ADR (ADR-0068 §D5).
+- **Liveness is checked per request, not at mint time (SEC-34).** A paired session's
+  `paired_sessions` row is read on every request carrying a paired-scope token — a
+  revoked or expired session is refused live, not only once its token would otherwise
+  expire. A desktop token takes no extra work at all: the liveness check is keyed on
+  `Scope.Name == "approvals@1"`, so an unscoped operator token skips it entirely
+  (PERF-12).
+- **No sliding refresh on the paired plane (SEC-39).** The paired session expires hard
+  at `PairedTTL = 8h` and must be re-paired; ADR-0047's server-side cookie rotation
+  for the desktop plane is unchanged and does not apply here.
+- **The paired session cannot reach another service (SEC-38).** It exists on the
+  `services/api` operator plane only. `packages/go/middleware`'s `RequireCapability`
+  gained no database dependency, and `session-broker` / `policy-service` /
+  `connector-service` / `audit-service` / `mcp-gateway` are byte-unchanged by this
+  release.
+- **Off by default (SEC-41).** `AIREOS_PAIRING_ENABLED` defaults to `0`; `install.sh`
+  writes it off. With pairing disabled the four pairing routes answer a plain `404` —
+  byte-identical to chi's own unmatched-route 404, no oracle distinguishing
+  "disabled" from "doesn't exist."
+- **Audit provenance, disclosed.** A paired-session approval chains `approval.granted`
+  (or `approval.denied:operator`) with actor `operator:<id>#paired` — the only
+  mechanism available that satisfies both SEC-38 (policy-service/audit-service stay
+  byte-unchanged) and AUD-34 (a paired approval must be attributable as such).
+  **Known consequence:** `audit-service`'s actor filter is exact-match, so filtering
+  for `operator:<id>` does not return that operator's paired-device approvals — a
+  real fork in the audit actor, disclosed at review (T-114b) and carried as a v1.x
+  residual (`docs/requirements/backlog_v4.csv` B-034: provenance as a structured
+  field, not an actor-string suffix).
+
+Event vocabulary added (AUD-32/33; content-free, ADR-0049): `pairing.requested` /
+`pairing.redeemed` / `pairing.revoked`, each chained inside
+`services/api/internal/pairing/store.go`'s own transaction for the state change it
+records (actor = the operator, edge `human-agent`, target `pairing:<id>` /
+`paired-session:<id>`). There is deliberately **no** `pairing.expired` event and no
+expiry-sweep event (AUD-33) — conforming to ADR-0067 §D3's lifecycle-noise finding,
+the same discipline that shaped `governed-actions@1`.
