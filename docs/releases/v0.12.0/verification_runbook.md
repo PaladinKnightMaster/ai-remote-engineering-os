@@ -139,10 +139,45 @@ deliberately** — the enable path is documented in
 choice. With it off the routes answer **404**, not 403: a disabled capability must
 not advertise its own existence.
 
-Then: render the QR, **redeem it on a real phone** (or a second browser profile),
-**approve a held invocation from the paired session**, and **revoke that session
-from the desk** — and watch the phone lose access on its very next request. The
-liveness check runs per request against the row, not at mint time.
+Then: render the QR, **redeem it on a second device**, **approve a held invocation
+from the paired session**, and **revoke that session from the desk** — and watch it
+lose access on its very next request. The liveness check runs per request against
+the row, not at mint time.
+
+**Nothing is installed on the second device.** The paired session is an ordinary
+web session on the same origin — no app, no client. A phone needs only its camera
+(iOS and Android scan QR natively) and a browser.
+
+#### Which second device to use
+
+**Use a second browser profile for the gate.** The criterion permits it explicitly,
+it exercises the identical mechanism — separate cookie jar, same origin, the full
+redeem → approve → revoke cycle — and it needs no setup, so nothing outside the
+product can block your sign-off. Open a second Chrome/Edge profile (or a private
+window) at the same `https://localhost:8443`, and scan the QR by pasting the URL it
+encodes if the profile cannot see the screen.
+
+**A real phone works too, but needs three prerequisites** — set them up before the
+walkthrough, not during it:
+
+1. **Caddy must answer the phone.** The Caddyfile matches on Host
+   (`{$AIREOS_SITE_ADDRESS:localhost}`), and `bringup-demo.sh` sets the site address
+   to `'localhost <container-hostname>'` — so a request to `https://192.168.1.x:8443`
+   matches no site block and gets nothing. Add the host's LAN IP to the site address:
+   `AIREOS_SITE_ADDRESS='localhost <host> 192.168.1.x'`. Caddy accepts multiple
+   space-separated hosts — the same multi-token form OI-22's loopback rule was built
+   to handle.
+2. **The QR must encode a reachable origin.** It is built from
+   `window.location.origin`, so a desk browser at `https://localhost:8443` produces a
+   QR pointing at `localhost` — which, on the phone, means the phone. Open the **desk**
+   browser at `https://192.168.1.x:8443` instead.
+3. **Windows Firewall** must allow inbound TCP 8443, and the phone must be on the
+   same Wi-Fi. Accept the `tls internal` certificate warning on the phone; the session
+   cookie is `Secure`, so HTTPS is required and a manually-accepted self-signed origin
+   is sufficient.
+
+Run the phone leg **after** sign-off as a real-device confirmation if you want it —
+that keeps a firewall rule or a certificate prompt from blocking the gate itself.
 
 The QR encodes `https://<site>/pair#<id>.<secret>`. The secret rides the **URL
 fragment**, which browsers never transmit — it reaches no access log and no
