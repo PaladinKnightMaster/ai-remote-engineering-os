@@ -242,8 +242,24 @@ case "$MODE" in
     ACCOUNT="${PARSED%%|*}"
     PORT="${PARSED##*|}"
 
-    systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null \
-      || die "no sshd running on this host (checked the 'ssh' and 'sshd' systemd units) — install and start one before running this script"
+    # What this script needs is a REACHABLE sshd, not a particular systemd
+    # arrangement — so test the port, and fall back to the unit check only when
+    # no TCP probe is possible.
+    #
+    # Checking `systemctl is-active ssh|sshd` alone is wrong on Ubuntu 24.04,
+    # which is this product's own primary install target: it ships sshd
+    # **socket-activated**, so `ssh.socket` listens on 0.0.0.0:22 while
+    # `ssh.service` stays *inactive* until a connection actually arrives. The
+    # unit-only check therefore reported "no sshd running" on a host where sshd
+    # was running and accepting connections — found at v0.12.0's GATE-4 §human
+    # walkthrough on a real installed stack, where it blocked the documented
+    # quickstart (ONB-5) at its first step.
+    if ! timeout 3 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+      systemctl is-active --quiet ssh 2>/dev/null \
+        || systemctl is-active --quiet sshd 2>/dev/null \
+        || systemctl is-active --quiet ssh.socket 2>/dev/null \
+        || die "no sshd reachable on 127.0.0.1:$PORT (and neither the ssh/sshd service nor ssh.socket is active) — install and start one before running this script"
+    fi
     id "$ACCOUNT" >/dev/null 2>&1 || die "no such account '$ACCOUNT' — create the dedicated demo account first"
     command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found (openssh-client)"
 
