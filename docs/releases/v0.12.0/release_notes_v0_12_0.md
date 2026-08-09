@@ -1,12 +1,47 @@
 # AI Remote Engineering OS — v0.12.0 release notes
 
-**Status: RELEASE CANDIDATE (RC) — not released.** GATE-1 (WD-11 both stacks + its
-negative leg), GATE-2 (WD-1..10 full regression, both stacks) and GATE-3 (browser
-smoke) are **green**. **GATE-4 — the CEO §human walkthrough on a fresh install — is
-the one remaining gate** (T-122c). Per the ratified split, this ticket (T-122b)
-carries the release's documentation and requirements-ladder record; it tags nothing,
-flips nothing to *released*, and does not fast-forward `main`. That happens at T-122c
-sign-off.
+**Status: RELEASED — 2026-08-09.** All four gates green. GATE-1 (WD-11 both stacks +
+its negative leg), GATE-2 (WD-1..10 full regression, both stacks) and GATE-3 (browser
+smoke) were verified at T-122a. **GATE-4 — the CEO §human walkthrough on a fresh
+install — was driven live and signed off at T-122c**, on a stack stood up by
+`bringup-demo.sh` from the from-HEAD 0.12.0 bundle.
+
+**GATE-4 evidence (2026-08-09, live on the installed stack):**
+
+1. **First run from an un-seeded stack.** Both checklist items unchecked at login →
+   `setup-loopback-demo.sh generate` → target created in the cockpit → item 1 flipped
+   on its own → one-step Run reached **completed** → item 2 flipped on its own. The
+   chain: `run.launched → tool.invoked → credential.leased → remote.exec →
+   tool.result → run.completed`.
+2. **The stack reports its profile.** `deployment profile lan-only` in the cockpit
+   header, additive on `/v1/auth/me`, no new route and no audit event.
+3. **Pairing end to end.** Enabled deliberately from its shipped-off default → QR
+   rendered → redeemed in a second browser profile, which landed on the **approval
+   surface only** → a held invocation approved from that paired session, chaining
+   **`approval.granted` with actor `operator:admin#paired`** (AUD-34 live) → revoked
+   from the desk → the paired session was **refused on its very next request** while
+   its token remained cryptographically valid for another ~8h. The product's first
+   revocable session, proven.
+4. **Button states.** The `disabled` state observed rendering on the installed stack;
+   hover / active / `focus-visible` are rigorously proven by
+   `tests/smoke/button.smoke.spec.ts`, which asserts **computed styles** across all
+   four variants in real Chromium. Spot-check, not primary evidence — stated as such.
+
+**Two defects the §human gate caught that no automated gate could**, both fixed
+before sign-off: `bringup-demo.sh` hard-coded a stale bundle version (invisible for
+eight releases *because* `BUNDLE_VERSION` silently defaulted to the same stale value,
+so the stale default was concealing the stale hard-code); and
+`setup-loopback-demo.sh` gated on `systemctl is-active ssh`, which is wrong on
+**Ubuntu 24.04 — this product's own primary install target** — where sshd ships
+**socket-activated**, leaving `ssh.service` inactive while `ssh.socket` listens. It
+reported "no sshd running" on a host where sshd was running and reachable, blocking
+the documented quickstart at its first step. Same species as T-123: a real-world
+default configuration no fixture in this product exercised.
+
+**One unscripted demonstration worth recording.** Removing the demo target flipped
+"Register a resource" back to unchecked while "Complete a governed action" **stayed
+checked** — derived state tracking live reality, and the audit chain refusing to
+forget. Mutable state and immutable evidence, visible in one screen.
 
 Baseline: **v0.11.0** (local annotated tag `v0.11.0`, no remote) on v3.0.1.
 
