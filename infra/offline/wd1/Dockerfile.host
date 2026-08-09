@@ -5,10 +5,22 @@
 # scripts — no build toolchain on the host (the binaries are static). systemd-in-
 # Docker is enabled by cgroup v2 (works on Linux + Windows/WSL2; run --privileged
 # --cgroupns=host --tmpfs /run -v /sys/fs/cgroup:rw).
+#
+# T-122a: also install openssh-server. The ONB-3 loopback demo (T-118b,
+# infra/offline/setup-loopback-demo.sh) targets THIS host SSHing to itself —
+# T-118b had to apt-install sshd ad hoc to prove it live, and GATE-4's §human
+# walkthrough (T-122c) runs the real quickstart on this same image, so the
+# demo target needs sshd baked in, not bolted on during a walkthrough.
+# Ubuntu's openssh-server postinst runs `ssh-keygen -A`, which generates
+# ed25519 + ecdsa + rsa host keys unconditionally — a stock multi-key sshd,
+# matching what T-121 did for the compose e2e sshd fixture (Dockerfile.sshd)
+# so this target isn't the single-host-key blind spot that hid T-123's
+# HostKeyAlgorithms defect for five releases. ssh.service is enabled by
+# systemd's default preset, so it starts with the rest of the unit set.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq \
-    && apt-get install -y -qq systemd systemd-sysv curl \
+    && apt-get install -y -qq systemd systemd-sysv curl openssh-server \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

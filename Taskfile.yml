@@ -103,10 +103,16 @@ tasks:
 
   offline-bundle:
     desc: "Build the offline-install bundle (§OI-a, ADR-0051): static linux/amd64 service binaries + SPA + Caddy + config + SHA256 manifest, packaged + OI-4 size-gated. Output: dist/offline/. Build host needs go 1.23 + node 22/pnpm + curl|wget. install.sh + staged postgres packages land in §OI-b."
+    vars:
+      # The Taskfile is the single source of truth for the release artifact's
+      # version (T-122a, OI-29): build-bundle.sh REFUSES to run without
+      # BUNDLE_VERSION set (no silent default — the OI-21 rule), and this is
+      # the one place that sets it. Bump on every release.
+      BUNDLE_VERSION: "0.12.0"
     cmds:
       - pnpm install --frozen-lockfile
       - pnpm --filter @aireos/web build
-      - bash infra/offline/build-bundle.sh
+      - BUNDLE_VERSION={{.BUNDLE_VERSION}} bash infra/offline/build-bundle.sh
 
   codegen:
     desc: "Generate per-service Go chi-server stubs + apps/web TS types from the OpenAPI fragment (ADR-0043, ADR-0047; T-014, T-007a). One schema, two consumers."

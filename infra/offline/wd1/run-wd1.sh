@@ -152,6 +152,45 @@ docker exec "$HOST" bash -c '
   echo "OI-21/OI-23 OK — deployment profile persisted in aireos.env"
 '
 
+# 9e. WD-11 (T-122a, ADR-0068 §D10/SEC-41): pairing ships OFF by default. Assert
+#     the off state answers 404 (no oracle) on THIS stack rather than assuming
+#     compose's proof of the same posture carries over, THEN turn it on the way
+#     an operator actually would — a re-run of the real install.sh with
+#     AIREOS_PAIRING_ENABLED=1 — and restart aireos-api.service so the new env
+#     takes effect (a running process only reads AIREOS_PAIRING_ENABLED at boot,
+#     services/api/main.go; install.sh's own `systemctl enable --now` is a no-op
+#     on an already-active unit). This is the enable path GATE-4's §human
+#     walkthrough will also exercise; proving it here is what lets the WD-11 Go
+#     test below assume pairing is live.
+log "assert: pairing routes 404 while AIREOS_PAIRING_ENABLED is off (SEC-41)"
+docker exec "$HOST" bash -c '
+  # redeemPairingRequest declares security:[] (public — the redeeming device has
+  # no session yet, ADR-0068 §D6), so it reaches pairingDisabled 404 with NO
+  # capability token needed, unlike CreatePairingRequest (gated by
+  # RequireCapability first, so an unauthenticated probe there 401s before ever
+  # reaching the pairing-off check — that is a DIFFERENT gate, not this one).
+  code="$(curl -sk -o /dev/null -w "%{http_code}" -X POST https://localhost/v1/pairing-requests/probe-id/redeem -H "Content-Type: application/json" -d "{\"secret\":\"x\"}")"
+  [ "$code" = "404" ] || { echo "SEC-41 VIOLATION — POST /v1/pairing-requests/{id}/redeem with pairing off = $code, want 404"; exit 1; }
+  echo "SEC-41 OK — pairing routes 404 while off"
+'
+log "enable pairing: re-run install.sh with AIREOS_PAIRING_ENABLED=1 (OI-23 idempotent re-run)"
+docker exec "$HOST" bash -c "set -e; cd /root/inst && cd \$(ls -d aireos-offline-*/ | head -1) &&
+  AIREOS_DB_URL='postgres://cockpit:$DBPW@localhost:5432/cockpit?sslmode=disable' \
+  AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW \
+  AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only AIREOS_PAIRING_ENABLED=1 ./install.sh"
+docker exec "$HOST" systemctl restart aireos-api.service
+for i in $(seq 1 30); do
+  docker exec "$HOST" systemctl is-active --quiet aireos-api && break
+  [ "$i" = 30 ] && { echo "aireos-api did not come back active after the pairing-enable restart"; exit 1; }
+  sleep 1
+done
+log "assert: the re-run preserved the profile + persisted AIREOS_PAIRING_ENABLED=1"
+docker exec "$HOST" bash -c '
+  grep -q "^AIREOS_DEPLOYMENT_PROFILE=lan-only$" /etc/aireos/aireos.env || { echo "OI-23 VIOLATION — profile lost across the pairing-enable re-run"; exit 1; }
+  grep -q "^AIREOS_PAIRING_ENABLED=1$" /etc/aireos/aireos.env || { echo "aireos.env missing AIREOS_PAIRING_ENABLED=1 after enabling"; exit 1; }
+  echo "OI-23 OK — deployment profile survived the re-run; AIREOS_PAIRING_ENABLED=1 persisted"
+'
+
 # 9c. HYGIENE (T-084 security-hook flag): export Caddy's own local CA (`tls
 #     internal`, persisted under XDG_DATA_HOME=/var/lib/aireos/caddy per the
 #     aireos-caddy unit) so the go-test harness can REAL-verify the HTTPS
@@ -211,7 +250,13 @@ docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env |
 # AIREOS_CONTEXT_INDEX_SECONDS override); context.search rides the already-installed
 # gateway binary + Caddy /mcp route — no new unit/route/key/env. Per-composer/per-id
 # exactly-once precision is asserted in-test via the audit read-proxy.
-WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired memory.written memory.redacted memory.expired plan.requested plan.submitted plan.expired memory.read memory.shared memory.unshared run.denied context.source.registered context.read"
+# v0.12 (OI-27, T-122a) adds the WD-11 pairing lifecycle (ADR-0068, AUD-32, same
+# api relay + migration 0016 riding the migrate loop): pairing.requested (the desk's
+# request), pairing.redeemed (the device's redeem), pairing.revoked (the desk's
+# revoke) — all content-free per AUD-33 (no pairing.expired). approval.granted is
+# already in WANTS from WD-2; the paired-origin approval's distinct actor
+# (operator:admin#paired, AUD-34) is asserted separately below.
+WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired memory.written memory.redacted memory.expired plan.requested plan.submitted plan.expired memory.read memory.shared memory.unshared run.denied context.source.registered context.read pairing.requested pairing.redeemed pairing.revoked"
 for attempt in 1 2 3 4 5 6; do
   OUTCOMES="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT outcome FROM audit_events ORDER BY seq\"")"
   MISSING=""
@@ -244,4 +289,16 @@ for attempt in 1 2 3; do
   sleep 5
 done
 
-log "T-053a/T-061/T-069/T-077/T-084/T-093/T-102 PASS — WD-4 + WD-5 + WD-6 + WD-7 + WD-8 + WD-9 + WD-10 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop)), the WD-8 Persistent Scoped Memory plane (OI-15: the completed tick ACCRUES a content-free pointer with nobody writing it → author/scoped-read/redact + the N1 idempotent no-op → the agent plane is rejected on /v1/memories* (SEC-31) → unknown-id 404s → the sweep at the PRODUCTION 2-min reaper cadence expires the unpinned row exactly once and spares the pinned one → an operator-canceled Run accrues exactly one :canceled pointer; migration 0012 rides the migrate loop, the sweep rides the unconditional reaper goroutine), the WD-9 Adaptive-Workstreams plane (OI-16: a real external MCP client composes the next tick's plan from governed memory it reads over Caddy /mcp, a human reviews the exact plan before anything runs, the engine executes it, the outcome accrues, and the NEXT tick's read proves the loop closed — at the 60s production floor; cross-grant containment + revoke-cascades-with-zero-run.denied + the share gate + the deny cycle + expiry-never-wedges all proven installed; migration 0013 rides the migrate loop, the three control-plane MCP tools ride the existing gateway binary + /mcp route — NO new unit/route/key/env for either v0.8 or v0.9), AND the WD-10 Layer 1 Live/Context Index plane (OI-17: a real host directory bound to a charter — via the wd1-harness-owned CTXVOL, standing in for the installed api's own filesystem, since api is a systemd service inside $HOST with no bind-mounted repo checkout — is swept by the in-process indexer at the REAL 60s production floor, the composer's context.search over Caddy /mcp reads it (chained context.read, agent-workspace edge, content-free) alongside memory.read, a human reviews and approves the exact grounded plan, the flagged resource's invocation-level park+approve completes it, it accrues, and a live source edit is reflected on the NEXT sweep with no rebuild call; the confined-root guard (N2) holds installed too; migrations 0014+0015 ride the migrate loop, context.search rides the existing gateway binary + /mcp route — NO new unit/route/key/required-env); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched + memory.written/memory.redacted/memory.expired + plan.requested/plan.submitted/plan.expired + memory.read/memory.shared/memory.unshared + run.denied + context.source.registered/context.read)."
+# v0.12 (OI-27, T-122a): the PAIRED-session approval must be attributable as such
+# (AUD-34) — approval.granted with actor 'operator:admin#paired', distinguishable
+# from every desk approval already in the chain (plain 'operator:admin'). Proves
+# WD-11's leg 3 (the held invocation was approved FROM the paired session) on the
+# real install, not just on compose.
+for attempt in 1 2 3; do
+  PAIRED_APPROVED="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT count(*) FROM audit_events WHERE outcome='approval.granted' AND actor='operator:admin#paired'\"")"
+  [ "${PAIRED_APPROVED:-0}" -ge 1 ] && break
+  [ "$attempt" = 3 ] && { echo "no operator:admin#paired approval.granted in the installed chain — AUD-34's paired-origin attribution missing"; exit 1; }
+  sleep 5
+done
+
+log "T-053a/T-061/T-069/T-077/T-084/T-093/T-102/T-122a PASS — WD-4 + WD-5 + WD-6 + WD-7 + WD-8 + WD-9 + WD-10 + WD-11 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop)), the WD-8 Persistent Scoped Memory plane (OI-15: the completed tick ACCRUES a content-free pointer with nobody writing it → author/scoped-read/redact + the N1 idempotent no-op → the agent plane is rejected on /v1/memories* (SEC-31) → unknown-id 404s → the sweep at the PRODUCTION 2-min reaper cadence expires the unpinned row exactly once and spares the pinned one → an operator-canceled Run accrues exactly one :canceled pointer; migration 0012 rides the migrate loop, the sweep rides the unconditional reaper goroutine), the WD-9 Adaptive-Workstreams plane (OI-16: a real external MCP client composes the next tick's plan from governed memory it reads over Caddy /mcp, a human reviews the exact plan before anything runs, the engine executes it, the outcome accrues, and the NEXT tick's read proves the loop closed — at the 60s production floor; cross-grant containment + revoke-cascades-with-zero-run.denied + the share gate + the deny cycle + expiry-never-wedges all proven installed; migration 0013 rides the migrate loop, the three control-plane MCP tools ride the existing gateway binary + /mcp route — NO new unit/route/key/env for either v0.8 or v0.9), the WD-10 Layer 1 Live/Context Index plane (OI-17: a real host directory bound to a charter — via the wd1-harness-owned CTXVOL, standing in for the installed api's own filesystem, since api is a systemd service inside $HOST with no bind-mounted repo checkout — is swept by the in-process indexer at the REAL 60s production floor, the composer's context.search over Caddy /mcp reads it (chained context.read, agent-workspace edge, content-free) alongside memory.read, a human reviews and approves the exact grounded plan, the flagged resource's invocation-level park+approve completes it, it accrues, and a live source edit is reflected on the NEXT sweep with no rebuild call; the confined-root guard (N2) holds installed too; migrations 0014+0015 ride the migrate loop, context.search rides the existing gateway binary + /mcp route — NO new unit/route/key/required-env), AND the WD-11 pairing plane (T-122a, ADR-0068: pairing ships OFF by default — proven 404 live on this stack — then enabled the way an operator actually would, a re-run of the real install.sh with AIREOS_PAIRING_ENABLED=1 + a unit restart, OI-23 idempotence preserved; the desk requests a pairing, a device redeems the fragment-carried secret for a revocable paired session, a held invocation is approved FROM the paired session — not the desk — attributably (AUD-34: approval.granted actor=operator:admin#paired), and the desk revokes it, SEC-34 proving the revoked reuse refused live; migration 0016 rides the migrate loop, no new unit/port/key/Caddyfile change); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched + memory.written/memory.redacted/memory.expired + plan.requested/plan.submitted/plan.expired + memory.read/memory.shared/memory.unshared + run.denied + context.source.registered/context.read + pairing.requested/pairing.redeemed/pairing.revoked + the paired-actor approval.granted)."

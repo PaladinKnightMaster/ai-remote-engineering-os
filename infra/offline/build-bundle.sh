@@ -41,13 +41,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
-BUNDLE_VERSION="${BUNDLE_VERSION:-0.4.0}"
+log() { printf '\033[1;34m[bundle]\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31m[bundle] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# BUNDLE_VERSION is REQUIRED and never silently defaulted (the OI-21 rule
+# applied to the artifact filename itself, not just the profile): a stale
+# default here shipped v0.5.0..v0.11.0's release artifacts under a filename
+# that still read aireos-offline-0.4.0.tar.gz, eight releases stale, because
+# nothing set it. `task offline-bundle` is the single source of truth — it
+# passes the current release version; a manual invocation of this script must
+# set BUNDLE_VERSION explicitly.
+[ -n "${BUNDLE_VERSION:-}" ] || die "BUNDLE_VERSION is required and is never defaulted — set it (task offline-bundle passes the current release version automatically; a direct invocation must set BUNDLE_VERSION=<version>)"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist/offline}"
 STAGE="$OUT_DIR/aireos-offline-$BUNDLE_VERSION"
 TARBALL="$OUT_DIR/aireos-offline-$BUNDLE_VERSION.tar.gz"
-
-log() { printf '\033[1;34m[bundle]\033[0m %s\n' "$*"; }
-die() { printf '\033[1;31m[bundle] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 fetch() { # fetch <url> <outfile>
   if command -v curl >/dev/null 2>&1; then curl -fsSL -o "$2" "$1"
