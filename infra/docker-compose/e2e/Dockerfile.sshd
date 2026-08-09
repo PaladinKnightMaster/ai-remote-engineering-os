@@ -1,11 +1,21 @@
 # Test SSH target for the T-020b live e2e harness. NOT a product component —
 # it stands in for an operator-provisioned target host (ADR-0048 §7: operators
-# pre-provision a service account on the target). The host key + the authorized
-# client key are generated at runtime by the seed one-shot and delivered on the
-# shared sshd-keys volume, so no keys are baked into this image or committed.
+# pre-provision a service account on the target). The PINNED host key + the
+# authorized client key are generated at runtime by the seed one-shot and
+# delivered on the shared sshd-keys volume, so no keys are baked into this
+# image or committed.
+#
+# T-121 (WD-11, per T-123's fix): every SSH fixture in this product used to
+# offer exactly ONE host-key type, which is structurally incapable of catching
+# a HostKeyAlgorithms negotiation bug — session-broker pinned the host key but
+# never constrained HostKeyAlgorithms, so it silently worked only because there
+# was nothing else to negotiate. sshd-entrypoint.sh now ALSO generates an
+# ecdsa host key locally (openssh-keygen, below) and offers it alongside the
+# pinned ed25519 key, so this fixture — and every e2e test that already uses
+# it — exercises the real multi-key negotiation path T-123 fixed.
 FROM alpine:3.20
 
-RUN apk add --no-cache openssh-server \
+RUN apk add --no-cache openssh-server openssh-keygen \
     && adduser -D -s /bin/sh aireos \
     && echo "aireos:aireos" | chpasswd
 # chpasswd sets a real hash so the account is NOT locked — OpenSSH refuses even
