@@ -213,10 +213,15 @@ dependency forces v0.14 before v1.0; it is not a preference.
 
 ### The two ratified structural rules
 
-**1. v1.0 adds NOTHING functional.** E-05 moved out of v1.0 into v0.12. Rationale: *if you
-are still shipping UI changes in the release where you freeze the API, the freeze is
-theatre.* A 1.0 that changes nothing and spends itself proving stability is a credible 1.0 —
-the version a commercial buyer can be pointed at.
+**1. The stability release adds NOTHING functional.** E-05 moved out of it into v0.12.
+Rationale: *if you are still shipping UI changes in the release where you freeze the API, the
+freeze is theatre.* A release that changes nothing and spends itself proving stability is what
+makes a version number a claim — the one a commercial buyer can be pointed at.
+
+*(Generalized from "v1.0 adds NOTHING functional" at the E-06 split, 2026-08-10 — same
+generalization as the boundary rule below, and for the same reason. **The release this now binds
+is v0.13.0**, which is why B-037's design pass and every UI change are excluded from it. It binds
+**v1.0.0 again** when the freeze half lands there.)*
 
 **2. Gates are right-sized: a new WD-N is minted only when a release adds new GOVERNED
 capability** — not once per release out of habit. E-01 changes a read surface (no new edge,
