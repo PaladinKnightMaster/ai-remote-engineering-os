@@ -102,10 +102,17 @@ modal would actually make these surfaces **testable in-pane**, which is a second
 
 | Story | Detail | Size |
 |---|---|---|
-| S-20 | **OpenAPI surface freeze** + a documented compatibility policy (the fragment has grown every release since v0.5) | M |
-| S-21 | **Security-audit capstone** across the full governance spine — cross-check against the now-named governance category (agent-governance-toolkit, SkillSpector) | L |
+| S-20 | **OpenAPI surface freeze** + a documented compatibility policy (the fragment has grown every release since v0.5). **Every other E-06 story depends on this — do it first.** Frozen: the fragment in full, the seven edge names, versioned scope strings (`approvals@1`), audit event names + chain envelope, `governed-actions@1`, installer env var names. **Deliberately NOT frozen: the `mcp-gateway` MCP tool surface** (agent plane is still learning — B-027/B-028/E-11), the web UI and `packages/ui` APIs, DB schema/migrations, event payload bodies beyond the envelope, error strings, profile support depth. Policy classes — *non-breaking in 1.x:* new paths, new optional request fields, new response fields, new output-only enum values, new event names, **strengthening a security guarantee on an existing route**; *breaking (2.0 only):* removal/rename, optional→required, narrowed response type, changed status code for an existing condition, changed meaning of an existing event name; *pre-decided:* a new **input** enum value is non-breaking because server and client ship as one artifact. | M |
+| S-21 | **Security-audit capstone** across the full governance spine — cross-check against the now-named governance category (agent-governance-toolkit, SkillSpector, agentfield, clawpatrol) | L |
 | S-22 | **Upgrade/migration statement** — what an operator can expect across 1.x | S |
 | S-23 | **Single-operator posture stated explicitly** — multi-operator ACL/SoD is post-Beta (G14); Beta-1 must say so rather than imply otherwise | S |
+| S-24 | **Session-revocation posture stated explicitly** — operator sessions are stateless bearer tokens with an 8h TTL; `logout` clears the cookie but does not invalidate the token; the paired tier is the product's only revocable session. Mitigations: TTL, HttpOnly/Secure/SameSite=Strict, same-origin. Fix is B-032 at v1.3, pre-authorised by S-20's security-strengthening clause. | S |
+| S-25 | **Enforcement-of-enforcement (B-038)** — every lint override, config scan root and whole-module test mock carries a test asserting it matches / covers / exercises real code. Three known: the dead SEC-7 ESLint override, Tailwind's `packages/ui/src` scan gap, the workspace-package whole-module mock. *A freeze is only credible if the enforcement protecting it demonstrably runs.* | M |
+| S-26 | **The documented quickstart is a gate** — an automated run executes the published quickstart from the **built bundle on a fresh host**, not from the repo and not with repo defaults. GATE-4 §human caught two step-1 blockers no automated gate could (a bundle version hard-coded stale for eight releases, concealed because `BUNDLE_VERSION` defaulted to the same value; `setup-loopback-demo.sh` rejecting socket-activated sshd — Ubuntu 24.04's default and our primary target). **A default that matches the stale value hides the staleness.** | M |
+| S-27 | **OWASP ASI01–10 control mapping** — map our controls to *OWASP Top 10 for Agentic Applications* (released 2025-12-09; note the name is "Agentic **Applications**", not "Agentic AI"). Strong: ASI06, ASI09. Gapped: ASI02/03/05 (→ S-30), ASI08 (→ S-28), ASI04 (→ S-29). **State ASI07 as out of scope** (single-plane, no agent-to-agent path) rather than leaving it silent — reviewers will ask. A published external taxonomy is worth more to a commercial buyer than any internal checklist. | M |
+| S-28 | **Audit-chain external verifiability** — our chain is unkeyed SHA-256 computed and stored by `audit-service` itself, so it proves *ordering*, not *authenticity*: an attacker with write access recomputes from genesis and it verifies clean. Sign chain heads with a key the writing service does not hold (and/or periodic witness). **No new capability — this hardens the control the whole product claim rests on.** ASI08. | M |
+| S-29 | **Bundle signing + SBOM** — for an air-gapped product **the offline bundle is the trust root**, and today's release gates are functional (size/version), not provenance. An operator on a disconnected network has no cryptographic way to confirm the bundle is the one we built. Release engineering, not product capability. ASI04. | M |
+| S-30 | **Containment boundary stated explicitly** — our controls hold for actions traversing the gateway; **a process spawned by an approved `remote.exec` is not contained, and its own network activity is ungoverned**. Say so in the threat model. Enforcement lands at v1.1; v1.0 states the boundary honestly rather than letting a red-teamer discover it. ASI02/03/05. | S |
 
 ---
 
@@ -144,13 +151,30 @@ fix, not a containment bug.
 
 ---
 
-## Part 4 — the Beta-1 path — **RATIFIED 2026-07-24 (CEO)**
+## Part 4 — the Beta-1 path — **RATIFIED 2026-07-24 (CEO)**, **RE-ORDERED 2026-08-10 (CEO, post-Beta war room)**
+
+v0.11 and v0.12 shipped as ratified. **The v1.0-and-beyond path below replaces the original
+single-row v1.0 ending**, following the post-Beta roadmap war room of 2026-08-10.
 
 | Release | Theme | Contents | Gate |
 |---|---|---|---|
-| **v0.11** | **Operator Experience** | E-01 audit read surface *(v1.0-BLOCKING)* · E-07 live refresh · E-08 charter-scope accrual | **No new WD** — WD-1..10 regression + smoke + a §human spot-check |
-| **v0.12** | **Access & Onboarding** | E-02 mobile/QR · E-03 deployment profiles · E-04 onboarding · E-05 consent modals | **WD-11** for pairing (new security semantics) · profiles ride `task wd1` · the rest ride smoke + §human |
-| **v1.0.0** | **MVP Beta 1** | **E-06 only** — OpenAPI freeze, security-audit capstone, compat policy, single-operator posture stated, full WD regression sweep | The **security audit is the gate** |
+| **v0.11** ✅ | **Operator Experience** | E-01 audit read surface *(v1.0-BLOCKING)* · E-07 live refresh · E-08 charter-scope accrual | **No new WD** — WD-1..10 regression + smoke + a §human spot-check |
+| **v0.12** ✅ | **Access & Onboarding** | E-02 mobile/QR · E-03 deployment profiles · E-04 onboarding · E-05a Button (E-05b cut) | **WD-11** for pairing (new security semantics) · profiles ride `task wd1` · the rest ride smoke + §human |
+| **v1.0.0** | **Beta 1 — Governed Remote Operations** | **E-06 only**, now S-20…S-30 — freeze + compat policy + capstone + ASI mapping + audit-chain external verifiability + bundle signing/SBOM + the containment and revocation boundary statements · B-033 (narrowed to `CreateResource`) · B-035 **removal** | The **security audit is the gate**; full WD-1..11 regression; **no new WD** |
+| **v1.1** | **Containment** | Adopt a sandbox so the "sole tool-execution path" becomes *enforced* rather than assumed. Own ADR. Lead candidates: **matchlock** (Firecracker + self-programmed nftables + Unix-socket allow/block hook) paired with **iron-proxy** (fail-closed gRPC reject transform + MCP tool allowlists). | **WD-12** |
+| **v1.2** | **Governed Harness** — *layer 2 lands* | Reference integrations of **OpenHands SDK** (`POST /respond_to_confirmation`) and **openworker** (`GET /v1/inbox` + `POST /v1/inbox/{id}/resolve`) via their HTTP approval endpoints, running inside the v1.1 boundary. **Zero fork.** | **WD-13** |
+| **v1.3** | **Session & Evidence** | B-032 generalized revocation · B-034 provenance field · B-036 FK/deletion · B-037 design pass · B-031 re-ask backoff | **WD-14** |
+| **v1.4+** | **Post-Beta reach** | Mobile PWA + `cockpit@1` · Mattermost as a governed connector · B-008 (agent-device) · B-024 (pgGraph) · voice (KittenTTS) | per epic |
+
+### Why this ordering (the two dependencies that force it)
+
+**Containment is v1.0-adjacent but NOT in v1.0.** It is new governed capability (ADR + WD), and
+it would place the trust root on an unmeasured dependency inside the very release whose purpose
+is proving stability. **v1.0 STATES the boundary (S-30); v1.1 BUILDS it.**
+
+**Containment is the PREREQUISITE for layer 2, not a parallel track.** You cannot safely govern a
+third-party harness that is not contained — the harness would have to *choose* to call us. That
+dependency forces v1.1 before v1.2; it is not a preference.
 
 ### The two ratified structural rules
 
@@ -164,6 +188,32 @@ capability** — not once per release out of habit. E-01 changes a read surface 
 no new governance semantics) → no new WD. E-03 is install-level → rides `wd1`. Only E-02's
 pairing token introduces new security semantics → earns **WD-11**. This saves roughly a
 release's worth of ceremony across the path without weakening a single real gate.
+
+### The v1.0 boundary rule — **added 2026-08-10, load-bearing**
+
+> **v1.0 may close an evidence gap on an existing governed mutation; it may not add a governed
+> mutation.**
+
+This is what admits S-27/S-28/S-29 and B-033 (which chains an event on an existing route) while
+excluding B-032 (adds an auth-session table, a revoke verb and a session-list read) and
+containment itself. It is the operational form of structural rule #1 above. It has now held under
+pressure twice — quote it when v1.0 scope is challenged, and treat a *fifth* candidate as the
+signal that the boundary has become elastic.
+
+### Findings that drove the re-order (recorded 2026-08-10)
+
+1. **"Sole tool-execution path" is an assumption, not a boundary.** Our controls hold only if the
+   agent chooses to call the gateway. Our one tool is `remote.exec` — once an approved command
+   runs on the target host, **that process's own network activity is entirely ungoverned**.
+2. **The hash chain proves ordering, not authenticity.** Unkeyed SHA-256 computed and stored by
+   `audit-service` itself; an attacker with write access recomputes from genesis and it verifies
+   clean. The audit trail is the core product claim, which is what makes this the sharpest finding.
+3. **No supply-chain attestation, including on the bundle** — and for an air-gapped product the
+   bundle is the trust root.
+
+**Positioning correction:** Microsoft's agent-governance-toolkit independently arrived at ~5 of
+our 7 controls, *including* the credential-broker property we treat as differentiating. Our
+genuinely unmatched control is the **air-gap posture**. Plan the pitch accordingly.
 
 ### Recorded risks
 
