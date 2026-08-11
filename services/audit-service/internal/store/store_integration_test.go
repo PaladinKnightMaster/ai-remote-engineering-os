@@ -13,12 +13,14 @@ package store
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -707,4 +709,243 @@ func explainPlan(t *testing.T, q explainQuerier, sql string, args ...any) string
 		t.Fatalf("explain rows: %v", err)
 	}
 	return plan.String()
+}
+
+// ---- T-124a: audit_chain_heads + Ed25519 chain-head signing (ADR-0069) ----
+
+// walkChainFromGenesis pages the WHOLE audit_events table in ascending seq
+// order and runs chain.Verify — the same recompute-from-Genesis walk the
+// ADR-0069 D6 verifier's step 2 performs — returning the live chain tip only
+// if every link independently recomputes. This is what lets the tests below
+// claim a signed head attests the REAL chain, not merely a value copied from
+// one stored row.
+func walkChainFromGenesis(t *testing.T, s *Store) (headSeq int64, headChainHash string) {
+	t.Helper()
+	events := listAll(t, s, ListQuery{Direction: Asc, Limit: 500})
+	if len(events) == 0 {
+		t.Fatal("expected at least one event in the live chain")
+	}
+	if idx := chain.Verify(events); idx != -1 {
+		t.Fatalf("live chain failed independent recomputation at index %d", idx)
+	}
+	last := events[len(events)-1]
+	return last.Seq, last.ChainHash
+}
+
+// TestChainHeadSigningAttestsLiveChain is the NAMED G1 LIVE TEST for T-124a.
+// It appends real events through the real store, independently recomputes
+// the live chain tip (walkChainFromGenesis, mirroring the verifier's own
+// walk), signs THAT value, round-trips it through InsertHead/LastHead, and
+// proves the stored head's chainHash is exactly the value chain.Compute
+// produces by walking the real chain from chain.Genesis — i.e. the head
+// genuinely attests the live chain, not a mocked or assumed one.
+func TestChainHeadSigningAttestsLiveChain(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	marker := uniqueMarker(t)
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	headSeq, headChainHash := walkChainFromGenesis(t, s)
+
+	pub, sk, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	h, err := chain.SignHead(sk, headSeq, headChainHash, ts)
+	if err != nil {
+		t.Fatalf("sign head: %v", err)
+	}
+	if err := s.InsertHead(ctx, h); err != nil {
+		t.Fatalf("insert head: %v", err)
+	}
+
+	got, ok, err := s.LastHead(ctx)
+	if err != nil {
+		t.Fatalf("last head: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a head to exist after InsertHead")
+	}
+	if got.Seq != headSeq || got.ChainHash != headChainHash {
+		t.Fatalf("stored head (seq=%d chainHash=%s) does not match the independently recomputed live chain tip (seq=%d chainHash=%s)",
+			got.Seq, got.ChainHash, headSeq, headChainHash)
+	}
+	if err := chain.VerifyHead(pub, got); err != nil {
+		t.Fatalf("stored head failed to verify against the signing key: %v", err)
+	}
+}
+
+// TestVerifyHeadRejectsSwappedChainState proves a head's signature attests
+// (seq, chainHash) as a bound pair over LIVE, store-derived chain states —
+// not either field independently. A signature captured at an earlier real
+// chain position must fail once its content is swapped for a later real
+// position's, exactly the divergence a verifier must catch after a
+// truncation or rewrite.
+func TestVerifyHeadRejectsSwappedChainState(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	marker := uniqueMarker(t)
+	pub, sk, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+
+	if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+		t.Fatalf("seed first: %v", err)
+	}
+	seqA, hashA := walkChainFromGenesis(t, s)
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	headA, err := chain.SignHead(sk, seqA, hashA, ts)
+	if err != nil {
+		t.Fatalf("sign head A: %v", err)
+	}
+	if err := chain.VerifyHead(pub, headA); err != nil {
+		t.Fatalf("head A must verify against its own signing key: %v", err)
+	}
+
+	if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+		t.Fatalf("seed second: %v", err)
+	}
+	seqB, hashB := walkChainFromGenesis(t, s)
+	if seqB == seqA || hashB == hashA {
+		t.Fatal("expected the live chain to have advanced between the two checkpoints")
+	}
+
+	swapped := headA
+	swapped.Seq = seqB
+	swapped.ChainHash = hashB
+	if err := chain.VerifyHead(pub, swapped); err == nil {
+		t.Fatal("expected a signature captured at an earlier live chain state to fail verification against a later one")
+	}
+}
+
+// TestEventCountSinceAcrossAppend is the live test for EventCountSince: zero
+// before any append past the baseline, exactly the appended count after.
+func TestEventCountSinceAcrossAppend(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	marker := uniqueMarker(t)
+
+	headBefore, err := s.ChainHead(ctx)
+	if err != nil {
+		t.Fatalf("chain head: %v", err)
+	}
+	if n, err := s.EventCountSince(ctx, headBefore); err != nil {
+		t.Fatalf("event count since (baseline): %v", err)
+	} else if n != 0 {
+		t.Fatalf("expected 0 events since the current head, got %d", n)
+	}
+
+	const appended = 7
+	for i := 0; i < appended; i++ {
+		if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	n, err := s.EventCountSince(ctx, headBefore)
+	if err != nil {
+		t.Fatalf("event count since (after append): %v", err)
+	}
+	if n != appended {
+		t.Fatalf("expected %d events since headBefore, got %d", appended, n)
+	}
+}
+
+// TestChainHeadsAppendOnlyTrigger proves audit_chain_heads sits behind the
+// same append-only bar as audit_events: both UPDATE and DELETE are rejected
+// by the trigger the migration adds.
+func TestChainHeadsAppendOnlyTrigger(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	marker := uniqueMarker(t)
+
+	if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seq, hash := walkChainFromGenesis(t, s)
+	_, sk, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	h, err := chain.SignHead(sk, seq, hash, ts)
+	if err != nil {
+		t.Fatalf("sign head: %v", err)
+	}
+	if err := s.InsertHead(ctx, h); err != nil {
+		t.Fatalf("insert head: %v", err)
+	}
+
+	if _, err := s.pool.Exec(ctx, `UPDATE audit_chain_heads SET key_id = 'tampered' WHERE seq = $1`, seq); err == nil {
+		t.Fatal("expected UPDATE on audit_chain_heads to be rejected by the append-only trigger")
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM audit_chain_heads WHERE seq = $1`, seq); err == nil {
+		t.Fatal("expected DELETE on audit_chain_heads to be rejected by the append-only trigger")
+	}
+
+	// The row must still be exactly as inserted — neither statement partially
+	// applied before the trigger raised.
+	got, ok, err := s.LastHead(ctx)
+	if err != nil {
+		t.Fatalf("last head after rejected mutations: %v", err)
+	}
+	if !ok || got.Seq != seq || got.KeyID != h.KeyID {
+		t.Fatalf("expected the head at seq %d to survive unmutated, got ok=%v %+v", seq, ok, got)
+	}
+}
+
+// TestWithCheckpointLockSingleWriter proves WithCheckpointLock is
+// non-blocking single-writer: a concurrent second caller gets
+// acquired=false immediately (fn never runs) while the first holder's
+// transaction is still open, rather than waiting for it to release.
+func TestWithCheckpointLockSingleWriter(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	holding := make(chan struct{})
+	release := make(chan struct{})
+	doneFirst := make(chan struct{})
+
+	go func() {
+		defer close(doneFirst)
+		acquired, err := s.WithCheckpointLock(ctx, func(pgx.Tx) error {
+			close(holding)
+			<-release
+			return nil
+		})
+		if err != nil {
+			t.Errorf("first checkpoint: %v", err)
+		}
+		if !acquired {
+			t.Error("expected the first caller to acquire the checkpoint lock")
+		}
+	}()
+
+	<-holding // first holder now holds the advisory lock inside a still-open tx
+
+	ran := false
+	acquired, err := s.WithCheckpointLock(ctx, func(pgx.Tx) error {
+		ran = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("second checkpoint attempt: %v", err)
+	}
+	if acquired {
+		t.Fatal("expected the second concurrent caller to fail to acquire (acquired=false), not block")
+	}
+	if ran {
+		t.Fatal("fn must not run for a caller that did not acquire the lock")
+	}
+
+	close(release)
+	<-doneFirst
 }
