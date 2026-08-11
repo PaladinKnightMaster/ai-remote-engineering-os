@@ -75,6 +75,23 @@ func eventCountSince(ctx context.Context, q dbtx, since int64) (int64, error) {
 	return n, nil
 }
 
+// chainTip returns the (seq, chainHash) of the newest audit_events row — the
+// value a checkpoint must sign (chain.SignHead's seq/chainHash args). ok=false
+// on an empty chain (nothing to attest yet). Read on the SAME locked tx as
+// LastHead/InsertHead inside WithCheckpointLock's callback (T-124b) — never
+// against s.pool from in there, for the reason dbtx's doc comment above
+// explains.
+func chainTip(ctx context.Context, q dbtx) (seq int64, chainHash string, ok bool, err error) {
+	err = q.QueryRow(ctx, `SELECT seq, chain_hash FROM audit_events ORDER BY seq DESC LIMIT 1`).Scan(&seq, &chainHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, fmt.Errorf("chain tip: %w", err)
+	}
+	return seq, chainHash, true, nil
+}
+
 // InsertHead persists a signed chain head against the pool. h.Seq must
 // already exist as an audit_events row — the migration's FK (RESTRICT, no
 // ON DELETE) enforces that a head can never outlive or precede its event.
@@ -120,6 +137,10 @@ func (c CheckpointTx) LastHead(ctx context.Context) (chain.Head, bool, error) {
 
 func (c CheckpointTx) EventCountSince(ctx context.Context, since int64) (int64, error) {
 	return eventCountSince(ctx, c.q, since)
+}
+
+func (c CheckpointTx) ChainTip(ctx context.Context) (seq int64, chainHash string, ok bool, err error) {
+	return chainTip(ctx, c.q)
 }
 
 // WithCheckpointLock runs fn inside a transaction holding

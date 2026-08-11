@@ -1,20 +1,25 @@
 // Command audit-service is the append-only audit chain authority (ADR-0045).
 //
-// Subcommands (ADR-0044):
+// Subcommands (ADR-0044, ADR-0069):
 //
 //	audit-service serve                 # default; run the HTTP server
 //	audit-service migrate up|version|force <v>
 //	audit-service verify                # recompute + verify the chained-hash chain
+//	audit-service checkpoint            # force one signed chain head now and exit (D3)
 package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"embed"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,6 +29,7 @@ import (
 	"aireos.local/packages/go/migrate"
 	"aireos.local/services/audit-service/internal/audit"
 	"aireos.local/services/audit-service/internal/chain"
+	"aireos.local/services/audit-service/internal/checkpoint"
 	"aireos.local/services/audit-service/internal/server"
 	"aireos.local/services/audit-service/internal/store"
 )
@@ -61,8 +67,11 @@ func run(args []string) error {
 	if cmd == "verify" {
 		return runVerify(dsn)
 	}
+	if cmd == "checkpoint" {
+		return runCheckpoint(dsn)
+	}
 	if cmd != "serve" {
-		return fmt.Errorf("unknown command %q (want serve|migrate|verify)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate|verify|checkpoint)", cmd)
 	}
 	return serve(dsn)
 }
@@ -107,8 +116,50 @@ func runVerify(dsn string) error {
 	return nil
 }
 
-func serve(dsn string) error {
+// runCheckpoint forces ONE chain-head checkpoint attempt right now and exits
+// — ADR-0069 D3's explicit operator action. The export path (T-125/T-126)
+// must never sign on its own, so this is how an operator attests on demand
+// between cadence ticks. Reports exactly which of the three outcomes
+// happened; never silently does nothing without saying so.
+func runCheckpoint(dsn string) error {
 	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+
+	signKey, err := loadChainSignKey()
+	if err != nil {
+		return err
+	}
+	if signKey == nil {
+		return errors.New("AIREOS_AUDIT_CHAIN_SIGN_KEY is not set — cannot checkpoint while chain-head signing is disabled (degraded mode; see T-125)")
+	}
+
+	sw := &checkpoint.Sweeper{Store: store.New(pool), Key: signKey}
+	out, err := sw.Checkpoint(ctx)
+	if err != nil {
+		return fmt.Errorf("checkpoint: %w", err)
+	}
+	switch {
+	case out.LockHeld:
+		fmt.Println("checkpoint: lock held by another writer, skipped")
+	case out.Signed:
+		fmt.Printf("checkpoint: signed chain head at seq %d\n", out.Seq)
+	default:
+		fmt.Println("checkpoint: nothing to do (no new events since the last head)")
+	}
+	return nil
+}
+
+// serve runs the HTTP server plus the ADR-0069 D2 cadence sweep, with
+// graceful shutdown on SIGINT/SIGTERM (D2 also requires signing on shutdown
+// — audit-service had no signal handling at all before this ticket).
+func serve(dsn string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
@@ -120,14 +171,132 @@ func serve(dsn string) error {
 		return err
 	}
 
-	h := server.New(store.New(pool), v)
+	st := store.New(pool)
+	h := server.New(st, v)
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("AUDIT_ADDR"), ":8081"),
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("audit-service listening on %s", srv.Addr)
-	return srv.ListenAndServe()
+
+	signKey, err := loadChainSignKey()
+	if err != nil {
+		return err
+	}
+	insecure := os.Getenv("AUDIT_DEV_INSECURE_AUTH") == "1"
+	if signKey == nil {
+		// D5: absent key is DEGRADED, not fatal — loud at boot so it cannot
+		// be missed, then re-logged periodically by the sweep (see
+		// checkpoint.Sweeper.Run) so it cannot scroll past once and be
+		// forgotten either. T-125 makes install.sh generate this key and
+		// turns an absent key into a boot-time failure instead — this whole
+		// degraded branch is temporary and is expected to be retired then.
+		log.Print(degradedSigningBootWarning)
+	}
+	sweeper := &checkpoint.Sweeper{
+		Store:    st,
+		Key:      signKey,
+		Events:   checkpointEvents(),
+		Interval: checkpointInterval(),
+	}
+	go sweeper.Run(ctx, insecure)
+
+	serveErrc := make(chan error, 1)
+	go func() {
+		log.Printf("audit-service listening on %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErrc <- err
+			return
+		}
+		serveErrc <- nil
+	}()
+
+	select {
+	case err := <-serveErrc:
+		return err
+	case <-ctx.Done():
+	}
+
+	log.Print("audit-service: shutdown signal received, draining")
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("audit-service: graceful HTTP shutdown error (continuing to exit): %v", err)
+	}
+
+	// Best-effort final checkpoint (D2). Its own short bounded context: this
+	// MUST NOT be able to hang shutdown past systemd's TimeoutStopSec — a
+	// blocked SIGTERM becomes a SIGKILL, which is strictly worse than simply
+	// leaving the tail unattested (the verifier already reports that
+	// honestly as INTACT+UNATTESTED). Log and exit cleanly on any outcome.
+	if signKey != nil {
+		finalCtx, cancelFinal := context.WithTimeout(context.Background(), 5*time.Second)
+		out, ferr := sweeper.Checkpoint(finalCtx)
+		cancelFinal()
+		switch {
+		case ferr != nil:
+			log.Printf("audit-service: final checkpoint failed, exiting anyway: %v", ferr)
+		case out.Signed:
+			log.Printf("audit-service: final checkpoint signed chain head at seq %d", out.Seq)
+		case out.LockHeld:
+			log.Print("audit-service: final checkpoint skipped, lock held by another writer")
+		default:
+			log.Print("audit-service: final checkpoint had nothing new to sign")
+		}
+	}
+	return nil
+}
+
+const degradedSigningBootWarning = "WARNING: AIREOS_AUDIT_CHAIN_SIGN_KEY is not set — chain-head signing is DISABLED; " +
+	"the audit chain is ordering-only, not authenticated to a third party (ADR-0069). This is a temporary " +
+	"degraded mode: T-125 makes install.sh generate this key and turns an absent key into a boot-time failure."
+
+// loadChainSignKey resolves the Ed25519 chain-head signing key (ADR-0069 D5).
+//   - Unset -> (nil, nil): degraded mode, logged loudly by the caller, never
+//     fatal (T-125 is what flips this to fail-loud once install.sh mints it).
+//   - Set but malformed -> a non-nil error: a corrupt key is an operator
+//     error, not a degraded mode, and must fail loud at boot — same posture
+//     as capabilityVerifier()'s handling of a bad AIREOS_PASETO_KEY.
+func loadChainSignKey() (ed25519.PrivateKey, error) {
+	keyHex := os.Getenv("AIREOS_AUDIT_CHAIN_SIGN_KEY")
+	if keyHex == "" {
+		return nil, nil
+	}
+	sk, err := chain.SecretKeyFromHex(keyHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid AIREOS_AUDIT_CHAIN_SIGN_KEY: %w", err)
+	}
+	return sk, nil
+}
+
+// checkpointEvents / checkpointInterval resolve the D2 cadence overrides.
+// Both fall back to checkpoint.DefaultEvents/DefaultInterval on an unset or
+// invalid value (logged, never fatal — a malformed cadence override is an
+// operator typo, not a reason to refuse to serve).
+func checkpointEvents() int64 {
+	v := os.Getenv("AIREOS_AUDIT_CHECKPOINT_EVENTS")
+	if v == "" {
+		return checkpoint.DefaultEvents
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		log.Printf("audit-service: invalid AIREOS_AUDIT_CHECKPOINT_EVENTS=%q, using default %d", v, checkpoint.DefaultEvents)
+		return checkpoint.DefaultEvents
+	}
+	return n
+}
+
+func checkpointInterval() time.Duration {
+	v := os.Getenv("AIREOS_AUDIT_CHECKPOINT_INTERVAL")
+	if v == "" {
+		return checkpoint.DefaultInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		log.Printf("audit-service: invalid AIREOS_AUDIT_CHECKPOINT_INTERVAL=%q, using default %s", v, checkpoint.DefaultInterval)
+		return checkpoint.DefaultInterval
+	}
+	return d
 }
 
 // capabilityVerifier resolves the capability Verifier (ADR-0046).

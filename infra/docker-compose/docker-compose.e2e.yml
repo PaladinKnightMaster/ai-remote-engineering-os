@@ -106,6 +106,16 @@ services:
       # ADR-0060: accept the gateway's asymmetric outbox token (dual-mode alongside
       # the cluster key). Matches the gateway's AIREOS_GATEWAY_SIGN_KEY (set in T-049).
       AIREOS_GATEWAY_PUBLIC_KEY: baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
+      # ADR-0069 (T-124b): the chain-head signing key. Test fixture keypair generated via
+      # `go run ./packages/go/auth/cmd/authctl genkeypair` — NEVER a real deployment key
+      # (T-125 has install.sh mint a fresh one per install). Duplicated onto the tester
+      # service below (same pattern as AIREOS_GATEWAY_SIGN_KEY) so the G1 live test can
+      # derive the public half and call chain.VerifyHead against real signed heads.
+      AIREOS_AUDIT_CHAIN_SIGN_KEY: 206f72f4093b3551d7819e7f0c212bda0e2c109983a2f315532e70d1e945ad80b4909c655f888fc007e84e775f75fedcdb234b3d8fb11d1e9b40620902571413
+      # T-124b G1: lower the checkpoint cadence so a signed head appears within the live
+      # e2e run instead of waiting for the 100-event/60s production defaults.
+      AIREOS_AUDIT_CHECKPOINT_EVENTS: "20"
+      AIREOS_AUDIT_CHECKPOINT_INTERVAL: "5s"
     command: ["bash", "-c", "go run ./services/audit-service serve"]
 
   api:
@@ -294,15 +304,23 @@ services:
       # signing key and proves connector/api reject it. Same fixture as the gateway's
       # AIREOS_GATEWAY_SIGN_KEY (the tester already holds the more-powerful cluster key).
       AIREOS_GATEWAY_SIGN_KEY: 77c62aa6ab782391dfbb81a9a58d3e6b3b78506f4b9e37d1fe7d91456ea87b21baca828976826ae087bdfde41715192021ef1429cd95339b7678da4348dca652
+      # T-124b G1: same fixture keypair as audit's AIREOS_AUDIT_CHAIN_SIGN_KEY above —
+      # the tester derives the public half from this secret to call chain.VerifyHead
+      # against heads the live audit-service actually signed.
+      AIREOS_AUDIT_CHAIN_SIGN_KEY: 206f72f4093b3551d7819e7f0c212bda0e2c109983a2f315532e70d1e945ad80b4909c655f888fc007e84e775f75fedcdb234b3d8fb11d1e9b40620902571413
     volumes:
       - ../../:/work
       - gomodcache:/go/pkg/mod
       - gocache:/root/.cache/go-build
       - casts:/var/lib/aireos/sessions
-    # After the e2e tests pass, verify the WHOLE accumulated audit chain's hash
-    # integrity (AUD-11) — recomputes every chainHash + prevHash link, exits non-zero
-    # on a broken link. The capstone's hash-intact proof, over the full chain.
-    command: ["bash", "-c", "go test -tags e2e -count=1 -v -timeout 600s ./tests/e2e/... && go run ./services/audit-service verify"]
+    # After the e2e tests pass: run the T-124b G1 live chain-head-sweep proof (it lives
+    # under services/audit-service, not tests/e2e — that is a SEPARATE Go module and
+    # Go's internal-package rule forbids it from importing internal/chain at all; see
+    # checkpoint_e2e_test.go's header comment), THEN verify the WHOLE accumulated audit
+    # chain's hash integrity (AUD-11) — recomputes every chainHash + prevHash link,
+    # exits non-zero on a broken link. The capstone's hash-intact proof, over the full
+    # chain.
+    command: ["bash", "-c", "go test -tags e2e -count=1 -v -timeout 600s ./tests/e2e/... && go test -tags e2e -count=1 -v -timeout 120s ./services/audit-service/internal/checkpoint/... && go run ./services/audit-service verify"]
 
 volumes:
   gomodcache:
