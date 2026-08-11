@@ -64,6 +64,14 @@ tasks:
       # test for the authorized_keys line construction — F4 from the E-04
       # reconciliation pass: nothing else exercises this script automatically).
       - bash infra/offline/setup_loopback_demo_test.sh
+      # install.sh's audit chain-head signing key (T-125a, OI-41's named live
+      # test): unlike the two tests above, this one runs install.sh's REAL
+      # body (root, useradd, chown) to prove byte-identical key reuse across a
+      # re-install — a claim a pure-function test can't make. SKIPS (does not
+      # fail) when not running as root, e.g. a bare non-container dev machine;
+      # it must be run inside golang:1.23 (or another root container) to
+      # actually exercise the assertion. See the script's own header.
+      - bash infra/offline/install_audit_key_test.sh
       # JS workspace unit tests (T-007a). `--if-present` skips packages
       # without a `test` script; packages/ui + packages/config have none yet.
       - pnpm -r --if-present run test

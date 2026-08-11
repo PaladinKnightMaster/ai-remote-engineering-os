@@ -43,10 +43,12 @@ const (
 // configured smaller than that (e2e cadence overrides, T-124b report).
 const pollPeriod = 5 * time.Second
 
-// ErrNoKey is returned by Checkpoint when no signing key is configured — the
-// degraded mode D5/main.go allow at boot (absent key is loud, not fatal).
-// Sweep tick failures never surface — checkOnce is a private, ctx-driven op.
-var ErrNoKey = errors.New("checkpoint: no chain-head signing key configured (degraded mode)")
+// ErrNoKey is returned by Checkpoint when no signing key is configured. Since
+// T-125a, a Sweeper only ever has Key==nil under the AUDIT_DEV_INSECURE_AUTH=1
+// local-dev escape (main.go's serve() is fatal at boot otherwise) — so this
+// error path is dev-only, never a real-install condition. Sweep tick failures
+// never surface — checkOnce is a private, ctx-driven op.
+var ErrNoKey = errors.New("checkpoint: no chain-head signing key configured")
 
 // lockStore narrows *store.Store to exactly the surface this package needs,
 // so the acquired=false / no-op paths are unit-testable without a live
@@ -70,8 +72,9 @@ type Outcome struct {
 }
 
 // Sweeper holds everything one audit-service instance needs to run the
-// cadence sweep. Key is nil in degraded mode (AIREOS_AUDIT_CHAIN_SIGN_KEY
-// unset) — signing is skipped, never attempted, never crashes.
+// cadence sweep. Key is nil only under the AUDIT_DEV_INSECURE_AUTH=1 local-dev
+// escape (AIREOS_AUDIT_CHAIN_SIGN_KEY unset; T-125a made this fatal at boot
+// otherwise) — signing is skipped, never attempted, never crashes.
 type Sweeper struct {
 	Store    lockStore
 	Key      ed25519.PrivateKey
@@ -96,15 +99,11 @@ func (s *Sweeper) Checkpoint(ctx context.Context) (Outcome, error) {
 // goroutine bound to a context canceled at shutdown (main.go). It never
 // blocks ListenAndServe and never touches chainLockKey.
 //
-// In degraded mode (Key nil) it re-logs the WARNING once per pollPeriod so it
-// cannot scroll past once and be forgotten, UNLESS insecureAck is true
-// (AUDIT_DEV_INSECURE_AUTH=1 — reusing the existing flag, no new one minted):
-// an operator who has already acknowledged the degraded state gets ONE
-// additional single-line confirmation from the sweep (proving it is alive
-// and aware, not silently spinning) and no further repeats after that.
-// T-125 is expected to make the absent-key case fail-loud at boot, which
-// retires this whole branch — see main.go's loadChainSignKey.
-func (s *Sweeper) Run(ctx context.Context, insecureAck bool) {
+// Key==nil only happens under the AUDIT_DEV_INSECURE_AUTH=1 local-dev escape
+// (main.go's serve() is fatal at boot on an absent key otherwise, since
+// T-125a) — main.go already logs that condition loudly once at boot, so Run
+// simply skips its tick silently rather than repeating the warning forever.
+func (s *Sweeper) Run(ctx context.Context) {
 	tick := pollPeriod
 	if s.Interval > 0 && s.Interval < tick {
 		tick = s.Interval
@@ -112,21 +111,13 @@ func (s *Sweeper) Run(ctx context.Context, insecureAck bool) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 
-	insecureLogged := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			if s.Key == nil {
-				switch {
-				case insecureAck && !insecureLogged:
-					log.Print(degradedInsecureAckLine)
-					insecureLogged = true
-				case !insecureAck:
-					log.Print(degradedRepeatWarning)
-				}
-				continue
+				continue // AUDIT_DEV_INSECURE_AUTH=1 escape; boot already warned once
 			}
 			out, err := s.checkOnce(ctx, false)
 			if err != nil {
@@ -144,12 +135,6 @@ func (s *Sweeper) Run(ctx context.Context, insecureAck bool) {
 		}
 	}
 }
-
-const degradedRepeatWarning = "WARNING: AIREOS_AUDIT_CHAIN_SIGN_KEY is not set — chain-head signing is DISABLED; " +
-	"the audit chain is ordering-only, not authenticated (ADR-0069). This is a temporary degraded mode; " +
-	"T-125 makes install.sh generate this key and flips this to fail-loud at boot."
-
-const degradedInsecureAckLine = "audit checkpoint sweep: chain-head signing remains DISABLED (AUDIT_DEV_INSECURE_AUTH=1 acknowledges this); not repeating further"
 
 // checkOnce runs the whole read-then-write composition on ONE locked
 // transaction, per WithCheckpointLock's contract: LastHead, ChainTip, decide,

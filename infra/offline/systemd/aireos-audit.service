@@ -10,14 +10,17 @@ Type=simple
 User=aireos
 Group=aireos
 EnvironmentFile=/etc/aireos/aireos.env
+EnvironmentFile=/etc/aireos/audit.env
 ExecStart=/opt/aireos/bin/audit-service serve
 Restart=on-failure
 RestartSec=2
-# Hardening.
+# Hardening. ProtectSystem=strict makes the FS read-only except the anchor dir
+# (ADR-0069 D4/T-125a; T-125b's writer needs $STATE/audit to be writable).
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+ReadWritePaths=/var/lib/aireos
 
 [Install]
 WantedBy=multi-user.target

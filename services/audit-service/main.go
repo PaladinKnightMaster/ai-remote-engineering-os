@@ -134,7 +134,7 @@ func runCheckpoint(dsn string) error {
 		return err
 	}
 	if signKey == nil {
-		return errors.New("AIREOS_AUDIT_CHAIN_SIGN_KEY is not set — cannot checkpoint while chain-head signing is disabled (degraded mode; see T-125)")
+		return errors.New("AIREOS_AUDIT_CHAIN_SIGN_KEY is not set (expected in /etc/aireos/audit.env, ADR-0069 D5) — cannot checkpoint without a chain-head signing key")
 	}
 
 	sw := &checkpoint.Sweeper{Store: store.New(pool), Key: signKey}
@@ -185,13 +185,17 @@ func serve(dsn string) error {
 	}
 	insecure := os.Getenv("AUDIT_DEV_INSECURE_AUTH") == "1"
 	if signKey == nil {
-		// D5: absent key is DEGRADED, not fatal — loud at boot so it cannot
-		// be missed, then re-logged periodically by the sweep (see
-		// checkpoint.Sweeper.Run) so it cannot scroll past once and be
-		// forgotten either. T-125 makes install.sh generate this key and
-		// turns an absent key into a boot-time failure instead — this whole
-		// degraded branch is temporary and is expected to be retired then.
-		log.Print(degradedSigningBootWarning)
+		// T-125a flip (ADR-0069 D5): an absent key is FATAL — running unsigned
+		// would make the audit chain ordering-only rather than authenticated,
+		// and that must never happen silently. The one exception is the same
+		// local-dev escape capabilityVerifier() already grants a missing
+		// AIREOS_PASETO_KEY: AUDIT_DEV_INSECURE_AUTH=1 lets `go run
+		// ./services/audit-service serve` keep working with no key material
+		// at all, loudly, once, at boot.
+		if !insecure {
+			return fmt.Errorf("AIREOS_AUDIT_CHAIN_SIGN_KEY is not set (expected in /etc/aireos/audit.env, ADR-0069 D5) — refusing to start: running unsigned would make the audit chain ordering-only, not authenticated. Set AUDIT_DEV_INSECURE_AUTH=1 to run unsigned for local development only")
+		}
+		log.Print(devInsecureUnsignedBootWarning)
 	}
 	sweeper := &checkpoint.Sweeper{
 		Store:    st,
@@ -199,7 +203,7 @@ func serve(dsn string) error {
 		Events:   checkpointEvents(),
 		Interval: checkpointInterval(),
 	}
-	go sweeper.Run(ctx, insecure)
+	go sweeper.Run(ctx)
 
 	serveErrc := make(chan error, 1)
 	go func() {
@@ -247,16 +251,17 @@ func serve(dsn string) error {
 	return nil
 }
 
-const degradedSigningBootWarning = "WARNING: AIREOS_AUDIT_CHAIN_SIGN_KEY is not set — chain-head signing is DISABLED; " +
-	"the audit chain is ordering-only, not authenticated to a third party (ADR-0069). This is a temporary " +
-	"degraded mode: T-125 makes install.sh generate this key and turns an absent key into a boot-time failure."
+const devInsecureUnsignedBootWarning = "WARNING: AIREOS_AUDIT_CHAIN_SIGN_KEY is not set and AUDIT_DEV_INSECURE_AUTH=1 — " +
+	"running UNSIGNED (chain-head signing disabled); the audit chain is ordering-only, not authenticated to a " +
+	"third party (ADR-0069). This escape is for local development only; install.sh always mints a key for a real install."
 
 // loadChainSignKey resolves the Ed25519 chain-head signing key (ADR-0069 D5).
-//   - Unset -> (nil, nil): degraded mode, logged loudly by the caller, never
-//     fatal (T-125 is what flips this to fail-loud once install.sh mints it).
+//   - Unset -> (nil, nil): the caller decides fatal-vs-dev-escape (serve()) —
+//     this function only parses, it never applies boot policy.
 //   - Set but malformed -> a non-nil error: a corrupt key is an operator
-//     error, not a degraded mode, and must fail loud at boot — same posture
-//     as capabilityVerifier()'s handling of a bad AIREOS_PASETO_KEY.
+//     error, not an absent one, and must fail loud at boot regardless of the
+//     dev escape — same posture as capabilityVerifier()'s handling of a bad
+//     AIREOS_PASETO_KEY.
 func loadChainSignKey() (ed25519.PrivateKey, error) {
 	keyHex := os.Getenv("AIREOS_AUDIT_CHAIN_SIGN_KEY")
 	if keyHex == "" {

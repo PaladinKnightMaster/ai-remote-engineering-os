@@ -217,7 +217,7 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     || useradd -r -s /sbin/nologin "$SVC_USER"   # Ubuntu vs RHEL nologin path
 fi
 install -d -m 755 "$PREFIX/bin" "$PREFIX/web" "$ETC"
-install -d -m 750 -o "$SVC_USER" -g "$SVC_USER" "$STATE" "$STATE/sessions" "$STATE/caddy"
+install -d -m 750 -o "$SVC_USER" -g "$SVC_USER" "$STATE" "$STATE/sessions" "$STATE/caddy" "$STATE/audit"
 
 # --- 2. deploy binaries + SPA + config --------------------------------------
 log "deploy binaries, SPA, config"
@@ -286,6 +286,37 @@ GW_CMD_KEY="${AIREOS_GATEWAY_COMMAND_KEY:-$("$PREFIX/bin/authctl" genaeskey)}"
 { [ "$GW_CMD_KEY" != "$PASETO_KEY" ] && [ "$GW_CMD_KEY" != "$GW_SK" ]; } || die "command key must differ from the cluster / gateway sign keys (authority separation)"
 [ "$API_AGENT_SK" != "$GW_SK" ] || die "api-agent and gateway sign keys must differ (per-workload keys, ADR-0060)"
 
+# --- 3c. audit chain-head signing keypair (ADR-0069 D5/AUD-35; OI-41) -------
+# A NEW Ed25519 keypair per install, same genkeypair idiom as 3b above. THE
+# SECRET MUST NOT GO IN THE SHARED aireos.env: every service reads that file,
+# so putting the signing secret there would let an RCE on ANY service forge
+# chain heads — silently invalidating ADR-0069's stated residual (only
+# audit-service RCE can forge). It lives ALONE in audit.env, the same
+# least-privilege pattern api.env/gateway.env/connector.env already establish.
+# The public half is not secret and rides shared aireos.env so operators and
+# third-party verifiers can read it.
+#
+# Idempotent (OI-41 — an evidence-integrity property here, not hygiene): reuse
+# an existing key from audit.env exactly like 3b reuses gateway.env/api.env.
+# REGENERATING ON RE-INSTALL SILENTLY ORPHANS EVERY HISTORICAL CHAIN HEAD —
+# the chain still verifies structurally while every signature becomes
+# uncheckable. This is the single most likely implementation error in the
+# release (ADR-0069 D5).
+AUDIT_ENV="$ETC/audit.env"
+if [ -f "$AUDIT_ENV" ]; then
+  eval "$(grep -E '^AIREOS_AUDIT_CHAIN_SIGN_KEY=' "$AUDIT_ENV" | sed 's/^/export /')"
+fi
+if [ -f "$ENV_FILE" ]; then
+  eval "$(grep -E '^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=' "$ENV_FILE" | sed 's/^/export /')"
+fi
+AUDIT_SK="${AIREOS_AUDIT_CHAIN_SIGN_KEY:-}"
+AUDIT_PK="${AIREOS_AUDIT_CHAIN_PUBLIC_KEY:-}"
+if [ -z "$AUDIT_SK" ] || [ -z "$AUDIT_PK" ]; then
+  KP="$("$PREFIX/bin/authctl" genkeypair)"; AUDIT_SK="${KP%% *}"; AUDIT_PK="${KP##* }"
+fi
+[ -n "$AUDIT_SK" ] && [ -n "$AUDIT_PK" ] || die "audit chain-head key generation failed"
+[ "$AUDIT_SK" != "$GW_SK" ] && [ "$AUDIT_SK" != "$API_AGENT_SK" ] || die "audit chain-head sign key must differ from the other per-workload keys (ADR-0060 authority separation)"
+
 # --- 4. operator credentials (prompt default, env override; OQ-4) -----------
 OP_USER="${AIREOS_BOOTSTRAP_OPERATOR_USER:-}"
 OP_HASH="${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH:-}"
@@ -305,12 +336,18 @@ DB_URL="${AIREOS_DB_URL:-}"
 # --- 6. write the env files (0600, owned by the service user) ---------------
 # aireos.env = shared config for every unit. The resource key is NOT here: it
 # lives in connector.env, referenced only by aireos-connector.service (SEC-13 —
-# a v0.1.0 aireos.env carrying the key is rewritten without it on upgrade).
+# a v0.1.0 aireos.env carrying the key is rewritten without it on upgrade). The
+# audit chain-head SECRET is likewise not here (see 3c) — only its PUBLIC key,
+# which is safe to share, plus AIREOS_AUDIT_ANCHOR_PATH (ADR-0069 D4). Nothing
+# consumes AIREOS_AUDIT_ANCHOR_PATH yet — its writer is T-125b — but it is
+# provisioned here so install.sh is touched exactly once for this feature.
 log "write $ENV_FILE"
 ( umask 077; cat > "$ENV_FILE" <<EOF
 DATABASE_URL=$DB_URL
 AIREOS_PASETO_KEY=$PASETO_KEY
 AIREOS_GATEWAY_PUBLIC_KEY=$GW_PK
+AIREOS_AUDIT_CHAIN_PUBLIC_KEY=$AUDIT_PK
+AIREOS_AUDIT_ANCHOR_PATH=$STATE/audit/chain-heads.ndjson
 AIREOS_CAST_DIR=$STATE/sessions
 AIREOS_AUDIT_URL=http://127.0.0.1:8081
 AIREOS_SITE_ADDRESS=${AIREOS_SITE_ADDRESS:-localhost}
@@ -346,6 +383,17 @@ AIREOS_API_AGENT_SIGN_KEY=$API_AGENT_SK
 EOF
 )
 chown "$SVC_USER:$SVC_USER" "$API_ENV"; chmod 600 "$API_ENV"
+
+# audit.env = the chain-head signing SECRET only (ADR-0069 D5; same
+# least-privilege pattern as api.env/connector.env). Loaded by
+# aireos-audit.service in addition to aireos.env. NEVER write this key to
+# aireos.env — see 3c above for why.
+log "write $AUDIT_ENV (audit chain-head signing key)"
+( umask 077; cat > "$AUDIT_ENV" <<EOF
+AIREOS_AUDIT_CHAIN_SIGN_KEY=$AUDIT_SK
+EOF
+)
+chown "$SVC_USER:$SVC_USER" "$AUDIT_ENV"; chmod 600 "$AUDIT_ENV"
 
 # gateway.env = the agent-facing gateway's ENTIRE env (SEC-20: NO AIREOS_PASETO_KEY).
 # Its own sign key + api's public key (verify inbound) + the F3 command key, plus the
@@ -387,3 +435,11 @@ else
     aireos-connector.service aireos-policy.service aireos-mcp-gateway.service aireos-caddy.service
 fi
 log "DONE — cockpit installed (deployment profile: $DEPLOYMENT_PROFILE). Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."
+# ADR-0069 D5/SEC-44: this public key is the trust root for offline
+# third-party chain verification — record it OUT-OF-BAND (e.g. print this
+# line to a separate channel, not just this host's install log) so a verifier
+# can be handed it independently of anything this host later claims about
+# itself. The key id a verifier derives is a pure function of this value
+# (chain.KeyIDFor — first 16 hex chars of SHA-256(pubkey)); no fingerprint is
+# computed here.
+log "AUDIT CHAIN-HEAD PUBLIC KEY (record out-of-band — this is the trust root for offline verification): $AUDIT_PK"

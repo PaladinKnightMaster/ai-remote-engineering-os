@@ -61,7 +61,7 @@ func TestDecideForceBypassesCadence(t *testing.T) {
 
 func TestCheckpointNoKeyReturnsErrNoKeyWithoutTouchingStore(t *testing.T) {
 	// Store is deliberately nil: Checkpoint must return ErrNoKey before ever
-	// dereferencing s.Store, proving degraded mode cannot panic or attempt to
+	// dereferencing s.Store, proving a nil key cannot panic or attempt to
 	// sign — "absent key -> no signing and no crash" (T-124b brief §6).
 	s := &Sweeper{Store: nil, Key: nil}
 	out, err := s.Checkpoint(context.Background())
@@ -114,18 +114,19 @@ func TestCheckOnceLockHeldIsSilentSkip(t *testing.T) {
 	}
 }
 
-func TestRunDegradedModeNeverPanics(t *testing.T) {
-	// A Sweeper with Key=nil and a Store that would panic if ever touched
-	// (WithCheckpointLock is never expected to be called in degraded mode) —
-	// Run must tick through the degraded branch only, with no crash, and
-	// return promptly when ctx is canceled.
+func TestRunNilKeyNeverPanics(t *testing.T) {
+	// A Sweeper with Key=nil (the AUDIT_DEV_INSECURE_AUTH=1 local-dev escape,
+	// the only way Key is ever nil since T-125a's boot-fatal flip) and a Store
+	// that would panic if ever touched (WithCheckpointLock is never expected
+	// to be called while Key is nil) — Run must tick through the nil-key skip
+	// branch only, with no crash, and return promptly when ctx is canceled.
 	s := &Sweeper{Store: panicLockStore{}, Key: nil, Interval: 10 * time.Millisecond}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		s.Run(ctx, false)
+		s.Run(ctx)
 		close(done)
 	}()
 	select {
@@ -138,5 +139,5 @@ func TestRunDegradedModeNeverPanics(t *testing.T) {
 type panicLockStore struct{}
 
 func (panicLockStore) WithCheckpointLock(ctx context.Context, fn func(store.CheckpointTx) error) (bool, error) {
-	panic("WithCheckpointLock must never be called while Key is nil (degraded mode)")
+	panic("WithCheckpointLock must never be called while Key is nil")
 }
