@@ -916,7 +916,7 @@ func TestWithCheckpointLockSingleWriter(t *testing.T) {
 
 	go func() {
 		defer close(doneFirst)
-		acquired, err := s.WithCheckpointLock(ctx, func(pgx.Tx) error {
+		acquired, err := s.WithCheckpointLock(ctx, func(CheckpointTx) error {
 			close(holding)
 			<-release
 			return nil
@@ -932,7 +932,7 @@ func TestWithCheckpointLockSingleWriter(t *testing.T) {
 	<-holding // first holder now holds the advisory lock inside a still-open tx
 
 	ran := false
-	acquired, err := s.WithCheckpointLock(ctx, func(pgx.Tx) error {
+	acquired, err := s.WithCheckpointLock(ctx, func(CheckpointTx) error {
 		ran = true
 		return nil
 	})
@@ -948,4 +948,128 @@ func TestWithCheckpointLockSingleWriter(t *testing.T) {
 
 	close(release)
 	<-doneFirst
+}
+
+// TestCheckpointTxAtomicReadWriteAndIsolation is the FINDING 1 fix's live
+// proof (Commander review of 93f3e39). It shows the read-then-write a
+// checkpoint needs actually happens on ONE locked connection — ck.LastHead
+// then ck.InsertHead, both via CheckpointTx, never s.pool — and that this
+// has two independently necessary consequences: a concurrent second
+// checkpoint fails to acquire (single-writer, already covered above), AND a
+// plain read from OUTSIDE the holding transaction cannot observe the new
+// head while it is still uncommitted (transactional isolation — the
+// property that makes it safe for a second, non-checkpoint caller to call
+// s.LastHead at any time without seeing half-finished checkpoint state).
+//
+// audit_chain_heads is shared and never truncated across this test binary's
+// run (the same T-073 dirty-DB lesson the rest of this file already follows,
+// e.g. uniqueMarker), so a prior test in this run (TestChainHeadSigning...,
+// TestChainHeadsAppendOnlyTrigger) may already have inserted a head. Every
+// assertion below therefore diffs against a captured BASELINE rather than
+// assuming an empty table — asserting "ok == false" here would be exactly
+// the dirty-DB mistake this file already documents guarding against.
+//
+// The blocking goroutine's release channel is closed via a deferred,
+// once-guarded release() so a t.Fatal anywhere in the main test goroutine
+// cannot leak a goroutine parked forever inside an open transaction — the
+// bug an earlier version of this test had (Commander review confirmed the
+// live run hung on exactly this).
+func TestCheckpointTxAtomicReadWriteAndIsolation(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	marker := uniqueMarker(t)
+
+	baseline, baselineOK, err := s.LastHead(ctx)
+	if err != nil {
+		t.Fatalf("baseline last head: %v", err)
+	}
+
+	if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seq, hash := walkChainFromGenesis(t, s)
+	_, sk, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+
+	insertedUncommitted := make(chan struct{})
+	proceed := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(proceed) }) }
+	defer release() // never leak the holding goroutine, even on t.Fatal below
+
+	doneFirst := make(chan struct{})
+
+	go func() {
+		defer close(doneFirst)
+		acquired, err := s.WithCheckpointLock(ctx, func(ck CheckpointTx) error {
+			// The read half, on the locked connection: must see exactly the
+			// pre-test baseline, not "empty" and not some other test's head.
+			got, ok, err := ck.LastHead(ctx)
+			if err != nil {
+				return err
+			}
+			if ok != baselineOK || (ok && got.Seq != baseline.Seq) {
+				t.Errorf("expected LastHead inside the checkpoint to match the baseline (ok=%v seq=%v), got ok=%v %+v",
+					baselineOK, baseline.Seq, ok, got)
+			}
+			// The write half, on the SAME locked connection.
+			h, err := chain.SignHead(sk, seq, hash, ts)
+			if err != nil {
+				return err
+			}
+			if err := ck.InsertHead(ctx, h); err != nil {
+				return err
+			}
+			close(insertedUncommitted) // inserted, but the tx has not committed yet
+			<-proceed
+			return nil
+		})
+		if err != nil {
+			t.Errorf("first checkpoint: %v", err)
+		}
+		if !acquired {
+			t.Error("expected the first caller to acquire the checkpoint lock")
+		}
+	}()
+
+	<-insertedUncommitted
+
+	// A concurrent second checkpoint must fail to acquire and never run fn.
+	ran := false
+	acquired, err := s.WithCheckpointLock(ctx, func(CheckpointTx) error {
+		ran = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("second checkpoint attempt: %v", err)
+	}
+	if acquired || ran {
+		t.Fatal("expected the second concurrent checkpoint to fail to acquire and never run fn")
+	}
+
+	// A plain read from OUTSIDE the holding transaction must still show the
+	// baseline — never the new, still-uncommitted seq — proving InsertHead
+	// ran on the locked tx and not on a second pool connection.
+	if got, ok, err := s.LastHead(ctx); err != nil {
+		t.Fatalf("last head while the first checkpoint's tx is still open: %v", err)
+	} else if ok != baselineOK || (ok && got.Seq != baseline.Seq) {
+		t.Fatalf("observed the new uncommitted head from outside the holding transaction (got ok=%v %+v, want baseline ok=%v %+v) — "+
+			"InsertHead must have run on a different connection than LastHead's read", ok, got, baselineOK, baseline)
+	}
+
+	release()
+	<-doneFirst
+
+	// Once the first checkpoint commits, the NEW head is visible via the
+	// normal pool-backed path.
+	got, ok, err := s.LastHead(ctx)
+	if err != nil {
+		t.Fatalf("last head after commit: %v", err)
+	}
+	if !ok || got.Seq != seq {
+		t.Fatalf("expected the committed head at seq %d to be visible after commit, got ok=%v %+v", seq, ok, got)
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"aireos.local/services/audit-service/internal/chain"
 )
@@ -23,11 +24,23 @@ import (
 // against each other, which is what D2/PERF-14 require.
 const checkpointLockKey int64 = 0x41554448 // "AUDH", distinct from Append's "AUDI"
 
-// InsertHead persists a signed chain head. h.Seq must already exist as an
-// audit_events row — the migration's FK (RESTRICT, no ON DELETE) enforces
-// that a head can never outlive or precede its event.
-func (s *Store) InsertHead(ctx context.Context, h chain.Head) error {
-	_, err := s.pool.Exec(ctx, `
+// dbtx is the minimal Exec+QueryRow surface both *pgxpool.Pool and pgx.Tx
+// satisfy. The head read/write logic below runs against a dbtx rather than
+// against s.pool directly, so it works IDENTICALLY on the pool (normal
+// calls, below) and on an open transaction (checkpoint calls, via
+// CheckpointTx). This is load-bearing, not style (Commander review): without
+// it, calling s.InsertHead from inside WithCheckpointLock's callback would
+// silently grab a DIFFERENT pool connection — running outside both the
+// transaction and the advisory lock, defeating the single-writer guarantee
+// D10 exists to provide (a losing checkpoint would then race a winning one
+// instead of cleanly skipping its turn).
+type dbtx interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func insertHead(ctx context.Context, q dbtx, h chain.Head) error {
+	_, err := q.Exec(ctx, `
 		INSERT INTO audit_chain_heads (seq, chain_hash, head_timestamp, key_id, signature)
 		VALUES ($1, $2, $3, $4, $5)`,
 		h.Seq, h.ChainHash, h.Timestamp, h.KeyID, h.Signature,
@@ -38,12 +51,8 @@ func (s *Store) InsertHead(ctx context.Context, h chain.Head) error {
 	return nil
 }
 
-// LastHead returns the highest-seq chain head, or ok=false when none exists
-// yet — a fresh install has no heads at all until the first checkpoint fires
-// (ADR-0069 D6's "three outcomes, never two" starts here: absence is a real,
-// expected state, not an error).
-func (s *Store) LastHead(ctx context.Context) (h chain.Head, ok bool, err error) {
-	err = s.pool.QueryRow(ctx, `
+func lastHead(ctx context.Context, q dbtx) (h chain.Head, ok bool, err error) {
+	err = q.QueryRow(ctx, `
 		SELECT seq, chain_hash, head_timestamp, key_id, signature
 		FROM audit_chain_heads
 		ORDER BY seq DESC
@@ -58,15 +67,59 @@ func (s *Store) LastHead(ctx context.Context) (h chain.Head, ok bool, err error)
 	return h, true, nil
 }
 
+func eventCountSince(ctx context.Context, q dbtx, since int64) (int64, error) {
+	var n int64
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE seq > $1`, since).Scan(&n); err != nil {
+		return 0, fmt.Errorf("event count since seq %d: %w", since, err)
+	}
+	return n, nil
+}
+
+// InsertHead persists a signed chain head against the pool. h.Seq must
+// already exist as an audit_events row — the migration's FK (RESTRICT, no
+// ON DELETE) enforces that a head can never outlive or precede its event.
+// Called from inside WithCheckpointLock's callback, use CheckpointTx's
+// method of the same name instead — see dbtx's doc comment for why.
+func (s *Store) InsertHead(ctx context.Context, h chain.Head) error {
+	return insertHead(ctx, s.pool, h)
+}
+
+// LastHead returns the highest-seq chain head, or ok=false when none exists
+// yet — a fresh install has no heads at all until the first checkpoint fires
+// (ADR-0069 D6's "three outcomes, never two" starts here: absence is a real,
+// expected state, not an error).
+func (s *Store) LastHead(ctx context.Context) (chain.Head, bool, error) {
+	return lastHead(ctx, s.pool)
+}
+
 // EventCountSince returns the number of audit_events with seq > since — the
 // input the cadence sweep's "100 events since the last head" trigger reads
 // (T-124b; not called from this ticket's own code).
 func (s *Store) EventCountSince(ctx context.Context, since int64) (int64, error) {
-	var n int64
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE seq > $1`, since).Scan(&n); err != nil {
-		return 0, fmt.Errorf("event count since seq %d: %w", since, err)
-	}
-	return n, nil
+	return eventCountSince(ctx, s.pool, since)
+}
+
+// CheckpointTx exposes InsertHead/LastHead/EventCountSince against an
+// already-open, already-locked transaction — the ONLY type
+// WithCheckpointLock's callback receives (deliberately not a raw pgx.Tx).
+// A caller inside the callback can therefore do a full read-then-write
+// (read LastHead, decide, InsertHead) entirely on the locked connection,
+// with no way to reach for s.pool by mistake and defeat the lock (see
+// dbtx's doc comment above for the failure this closes: Commander review
+// after the first cut called s.InsertHead from inside fn(pgx.Tx), which
+// compiled and passed every test while running outside the transaction).
+type CheckpointTx struct{ q dbtx }
+
+func (c CheckpointTx) InsertHead(ctx context.Context, h chain.Head) error {
+	return insertHead(ctx, c.q, h)
+}
+
+func (c CheckpointTx) LastHead(ctx context.Context) (chain.Head, bool, error) {
+	return lastHead(ctx, c.q)
+}
+
+func (c CheckpointTx) EventCountSince(ctx context.Context, since int64) (int64, error) {
+	return eventCountSince(ctx, c.q, since)
 }
 
 // WithCheckpointLock runs fn inside a transaction holding
@@ -83,7 +136,7 @@ func (s *Store) EventCountSince(ctx context.Context, since int64) (int64, error)
 // checkpointLockKey, every governed action would serialize behind the
 // head-signing cadence — exactly what D2 ("signing is off the audit write
 // path") rules out.
-func (s *Store) WithCheckpointLock(ctx context.Context, fn func(pgx.Tx) error) (acquired bool, err error) {
+func (s *Store) WithCheckpointLock(ctx context.Context, fn func(CheckpointTx) error) (acquired bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin checkpoint tx: %w", err)
@@ -96,7 +149,7 @@ func (s *Store) WithCheckpointLock(ctx context.Context, fn func(pgx.Tx) error) (
 	if !acquired {
 		return false, nil
 	}
-	if err := fn(tx); err != nil {
+	if err := fn(CheckpointTx{q: tx}); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -201,3 +201,53 @@ func TestAuthctlKeyFormatCompatibility(t *testing.T) {
 		t.Fatal("expected error for a secret-length key passed as public")
 	}
 }
+
+// TestSignHeadGoldenVector pins the signed-head wire format against a fixed
+// expected signature (Commander review of 93f3e39, FINDING 2). Every other
+// test in this file computes its "expected" value with the same headPayload
+// it is testing, so a change to field order, the domain separator string,
+// decimal-vs-binary seq encoding, or a dropped frame would pass the whole
+// suite while silently invalidating every head ever signed by a prior
+// version — exactly the ambiguity ADR-0069 §Consequences names the `-v1`
+// domain separator to avoid.
+//
+// goldenSignature was generated ONCE from this package's own
+// SignHead(goldenSecretHex fixture, seq=42, a fixed chainHash, a fixed
+// RFC3339Nano timestamp) and hard-coded below as a literal, independent of
+// whatever headPayload does today.
+//
+// IF THIS TEST FAILS: the signed-head format has changed. That means every
+// head signed by every prior version of this code is now unverifiable. The
+// fix is NEVER to paste in a new expected value — it is to bump HeadDomain
+// to a `-v2` string and ship a verifier that accepts both, per ADR-0069's
+// stated compatibility posture.
+func TestSignHeadGoldenVector(t *testing.T) {
+	const (
+		goldenSeq       = 42
+		goldenChainHash = "5f2f3c9a6f1a8e6c2d9b7a4e1f3c8d6b5a2f0e9d7c4b1a8f6e3d0c9b7a5f2e1d"
+		goldenTimestamp = "2026-08-11T00:00:00.000000000Z"
+		goldenSignature = "268db37766e9ef53bbe235cdb503c6341f34757c9fad344cb7081a03b388d2" +
+			"bbbfad0c9957860e9d412087abaadfc0b94358c0601fb7311a2fd7263d226c5f0b"
+	)
+
+	sk, err := SecretKeyFromHex(authctlFixtureSecretHex)
+	if err != nil {
+		t.Fatalf("parse fixture secret key: %v", err)
+	}
+	h, err := SignHead(sk, goldenSeq, goldenChainHash, goldenTimestamp)
+	if err != nil {
+		t.Fatalf("sign golden vector: %v", err)
+	}
+	if h.Signature != goldenSignature {
+		t.Fatalf("signed-head format has changed — got %s, want %s (see this test's doc comment: "+
+			"bump HeadDomain to -v2, do not update this expected value)", h.Signature, goldenSignature)
+	}
+
+	pub, err := PublicKeyFromHex(authctlFixturePublicHex)
+	if err != nil {
+		t.Fatalf("parse fixture public key: %v", err)
+	}
+	if err := VerifyHead(pub, h); err != nil {
+		t.Fatalf("golden vector must verify: %v", err)
+	}
+}
