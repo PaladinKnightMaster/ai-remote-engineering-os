@@ -5,7 +5,7 @@ These rules apply to this project unless explicitly overridden. This project fol
 ## Workspace layout
 This product repo lives at `AI-Agentic-OS/ai-remote-engineering-os/` and is one of three siblings:
 
-- `../agency-kit/` — generic Claude war-room agency kit v4.2. Owns base CLAUDE.md template, core modules, templates, generic role cards, scripts. Upgraded independently.
+- `../agency-kit/` — generic Claude war-room agency kit **v4.6.0**. Owns base CLAUDE.md template, core modules, templates, generic role cards, scripts. Upgraded independently. This directory is a **refreshable snapshot**; the canonical source is `D:\1_PROJECT\PRIVATE_WORK\Agentic Kit\war-room-agency-workspace\core\war-room-agency-kit-<version>\claude\` (see `../VERSION_CONTROL.md`). Read the snapshot, not the canonical tree.
 - `../artifacts/ai-remote-engineering-os/v3.0.1/` — release binaries (ZIP/PDF/XLSX). Not part of this repo's git history.
 - `./` (this repo) — product source, project-customized agency overlays, project specialists, v3.0.1 canonical docs.
 

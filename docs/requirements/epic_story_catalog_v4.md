@@ -98,21 +98,31 @@ approach before implementing.**
 modal would actually make these surfaces **testable in-pane**, which is a secondary win.
 
 ### E-06 · v1.0 stability posture — **what makes 1.0 a claim**
-**release epic · B-020 · size L**
+**release epic · B-020 · size L · SPLIT 2026-08-10**
+
+> **This epic ships in two halves.** The **hardening half** — S-21, S-23…S-30 — ships as **v0.13.0
+> "Evidence Hardening"** (see `docs/releases/v0.13.0/`). The **freeze half** — **S-20 and S-22** —
+> defers to **v1.0.0**, when layer 2 lands and the surface has a consumer. See §Part 4 for the
+> reasoning and the renumbering map.
+>
+> **S-20's policy text below is ratified doctrine and is NOT re-derived — only its *stamping*
+> defers.** v0.13.0 voluntarily obeys these classes (criteria CON-6) with exactly one recorded
+> exception, B-035's removal, so the freeze is preceded by zero churn and can be stamped without
+> rework if a buyer appears mid-cycle.
 
 | Story | Detail | Size |
 |---|---|---|
-| S-20 | **OpenAPI surface freeze** + a documented compatibility policy (the fragment has grown every release since v0.5). **Every other E-06 story depends on this — do it first.** Frozen: the fragment in full, the seven edge names, versioned scope strings (`approvals@1`), audit event names + chain envelope, `governed-actions@1`, installer env var names. **Deliberately NOT frozen: the `mcp-gateway` MCP tool surface** (agent plane is still learning — B-027/B-028/E-11), the web UI and `packages/ui` APIs, DB schema/migrations, event payload bodies beyond the envelope, error strings, profile support depth. Policy classes — *non-breaking in 1.x:* new paths, new optional request fields, new response fields, new output-only enum values, new event names, **strengthening a security guarantee on an existing route**; *breaking (2.0 only):* removal/rename, optional→required, narrowed response type, changed status code for an existing condition, changed meaning of an existing event name; *pre-decided:* a new **input** enum value is non-breaking because server and client ship as one artifact. | M |
+| S-20 | **→ DEFERRED to v1.0.0 (freeze half).** **OpenAPI surface freeze** + a documented compatibility policy (the fragment has grown every release since v0.5). *(The former "every other E-06 story depends on this — do it first" no longer holds: the hardening half depends on none of it, which is what made the split possible.)* Frozen: the fragment in full, the seven edge names, versioned scope strings (`approvals@1`), audit event names + chain envelope, `governed-actions@1`, installer env var names. **Deliberately NOT frozen: the `mcp-gateway` MCP tool surface** (agent plane is still learning — B-027/B-028/E-11), the web UI and `packages/ui` APIs, DB schema/migrations, event payload bodies beyond the envelope, error strings, profile support depth. Policy classes — *non-breaking in 1.x:* new paths, new optional request fields, new response fields, new output-only enum values, new event names, **strengthening a security guarantee on an existing route**; *breaking (2.0 only):* removal/rename, optional→required, narrowed response type, changed status code for an existing condition, changed meaning of an existing event name; *pre-decided:* a new **input** enum value is non-breaking because server and client ship as one artifact. | M |
 | S-21 | **Security-audit capstone** across the full governance spine — cross-check against the now-named governance category (agent-governance-toolkit, SkillSpector, agentfield, clawpatrol) | L |
-| S-22 | **Upgrade/migration statement** — what an operator can expect across 1.x | S |
-| S-23 | **Single-operator posture stated explicitly** — multi-operator ACL/SoD is post-Beta (G14); Beta-1 must say so rather than imply otherwise | S |
-| S-24 | **Session-revocation posture stated explicitly** — operator sessions are stateless bearer tokens with an 8h TTL; `logout` clears the cookie but does not invalidate the token; the paired tier is the product's only revocable session. Mitigations: TTL, HttpOnly/Secure/SameSite=Strict, same-origin. Fix is B-032 at v1.3, pre-authorised by S-20's security-strengthening clause. | S |
+| S-22 | **→ DEFERRED to v1.0.0 (freeze half).** **Upgrade/migration statement** — what an operator can expect across 1.x. Meaningless without the freeze it describes. | S |
+| S-23 | **Single-operator posture stated explicitly** — multi-operator ACL/SoD is post-Beta (G14); Beta-1 must say so rather than imply otherwise. **Pulled into the hardening half at the split**: it is an honest-disclosure statement, the same family as S-24 and S-30, and a threat model that states the containment boundary while staying silent on this has a hole a reviewer finds in one pass. | S |
+| S-24 | **Session-revocation posture stated explicitly** — operator sessions are stateless bearer tokens with an 8h TTL; `logout` clears the cookie but does not invalidate the token; the paired tier is the product's only revocable session. Mitigations: TTL, HttpOnly/Secure/SameSite=Strict, same-origin. Fix is B-032 at **v1.1**, pre-authorised by S-20's security-strengthening clause. **Pulled into the hardening half at the split** (with S-23, S-30) — a non-revocable bearer token is a live posture a reviewer will probe, so leaving it unstated until the freeze release was the sharper omission of the two. | S |
 | S-25 | **Enforcement-of-enforcement (B-038)** — every lint override, config scan root and whole-module test mock carries a test asserting it matches / covers / exercises real code. Three known: the dead SEC-7 ESLint override, Tailwind's `packages/ui/src` scan gap, the workspace-package whole-module mock. *A freeze is only credible if the enforcement protecting it demonstrably runs.* | M |
 | S-26 | **The documented quickstart is a gate** — an automated run executes the published quickstart from the **built bundle on a fresh host**, not from the repo and not with repo defaults. GATE-4 §human caught two step-1 blockers no automated gate could (a bundle version hard-coded stale for eight releases, concealed because `BUNDLE_VERSION` defaulted to the same value; `setup-loopback-demo.sh` rejecting socket-activated sshd — Ubuntu 24.04's default and our primary target). **A default that matches the stale value hides the staleness.** | M |
 | S-27 | **OWASP ASI01–10 control mapping** — map our controls to *OWASP Top 10 for Agentic Applications* (released 2025-12-09; note the name is "Agentic **Applications**", not "Agentic AI"). Strong: ASI06, ASI09. Gapped: ASI02/03/05 (→ S-30), ASI08 (→ S-28), ASI04 (→ S-29). **State ASI07 as out of scope** (single-plane, no agent-to-agent path) rather than leaving it silent — reviewers will ask. A published external taxonomy is worth more to a commercial buyer than any internal checklist. | M |
 | S-28 | **Audit-chain external verifiability** — our chain is unkeyed SHA-256 computed and stored by `audit-service` itself, so it proves *ordering*, not *authenticity*: an attacker with write access recomputes from genesis and it verifies clean. Sign chain heads with a key the writing service does not hold (and/or periodic witness). **No new capability — this hardens the control the whole product claim rests on.** ASI08. | M |
 | S-29 | **Bundle signing + SBOM** — for an air-gapped product **the offline bundle is the trust root**, and today's release gates are functional (size/version), not provenance. An operator on a disconnected network has no cryptographic way to confirm the bundle is the one we built. Release engineering, not product capability. ASI04. | M |
-| S-30 | **Containment boundary stated explicitly** — our controls hold for actions traversing the gateway; **a process spawned by an approved `remote.exec` is not contained, and its own network activity is ungoverned**. Say so in the threat model. Enforcement lands at v1.1; v1.0 states the boundary honestly rather than letting a red-teamer discover it. ASI02/03/05. | S |
+| S-30 | **Containment boundary stated explicitly** — our controls hold for actions traversing the gateway; **a process spawned by an approved `remote.exec` is not contained, and its own network activity is ungoverned**. Say so in the threat model. Enforcement lands at **v0.14**; **v0.13** states the boundary honestly rather than letting a red-teamer discover it. ASI02/03/05. | S |
 
 ---
 
@@ -151,30 +161,55 @@ fix, not a containment bug.
 
 ---
 
-## Part 4 — the Beta-1 path — **RATIFIED 2026-07-24 (CEO)**, **RE-ORDERED 2026-08-10 (CEO, post-Beta war room)**
+## Part 4 — the Beta-1 path — **RATIFIED 2026-07-24 (CEO)**, **RE-ORDERED 2026-08-10 (CEO, post-Beta war room)**, **E-06 SPLIT 2026-08-10 (CEO, v1.0 scoping consult)**
 
 v0.11 and v0.12 shipped as ratified. **The v1.0-and-beyond path below replaces the original
 single-row v1.0 ending**, following the post-Beta roadmap war room of 2026-08-10.
 
+**The war room left one item open: *is there a near-term buyer, pilot, or demo for v1.0?* It had
+gone unanswered across three turns. Answered at the v1.0 scoping consult the same day: NO.** There
+is no external recipient of the bundle in the near term. That answer **splits E-06** and renumbers
+everything after it.
+
+E-06 bundled two different kinds of work. **Hardening** (the capstone, ASI mapping, chain
+authenticity, bundle provenance, the enforcement tests, the quickstart gate, the boundary
+statements) is pure upside — it gates nothing and every finding it closes is one a reviewer would
+otherwise find for us. **The freeze** (S-20 surface freeze, its compatibility policy, S-22's upgrade
+statement) buys nothing without someone writing against the surface, and constrains every release
+after it. **So the hardening ships now as v0.13.0, and 1.0 is minted when layer 2 is real.**
+
+**This ordering is better than the war room's, not merely cheaper:** S-28 adds signature and key-id
+material to audit responses, so freezing first would have frozen a surface we were about to change.
+
 | Release | Theme | Contents | Gate |
 |---|---|---|---|
-| **v0.11** ✅ | **Operator Experience** | E-01 audit read surface *(v1.0-BLOCKING)* · E-07 live refresh · E-08 charter-scope accrual | **No new WD** — WD-1..10 regression + smoke + a §human spot-check |
+| **v0.11** ✅ | **Operator Experience** | E-01 audit read surface · E-07 live refresh · E-08 charter-scope accrual | **No new WD** — WD-1..10 regression + smoke + a §human spot-check |
 | **v0.12** ✅ | **Access & Onboarding** | E-02 mobile/QR · E-03 deployment profiles · E-04 onboarding · E-05a Button (E-05b cut) | **WD-11** for pairing (new security semantics) · profiles ride `task wd1` · the rest ride smoke + §human |
-| **v1.0.0** | **Beta 1 — Governed Remote Operations** | **E-06 only**, now S-20…S-30 — freeze + compat policy + capstone + ASI mapping + audit-chain external verifiability + bundle signing/SBOM + the containment and revocation boundary statements · B-033 (narrowed to `CreateResource`) · B-035 **removal** | The **security audit is the gate**; full WD-1..11 regression; **no new WD** |
-| **v1.1** | **Containment** | Adopt a sandbox so the "sole tool-execution path" becomes *enforced* rather than assumed. Own ADR. Lead candidates: **matchlock** (Firecracker + self-programmed nftables + Unix-socket allow/block hook) paired with **iron-proxy** (fail-closed gRPC reject transform + MCP tool allowlists). | **WD-12** |
-| **v1.2** | **Governed Harness** — *layer 2 lands* | Reference integrations of **OpenHands SDK** (`POST /respond_to_confirmation`) and **openworker** (`GET /v1/inbox` + `POST /v1/inbox/{id}/resolve`) via their HTTP approval endpoints, running inside the v1.1 boundary. **Zero fork.** | **WD-13** |
-| **v1.3** | **Session & Evidence** | B-032 generalized revocation · B-034 provenance field · B-036 FK/deletion · B-037 design pass · B-031 re-ask backoff | **WD-14** |
-| **v1.4+** | **Post-Beta reach** | Mobile PWA + `cockpit@1` · Mattermost as a governed connector · B-008 (agent-device) · B-024 (pgGraph) · voice (KittenTTS) | per epic |
+| **v0.13.0** | **Evidence Hardening** — *the E-06 hardening half* | S-21 capstone · S-23 single-operator · S-24 session-revocation · S-25 enforcement-of-enforcement · S-26 quickstart-as-gate · S-27 ASI01–10 mapping · S-28 audit-chain external verifiability · S-29 bundle signing + SBOM · S-30 containment boundary · B-033 (narrowed to `CreateResource`) · B-035 **removal** | The **security audit is the gate**; full WD-1..11 regression; **no new WD**; two negative proofs + a §human offline verification |
+| **v0.14.0** | **Containment** | Adopt a sandbox so the "sole tool-execution path" becomes *enforced* rather than assumed. Own ADR. Lead candidates: **matchlock** (Firecracker + self-programmed nftables + Unix-socket allow/block hook) paired with **iron-proxy** (fail-closed gRPC reject transform + MCP tool allowlists). | **WD-12** |
+| **v1.0.0** | **Beta 1 — Governed Remote Operations** — *layer 2 lands, and the surface freezes* | Reference integrations of **OpenHands SDK** (`POST /respond_to_confirmation`) and **openworker** (`GET /v1/inbox` + `POST /v1/inbox/{id}/resolve`) via their HTTP approval endpoints, inside the v0.14 boundary. **Zero fork.** **Plus the E-06 freeze half — S-20 surface freeze + compatibility policy, S-22 upgrade statement.** | **WD-13** |
+| **v1.1** | **Session & Evidence** | B-032 generalized revocation · B-034 provenance field · B-036 FK/deletion · B-037 design pass · B-031 re-ask backoff | **WD-14** |
+| **v1.2+** | **Post-Beta reach** | Mobile PWA + `cockpit@1` · Mattermost as a governed connector · B-008 (agent-device) · B-024 (pgGraph) · voice (KittenTTS) | per epic |
 
-### Why this ordering (the two dependencies that force it)
+**Renumbering map** (the war-room table used pre-split numbers; this is the translation):
+war-room **v1.0** → *split* into **v0.13.0** (hardening) + the freeze half folded into **v1.0.0** ·
+war-room **v1.1** Containment → **v0.14.0** · war-room **v1.2** Governed Harness → **v1.0.0** ·
+war-room **v1.3** → **v1.1** · war-room **v1.4+** → **v1.2+**.
 
-**Containment is v1.0-adjacent but NOT in v1.0.** It is new governed capability (ADR + WD), and
+### Why this ordering (the three dependencies that force it)
+
+**1. 1.0 is minted when layer 2 is real, not on a calendar.** With no buyer, a freeze is ceremony
+that constrains the next ten releases. With layer 2 landed, the freeze has a consumer and is stamped
+on a surface that has already been hardened. **The version number follows the product, not the other
+way round.**
+
+**Containment is v1.0-adjacent but NOT in it.** It is new governed capability (ADR + WD), and
 it would place the trust root on an unmeasured dependency inside the very release whose purpose
-is proving stability. **v1.0 STATES the boundary (S-30); v1.1 BUILDS it.**
+is proving stability. **v0.13 STATES the boundary (S-30); v0.14 BUILDS it.**
 
 **Containment is the PREREQUISITE for layer 2, not a parallel track.** You cannot safely govern a
 third-party harness that is not contained — the harness would have to *choose* to call us. That
-dependency forces v1.1 before v1.2; it is not a preference.
+dependency forces v0.14 before v1.0; it is not a preference.
 
 ### The two ratified structural rules
 
@@ -189,16 +224,24 @@ no new governance semantics) → no new WD. E-03 is install-level → rides `wd1
 pairing token introduces new security semantics → earns **WD-11**. This saves roughly a
 release's worth of ceremony across the path without weakening a single real gate.
 
-### The v1.0 boundary rule — **added 2026-08-10, load-bearing**
+### The boundary rule — **added 2026-08-10, load-bearing**
 
-> **v1.0 may close an evidence gap on an existing governed mutation; it may not add a governed
-> mutation.**
+> **A freeze-track release may close an evidence gap on an existing governed mutation; it may not
+> add a governed mutation.**
+
+*(Generalized from "v1.0 may…" at the E-06 split: the rule binds the hardening release, which is
+now v0.13.0, and continues to bind v1.0.0 when the freeze lands there.)*
 
 This is what admits S-27/S-28/S-29 and B-033 (which chains an event on an existing route) while
 excluding B-032 (adds an auth-session table, a revoke verb and a session-list read) and
 containment itself. It is the operational form of structural rule #1 above. It has now held under
-pressure twice — quote it when v1.0 scope is challenged, and treat a *fifth* candidate as the
-signal that the boundary has become elastic.
+pressure **three** times — quote it when scope is challenged.
+
+**The admitted-candidate count stands at FOUR: S-28, S-29, B-033, B-035.** Treat a *fifth* as the
+signal that the boundary has become elastic — the next addition requires re-opening the rule, not
+stretching it. **B-035 is admitted as strictly subtractive** (it *removes* a governed mutation); see
+the v0.13.0 release criteria §8 for why its "last fragment change before the freeze" sequencing
+constraint is satisfied by landing early rather than violated by it.
 
 ### Findings that drove the re-order (recorded 2026-08-10)
 
