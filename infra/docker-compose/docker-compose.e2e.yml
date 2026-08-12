@@ -331,11 +331,24 @@ services:
     # After the e2e tests pass: run the T-124b G1 live chain-head-sweep proof (it lives
     # under services/audit-service, not tests/e2e — that is a SEPARATE Go module and
     # Go's internal-package rule forbids it from importing internal/chain at all; see
-    # checkpoint_e2e_test.go's header comment), THEN verify the WHOLE accumulated audit
-    # chain's hash integrity (AUD-11) — recomputes every chainHash + prevHash link,
-    # exits non-zero on a broken link. The capstone's hash-intact proof, over the full
-    # chain.
-    command: ["bash", "-c", "go test -tags e2e -count=1 -v -timeout 600s ./tests/e2e/... && go test -tags e2e -count=1 -v -timeout 120s ./services/audit-service/internal/checkpoint/... && go run ./services/audit-service verify"]
+    # checkpoint_e2e_test.go's header comment), THEN force one last checkpoint (the
+    # `checkpoint` subcommand — ADR-0069 D3's explicit operator action, bypasses the
+    # cadence gate) so the tail of events the suite just generated since the audit
+    # service's last periodic sweep tick is actually signed, THEN verify the WHOLE
+    # accumulated audit chain's hash integrity (AUD-11) — recomputes every chainHash +
+    # prevHash link AND (T-126a, ADR-0069 D6) every signed head's Ed25519 signature,
+    # exits non-zero on a broken link or a bad/unrecognized head signature. `verify`
+    # derives its public key from this service's own AIREOS_AUDIT_CHAIN_SIGN_KEY above
+    # (no separate AIREOS_AUDIT_CHAIN_PUBLIC_KEY needed — see resolveVerifyKey's doc
+    # comment), so the G1 assertion below is deliberately stronger than "exit 0": it
+    # greps stdout for the literal INTACT+ATTESTED outcome — task e2e's trailing verify
+    # run must never quietly regress to INTACT+UNATTESTED (head signing silently not
+    # exercised) or the ordering-only fallback (no key at all) and still pass. Retried a
+    # few times (1s apart) purely to absorb the checkpoint's own non-blocking advisory
+    # lock losing a race against the audit service's own concurrent cadence tick — not a
+    # flake worked around, since a losing tester-side checkpoint means the OTHER side
+    # already signed the identical tip and the very next verify attempt sees it.
+    command: ["bash", "-c", "set -o pipefail; go test -tags e2e -count=1 -v -timeout 600s ./tests/e2e/... && go test -tags e2e -count=1 -v -timeout 120s ./services/audit-service/internal/checkpoint/... && for i in 1 2 3 4 5; do go run ./services/audit-service checkpoint; if go run ./services/audit-service verify | tee /dev/stderr | grep -q 'INTACT+ATTESTED'; then exit 0; fi; sleep 1; done; echo 'G1 FAILED: audit-service verify never reported INTACT+ATTESTED after 5 forced-checkpoint retries' >&2; exit 1"]
 
 volumes:
   gomodcache:

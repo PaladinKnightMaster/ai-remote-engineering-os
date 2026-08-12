@@ -47,25 +47,43 @@
 //
 // (c) THREE-WAY DIVERGENCE CLASSIFICATION (Classify, below) — this
 // supersedes any two-way mutate-vs-clean framing: comparing the anchor's
-// last seq against the database's last signed head has three outcomes, not
-// two:
+// last recorded position against the database's full set of signed heads
+// has three outcomes, not two. The comparison unit is a COUNT OF HEADS, NOT
+// a seq subtraction — heads are cadence-spaced (D2: one per ~100 events or
+// 60s), so consecutive head seqs sit nothing like consecutive integers
+// (e.g. 100, 213, 340). An earlier version of this file classified by
+// subtracting event seqs, which made outcome 1 below unreachable in
+// production and mislabeled the resulting seq gap "heads" in its own log
+// line — Classify's Classification.HeadsBehind is the fix: a real count,
+// computed once, here, and never recomputed by a caller:
 //
-//  1. anchor behind by exactly 1 -> DivergenceBenignCrash. A checkpoint
-//     committed to Postgres and the process died before (or during) the
-//     anchor append. Self-heal by appending the missing head; this is
-//     completely ordinary and must never be reported as tampering.
-//  2. anchor behind by MANY -> DivergenceWriterBroken. The anchor WRITER is
-//     broken — disk full, permission lost, bad path — not the chain. This
-//     is an OPERATIONAL ALARM, never a tamper finding: a full disk must
-//     never masquerade as an attack, because every false tamper alarm spends
-//     down the credibility a real one needs. Log loudly as operational, then
-//     self-heal by appending the missing heads.
-//  3. anchor AHEAD of the database by any amount -> DivergenceTruncation —
-//     the truncation signature this whole package exists to catch. Log
-//     loudly and persistently. NEVER delete, rewrite, or truncate the
-//     anchor to "fix" this — the divergence itself is the evidence, and
-//     erasing it to make the two agree again would erase the only proof the
-//     truncation happened.
+//  1. exactly ONE db head past the anchor's last recorded seq ->
+//     DivergenceBenignCrash. A checkpoint committed to Postgres and the
+//     process died before (or during) the anchor append. Self-heal by
+//     appending the missing head; this is completely ordinary and must
+//     never be reported as tampering.
+//  2. MORE THAN ONE db head past the anchor -> DivergenceWriterBroken. The
+//     anchor WRITER is broken — disk full, permission lost, bad path — not
+//     the chain. This is an OPERATIONAL ALARM, never a tamper finding: a
+//     full disk must never masquerade as an attack, because every false
+//     tamper alarm spends down the credibility a real one needs. Log
+//     loudly as operational, then self-heal by appending the missing
+//     heads. (Classify also reuses this value, with HeadsBehind == 0, for
+//     an unrelated tips-agree-but-coverage-gapped case — see its own doc
+//     comment.)
+//  3. anchor's last recorded seq AHEAD of the database's by any amount ->
+//     DivergenceTruncation — the truncation signature this whole package
+//     exists to catch. Log loudly and persistently. NEVER delete, rewrite,
+//     or truncate the anchor to "fix" this — the divergence itself is the
+//     evidence, and erasing it to make the two agree again would erase the
+//     only proof the truncation happened.
+//
+// Independently of (c), Classify also reports a COVERAGE GAP whenever the
+// anchor carries a KindInit marker and the database has head(s) with seq
+// below that marker's seq — heads that exist in Postgres but were never
+// independently witnessed by this anchor (see (d) immediately below for why
+// that gap can exist at all). See Classification's doc comment for exactly
+// how the two concerns compose.
 //
 // (d) MISSING ANCHOR FILE -> RECREATE WITH AN INITIALIZATION MARKER, NEVER
 // SILENTLY REBUILD FROM DB HEADS. The anchor's entire value is being an
@@ -152,21 +170,114 @@ const (
 	DivergenceTruncation
 )
 
-// Classify compares an anchor's last recorded seq against the database's
-// last signed head seq and returns the three-way (c) classification. Pure
-// and side-effect-free so it is unit-testable with no filesystem or
-// database — see anchor_test.go.
-func Classify(anchorSeq, dbSeq int64) Divergence {
-	switch {
-	case anchorSeq == dbSeq:
-		return DivergenceNone
-	case dbSeq == anchorSeq+1:
-		return DivergenceBenignCrash
-	case dbSeq > anchorSeq:
-		return DivergenceWriterBroken
-	default: // anchorSeq > dbSeq
-		return DivergenceTruncation
+// Classification packages the (c) three-way divergence classification with
+// every fact a caller needs, so no caller ever has to redo the arithmetic
+// itself. That arithmetic, done wrong exactly once — comparing EVENT seqs
+// instead of counting HEADS, in a shipped version of this file — made
+// DivergenceBenignCrash unreachable in practice (heads are cadence-spaced,
+// D2: one per ~100 events or 60s, so consecutive head seqs are nothing like
+// consecutive integers) and printed a seq subtraction mislabeled "heads" on
+// every ordinary restart. This type exists so that bug class cannot recur:
+// every caller reads HeadsBehind, never subtracts seqs itself.
+type Classification struct {
+	// Divergence is the (c) three-way classification (plus the WriterBroken
+	// reuse documented on Classify below for the tips-agree-but-gapped case).
+	Divergence Divergence
+	// HeadsBehind is the COUNT of DB heads with seq greater than the
+	// anchor's last recorded seq — a count of heads, never a seq
+	// subtraction. 0 whenever the anchor's last seq is >= every DB head's
+	// seq (DivergenceNone, DivergenceTruncation, or the gap-only case).
+	HeadsBehind int
+	// CoverageStartSeq is the anchor's FIRST record's Seq when that record
+	// is a KindInit marker — the earliest seq this anchor independently
+	// witnesses. 0 when the anchor carries no marker at all (it claims
+	// coverage back to the very start of the chain) — indistinguishable
+	// from, and equally safe as, a marker legitimately written at seq 0.
+	CoverageStartSeq int64
+	// UnwitnessedHeadSeqs lists every DB head seq strictly less than
+	// CoverageStartSeq: present in the database but never independently
+	// witnessed by this anchor (ADR-0069 D4(d)'s exact reason a KindInit
+	// marker is written instead of silently rebuilding). Always empty when
+	// CoverageStartSeq is 0.
+	UnwitnessedHeadSeqs []int64
+}
+
+// Classify compares an anchor's full recorded history (anchorRecords, file
+// order — Writer.All) against the database's full set of signed chain-head
+// seqs (dbHeadSeqs, any order — Store.HeadsSince(ctx, 0), which returns
+// every head since every seq is > 0) and returns the (c) three-way
+// divergence classification packaged with the head-count and coverage
+// facts above. Pure and side-effect-free: no filesystem, no database — both
+// callers (the boot-path re-sync in main.go, and T-126b's standalone
+// aireos-verify binary) gather these two slices themselves and hand them
+// here unchanged, so there is exactly ONE place this arithmetic is ever
+// done (see the package doc's binding rule (c)).
+//
+// Handles every degenerate input explicitly rather than requiring a
+// non-empty precondition: no anchor records at all, an anchor holding only
+// a KindInit marker with no heads, and no DB heads at all all produce a
+// well-defined Classification, never a panic.
+//
+// A coverage gap (len(UnwitnessedHeadSeqs) > 0) is independent of
+// Divergence and can co-occur with any of the four values EXCEPT
+// DivergenceNone, which requires both tips to agree AND no coverage gap.
+// When the tips agree but a gap exists anyway (the anchor was legitimately
+// recreated after DB history its new marker does not reach back to — (d)),
+// there is no dedicated fifth enum value (the existing four are kept, on
+// purpose) so this specific case is reported as DivergenceWriterBroken:
+// like an actually-broken writer, it is an operational condition an
+// operator should look at, never by itself a tamper finding — but
+// HeadsBehind is 0 here (nothing is missing to self-heal), so a caller
+// building a "behind by N heads" message MUST check HeadsBehind > 0 before
+// printing a head count, and should report the coverage gap (via
+// UnwitnessedHeadSeqs) as its own, separate condition regardless of which
+// Divergence value came back.
+func Classify(anchorRecords []Record, dbHeadSeqs []int64) Classification {
+	var anchorLastSeq int64
+	if len(anchorRecords) > 0 {
+		anchorLastSeq = anchorRecords[len(anchorRecords)-1].Seq
 	}
+
+	var coverageStart int64
+	if len(anchorRecords) > 0 && anchorRecords[0].Kind == KindInit {
+		coverageStart = anchorRecords[0].Seq
+	}
+
+	var dbLastSeq int64
+	headsBehind := 0
+	var unwitnessed []int64
+	for _, seq := range dbHeadSeqs {
+		if seq > dbLastSeq {
+			dbLastSeq = seq
+		}
+		if seq > anchorLastSeq {
+			headsBehind++
+		}
+		if coverageStart > 0 && seq < coverageStart {
+			unwitnessed = append(unwitnessed, seq)
+		}
+	}
+
+	c := Classification{
+		HeadsBehind:         headsBehind,
+		CoverageStartSeq:    coverageStart,
+		UnwitnessedHeadSeqs: unwitnessed,
+	}
+	switch {
+	case anchorLastSeq == dbLastSeq && len(unwitnessed) == 0:
+		c.Divergence = DivergenceNone
+	case headsBehind == 1:
+		c.Divergence = DivergenceBenignCrash
+	case headsBehind > 1:
+		c.Divergence = DivergenceWriterBroken
+	case anchorLastSeq > dbLastSeq:
+		c.Divergence = DivergenceTruncation
+	default:
+		// headsBehind == 0 and anchorLastSeq == dbLastSeq, but a coverage
+		// gap exists (len(unwitnessed) > 0) — see the doc comment above.
+		c.Divergence = DivergenceWriterBroken
+	}
+	return c
 }
 
 // Writer appends signed chain heads to a single NDJSON file outside

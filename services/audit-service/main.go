@@ -35,6 +35,7 @@ import (
 	"aireos.local/services/audit-service/internal/export"
 	"aireos.local/services/audit-service/internal/server"
 	"aireos.local/services/audit-service/internal/store"
+	"aireos.local/services/audit-service/internal/verify"
 )
 
 //go:embed migrations/*.sql
@@ -82,10 +83,16 @@ func run(args []string) error {
 	return serve(dsn)
 }
 
-// runVerify reads the whole chain in order and checks its integrity with
-// chain.Verify (recomputes every chainHash + checks each prevHash links to its
-// predecessor). The operator-facing chain-integrity CLI, no external script
-// (v0.1.0 release-criteria WD-1 step 9). Exits non-zero on a broken link.
+// runVerify reads the whole chain in order and checks its integrity. Since
+// T-126a it runs the full ADR-0069 D6 two-step proof (internal/verify.Chain
+// — head signatures, THEN chain recompute) whenever a verification key is
+// available, reporting all three D6 outcomes; it only falls back to the
+// pre-existing ordering-only chain.Verify walk (recompute + link check, no
+// signatures) when NO key is configured at all, and says so loudly — this
+// CLI must never print a bare "intact" a reader could mistake for
+// attested. The operator-facing chain-integrity CLI, no external script
+// (v0.1.0 release-criteria WD-1 step 9). Exits non-zero on a broken link or
+// a bad/unrecognized head signature.
 func runVerify(dsn string) error {
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -95,12 +102,15 @@ func runVerify(dsn string) error {
 	defer pool.Close()
 	st := store.New(pool)
 
+	// Behavior-preserving accumulation (T-105 is store-layer-only, and
+	// PERF-16 governs the export path, not this operator CLI — this loop is
+	// deliberately NOT touched beyond what's needed to feed the same `all`
+	// slice into the new verify.Chain call below): ascending, unfiltered,
+	// no preset — the chain-order walk this CLI has always done.
 	const page = 200
 	var all []audit.Event
 	var after int64
 	for {
-		// Behavior-preserving (T-105 is store-layer-only): ascending,
-		// unfiltered, no preset — the chain-order walk this CLI has always done.
 		batch, last, err := st.List(ctx, store.ListQuery{
 			Direction: store.Asc,
 			Cursor:    after,
@@ -115,11 +125,87 @@ func runVerify(dsn string) error {
 		}
 		after = last
 	}
-	if idx := chain.Verify(all); idx >= 0 {
-		return fmt.Errorf("audit chain integrity BROKEN at index %d (seq=%d id=%s)", idx, all[idx].Seq, all[idx].ID)
+
+	pub, source, err := resolveVerifyKey()
+	if err != nil {
+		return err
 	}
-	fmt.Printf("audit chain intact: %d event(s) verified\n", len(all))
-	return nil
+	if pub == nil {
+		// No AIREOS_AUDIT_CHAIN_PUBLIC_KEY and no AIREOS_AUDIT_CHAIN_SIGN_KEY
+		// available: this is the pre-T-126a behavior, ordering-only, kept as
+		// a fallback rather than a hard failure (an operator without the key
+		// on hand should still be able to check ordering) — but LOUD, never
+		// silently indistinguishable from an attested run.
+		if idx := chain.Verify(all); idx >= 0 {
+			return fmt.Errorf("audit chain integrity BROKEN at index %d (seq=%d id=%s)", idx, all[idx].Seq, all[idx].ID)
+		}
+		fmt.Printf("audit chain intact: %d event(s) verified — ORDERING-ONLY, HEAD SIGNATURES WERE NOT CHECKED (no AIREOS_AUDIT_CHAIN_PUBLIC_KEY or AIREOS_AUDIT_CHAIN_SIGN_KEY set): this result is NOT authenticated to a third party (ADR-0069 D6)\n", len(all))
+		return nil
+	}
+
+	heads, err := st.HeadsSince(ctx, 0)
+	if err != nil {
+		return fmt.Errorf("list chain heads: %w", err)
+	}
+
+	result := verify.Chain(all, heads, verify.NewKeyRing(pub))
+	switch result.Outcome {
+	case verify.OutcomeIntactAttested:
+		fmt.Printf("audit chain intact: %d event(s) verified — INTACT+ATTESTED through seq %d (head signatures verified against %s)\n",
+			result.EventsVerified, result.AttestedThroughSeq, source)
+		return nil
+	case verify.OutcomeIntactUnattested:
+		fmt.Printf("audit chain intact: %d event(s) verified — INTACT+UNATTESTED: attested through seq %d, UNATTESTED from seq %d onward (no signed checkpoint covers the tail yet; head signatures verified against %s)\n",
+			result.EventsVerified, result.AttestedThroughSeq, result.UnattestedFromSeq, source)
+		return nil
+	default: // verify.OutcomeBroken
+		if result.BrokenAtIndex >= 0 {
+			return fmt.Errorf("audit chain integrity BROKEN at index %d (seq=%d id=%s)", result.BrokenAtIndex, all[result.BrokenAtIndex].Seq, all[result.BrokenAtIndex].ID)
+		}
+		if result.UnknownKeyID {
+			return fmt.Errorf("audit chain head at seq %d was signed under key id %s, which %s does not recognize — not a tamper finding by itself (ADR-0069 D5: keys are additive-forever), but this key cannot verify it",
+				result.BadHeadSeq, result.BadHeadKeyID, source)
+		}
+		return fmt.Errorf("audit chain integrity BROKEN: head at seq %d (key id %s) failed signature verification", result.BadHeadSeq, result.BadHeadKeyID)
+	}
+}
+
+// resolveVerifyKey resolves the Ed25519 public key `verify` checks head
+// signatures against (ADR-0069 D6), in priority order:
+//
+//  1. AIREOS_AUDIT_CHAIN_PUBLIC_KEY, if set (rides the shared aireos.env,
+//     T-125a) — the normal case for an operator running `verify` against a
+//     real install.
+//  2. else, derived from AIREOS_AUDIT_CHAIN_SIGN_KEY, if set: an Ed25519
+//     private key is seed(32)||public(32) — chain.TestAuthctlKeyFormatCompatibility
+//     proves this is exactly what `authctl genkeypair` emits — so the
+//     public half is recoverable (sk.Public()) with no separate public-key
+//     env var needed. Useful wherever only the signing key is present
+//     (e.g. this repo's e2e compose stack, or the audit-service host
+//     itself, which already holds AIREOS_AUDIT_CHAIN_SIGN_KEY to checkpoint).
+//  3. else, pub == nil: no key available at all. The caller falls back to
+//     ordering-only and says so loudly — this function never fails just
+//     because no key is configured.
+func resolveVerifyKey() (pub ed25519.PublicKey, source string, err error) {
+	if hexKey := os.Getenv("AIREOS_AUDIT_CHAIN_PUBLIC_KEY"); hexKey != "" {
+		p, err := chain.PublicKeyFromHex(hexKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid AIREOS_AUDIT_CHAIN_PUBLIC_KEY: %w", err)
+		}
+		return p, "AIREOS_AUDIT_CHAIN_PUBLIC_KEY", nil
+	}
+	if hexKey := os.Getenv("AIREOS_AUDIT_CHAIN_SIGN_KEY"); hexKey != "" {
+		sk, err := chain.SecretKeyFromHex(hexKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid AIREOS_AUDIT_CHAIN_SIGN_KEY: %w", err)
+		}
+		p, ok := sk.Public().(ed25519.PublicKey)
+		if !ok {
+			return nil, "", errors.New("AIREOS_AUDIT_CHAIN_SIGN_KEY: private key has no ed25519 public half")
+		}
+		return p, "AIREOS_AUDIT_CHAIN_SIGN_KEY (public half derived)", nil
+	}
+	return nil, "", nil
 }
 
 // runCheckpoint forces ONE chain-head checkpoint attempt right now and exits
@@ -362,10 +448,11 @@ func exportAnchorReader(aw *anchor.Writer) export.AnchorReader {
 }
 
 // resyncAnchorAtStartup runs the ADR-0069 §1(c)/§4 startup re-sync: compare
-// the anchor file's last recorded position against the database's last
-// signed head, classify the three-way divergence (anchor.Classify), and
-// self-heal the two benign cases by appending the missing heads. Runs
-// exactly once, before sweeper.Run starts (serve(), above).
+// the anchor file's full recorded history against the database's full set
+// of signed heads, classify the divergence (anchor.Classify — the T-126a
+// Classification, head-count based, never a seq subtraction), and self-heal
+// the self-healable cases by appending the missing heads. Runs exactly
+// once, before sweeper.Run starts (serve(), above).
 //
 // Anchor errors here are FAIL-LOUD, NOT FAIL-CLOSED, same posture as the
 // sweep itself (D10): every branch logs and returns, never blocks serve()
@@ -380,19 +467,19 @@ func resyncAnchorAtStartup(ctx context.Context, st *store.Store, aw *anchor.Writ
 	rctx, cancel := context.WithTimeout(ctx, resyncTimeout)
 	defer cancel()
 
-	dbHead, dbOk, err := st.LastHead(rctx)
-	if err != nil {
-		log.Printf("audit-service: startup anchor re-sync: read last DB head: %v (continuing to start; anchoring resumes on the next checkpoint)", err)
-		return
-	}
-
-	last, anchorOk, err := aw.Last()
+	anchorRecords, err := aw.All()
 	if err != nil {
 		log.Printf("audit-service: startup anchor re-sync: read anchor file %s: %v (continuing to start)", aw.Path(), err)
 		return
 	}
 
-	if !anchorOk {
+	dbHeads, err := st.HeadsSince(rctx, 0)
+	if err != nil {
+		log.Printf("audit-service: startup anchor re-sync: read DB heads: %v (continuing to start; anchoring resumes on the next checkpoint)", err)
+		return
+	}
+
+	if len(anchorRecords) == 0 {
 		// Missing/empty anchor file (ADR-0069 §1(d)): recreate with an
 		// initialization marker documenting the gap. NEVER silently rebuild
 		// the missing history from the database — an attacker who deletes
@@ -400,8 +487,8 @@ func resyncAnchorAtStartup(ctx context.Context, st *store.Store, aw *anchor.Writ
 		// up with a "reconstructed" anchor that agrees with the tampered
 		// chain by construction.
 		seq := int64(0)
-		if dbOk {
-			seq = dbHead.Seq
+		if n := len(dbHeads); n > 0 {
+			seq = dbHeads[n-1].Seq
 		}
 		if err := aw.WriteInitMarker(seq, "anchor file absent at startup; ADR-0069 D4 forbids reconstructing prior history from Postgres"); err != nil {
 			log.Printf("audit-service: startup anchor re-sync: failed to write init marker: %v (continuing to start; the truncation detector remains degraded)", err)
@@ -411,49 +498,71 @@ func resyncAnchorAtStartup(ctx context.Context, st *store.Store, aw *anchor.Writ
 		return
 	}
 
-	if !dbOk {
-		// The anchor has recorded head(s) but the database has NONE at all —
-		// the anchor is unconditionally ahead, the truncation signature (or
-		// a legitimate restore from an older/empty backup, which produces
-		// the identical signature — see DivergenceTruncation's case below
-		// for why this service still starts rather than refusing to boot).
-		log.Printf("TRUNCATION SIGNATURE: audit-service: anchor %s holds head(s) up to seq %d but the database has NO chain heads at all — the anchor file is left untouched; a verifier (T-126) is the authority on tampering, not this service", aw.Path(), last.Seq)
-		return
+	dbHeadSeqs := make([]int64, len(dbHeads))
+	for i, h := range dbHeads {
+		dbHeadSeqs[i] = h.Seq
+	}
+	c := anchor.Classify(anchorRecords, dbHeadSeqs)
+
+	anchorLastSeq := anchorRecords[len(anchorRecords)-1].Seq
+	var dbLastSeq int64
+	if n := len(dbHeads); n > 0 {
+		dbLastSeq = dbHeads[n-1].Seq
 	}
 
-	switch anchor.Classify(last.Seq, dbHead.Seq) {
+	// The coverage gap is independent of Divergence and can co-occur with
+	// any outcome except DivergenceNone — reported unconditionally here,
+	// alongside whichever kind the switch below reports.
+	if len(c.UnwitnessedHeadSeqs) > 0 {
+		log.Printf("audit-service: COVERAGE GAP: anchor %s independently witnesses only seq >= %d — %d DB head(s) predate that (seqs %v) and were never independently witnessed (ADR-0069 D4(d)); this is expected right after the anchor was recreated, but should be investigated if unexpected",
+			aw.Path(), c.CoverageStartSeq, len(c.UnwitnessedHeadSeqs), c.UnwitnessedHeadSeqs)
+	}
+
+	switch c.Divergence {
 	case anchor.DivergenceNone:
-		log.Printf("audit-service: anchor in sync with the database at seq %d", last.Seq)
+		log.Printf("audit-service: anchor in sync with the database at seq %d", anchorLastSeq)
 	case anchor.DivergenceBenignCrash:
-		log.Printf("audit-service: anchor behind the database by 1 (anchor=%d db=%d) — benign crash window, self-healing", last.Seq, dbHead.Seq)
-		selfHealAnchor(rctx, st, aw, last.Seq)
+		log.Printf("audit-service: anchor behind the database by 1 head (anchor=%d db=%d) — benign crash window, self-healing", anchorLastSeq, dbLastSeq)
+		selfHealAnchor(aw, dbHeads, c.HeadsBehind)
 	case anchor.DivergenceWriterBroken:
-		log.Printf("OPERATIONAL ALARM: audit-service: anchor is behind the database by %d heads (anchor=%d db=%d) — the anchor WRITER appears broken (check disk space and permissions at %s); this is NOT a tamper finding; self-healing by appending the missing heads now",
-			dbHead.Seq-last.Seq, last.Seq, dbHead.Seq, aw.Path())
-		selfHealAnchor(rctx, st, aw, last.Seq)
+		if c.HeadsBehind > 0 {
+			log.Printf("OPERATIONAL ALARM: audit-service: anchor is behind the database by %d heads (anchor=%d db=%d) — the anchor WRITER appears broken (check disk space and permissions at %s); this is NOT a tamper finding; self-healing by appending the missing heads now",
+				c.HeadsBehind, anchorLastSeq, dbLastSeq, aw.Path())
+			selfHealAnchor(aw, dbHeads, c.HeadsBehind)
+		} else {
+			// Tips agree, but a coverage gap was reported above — see
+			// anchor.Classify's doc comment for why this reuses
+			// DivergenceWriterBroken with HeadsBehind == 0. Nothing to
+			// self-heal (no head is missing from the anchor).
+			log.Printf("OPERATIONAL ALARM: audit-service: anchor %s tip agrees with the database at seq %d, but the coverage gap logged above means part of this chain's history was never independently witnessed", aw.Path(), anchorLastSeq)
+		}
 	case anchor.DivergenceTruncation:
-		// The anchor is AHEAD of the database — the truncation signature.
-		// Never touch the anchor to "fix" this (the divergence itself is
-		// the evidence); never refuse to start (a legitimate restore from
-		// an older backup produces the identical signature, and bricking a
-		// stack on routine recovery makes nothing more verifiable — the
-		// verifier, not this service, is the authority on tampering).
-		log.Printf("TRUNCATION SIGNATURE: audit-service: anchor at seq %d is AHEAD of the database's last head at seq %d — this can mean the audit chain was truncated below the anchor, or a legitimate restore from an older backup; the anchor file is left untouched; continuing startup", last.Seq, dbHead.Seq)
+		// The anchor is AHEAD of the database — the truncation signature
+		// (or a legitimate restore from an older/empty backup, which
+		// produces the identical signature). Never touch the anchor to
+		// "fix" this (the divergence itself is the evidence); never refuse
+		// to start (bricking a stack on routine recovery makes nothing
+		// more verifiable — the verifier, not this service, is the
+		// authority on tampering).
+		log.Printf("TRUNCATION SIGNATURE: audit-service: anchor at seq %d is AHEAD of the database's last head at seq %d — this can mean the audit chain was truncated below the anchor, or a legitimate restore from an older backup; the anchor file is left untouched; continuing startup", anchorLastSeq, dbLastSeq)
 	}
 }
 
-// selfHealAnchor appends every DB head with seq > since to the anchor,
-// closing the DivergenceBenignCrash / DivergenceWriterBroken cases. Stops on
-// the first Append error (fail-loud, not a retry loop) and always logs how
-// many it appended.
-func selfHealAnchor(ctx context.Context, st *store.Store, aw *anchor.Writer, since int64) {
-	heads, err := st.HeadsSince(ctx, since)
-	if err != nil {
-		log.Printf("audit-service: startup anchor re-sync: read heads since seq %d: %v", since, err)
+// selfHealAnchor appends the last n entries of dbHeads (ascending by seq,
+// already fetched by the caller) to the anchor — those n entries are, by
+// construction of Classification.HeadsBehind, exactly the DB heads with seq
+// greater than the anchor's last recorded seq. Closes the
+// DivergenceBenignCrash / DivergenceWriterBroken (headsBehind > 0) cases.
+// Stops on the first Append error (fail-loud, not a retry loop) and always
+// logs how many it appended.
+func selfHealAnchor(aw *anchor.Writer, dbHeads []chain.Head, n int) {
+	if n <= 0 || n > len(dbHeads) {
+		log.Printf("audit-service: startup anchor re-sync: nothing to self-heal (n=%d, %d db head(s) known)", n, len(dbHeads))
 		return
 	}
+	missing := dbHeads[len(dbHeads)-n:]
 	appended := 0
-	for _, h := range heads {
+	for _, h := range missing {
 		if err := aw.Append(h); err != nil {
 			log.Printf("audit-service: startup anchor re-sync: append seq %d failed: %v (stopping self-heal; %d appended so far)", h.Seq, err, appended)
 			return

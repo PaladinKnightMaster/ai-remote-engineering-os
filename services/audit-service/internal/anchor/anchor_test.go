@@ -91,31 +91,147 @@ func TestAppendIdempotentSameSeq(t *testing.T) {
 	}
 }
 
-// ---- the three divergence classifications (c) ----
+// ---- the three divergence classifications (c), head-count based ----
+//
+// Cadence-realistic seqs throughout (100/213/340/455, D2's ~100-event
+// spacing) — never consecutive integers. The old version of this test used
+// {anchorSeq:100, dbSeq:101} to mean "behind by exactly 1 head", a state the
+// cadence design makes impossible in production (heads never land on
+// consecutive seqs): that is precisely how the shipped seq-subtraction bug
+// passed review. That case must not survive in any form here.
+
+func headRecord(seq int64) Record { return Record{Kind: KindHead, Seq: seq} }
 
 func TestClassifyThreeWayDivergence(t *testing.T) {
 	cases := []struct {
-		name      string
-		anchorSeq int64
-		dbSeq     int64
-		want      Divergence
+		name                string
+		anchorRecords       []Record
+		dbHeadSeqs          []int64
+		wantDivergence      Divergence
+		wantHeadsBehind     int
+		wantCoverageStart   int64
+		wantUnwitnessedSeqs []int64
 	}{
-		{"in sync", 100, 100, DivergenceNone},
-		{"zero-zero in sync", 0, 0, DivergenceNone},
-		{"behind by exactly 1 -> benign crash", 100, 101, DivergenceBenignCrash},
-		{"behind by many -> writer broken", 100, 150, DivergenceWriterBroken},
-		{"behind by 2 -> writer broken (not benign)", 100, 102, DivergenceWriterBroken},
-		{"ahead by 1 -> truncation", 101, 100, DivergenceTruncation},
-		{"ahead by many -> truncation", 150, 100, DivergenceTruncation},
+		{
+			name:           "in sync",
+			anchorRecords:  []Record{headRecord(455)},
+			dbHeadSeqs:     []int64{100, 213, 340, 455},
+			wantDivergence: DivergenceNone,
+		},
+		{
+			name:           "empty-empty in sync (fresh install, no heads yet)",
+			anchorRecords:  nil,
+			dbHeadSeqs:     nil,
+			wantDivergence: DivergenceNone,
+		},
+		{
+			name:            "one head past the anchor -> benign crash",
+			anchorRecords:   []Record{headRecord(100)},
+			dbHeadSeqs:      []int64{100, 213},
+			wantDivergence:  DivergenceBenignCrash,
+			wantHeadsBehind: 1,
+		},
+		{
+			name:            "two heads past the anchor -> writer broken (not benign)",
+			anchorRecords:   []Record{headRecord(100)},
+			dbHeadSeqs:      []int64{100, 213, 340},
+			wantDivergence:  DivergenceWriterBroken,
+			wantHeadsBehind: 2,
+		},
+		{
+			name:            "many heads past the anchor -> writer broken",
+			anchorRecords:   []Record{headRecord(100)},
+			dbHeadSeqs:      []int64{100, 213, 340, 455},
+			wantDivergence:  DivergenceWriterBroken,
+			wantHeadsBehind: 3,
+		},
+		{
+			name:           "anchor ahead of the database -> truncation",
+			anchorRecords:  []Record{headRecord(340)},
+			dbHeadSeqs:     []int64{100, 213},
+			wantDivergence: DivergenceTruncation,
+		},
+		{
+			name:           "anchor holds heads but the database has none at all -> truncation",
+			anchorRecords:  []Record{headRecord(100)},
+			dbHeadSeqs:     nil,
+			wantDivergence: DivergenceTruncation,
+		},
+		{
+			name:           "anchor has only a marker, no heads yet, database also empty",
+			anchorRecords:  []Record{{Kind: KindInit, Seq: 0, Note: "fresh install"}},
+			dbHeadSeqs:     nil,
+			wantDivergence: DivergenceNone,
+		},
+		{
+			name:              "no anchor records at all, database has heads -> writer broken",
+			anchorRecords:     nil,
+			dbHeadSeqs:        []int64{100, 213},
+			wantDivergence:    DivergenceWriterBroken,
+			wantHeadsBehind:   2,
+			wantCoverageStart: 0,
+		},
+		{
+			// The exact scenario Problem 2 describes: the anchor file was
+			// deleted and recreated at seq 300 with a marker; the DB has
+			// heads at 100/200/300/400; the anchor holds 300 and 400.
+			// Tips agree (400 == 400) but 100/200 predate the marker's
+			// coverage start — never independently witnessed. Must NOT
+			// report DivergenceNone.
+			name:                "coverage gap: tips agree but a marker hides unwitnessed heads",
+			anchorRecords:       []Record{{Kind: KindInit, Seq: 300, Note: "recreated"}, headRecord(300), headRecord(400)},
+			dbHeadSeqs:          []int64{100, 200, 300, 400},
+			wantDivergence:      DivergenceWriterBroken,
+			wantHeadsBehind:     0,
+			wantCoverageStart:   300,
+			wantUnwitnessedSeqs: []int64{100, 200},
+		},
+		{
+			// A coverage gap AND a benign-crash gap can co-occur — they are
+			// independent conditions (the doc comment's explicit claim).
+			// The anchor was recreated at seq 300 and has only recorded up
+			// through 300; the DB has since signed 400 too.
+			name:                "coverage gap co-occurring with a benign crash",
+			anchorRecords:       []Record{{Kind: KindInit, Seq: 300, Note: "recreated"}, headRecord(300)},
+			dbHeadSeqs:          []int64{100, 200, 300, 400},
+			wantDivergence:      DivergenceBenignCrash,
+			wantHeadsBehind:     1,
+			wantCoverageStart:   300,
+			wantUnwitnessedSeqs: []int64{100, 200},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Classify(tc.anchorSeq, tc.dbSeq)
-			if got != tc.want {
-				t.Fatalf("Classify(%d, %d) = %v, want %v", tc.anchorSeq, tc.dbSeq, got, tc.want)
+			got := Classify(tc.anchorRecords, tc.dbHeadSeqs)
+			if got.Divergence != tc.wantDivergence {
+				t.Fatalf("Divergence = %v, want %v", got.Divergence, tc.wantDivergence)
+			}
+			if got.HeadsBehind != tc.wantHeadsBehind {
+				t.Fatalf("HeadsBehind = %d, want %d", got.HeadsBehind, tc.wantHeadsBehind)
+			}
+			if got.CoverageStartSeq != tc.wantCoverageStart {
+				t.Fatalf("CoverageStartSeq = %d, want %d", got.CoverageStartSeq, tc.wantCoverageStart)
+			}
+			if !int64SlicesEqual(got.UnwitnessedHeadSeqs, tc.wantUnwitnessedSeqs) {
+				t.Fatalf("UnwitnessedHeadSeqs = %v, want %v", got.UnwitnessedHeadSeqs, tc.wantUnwitnessedSeqs)
+			}
+			if tc.name == "coverage gap: tips agree but a marker hides unwitnessed heads" && got.Divergence == DivergenceNone {
+				t.Fatal("a coverage gap must never be reported as DivergenceNone")
 			}
 		})
 	}
+}
+
+func int64SlicesEqual(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- missing-file initialization marker: written and parseable ----
