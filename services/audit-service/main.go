@@ -6,6 +6,7 @@
 //	audit-service migrate up|version|force <v>
 //	audit-service verify                # recompute + verify the chained-hash chain
 //	audit-service checkpoint            # force one signed chain head now and exit (D3)
+//	audit-service export                # stream the NDJSON evidence export to stdout (D3/D5/D6/D8)
 package main
 
 import (
@@ -31,6 +32,7 @@ import (
 	"aireos.local/services/audit-service/internal/audit"
 	"aireos.local/services/audit-service/internal/chain"
 	"aireos.local/services/audit-service/internal/checkpoint"
+	"aireos.local/services/audit-service/internal/export"
 	"aireos.local/services/audit-service/internal/server"
 	"aireos.local/services/audit-service/internal/store"
 )
@@ -71,8 +73,11 @@ func run(args []string) error {
 	if cmd == "checkpoint" {
 		return runCheckpoint(dsn)
 	}
+	if cmd == "export" {
+		return runExport(dsn)
+	}
 	if cmd != "serve" {
-		return fmt.Errorf("unknown command %q (want serve|migrate|verify|checkpoint)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate|verify|checkpoint|export)", cmd)
 	}
 	return serve(dsn)
 }
@@ -150,6 +155,33 @@ func runCheckpoint(dsn string) error {
 		fmt.Printf("checkpoint: signed chain head at seq %d\n", out.Seq)
 	default:
 		fmt.Println("checkpoint: nothing to do (no new events since the last head)")
+	}
+	return nil
+}
+
+// runExport streams the self-contained NDJSON evidence export to stdout
+// (ADR-0069 D3/D5/D6/D8, T-125c) so it pipes and redirects naturally
+// (`audit-service export > evidence.ndjson`). Follows runVerify's structure:
+// its own pgxpool, its own unbounded context, exits non-zero on error.
+// Deliberately never touches AIREOS_AUDIT_CHAIN_SIGN_KEY — export has no
+// signing key at all (D3) — and reads the anchor purely for its own section
+// (e), degrading gracefully to "no anchor available" when
+// AIREOS_AUDIT_ANCHOR_PATH is unset or the file is absent, per
+// internal/export's documented contract.
+func runExport(dsn string) error {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+
+	ex := &export.Exporter{
+		Store:  store.New(pool),
+		Anchor: exportAnchorReader(loadAnchorWriter()),
+	}
+	if err := ex.Export(ctx, os.Stdout); err != nil {
+		return fmt.Errorf("export: %w", err)
 	}
 	return nil
 }
@@ -312,6 +344,17 @@ func loadAnchorWriter() *anchor.Writer {
 // classic Go interface-nil trap) — checkpoint.Sweeper's `s.Anchor == nil`
 // check would then fail to catch it, panicking on the first Append call.
 func anchorInterface(aw *anchor.Writer) checkpoint.Anchor {
+	if aw == nil {
+		return nil
+	}
+	return aw
+}
+
+// exportAnchorReader converts a possibly-nil *anchor.Writer to the
+// export.AnchorReader interface, preserving a TRUE nil interface when aw is
+// nil (same Go interface-nil trap anchorInterface above guards against —
+// see its doc comment).
+func exportAnchorReader(aw *anchor.Writer) export.AnchorReader {
 	if aw == nil {
 		return nil
 	}
