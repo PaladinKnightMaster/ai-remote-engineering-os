@@ -21,6 +21,14 @@
 // service writes to (docker-compose.e2e.yml's x-cluster-env) — and reads
 // what that other, already-running process produced. This test process
 // itself never signs anything.
+//
+// T-125b extends it (ADR-0069 D4/AUD-37): after proving the DB-side head,
+// it also reads AIREOS_AUDIT_ANCHOR_PATH — the SAME named-volume file the
+// live `audit` service anchors to (docker-compose.e2e.yml's auditanchor
+// volume, mounted into both `audit` and `tester`) — and proves the anchor
+// holds the identical head: same seq, chainHash and signature. This is the
+// PRIMARY G1 proof that the anchor writer (internal/anchor) actually ran
+// inside the live process, not merely that its unit tests pass in isolation.
 package checkpoint
 
 import (
@@ -32,6 +40,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"aireos.local/services/audit-service/internal/anchor"
 	"aireos.local/services/audit-service/internal/audit"
 	"aireos.local/services/audit-service/internal/chain"
 	"aireos.local/services/audit-service/internal/store"
@@ -112,6 +121,65 @@ func TestLiveChainHeadSweepSignsRealHeads(t *testing.T) {
 		t.Fatalf("live chain failed independent recomputation at index %d (of %d events)", idx, len(events))
 	}
 	t.Logf("live chain head at seq %d verified (INTACT+ATTESTED prefix), %d total events recomputed clean", head.Seq, len(events))
+
+	// 4. ADR-0069 D4 (T-125b): the SAME head must also be present in the
+	// out-of-Postgres anchor file — proving the live audit-service process's
+	// anchor.Writer actually appended it (this is the AUD-37 live proof, not
+	// merely internal/anchor's own unit tests passing in isolation). The
+	// anchor write and the DB write are two independent pieces of I/O inside
+	// the SAME live checkOnce call (checkpoint.go's anchorIfSigned runs
+	// immediately after WithCheckpointLock returns), but this test process
+	// observes them through two different reads (Postgres vs. the shared
+	// auditanchor volume) with no synchronization between them, so it polls
+	// rather than assuming they land in the same instant.
+	anchorPath := os.Getenv("AIREOS_AUDIT_ANCHOR_PATH")
+	if anchorPath == "" {
+		t.Fatal("AIREOS_AUDIT_ANCHOR_PATH not set — docker-compose.e2e.yml must configure the tester with the same anchor path as the audit service (ADR-0069 D4)")
+	}
+	aw := anchor.New(anchorPath)
+
+	var anchorRec anchor.Record
+	found := false
+	anchorDeadline := time.Now().Add(30 * time.Second)
+	for {
+		records, aerr := aw.All()
+		if aerr != nil {
+			t.Fatalf("read anchor file %s: %v", anchorPath, aerr)
+		}
+		for _, r := range records {
+			if r.Kind == anchor.KindHead && r.Seq == head.Seq {
+				anchorRec = r
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(anchorDeadline) {
+			t.Fatalf("anchor file %s never recorded a head at seq %d within 30s — the live audit-service's anchor writer never ran, or disagreed", anchorPath, head.Seq)
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	if anchorRec.ChainHash != head.ChainHash || anchorRec.Timestamp != head.Timestamp ||
+		anchorRec.KeyID != head.KeyID || anchorRec.Signature != head.Signature {
+		t.Fatalf("anchor record at seq %d disagrees with the DB-signed head:\n  anchor:   %+v\n  database: seq=%d chainHash=%s timestamp=%s keyId=%s signature=%s",
+			head.Seq, anchorRec, head.Seq, head.ChainHash, head.Timestamp, head.KeyID, head.Signature)
+	}
+
+	// Not just byte-identical to the DB row — independently a VALID
+	// signature under the fixture public key, proving the anchor genuinely
+	// carries a verifiable head rather than an opaque copy.
+	anchorAsHead := chain.Head{
+		Seq: anchorRec.Seq, ChainHash: anchorRec.ChainHash,
+		Timestamp: anchorRec.Timestamp, KeyID: anchorRec.KeyID, Signature: anchorRec.Signature,
+	}
+	if err := chain.VerifyHead(pub, anchorAsHead); err != nil {
+		t.Fatalf("anchor's own recorded head at seq %d failed to verify: %v", head.Seq, err)
+	}
+
+	t.Logf("live chain head at seq %d verified in BOTH Postgres and the anchor file %s — seq/chainHash/timestamp/keyId/signature all agree", head.Seq, anchorPath)
 }
 
 func chainHashAtSeq(t *testing.T, pool *pgxpool.Pool, seq int64) string {

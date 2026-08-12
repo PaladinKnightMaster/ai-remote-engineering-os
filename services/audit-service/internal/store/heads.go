@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/services/audit-service/internal/chain"
 )
@@ -114,6 +115,48 @@ func (s *Store) LastHead(ctx context.Context) (chain.Head, bool, error) {
 // (T-124b; not called from this ticket's own code).
 func (s *Store) EventCountSince(ctx context.Context, since int64) (int64, error) {
 	return eventCountSince(ctx, s.pool, since)
+}
+
+// headsSince returns every chain head with seq > since, ascending. It reads
+// directly against pool (typed *pgxpool.Pool, not dbtx) because — unlike
+// insertHead/lastHead/eventCountSince/chainTip above — nothing calls this
+// from inside WithCheckpointLock's callback: the cadence sweep only ever
+// needs the single last head, never a range, so a Query method (which dbtx
+// deliberately does not expose) is fine to use here.
+func headsSince(ctx context.Context, pool *pgxpool.Pool, since int64) ([]chain.Head, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT seq, chain_hash, head_timestamp, key_id, signature
+		FROM audit_chain_heads
+		WHERE seq > $1
+		ORDER BY seq ASC`, since,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("heads since seq %d: %w", since, err)
+	}
+	defer rows.Close()
+
+	var out []chain.Head
+	for rows.Next() {
+		var h chain.Head
+		if err := rows.Scan(&h.Seq, &h.ChainHash, &h.Timestamp, &h.KeyID, &h.Signature); err != nil {
+			return nil, fmt.Errorf("scan chain head: %w", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("heads since seq %d: %w", since, err)
+	}
+	return out, nil
+}
+
+// HeadsSince returns every chain head with seq > since, in ascending seq
+// order — the ADR-0069 §4 startup re-sync's catch-up read (main.go). Once
+// the anchor's divergence from the database has been classified as
+// self-healable (anchor.DivergenceBenignCrash or
+// anchor.DivergenceWriterBroken), this is how the caller learns exactly
+// which heads to append to close the gap.
+func (s *Store) HeadsSince(ctx context.Context, since int64) ([]chain.Head, error) {
+	return headsSince(ctx, s.pool, since)
 }
 
 // CheckpointTx exposes InsertHead/LastHead/EventCountSince against an

@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	"aireos.local/services/audit-service/internal/chain"
 	"aireos.local/services/audit-service/internal/store"
 )
 
@@ -140,4 +142,110 @@ type panicLockStore struct{}
 
 func (panicLockStore) WithCheckpointLock(ctx context.Context, fn func(store.CheckpointTx) error) (bool, error) {
 	panic("WithCheckpointLock must never be called while Key is nil")
+}
+
+// ---- T-125b: anchorIfSigned (ADR-0069 D4) ----
+
+// fakeAnchor records every Append call and can be made to fail — the two
+// properties these tests need: WAS it called, and does failure propagate.
+type fakeAnchor struct {
+	mu    sync.Mutex
+	calls []chain.Head
+	err   error
+}
+
+func (f *fakeAnchor) Append(h chain.Head) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, h)
+	return f.err
+}
+
+func (f *fakeAnchor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// TestAnchorIfSignedAppendsOnSignedOutcome proves the happy path: a Signed
+// outcome's Head is passed through to the configured Anchor unchanged.
+func TestAnchorIfSignedAppendsOnSignedOutcome(t *testing.T) {
+	fa := &fakeAnchor{}
+	s := &Sweeper{Anchor: fa}
+	h := chain.Head{Seq: 42, ChainHash: "abc"}
+
+	s.anchorIfSigned(Outcome{Signed: true, Seq: 42, Head: h})
+
+	if fa.callCount() != 1 {
+		t.Fatalf("expected exactly 1 Append call, got %d", fa.callCount())
+	}
+	if fa.calls[0] != h {
+		t.Fatalf("expected Append to receive %+v, got %+v", h, fa.calls[0])
+	}
+}
+
+// TestAnchorIfSignedSkipsWhenNotSigned proves a LockHeld (or otherwise
+// unsigned) outcome never reaches the anchor — anchoring only ever follows a
+// REAL commit, never a skipped or no-op checkpoint attempt.
+func TestAnchorIfSignedSkipsWhenNotSigned(t *testing.T) {
+	fa := &fakeAnchor{}
+	s := &Sweeper{Anchor: fa}
+
+	s.anchorIfSigned(Outcome{Signed: false, LockHeld: true})
+
+	if fa.callCount() != 0 {
+		t.Fatalf("expected Append to never be called for an unsigned outcome, got %d calls", fa.callCount())
+	}
+}
+
+// TestAnchorIfSignedNoAnchorConfiguredNeverPanics proves a nil Anchor
+// (AIREOS_AUDIT_ANCHOR_PATH unset) is a plain no-op, never a nil-pointer
+// panic — anchoring must be optional, not load-bearing for signing itself.
+func TestAnchorIfSignedNoAnchorConfiguredNeverPanics(t *testing.T) {
+	s := &Sweeper{Anchor: nil}
+	s.anchorIfSigned(Outcome{Signed: true, Seq: 1, Head: chain.Head{Seq: 1}})
+}
+
+// TestAnchorIfSignedFailureDoesNotPropagate is the ADR-0069 D10 fail-loud
+// NOT fail-closed proof: an Append error is swallowed (logged, not
+// returned/panicked) — a broken anchor must never take down chain-head
+// signing.
+func TestAnchorIfSignedFailureDoesNotPropagate(t *testing.T) {
+	fa := &fakeAnchor{err: errors.New("disk full")}
+	s := &Sweeper{Anchor: fa}
+
+	// anchorIfSigned returns nothing; simply completing without panicking is
+	// the assertion. The attempt must still have been MADE, though — a
+	// failure must be visible (via the log line), not silently skipped.
+	s.anchorIfSigned(Outcome{Signed: true, Seq: 7, Head: chain.Head{Seq: 7}})
+
+	if fa.callCount() != 1 {
+		t.Fatalf("expected Append to have been attempted exactly once despite the eventual failure, got %d calls", fa.callCount())
+	}
+}
+
+// TestCheckOnceLockHeldNeverAnchors extends the existing
+// TestCheckOnceLockHeldIsSilentSkip case: when the checkpoint lock is held
+// by another writer, checkOnce's real call path must also never reach the
+// anchor — proven end-to-end through checkOnce itself, not just through
+// anchorIfSigned in isolation.
+func TestCheckOnceLockHeldNeverAnchors(t *testing.T) {
+	fake := &fakeLockStore{}
+	fa := &fakeAnchor{}
+	_, sk, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	s := &Sweeper{Store: fake, Key: sk, Anchor: fa, Events: DefaultEvents, Interval: DefaultInterval}
+
+	out, err := s.checkOnce(context.Background(), false)
+	if err != nil {
+		t.Fatalf("expected acquired=false to be a silent skip, got error: %v", err)
+	}
+	if !out.LockHeld {
+		t.Fatalf("expected Outcome.LockHeld=true, got %+v", out)
+	}
+	if fa.callCount() != 0 {
+		t.Fatalf("expected the anchor to never be called when the checkpoint lock was held elsewhere, got %d calls", fa.callCount())
+	}
 }

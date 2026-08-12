@@ -950,6 +950,85 @@ func TestWithCheckpointLockSingleWriter(t *testing.T) {
 	<-doneFirst
 }
 
+// ---- T-125b: HeadsSince (ADR-0069 §4 startup re-sync's catch-up read) ----
+
+// TestHeadsSinceAscendingAfterSeq proves HeadsSince returns exactly the
+// heads with seq > since, in ascending order — signing two real,
+// independently-recomputed live chain heads and checking both the exact
+// zero-result boundary (since == the newest head's own seq) and the
+// one-result case (since == the older head's seq).
+func TestHeadsSinceAscendingAfterSeq(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	marker := uniqueMarker(t)
+	_, sk, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+		t.Fatalf("seed 1: %v", err)
+	}
+	seqA, hashA := walkChainFromGenesis(t, s)
+	headA, err := chain.SignHead(sk, seqA, hashA, ts)
+	if err != nil {
+		t.Fatalf("sign head A: %v", err)
+	}
+	if err := s.InsertHead(ctx, headA); err != nil {
+		t.Fatalf("insert head A: %v", err)
+	}
+
+	// Nothing new since head A's own seq.
+	before, err := s.HeadsSince(ctx, seqA)
+	if err != nil {
+		t.Fatalf("heads since seqA (before B exists): %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("expected zero heads since seqA=%d itself, got %d: %+v", seqA, len(before), before)
+	}
+
+	if _, _, err := s.Append(ctx, ingestWith(marker, "service-service", "run.completed")); err != nil {
+		t.Fatalf("seed 2: %v", err)
+	}
+	seqB, hashB := walkChainFromGenesis(t, s)
+	headB, err := chain.SignHead(sk, seqB, hashB, ts)
+	if err != nil {
+		t.Fatalf("sign head B: %v", err)
+	}
+	if err := s.InsertHead(ctx, headB); err != nil {
+		t.Fatalf("insert head B: %v", err)
+	}
+
+	got, err := s.HeadsSince(ctx, seqA)
+	if err != nil {
+		t.Fatalf("heads since seqA: %v", err)
+	}
+	if len(got) != 1 || got[0].Seq != seqB || got[0].ChainHash != hashB {
+		t.Fatalf("expected exactly head B (seq=%d hash=%s) since seqA=%d, got %+v", seqB, hashB, seqA, got)
+	}
+
+	// Ascending order holds over a wider window too (shared table across
+	// this run's other tests — assert relative order, not an exact count,
+	// per the T-073 dirty-DB lesson).
+	all, err := s.HeadsSince(ctx, -1)
+	if err != nil {
+		t.Fatalf("heads since -1: %v", err)
+	}
+	foundA, foundB := -1, -1
+	for i, h := range all {
+		if h.Seq == seqA {
+			foundA = i
+		}
+		if h.Seq == seqB {
+			foundB = i
+		}
+	}
+	if foundA == -1 || foundB == -1 || foundA >= foundB {
+		t.Fatalf("expected head A before head B in ascending HeadsSince(-1) order, got foundA=%d foundB=%d (n=%d)", foundA, foundB, len(all))
+	}
+}
+
 // TestCheckpointTxAtomicReadWriteAndIsolation is the FINDING 1 fix's live
 // proof (Commander review of 93f3e39). It shows the read-then-write a
 // checkpoint needs actually happens on ONE locked connection — ck.LastHead

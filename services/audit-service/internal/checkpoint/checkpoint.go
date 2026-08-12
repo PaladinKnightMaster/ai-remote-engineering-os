@@ -10,6 +10,11 @@
 // chainLockKey or the Append path. The sweep runs on its own goroutine, on
 // its own advisory lock (checkpointLockKey), and a losing sweep tick
 // (acquired=false) skips its turn silently rather than retrying or blocking.
+//
+// T-125b adds one more step after a successful checkpoint: anchoring the
+// signed head outside Postgres (ADR-0069 D4, internal/anchor). That call
+// happens strictly after WithCheckpointLock has returned — see
+// anchorIfSigned's doc comment for why the ordering is fixed, not stylistic.
 package checkpoint
 
 import (
@@ -65,10 +70,23 @@ type Outcome struct {
 	Signed bool
 	// Seq is the chain position signed, valid only when Signed.
 	Seq int64
+	// Head is the full signed head, valid only when Signed — carried so the
+	// caller (checkOnce, below) can anchor it outside Postgres (ADR-0069 D4)
+	// AFTER the transaction that inserted it has committed.
+	Head chain.Head
 	// LockHeld is true when another writer held checkpointLockKey — this
 	// attempt did nothing and must be treated as a silent skip, never an
 	// error (ADR-0069 D10: single-writer, losing side never retries).
 	LockHeld bool
+}
+
+// Anchor is the ADR-0069 D4 out-of-Postgres truncation-detector dependency
+// (internal/anchor.Writer satisfies this). Narrowed to just Append so this
+// package depends on nothing beyond what its one call site needs. A nil
+// Anchor means AIREOS_AUDIT_ANCHOR_PATH was not configured — anchoring is
+// then disabled entirely (anchorIfSigned no-ops rather than nil-panicking).
+type Anchor interface {
+	Append(h chain.Head) error
 }
 
 // Sweeper holds everything one audit-service instance needs to run the
@@ -78,6 +96,7 @@ type Outcome struct {
 type Sweeper struct {
 	Store    lockStore
 	Key      ed25519.PrivateKey
+	Anchor   Anchor // optional; nil disables anchoring (ADR-0069 D4)
 	Events   int64
 	Interval time.Duration
 }
@@ -187,7 +206,7 @@ func (s *Sweeper) checkOnce(ctx context.Context, force bool) (Outcome, error) {
 		if ierr := tx.InsertHead(ctx, h); ierr != nil {
 			return fmt.Errorf("insert head at seq %d: %w", tipSeq, ierr)
 		}
-		out = Outcome{Signed: true, Seq: tipSeq}
+		out = Outcome{Signed: true, Seq: tipSeq, Head: h}
 		return nil
 	})
 	if err != nil {
@@ -196,7 +215,48 @@ func (s *Sweeper) checkOnce(ctx context.Context, force bool) (Outcome, error) {
 	if !acquired {
 		return Outcome{LockHeld: true}, nil
 	}
+
+	// ADR-0069 §1(a): anchoring happens HERE — strictly after
+	// WithCheckpointLock has returned, i.e. after the transaction that
+	// inserted the head has already committed AND the checkpoint advisory
+	// lock has been released. Two reasons this order is fixed, not a style
+	// choice: (i) anchoring before commit would mean a crash between the two
+	// writes leaves the anchor holding a head the DB never committed — the
+	// TRUNCATION signature — making ordinary restarts look like attacks;
+	// (ii) file I/O from inside the callback above would hold
+	// checkpointLockKey across a disk write, undoing the very separation
+	// T-124a introduced that lock key for (PERF-14: checkpointing must never
+	// neighbor ingest).
+	s.anchorIfSigned(out)
 	return out, nil
+}
+
+// anchorIfSigned appends out.Head to the configured Anchor, if any, and only
+// when out.Signed — a no-op for LockHeld or nothing-new-to-sign outcomes,
+// and a no-op when no anchor is configured (AIREOS_AUDIT_ANCHOR_PATH unset).
+//
+// Anchor failure is FAIL-LOUD, NOT FAIL-CLOSED (ADR-0069 D10): logged
+// prominently, never returned as an error and never panics. A broken anchor
+// degrades the truncation detector; it must never take down chain-head
+// signing or serving. Repeated failure naturally surfaces as the "anchor
+// behind by many" operational alarm at the next startup re-sync (main.go).
+//
+// Split out as its own function specifically so it is unit-testable
+// (checkpoint_test.go) with a synthetic Outcome and a fake Anchor — the
+// lock-then-anchor SEQUENCING proven above can only be exercised against a
+// real Postgres transaction, because store.WithCheckpointLock's callback
+// signature takes the concrete, unexported-field store.CheckpointTx (T-124a)
+// which cannot be constructed outside the store package. That live ordering
+// proof is checkpoint_e2e_test.go's G1 extension (T-125b); this function is
+// what that boundary calls into, and what THIS package's plain unit tests
+// can exercise directly without a database.
+func (s *Sweeper) anchorIfSigned(out Outcome) {
+	if !out.Signed || s.Anchor == nil {
+		return
+	}
+	if err := s.Anchor.Append(out.Head); err != nil {
+		log.Printf("audit checkpoint: anchor append FAILED for seq %d (truncation detector degraded, chain-head signing unaffected): %v", out.Seq, err)
+	}
 }
 
 func (s *Sweeper) eventsThreshold() int64 {

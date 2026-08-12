@@ -116,6 +116,15 @@ services:
       # e2e run instead of waiting for the 100-event/60s production defaults.
       AIREOS_AUDIT_CHECKPOINT_EVENTS: "20"
       AIREOS_AUDIT_CHECKPOINT_INTERVAL: "5s"
+      # ADR-0069 D4 (T-125b): the out-of-Postgres anchor. On the named volume
+      # below, deliberately OUTSIDE /work (the bind-mounted repo) — an anchor
+      # file under /work would land in the git working tree and dirty it.
+      AIREOS_AUDIT_ANCHOR_PATH: /var/lib/aireos/audit/chain-heads.ndjson
+    volumes:
+      - ../../:/work
+      - gomodcache:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+      - auditanchor:/var/lib/aireos/audit
     command: ["bash", "-c", "go run ./services/audit-service serve"]
 
   api:
@@ -308,11 +317,17 @@ services:
       # the tester derives the public half from this secret to call chain.VerifyHead
       # against heads the live audit-service actually signed.
       AIREOS_AUDIT_CHAIN_SIGN_KEY: 206f72f4093b3551d7819e7f0c212bda0e2c109983a2f315532e70d1e945ad80b4909c655f888fc007e84e775f75fedcdb234b3d8fb11d1e9b40620902571413
+      # ADR-0069 D4 (T-125b): same path as the audit service's
+      # AIREOS_AUDIT_ANCHOR_PATH, on the SAME named volume (below) — the G1
+      # extension reads this file directly to prove the live audit-service's
+      # anchor writes agree with its DB-signed heads.
+      AIREOS_AUDIT_ANCHOR_PATH: /var/lib/aireos/audit/chain-heads.ndjson
     volumes:
       - ../../:/work
       - gomodcache:/go/pkg/mod
       - gocache:/root/.cache/go-build
       - casts:/var/lib/aireos/sessions
+      - auditanchor:/var/lib/aireos/audit
     # After the e2e tests pass: run the T-124b G1 live chain-head-sweep proof (it lives
     # under services/audit-service, not tests/e2e — that is a SEPARATE Go module and
     # Go's internal-package rule forbids it from importing internal/chain at all; see
@@ -327,3 +342,8 @@ volumes:
   gocache:
   casts:
   sshd-keys:
+  # ADR-0069 D4 (T-125b): the out-of-Postgres anchor file. A named volume,
+  # deliberately NOT under the ../../:/work bind mount — an anchor file
+  # written into the repo's working tree would dirty `git status` on every
+  # e2e run. Shared read/write by audit and tester (the G1 assertion).
+  auditanchor:
