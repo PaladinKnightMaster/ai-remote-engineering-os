@@ -49,6 +49,27 @@
 // PERF-15's own size bound on the anchor file), so loading either fully is
 // deliberate and safe, unlike the potentially-unbounded event chain.
 //
+// Both passes are ALSO bounded to a single seq captured exactly ONCE, before
+// pass 1 makes its first read (Export calls Store.ChainHead exactly once, up
+// front). Without this, on a live system — audit-service ingests
+// continuously; every governed action chains an event in-transaction — the
+// two passes share no snapshot or transaction, so any event appended between
+// the end of pass 1 and the end of pass 2 would be streamed but never
+// counted: the manifest would then claim a smaller eventCount than the file
+// actually contains. That is not a cosmetic off-by-k. A verifier that
+// cross-checks the manifest against the body cannot distinguish "the count
+// is stale because ingest kept moving" from tampering — both look
+// identical, and a manifest that disagrees with its own body is the single
+// worst false-tamper-finding this artifact could produce, on exactly the
+// axis T-125b's three-way anchor-divergence classification was designed to
+// keep honest elsewhere. `ListQuery` deliberately gains NO upper-bound field
+// for this (shared store code five services depend on); the ceiling is
+// enforced locally, inside countEvents/streamEvents, by comparing each
+// event's Seq against the captured value. ManifestRecord.ExportedThroughSeq
+// publishes that ceiling, so a reader always knows exactly where the
+// snapshot ends rather than assuming it captured "everything" — which, on a
+// live system, was never a coherent claim to begin with.
+//
 // # (c) D3 — the export never signs
 //
 // Exporter holds no signing key, calls no Sweeper, and forces no checkpoint.
@@ -159,12 +180,28 @@ type ManifestRecord struct {
 	// different keyId than this field; each head record carries its own
 	// keyId, this field is only a quick-glance summary of the newest one.
 	ChainHeadKeyID string `json:"chainHeadKeyId,omitempty"`
-	// EventCount is the exact number of "event" lines that follow.
+	// ExportedThroughSeq is the audit_events seq this export is a SNAPSHOT
+	// AS OF — read once via a single Store.ChainHead call before either
+	// event pass starts (see the package doc comment (b)). Both
+	// countEvents and streamEvents stop at this seq, so EventCount is
+	// always exact relative to it even while audit-service keeps ingesting
+	// concurrently. This is a DIFFERENT boundary than AttestedThroughSeq
+	// below: ExportedThroughSeq says where the SNAPSHOT ends;
+	// AttestedThroughSeq says how far SIGNATURES cover. On a live system
+	// ExportedThroughSeq is normally >= AttestedThroughSeq (more events
+	// have been appended than have been checkpointed yet) — the gap
+	// between the two is exactly UnattestedEventCount's window.
+	ExportedThroughSeq int64 `json:"exportedThroughSeq"`
+	// EventCount is the exact number of "event" lines that follow — every
+	// event with seq <= ExportedThroughSeq. An event appended AFTER
+	// ExportedThroughSeq was captured is never included, by design: this
+	// field describes a snapshot, not "everything that will ever exist".
 	EventCount int64 `json:"eventCount"`
 	// HeadCount is the exact number of "head" lines that follow.
 	HeadCount int64 `json:"headCount"`
 	// AttestedThroughSeq is the highest event seq covered by a signed head
-	// (D6) — 0 when no head exists yet.
+	// (D6) — 0 when no head exists yet. See ExportedThroughSeq's doc
+	// comment for how the two boundaries differ.
 	AttestedThroughSeq int64 `json:"attestedThroughSeq"`
 	// UnattestedEventCount is how many exported events have seq greater
 	// than AttestedThroughSeq (D6) — never hidden, never dropped from the
@@ -228,13 +265,19 @@ type AnchorRecord struct {
 	Note       string `json:"note,omitempty"`
 }
 
-// Store is the read surface Export needs — exactly store.Store's List and
-// HeadsSince method signatures, narrowed to an interface so tests can inject
-// a fake that records every query it receives (D8) without a live Postgres.
-// *store.Store satisfies this with no adapter needed.
+// Store is the read surface Export needs — exactly store.Store's List,
+// HeadsSince, and ChainHead method signatures, narrowed to an interface so
+// tests can inject a fake that records every query it receives (D8), or
+// simulates concurrent ingest mid-export, without a live Postgres.
+// *store.Store satisfies this with no adapter needed. ChainHead is what
+// Export reads ONCE, up front, to capture ExportedThroughSeq (see its doc
+// comment and package doc (b)) — it is the same MAX(seq) position read
+// store.Store.ChainHead already exposed for other callers, not a new query
+// shape.
 type Store interface {
 	List(ctx context.Context, q store.ListQuery) ([]audit.Event, int64, error)
 	HeadsSince(ctx context.Context, since int64) ([]chain.Head, error)
+	ChainHead(ctx context.Context) (int64, error)
 }
 
 // AnchorReader is the read surface Export needs from the out-of-Postgres
@@ -295,8 +338,18 @@ func (ex *Exporter) Export(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("export: %w", err)
 	}
 
+	// Capture the snapshot boundary EXACTLY ONCE, before either event pass
+	// makes its first read (package doc (b) / ExportedThroughSeq's doc
+	// comment) — both countEvents and streamEvents stop at this seq, so the
+	// manifest's counts stay exact even while audit-service keeps ingesting
+	// concurrently.
+	exportedThroughSeq, err := ex.Store.ChainHead(ctx)
+	if err != nil {
+		return fmt.Errorf("export: read chain tip: %w", err)
+	}
+
 	page := ex.pageSize()
-	eventCount, unattestedCount, err := ex.countEvents(ctx, page, attestedThroughSeq)
+	eventCount, unattestedCount, err := ex.countEvents(ctx, page, attestedThroughSeq, exportedThroughSeq)
 	if err != nil {
 		return fmt.Errorf("export: count events: %w", err)
 	}
@@ -306,6 +359,7 @@ func (ex *Exporter) Export(ctx context.Context, w io.Writer) error {
 		FormatVersion:           FormatVersion,
 		ExportedAt:              ex.now().UTC().Format(time.RFC3339Nano),
 		ChainHeadKeyID:          keyID,
+		ExportedThroughSeq:      exportedThroughSeq,
 		EventCount:              eventCount,
 		HeadCount:               int64(len(heads)),
 		AttestedThroughSeq:      attestedThroughSeq,
@@ -318,7 +372,7 @@ func (ex *Exporter) Export(ctx context.Context, w io.Writer) error {
 		return fmt.Errorf("export: write manifest: %w", err)
 	}
 
-	if err := ex.streamEvents(ctx, w, page); err != nil {
+	if err := ex.streamEvents(ctx, w, page, exportedThroughSeq); err != nil {
 		return fmt.Errorf("export: stream events: %w", err)
 	}
 
@@ -358,10 +412,14 @@ func (ex *Exporter) readAnchor() (records []anchor.Record, available bool, reaso
 }
 
 // countEvents makes the FIRST of Export's two bounded passes (b): it walks
-// the whole chain with the exact D8 query shape, tallying totals and never
+// the chain with the exact D8 query shape, tallying totals and never
 // retaining more than one page of events at a time, so the manifest (which
 // must be line 1) can report exact counts before any event line is written.
-func (ex *Exporter) countEvents(ctx context.Context, page int, attestedThroughSeq int64) (total, unattested int64, err error) {
+// It STOPS at maxSeq (ExportedThroughSeq, captured once by Export before
+// either pass starts) — an event with Seq > maxSeq is never counted, even if
+// the store returns it (i.e. even if it was appended concurrently, after
+// the snapshot boundary was captured).
+func (ex *Exporter) countEvents(ctx context.Context, page int, attestedThroughSeq, maxSeq int64) (total, unattested int64, err error) {
 	var cursor int64
 	for {
 		batch, last, lerr := ex.Store.List(ctx, store.ListQuery{
@@ -373,12 +431,15 @@ func (ex *Exporter) countEvents(ctx context.Context, page int, attestedThroughSe
 			return 0, 0, lerr
 		}
 		for _, e := range batch {
+			if e.Seq > maxSeq {
+				return total, unattested, nil
+			}
 			total++
 			if e.Seq > attestedThroughSeq {
 				unattested++
 			}
 		}
-		if len(batch) < page {
+		if len(batch) < page || last >= maxSeq {
 			return total, unattested, nil
 		}
 		cursor = last
@@ -389,8 +450,11 @@ func (ex *Exporter) countEvents(ctx context.Context, page int, attestedThroughSe
 // exact same D8 query shape as countEvents, but this time writing each
 // event line as its page is read, and discarding the page immediately after
 // — never accumulating the chain into a slice (unlike main.go's `verify`
-// subcommand, deliberately not copied here).
-func (ex *Exporter) streamEvents(ctx context.Context, w io.Writer, page int) error {
+// subcommand, deliberately not copied here). It STOPS at the SAME maxSeq
+// countEvents used — this is what keeps EventCount exact: without this
+// bound, an event appended between the end of the count pass and the end of
+// this stream pass would be written here but never tallied there.
+func (ex *Exporter) streamEvents(ctx context.Context, w io.Writer, page int, maxSeq int64) error {
 	var cursor int64
 	for {
 		batch, last, err := ex.Store.List(ctx, store.ListQuery{
@@ -402,11 +466,14 @@ func (ex *Exporter) streamEvents(ctx context.Context, w io.Writer, page int) err
 			return err
 		}
 		for _, e := range batch {
+			if e.Seq > maxSeq {
+				return nil
+			}
 			if err := writeLine(w, newEventRecord(e)); err != nil {
 				return err
 			}
 		}
-		if len(batch) < page {
+		if len(batch) < page || last >= maxSeq {
 			return nil
 		}
 		cursor = last

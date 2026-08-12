@@ -62,6 +62,22 @@ func (f *fakeStore) HeadsSince(_ context.Context, since int64) ([]chain.Head, er
 	return out, nil
 }
 
+// ChainHead mirrors store.Store.ChainHead: MAX(seq) over the fake's current
+// events, 0 when empty. Reads f.events at CALL TIME — tests that mutate
+// f.events between the Export-internal ChainHead call and later List calls
+// (see injectingFakeStore below) rely on this being read once, up front.
+func (f *fakeStore) ChainHead(_ context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var max int64
+	for _, e := range f.events {
+		if e.Seq > max {
+			max = e.Seq
+		}
+	}
+	return max, nil
+}
+
 func (f *fakeStore) queriesSnapshot() []store.ListQuery {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -413,6 +429,146 @@ func TestNoHeadsMeansEverythingUnattested(t *testing.T) {
 	if m.ChainHeadKeyID != "" {
 		t.Fatalf("chainHeadKeyId = %q, want empty when no head exists", m.ChainHeadKeyID)
 	}
+	if m.ExportedThroughSeq != 4 {
+		t.Fatalf("exportedThroughSeq = %d, want 4", m.ExportedThroughSeq)
+	}
+}
+
+// injectingFakeStore simulates the exact production hazard the Commander's
+// review caught: audit-service ingests continuously, so events can be
+// appended to the real table WHILE Export's two passes are running,
+// strictly after the snapshot boundary (ExportedThroughSeq) was already
+// captured via ChainHead. This fake starts with an initial event set and,
+// on a configured List call number, appends "extra" events to its
+// underlying slice — mimicking concurrent ingest — before answering that
+// call. ChainHead is read by Export exactly once, before any List call, so
+// it always reports the PRE-injection tip regardless of when injection
+// later happens.
+type injectingFakeStore struct {
+	mu       sync.Mutex
+	events   []audit.Event
+	heads    []chain.Head
+	extra    []audit.Event
+	injectAt int // List call number (1-based) at which extra is appended
+	injected bool
+	calls    int
+}
+
+func (f *injectingFakeStore) ChainHead(_ context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var max int64
+	for _, e := range f.events {
+		if e.Seq > max {
+			max = e.Seq
+		}
+	}
+	return max, nil
+}
+
+func (f *injectingFakeStore) HeadsSince(_ context.Context, since int64) ([]chain.Head, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []chain.Head
+	for _, h := range f.heads {
+		if h.Seq > since {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
+func (f *injectingFakeStore) List(_ context.Context, q store.ListQuery) ([]audit.Event, int64, error) {
+	f.mu.Lock()
+	f.calls++
+	if f.calls == f.injectAt && !f.injected {
+		f.injected = true
+		f.events = append(f.events, f.extra...) // simulate concurrent ingest
+	}
+	snapshot := make([]audit.Event, len(f.events))
+	copy(snapshot, f.events)
+	f.mu.Unlock()
+
+	var out []audit.Event
+	for _, e := range snapshot {
+		if e.Seq > q.Cursor {
+			out = append(out, e)
+			if len(out) == q.Limit {
+				break
+			}
+		}
+	}
+	var last int64
+	if len(out) > 0 {
+		last = out[len(out)-1].Seq
+	}
+	return out, last, nil
+}
+
+// TestExportedThroughSeqBoundsBothPassesUnderConcurrentIngest is the
+// regression test for the Commander's review finding on a11cc2a: without a
+// snapshot boundary captured once up front, events appended between the
+// count pass and the stream pass would be streamed but never counted, so
+// manifest.eventCount would understate the file's actual "event" line
+// count — a manifest that disagrees with its own body is indistinguishable
+// from tampering to a verifier. A test against a STATIC fake store cannot
+// catch this class of bug (there is nothing to inject); this fake
+// specifically mutates mid-export.
+func TestExportedThroughSeqBoundsBothPassesUnderConcurrentIngest(t *testing.T) {
+	const page = 3
+	initial := makeEvents(1, 8) // seq 1..8 — 3 pages of 3,3,2 per pass
+	extra := makeEvents(9, 4)   // seq 9..12 — "arrives" mid-export
+	passACalls := pageCount(len(initial), page)
+
+	fs := &injectingFakeStore{
+		events: append([]audit.Event{}, initial...),
+		extra:  extra,
+		// Inject exactly at the first call of the STREAM pass — the precise
+		// "arrived between pass 1 and pass 2" scenario the review named.
+		// (Injecting mid pass-1 is equally covered: ChainHead is read
+		// before List is ever called, so the boundary is fixed regardless
+		// of when injection happens relative to either pass.)
+		injectAt: passACalls + 1,
+	}
+
+	ex := &Exporter{Store: fs, PageSize: page}
+	var buf bytes.Buffer
+	if err := ex.Export(context.Background(), &buf); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	m := decodeManifest(t, buf.Bytes())
+	if m.ExportedThroughSeq != 8 {
+		t.Fatalf("exportedThroughSeq = %d, want 8 (the tip BEFORE the mid-export inject)", m.ExportedThroughSeq)
+	}
+	if m.EventCount != 8 {
+		t.Fatalf("eventCount = %d, want 8 — events injected after the snapshot was captured must not be counted", m.EventCount)
+	}
+
+	var eventLines int
+	var maxSeenSeq int64
+	for _, l := range readLines(t, buf.Bytes())[1:] {
+		var probe struct {
+			Kind string `json:"kind"`
+			Seq  int64  `json:"seq"`
+		}
+		if err := json.Unmarshal(l, &probe); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if probe.Kind != KindEvent {
+			continue
+		}
+		eventLines++
+		if probe.Seq > maxSeenSeq {
+			maxSeenSeq = probe.Seq
+		}
+	}
+	if int64(eventLines) != m.EventCount {
+		t.Fatalf("manifest says eventCount=%d but the file actually contains %d \"event\" lines — a manifest that disagrees with its own body is indistinguishable from tampering", m.EventCount, eventLines)
+	}
+	if maxSeenSeq > m.ExportedThroughSeq {
+		t.Fatalf("an event with seq %d beyond exportedThroughSeq (%d) was streamed — the snapshot boundary was not honored", maxSeenSeq, m.ExportedThroughSeq)
+	}
 }
 
 // TestMissingAnchorDegradesGracefully covers both "not configured" (nil
@@ -516,6 +672,7 @@ func TestManifestGoldenVector(t *testing.T) {
 		FormatVersion:        1,
 		ExportedAt:           "2026-08-12T00:00:00.000000000Z",
 		ChainHeadKeyID:       "0123456789abcdef",
+		ExportedThroughSeq:   3,
 		EventCount:           3,
 		HeadCount:            1,
 		AttestedThroughSeq:   3,
@@ -527,7 +684,7 @@ func TestManifestGoldenVector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	const want = `{"kind":"manifest","formatVersion":1,"exportedAt":"2026-08-12T00:00:00.000000000Z","chainHeadKeyId":"0123456789abcdef","eventCount":3,"headCount":1,"attestedThroughSeq":3,"unattestedEventCount":0,"anchorAvailable":true,"anchorRecordCount":2}`
+	const want = `{"kind":"manifest","formatVersion":1,"exportedAt":"2026-08-12T00:00:00.000000000Z","chainHeadKeyId":"0123456789abcdef","exportedThroughSeq":3,"eventCount":3,"headCount":1,"attestedThroughSeq":3,"unattestedEventCount":0,"anchorAvailable":true,"anchorRecordCount":2}`
 	if string(b) != want {
 		t.Fatalf("manifest wire shape changed — the fix is to bump FormatVersion and teach the verifier both, never to update this expected value:\ngot:  %s\nwant: %s", b, want)
 	}
