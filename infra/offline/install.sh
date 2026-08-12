@@ -311,8 +311,21 @@ if [ -f "$ENV_FILE" ]; then
 fi
 AUDIT_SK="${AIREOS_AUDIT_CHAIN_SIGN_KEY:-}"
 AUDIT_PK="${AIREOS_AUDIT_CHAIN_PUBLIC_KEY:-}"
-if [ -z "$AUDIT_SK" ] || [ -z "$AUDIT_PK" ]; then
+if [ -z "$AUDIT_SK" ]; then
+  # No secret on disk at all: this is a genuinely fresh key.
   KP="$("$PREFIX/bin/authctl" genkeypair)"; AUDIT_SK="${KP%% *}"; AUDIT_PK="${KP##* }"
+elif [ -z "$AUDIT_PK" ]; then
+  # Secret present, public half missing — e.g. a prior run wrote audit.env
+  # but was interrupted (or failed, see step 7) before aireos.env's rewrite.
+  # DERIVE, never regenerate: an Ed25519 secret key is seed(32)||public(32),
+  # so the trailing 64 hex chars of the 128-hex secret ARE the public key
+  # (proven in T-124a's TestAuthctlKeyFormatCompatibility). Regenerating on
+  # this partial state would silently orphan every historical chain-head
+  # signature — the exact OI-41 failure this ticket exists to prevent — and
+  # since the public key is always recoverable from the secret, there is
+  # never a reason to.
+  AUDIT_PK="${AUDIT_SK: -64}"
+  log "re-derived the audit chain-head public key from the existing secret (aireos.env was missing it — OI-41 partial-state recovery)"
 fi
 [ -n "$AUDIT_SK" ] && [ -n "$AUDIT_PK" ] || die "audit chain-head key generation failed"
 [ "$AUDIT_SK" != "$GW_SK" ] && [ "$AUDIT_SK" != "$API_AGENT_SK" ] || die "audit chain-head sign key must differ from the other per-workload keys (ADR-0060 authority separation)"

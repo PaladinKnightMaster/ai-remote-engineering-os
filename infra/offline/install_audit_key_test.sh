@@ -155,6 +155,26 @@ PUB2="$(sed -n 's/^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=//p' "$SHARED_ENV" 2>/dev/null)
 assert_eq "OI-41: secret is BYTE-IDENTICAL across re-install" "$SECRET2" "$SECRET1"
 assert_eq "OI-41: public key is BYTE-IDENTICAL across re-install" "$PUB2" "$PUB1"
 
+echo "== third install run: partial-state recovery (Commander review finding) =="
+# Simulate a realistic crash-recovery path: audit.env was written (secret on
+# disk) but a prior run was interrupted/failed BEFORE aireos.env's rewrite, so
+# the public key line is gone from the shared env while the secret survives.
+# The regenerate-on-either-missing `||` this replaced would silently orphan
+# every historical chain-head signature here -- the exact OI-41 failure this
+# ticket exists to prevent. The fix must DERIVE the public half from the
+# still-present secret, never mint a fresh pair.
+sed -i '/^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=/d' "$SHARED_ENV"
+if grep -q '^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=' "$SHARED_ENV" 2>/dev/null; then
+  echo "FAIL setup: could not remove AIREOS_AUDIT_CHAIN_PUBLIC_KEY from aireos.env"; fail=$((fail + 1))
+else
+  echo "PASS setup: aireos.env's public-key line removed, audit.env's secret left intact"; pass=$((pass + 1))
+fi
+run_install || true
+SECRET3="$(sed -n 's/^AIREOS_AUDIT_CHAIN_SIGN_KEY=//p' "$AUDIT_ENV" 2>/dev/null)"
+PUB3="$(sed -n 's/^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=//p' "$SHARED_ENV" 2>/dev/null)"
+assert_eq "partial-state recovery: secret is STILL BYTE-IDENTICAL (not regenerated)" "$SECRET3" "$SECRET1"
+assert_eq "partial-state recovery: public key is RE-DERIVED to the same original value" "$PUB3" "$PUB1"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
