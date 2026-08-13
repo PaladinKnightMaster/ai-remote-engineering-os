@@ -219,8 +219,52 @@ docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodc
 # 11. assert the audit chain host-internally (WD-2.4: integrity + the governed
 #     wedge events in one chain). Retry: policy/connector relays deliver via
 #     LISTEN/NOTIFY and may lag the driver by a beat.
-log "assert: audit chain intact + the WD-2 events are present"
-docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | cut -d= -f2-); DATABASE_URL="$DU" /opt/aireos/bin/audit-service verify'
+log "assert: audit chain intact + ATTESTED (head signatures) + the WD-2 events are present"
+# T-127a: this invocation used to export ONLY DATABASE_URL. T-126a taught
+# `audit-service verify` to check Ed25519 head signatures (ADR-0069 D6), but with no
+# key in its environment resolveVerifyKey() finds nothing and the CLI falls back to
+# ordering-only — still exiting 0. So this gate went on passing while remaining blind
+# to head signing, i.e. blind to the mechanism this whole release rests on: the tool
+# got stronger and the caller kept invoking it in the weak mode.
+#
+# Export the chain-head PUBLIC key (it rides shared aireos.env from T-125a; the secret
+# lives in audit.env and is deliberately NOT needed here — a verifier must never
+# require signing material), and assert the LITERAL attested outcome rather than a bare
+# exit 0, because exit 0 alone cannot distinguish an attested run from the
+# ordering-only fallback.
+# Force one checkpoint FIRST (ADR-0069 D3's explicit operator action), then verify.
+# Without it the correct outcome is INTACT+UNATTESTED, not a failure: heads are signed
+# on a bounded cadence (100 events / 60s, D2) and a short wd1 run finishes before the
+# next tick, so the tail is legitimately unattested. `task e2e` already forces a
+# checkpoint for exactly this reason; wd1 must too, or it asserts something the cadence
+# design guarantees will not be true.
+#
+# NOTE THE PRIVILEGE SPLIT, it is deliberate: `checkpoint` SIGNS, so it needs the SECRET
+# from audit.env (0600, audit-service's own env file). `verify` only CHECKS, so it gets
+# the PUBLIC key from shared aireos.env and must never require signing material.
+# EXTRACT the values, never `.`/source the env files: sourcing runs them as shell, so
+# any line that is not a clean assignment gets EXECUTED (an earlier cut of this block
+# sourced aireos.env and produced `line 8: aireos-wd1-host: command not found`). The
+# original DATABASE_URL line used grep|cut for exactly this reason — a config file is
+# data, not code, and in a release about evidence integrity we do not hand a config
+# file to the shell.
+docker exec "$HOST" bash -c '
+  DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+  SK=$(grep "^AIREOS_AUDIT_CHAIN_SIGN_KEY=" /etc/aireos/audit.env | head -1 | cut -d= -f2-)
+  DATABASE_URL="$DU" AIREOS_AUDIT_CHAIN_SIGN_KEY="$SK" /opt/aireos/bin/audit-service checkpoint' \
+  || echo "wd1: forced checkpoint did not sign (see above) — the verify assertion below will catch it"
+VERIFY_OUT="$(docker exec "$HOST" bash -c '
+  DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+  PK=$(grep "^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+  DATABASE_URL="$DU" AIREOS_AUDIT_CHAIN_PUBLIC_KEY="$PK" /opt/aireos/bin/audit-service verify')"
+echo "$VERIFY_OUT"
+case "$VERIFY_OUT" in
+  *"INTACT+ATTESTED"*) : ;;
+  *"INTACT+UNATTESTED"*)
+    echo "wd1: verify reported INTACT+UNATTESTED after a forced checkpoint — head signatures ARE being checked, but the signed prefix does not cover the tail. Either the checkpoint above failed (see its output) or events were appended after it. Output above."; exit 1 ;;
+  *)
+    echo "wd1: audit-service verify did NOT report an attested outcome at all — most likely no chain-head public key reached the CLI, so it fell back to ordering-only (T-126a's resolveVerifyKey). Output above."; exit 1 ;;
+esac
 # Includes the WD-5 Run lifecycle events (OI-12, T-061): run.launched + run.completed
 # land via api's in-process outbox relay, proving the Run plane drives on the install.
 # v0.6 (OI-13, T-069) adds the delegation lifecycle: grant.issued/grant.revoked (the

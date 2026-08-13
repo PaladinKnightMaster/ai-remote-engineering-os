@@ -39,3 +39,11 @@ tests/e2e/.wd10-scratch/
 .env.local
 **/.env
 !**/env.example
+
+# Go build outputs that land in the tree when a containerised build writes into
+# the bind-mounted repo (Linux ELF binaries on a Windows host). They are build
+# artifacts, never sources — ignore them so `git status` stays a real signal.
+/seed
+/tests/e2e/seed
+/tools/migrate-lint/migrate-lint
+/tools/forbidden-features-check/forbidden-features-check
