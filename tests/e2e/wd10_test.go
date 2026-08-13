@@ -21,6 +21,25 @@ import (
 	"time"
 )
 
+// wd10IntervalSeconds is the adaptive charter's tick interval, and therefore (per
+// ticker.go's fireAdaptive: expiresAt = NextFireAt + IntervalSeconds) the plan
+// request's TTL (T-127a diagnosis). Leg 4 alone can burn up to ~60s in the worst case
+// (two sequential 30s poll budgets: pollActorOutcomeCount for memory.read, then
+// pollActorOutcomeCount for context.read) — a TTL that only just covers that gives no
+// real headroom. 60s (2x a single 30s poll budget) clears the typical case (these
+// polls resolve in low single-digit seconds via the outbox relay; 5s was too tight
+// only because it left ~0 slack for ordinary jitter, not because the real work takes
+// anywhere near 30s) with comfortable margin.
+//
+// NOTE (T-127a, caught live re-running this fix): store.go's Create sets the VERY
+// FIRST next_fire_at to now()+intervalSeconds (there is no immediate first fire for a
+// freshly chartered charter) — so raising the interval also pushes out how long leg 3
+// must wait for the FIRST plan request to appear. leg 3's own poll window below is
+// sized off this same constant for exactly that reason; a naive interval bump without
+// widening leg 3's wait reintroduces a NEW race (leg 3 timing out before the first
+// tick ever fires) instead of fixing the original one.
+const wd10IntervalSeconds = 60
+
 // TestWD10HappyPath — WD-10 §2 legs 1-8.
 func TestWD10HappyPath(t *testing.T) {
 	apiURL := env("E2E_API_URL", "http://api:8080")
@@ -43,7 +62,7 @@ func TestWD10HappyPath(t *testing.T) {
 	ws := charterWorkstream(t, client, apiURL, session, csrf, charterOpts{
 		objective:       "wd10 context loop " + suffix,
 		resources:       []string{workstreamResourceID},
-		intervalSeconds: 5, stepBudget: 100, kind: "adaptive", composer: composer,
+		intervalSeconds: wd10IntervalSeconds, stepBudget: 100, kind: "adaptive", composer: composer,
 	})
 	t.Cleanup(func() { retireWorkstream(t, client, apiURL, session, csrf, ws.ID) })
 
@@ -76,7 +95,12 @@ func TestWD10HappyPath(t *testing.T) {
 	t.Logf("PASS WD-10 leg 2 — the in-process indexer swept the source (native PG FTS, no network, no embedding); lastIndexedAt is set (the up-to-date staleness signal), status active")
 
 	// --- Leg 3: the tick publishes (v0.9 machinery, unchanged) ------------------------
-	req1 := waitForPlanRequest(t, client, mcpURL, tok, ws.ID, 30*time.Second)
+	// The wait budget is sized off wd10IntervalSeconds, not a bare 30s: the charter's
+	// FIRST next_fire_at is set at creation to now()+intervalSeconds (store.go's
+	// Create), so the first plan request cannot appear before roughly one interval has
+	// elapsed. +30s covers legs 1-2's own (usually sub-10s) time plus scheduler jitter
+	// (the ticker scans every 2s, ticker.go's NewTicker).
+	req1 := waitForPlanRequest(t, client, mcpURL, tok, ws.ID, time.Duration(wd10IntervalSeconds)*time.Second+30*time.Second)
 	t.Logf("PASS WD-10 leg 3 — the adaptive tick opened plan request %s", req1.RequestID)
 
 	// --- Leg 4: the composer reads memory AND context — both chained -----------------
@@ -139,7 +163,24 @@ func TestWD10HappyPath(t *testing.T) {
 	step := map[string]string{"resourceId": workstreamResourceID, "command": "echo WD10-CONTEXT-" + term1}
 	runID, planStatus, isErr, text := submitPlanMCP(t, client, mcpURL, tok, req1.RequestID, []map[string]string{step})
 	if isErr {
-		t.Fatalf("plan.submit refused (want success): %q", text)
+		// T-127a: plan.submit's ONE refusal shape ("the grant does not authorize this
+		// agent", adaptive_internal.go's submitPlanRefusalReason) is deliberately
+		// identical whether req1 is genuinely foreign/unauthorized OR merely no longer
+		// open (ADR-0065 §6 no-oracle: a foreign agent must not be able to tell "denied"
+		// from "unknown/expired" from the wire). That ambiguity is correct on the wire —
+		// but the operator's audit chain is NOT blinded by it: every expiry chains its
+		// own plan.expired event (store.go's expirePlanRequestsDue) targeting
+		// "plan-request:<id>". Ask the chain, not the wire, which case this is.
+		if countTargetOutcome(t, auditURL, auditTok, "plan-request:"+req1.RequestID, "plan.expired") > 0 {
+			t.Fatalf("plan.submit refused %q — this is a HARNESS TIMING race, not an authorization bug: "+
+				"plan-request %s's TTL (= this charter's intervalSeconds=%d, ticker.go's fireAdaptive sets "+
+				"expiresAt = NextFireAt + IntervalSeconds) expired before leg 4's polling landed the submit; "+
+				"the chain confirms a plan.expired event on plan-request:%s. If this recurs, widen "+
+				"wd10IntervalSeconds further — do not treat this failure as a grant-enforcement regression.",
+				text, req1.RequestID, wd10IntervalSeconds, req1.RequestID)
+		}
+		t.Fatalf("plan.submit refused (want success, and NO plan.expired event found on plan-request:%s — "+
+			"this is a genuine authorization regression, not a TTL race): %q", req1.RequestID, text)
 	}
 	if planStatus != "proposed" {
 		t.Fatalf("plan.submit run status = %q, want proposed", planStatus)
