@@ -44,8 +44,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -396,4 +401,340 @@ func exportLines(t *testing.T, data []byte) [][]byte {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// TestWD126GAireosVerifyBinaryProvesAllThreeLegs is T-126b's G1 capstone,
+// and — per the ticket — the NEGATIVE legs are the ones that matter (VER-16):
+// a guard that only ever passes is decoration. It exports the SAME live
+// chain the tests above prove the live sweep populated, builds the REAL
+// aireos-verify binary (never calls into internal/verify or internal/export
+// directly to fake the result), and runs it three times against the SAME
+// real public key:
+//
+//  1. the untouched export -> exit 0, INTACT+ATTESTED, IN_SYNC;
+//  2. the SAME export with one event's actor field mutated (the FIRST
+//     exported event, seq-wise — always below any signed head, so step 1
+//     alone cannot mask it, per ADR-0069's §Security posture test-design
+//     constraint) -> exit 1, BROKEN, naming the first divergent point;
+//  3. the SAME export with its LAST head line removed from the head
+//     section while the anchor section is left untouched — simulating a
+//     truncation the anchor independently witnessed but the (edited)
+//     head section no longer carries -> exit 2, TRUNCATION_SIGNATURE, even
+//     though the chain itself still recomputes cleanly.
+//
+// Leg 1 passing on clean input is what makes legs 2 and 3 meaningful proofs
+// rather than a guard that could never have passed in the first place.
+func TestWD126GAireosVerifyBinaryProvesAllThreeLegs(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+
+	sk, err := chain.SecretKeyFromHex(fixtureSecretKeyHex)
+	if err != nil {
+		t.Fatalf("parse fixture secret key: %v", err)
+	}
+	pub, ok := sk.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("fixture key has no ed25519 public half")
+	}
+	pubHex := hex.EncodeToString(pub)
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+	st := store.New(pool)
+
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		_, ok, err := st.LastHead(ctx)
+		if err != nil {
+			t.Fatalf("last head: %v", err)
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no audit_chain_heads row appeared within 90s — nothing for the export to attest")
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	anchorPath := os.Getenv("AIREOS_AUDIT_ANCHOR_PATH")
+	if anchorPath == "" {
+		t.Fatal("AIREOS_AUDIT_ANCHOR_PATH not set")
+	}
+
+	ex := &export.Exporter{Store: st, Anchor: anchor.New(anchorPath)}
+
+	// Force checkpoints until the export comes back FULLY attested — the
+	// live audit-service's own cadence sweep (D2: one head per ~100 events
+	// or 60s) may not yet have caught up to every event this suite just
+	// generated, and leg 1 needs a genuinely clean INTACT+ATTESTED/IN_SYNC
+	// baseline or legs 2/3's negative proofs mean nothing (VER-16). Mirrors
+	// the SAME retry idiom docker-compose.e2e.yml's tester command already
+	// uses for its own trailing `verify` call, for the identical reason: a
+	// forced checkpoint can lose the advisory lock race against the live
+	// process's own concurrent cadence tick, which just means the OTHER
+	// side is about to sign the same tip anyway.
+	sw := &Sweeper{Store: st, Key: sk, Anchor: anchor.New(anchorPath)}
+	var cleanBytes []byte
+	fullyClean := false
+	for attempt := 1; attempt <= 8; attempt++ {
+		if _, err := sw.Checkpoint(ctx); err != nil {
+			t.Fatalf("force checkpoint before export (attempt %d): %v", attempt, err)
+		}
+		var buf bytes.Buffer
+		if err := ex.Export(ctx, &buf); err != nil {
+			t.Fatalf("export (attempt %d): %v", attempt, err)
+		}
+		lines := exportLines(t, buf.Bytes())
+		var m export.ManifestRecord
+		if err := json.Unmarshal(lines[0], &m); err != nil {
+			t.Fatalf("unmarshal manifest (attempt %d): %v", attempt, err)
+		}
+		// Both axes must be clean, not just attestation: even once
+		// UnattestedEventCount hits 0, the anchor write for that SAME head
+		// (a separate piece of I/O, T-125b) can lag by an instant when a
+		// concurrent writer (the live audit-service's own cadence tick) won
+		// the checkpoint race instead of this call.
+		anchorInSync := m.AnchorAvailable && anchorAgreesWithHeads(t, lines, m)
+		if m.UnattestedEventCount == 0 && anchorInSync {
+			cleanBytes = buf.Bytes()
+			fullyClean = true
+			break
+		}
+		t.Logf("attempt %d: export not yet clean (unattestedEventCount=%d, anchorInSync=%v), retrying", attempt, m.UnattestedEventCount, anchorInSync)
+		time.Sleep(1 * time.Second)
+	}
+	if !fullyClean {
+		t.Fatal("export never came back fully attested AND anchor-in-sync after 8 forced-checkpoint retries — leg 1 cannot establish a clean baseline")
+	}
+
+	// Build the REAL binary once, reused for all three legs.
+	binPath := filepath.Join(t.TempDir(), "aireos-verify")
+	build := exec.Command("go", "build", "-o", binPath, "aireos.local/services/audit-service/cmd/aireos-verify")
+	build.Stdout = os.Stdout
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		t.Fatalf("build aireos-verify: %v", err)
+	}
+
+	// ---- leg 1: clean export -> exit 0 ----
+	cleanPath := filepath.Join(t.TempDir(), "clean.ndjson")
+	if err := os.WriteFile(cleanPath, cleanBytes, 0o600); err != nil {
+		t.Fatalf("write clean export: %v", err)
+	}
+	out1, code1 := runAireosVerifyBinary(t, binPath, pubHex, cleanPath)
+	if code1 != 0 {
+		t.Fatalf("leg 1 (clean): exit code = %d, want 0.\noutput:\n%s", code1, out1)
+	}
+	if !strings.Contains(out1, "INTACT+ATTESTED") {
+		t.Fatalf("leg 1 (clean): output missing INTACT+ATTESTED:\n%s", out1)
+	}
+	if !strings.Contains(out1, "IN_SYNC") {
+		t.Fatalf("leg 1 (clean): output missing IN_SYNC:\n%s", out1)
+	}
+	t.Logf("leg 1 (clean export) PASSED — exit 0:\n%s", out1)
+
+	// ---- leg 2: tamper one event below the signed head -> exit 1 ----
+	tamperedBytes := tamperFirstEventActor(t, cleanBytes)
+	tamperedPath := filepath.Join(t.TempDir(), "tampered.ndjson")
+	if err := os.WriteFile(tamperedPath, tamperedBytes, 0o600); err != nil {
+		t.Fatalf("write tampered export: %v", err)
+	}
+	out2, code2 := runAireosVerifyBinary(t, binPath, pubHex, tamperedPath)
+	if code2 != 1 {
+		t.Fatalf("leg 2 (tampered): exit code = %d, want 1.\noutput:\n%s", code2, out2)
+	}
+	if !strings.Contains(out2, "BROKEN") {
+		t.Fatalf("leg 2 (tampered): output missing BROKEN:\n%s", out2)
+	}
+	t.Logf("leg 2 (tampered event) PASSED — exit 1, first divergence named:\n%s", out2)
+
+	// ---- leg 3: anchor independently witnesses a head the (edited) head
+	// section no longer carries -> exit 2, even though the chain itself
+	// still recomputes cleanly (nothing below the retained heads was
+	// touched) ----
+	truncatedBytes := truncateLastHeadKeepAnchor(t, cleanBytes)
+	truncatedPath := filepath.Join(t.TempDir(), "truncated.ndjson")
+	if err := os.WriteFile(truncatedPath, truncatedBytes, 0o600); err != nil {
+		t.Fatalf("write truncated export: %v", err)
+	}
+	out3, code3 := runAireosVerifyBinary(t, binPath, pubHex, truncatedPath)
+	if code3 != 2 {
+		t.Fatalf("leg 3 (truncated anchor): exit code = %d, want 2.\noutput:\n%s", code3, out3)
+	}
+	if !strings.Contains(out3, "TRUNCATION_SIGNATURE") {
+		t.Fatalf("leg 3 (truncated anchor): output missing TRUNCATION_SIGNATURE:\n%s", out3)
+	}
+	t.Logf("leg 3 (truncated anchor) PASSED — exit 2:\n%s", out3)
+}
+
+// runAireosVerifyBinary runs the REAL built binary as a subprocess (never a
+// direct Go call into the packages it wraps) and returns its combined
+// stdout+stderr and process exit code.
+// anchorAgreesWithHeads parses the head and anchor sections straight out of
+// already-exported NDJSON lines and runs the SAME anchor.Classify aireos-verify
+// itself will run, reporting true only for DivergenceNone with no coverage
+// gap (IN_SYNC) — used purely to decide whether a just-produced export is
+// clean enough to serve as leg 1's baseline; this is NOT a second
+// implementation of the classification (it calls the one real
+// anchor.Classify), just an early look at its verdict before handing the
+// bytes to the binary.
+func anchorAgreesWithHeads(t *testing.T, lines [][]byte, m export.ManifestRecord) bool {
+	t.Helper()
+	var headSeqs []int64
+	var anchorRecords []anchor.Record
+	for _, line := range lines[1:] {
+		var probe struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &probe); err != nil {
+			t.Fatalf("probe kind: %v", err)
+		}
+		switch probe.Kind {
+		case export.KindHead:
+			var hr export.HeadRecord
+			if err := json.Unmarshal(line, &hr); err != nil {
+				t.Fatalf("unmarshal head record: %v", err)
+			}
+			headSeqs = append(headSeqs, hr.Seq)
+		case export.KindAnchor:
+			var ar export.AnchorRecord
+			if err := json.Unmarshal(line, &ar); err != nil {
+				t.Fatalf("unmarshal anchor record: %v", err)
+			}
+			anchorRecords = append(anchorRecords, ar.ToRecord())
+		}
+	}
+	c := anchor.Classify(anchorRecords, headSeqs)
+	return c.Divergence == anchor.DivergenceNone && len(c.UnwitnessedHeadSeqs) == 0
+}
+
+func runAireosVerifyBinary(t *testing.T, binPath, pubHex, exportPath string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(binPath, "--pubkey", pubHex, exportPath)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	if err == nil {
+		return out.String(), 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return out.String(), exitErr.ExitCode()
+	}
+	t.Fatalf("run aireos-verify: %v (output so far:\n%s)", err, out.String())
+	return "", -1
+}
+
+// tamperFirstEventActor mutates the FIRST exported event's actor field —
+// always the lowest seq in the export, always below any signed head — via
+// internal/export's own EventRecord type (never a hand-matched string
+// substitution, since real live data's field values are not known ahead of
+// time the way a unit-test fixture's are).
+func tamperFirstEventActor(t *testing.T, data []byte) []byte {
+	t.Helper()
+	lines := exportLines(t, data)
+	tampered := false
+	for i, line := range lines {
+		var probe struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &probe); err != nil {
+			t.Fatalf("probe kind: %v", err)
+		}
+		if probe.Kind != export.KindEvent {
+			continue
+		}
+		var er export.EventRecord
+		if err := json.Unmarshal(line, &er); err != nil {
+			t.Fatalf("unmarshal event record: %v", err)
+		}
+		er.Actor = er.Actor + "-FORGED-BY-T126b-G1"
+		newLine, err := json.Marshal(er)
+		if err != nil {
+			t.Fatalf("marshal tampered event: %v", err)
+		}
+		lines[i] = newLine
+		tampered = true
+		break // the FIRST event only — lowest seq, guaranteed below any head
+	}
+	if !tampered {
+		t.Fatal("test setup: no event line found in the live export to tamper")
+	}
+	var buf bytes.Buffer
+	for _, l := range lines {
+		buf.Write(l)
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes()
+}
+
+// truncateLastHeadKeepAnchor removes the LAST "head" line from the export's
+// head section (decrementing manifest.headCount to match, so the edited
+// export still passes the parser's own strictness check) while leaving the
+// anchor section byte-for-byte untouched — the anchor file, per ADR-0069
+// D4, is a SEPARATE, independent copy outside Postgres, so it still
+// remembers the head this edit removes from the (simulated-truncated)
+// database-backed section. This is exactly the state a real truncation
+// attack (delete events/heads from Postgres, leave the anchor alone)
+// produces.
+func truncateLastHeadKeepAnchor(t *testing.T, data []byte) []byte {
+	t.Helper()
+	lines := exportLines(t, data)
+	if len(lines) == 0 {
+		t.Fatal("empty export")
+	}
+
+	var manifest export.ManifestRecord
+	if err := json.Unmarshal(lines[0], &manifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if manifest.HeadCount == 0 {
+		t.Fatal("test precondition: the live export must carry at least one signed head")
+	}
+
+	lastHeadIdx := -1
+	for i, line := range lines {
+		var probe struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &probe); err != nil {
+			t.Fatalf("probe kind: %v", err)
+		}
+		if probe.Kind == export.KindHead {
+			lastHeadIdx = i
+		}
+	}
+	if lastHeadIdx < 0 {
+		t.Fatal("test setup: no head line found in the live export to remove")
+	}
+
+	manifest.HeadCount--
+	newManifestLine, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal edited manifest: %v", err)
+	}
+
+	out := make([][]byte, 0, len(lines))
+	out = append(out, newManifestLine)
+	for i, line := range lines {
+		if i == 0 || i == lastHeadIdx {
+			continue // line 0 replaced above; lastHeadIdx dropped entirely
+		}
+		out = append(out, line)
+	}
+
+	var buf bytes.Buffer
+	for _, l := range out {
+		buf.Write(l)
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes()
 }

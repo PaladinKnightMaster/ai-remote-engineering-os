@@ -148,7 +148,16 @@ func runVerify(dsn string) error {
 		return fmt.Errorf("list chain heads: %w", err)
 	}
 
-	result := verify.Chain(all, heads, verify.NewKeyRing(pub))
+	// T-126b: Chain now consumes an EventSource, streaming, so that
+	// aireos-verify (which cannot afford to materialize a customer's whole
+	// chain into memory) and this DB-backed CLI (which already materializes
+	// `all` above for reasons unrelated to this refactor) call the exact
+	// same function — see internal/verify's package doc. SliceSource never
+	// errors, so the error return here is purely defensive.
+	result, verr := verify.Chain(verify.NewSliceSource(all), heads, verify.NewKeyRing(pub))
+	if verr != nil {
+		return fmt.Errorf("audit chain verification failed: %w", verr)
+	}
 	switch result.Outcome {
 	case verify.OutcomeIntactAttested:
 		fmt.Printf("audit chain intact: %d event(s) verified — INTACT+ATTESTED through seq %d (head signatures verified against %s)\n",
@@ -160,7 +169,7 @@ func runVerify(dsn string) error {
 		return nil
 	default: // verify.OutcomeBroken
 		if result.BrokenAtIndex >= 0 {
-			return fmt.Errorf("audit chain integrity BROKEN at index %d (seq=%d id=%s)", result.BrokenAtIndex, all[result.BrokenAtIndex].Seq, all[result.BrokenAtIndex].ID)
+			return fmt.Errorf("audit chain integrity BROKEN at index %d (seq=%d id=%s)", result.BrokenAtIndex, result.BrokenEventSeq, result.BrokenEventID)
 		}
 		if result.UnknownKeyID {
 			return fmt.Errorf("audit chain head at seq %d was signed under key id %s, which %s does not recognize — not a tamper finding by itself (ADR-0069 D5: keys are additive-forever), but this key cannot verify it",

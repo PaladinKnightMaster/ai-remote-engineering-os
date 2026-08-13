@@ -75,6 +75,13 @@ done
 # authctl: the offline key + argon2id-hash CLI install.sh needs (§OI-b).
 CGO_ENABLED=0 GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" \
   go build -trimpath -ldflags "-s -w" -o "$STAGE/bin/authctl" ./packages/go/auth/cmd/authctl
+# aireos-verify: the offline, third-party evidence verifier (ADR-0069 D6,
+# T-126b). Same hand-added-special-case shape as authctl above — it is a
+# `cmd/` binary inside a service module (services/audit-service), not one of
+# the top-level services in $SERVICES, so it is never picked up automatically
+# and must be listed here explicitly, or it silently never ships.
+CGO_ENABLED=0 GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" \
+  go build -trimpath -ldflags "-s -w" -o "$STAGE/bin/aireos-verify" ./services/audit-service/cmd/aireos-verify
 
 # --- 2. SPA static assets (pre-built by `pnpm build`) -----------------------
 [ -d "apps/web/dist" ] || die "apps/web/dist not found — run 'pnpm --filter @aireos/web build' first (the task offline-bundle target does this)"
