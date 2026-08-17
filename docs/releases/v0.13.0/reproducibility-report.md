@@ -4,13 +4,19 @@ Per ADR-0070 D7: **non-reproducibility is a finding, not a blocker.** This repor
 measured result either way. It was produced by `infra/offline/measure-reproducibility.sh`
 (`task measure-reproducibility`), run once, T-130b.
 
-## Result: REPRODUCIBLE (same host, same container, warm build cache)
+## Result: REPRODUCIBLE — measured twice, warm cache and cold
 
-Two independent builds of the core offline bundle, from the same clean commit, each rebuilding
-the SPA from scratch, produced a **byte-identical tarball**. The qualifier in the heading is not
-hedging: the two builds shared a warm Go build cache, which materially weakens the Go-binary half
-of this result — see the caveat under Finding A, and the Scope limit at the end. The SPA, SBOM,
-manifest and packaging results are unaffected by that caveat and are the substantive findings.
+The core offline bundle reproduces byte-for-byte. Two separate measurements were run, because the
+first one's Go-binary result rested on a shared warm build cache and was therefore weaker than it
+looked:
+
+| Measurement | Commit | Go build cache | Result |
+|---|---|---|---|
+| Run 1 (warm) | `b13dbe8` | **shared** between both builds | byte-identical tarball `6dc9ba70…`, 26/26 files |
+| Run 2 (cold) | `deebb5b` | **wiped between the two builds** | byte-identical tarball `69e470a0…`, 26/26 files |
+
+**Run 2 is the load-bearing one.** It answers the question run 1 could not: *do two independent
+cold compilations of this source produce identical bytes?* They do.
 
 ```
 tarball A sha256: 6dc9ba702860f1bd4ade3a950625c8429775effefa21a23f3fa82627c20c4f4f
@@ -28,23 +34,29 @@ files present in A only: none
 files present in B only: none
 ```
 
-Note this hash does **not** match the currently-shipped
-`dist/offline/aireos-offline-0.13.0.tar.gz` (`e8ea7c9ee6051f2869ca3eb37330c086731b2d03f1b3cd7b7e71a9910f90916d`).
-That is expected, not a discrepancy: the shipped artifact was built from an earlier, **dirty**
-commit (`191b001c10bb1d05819862623cd542f18ecbdf79`, `vcs.modified=true` — see Finding A), not from
-this measurement's clean commit. This report measures reproducibility of the build process against
-itself, not equality with whatever happens to be staged in `dist/offline/`.
+Neither hash matches the artifact currently staged in
+`dist/offline/aireos-offline-0.13.0.tar.gz` (`e8ea7c9ee605…`), and the two runs' hashes do not
+match each other. **Both facts are expected, not discrepancies.** The staged artifact was built
+from an earlier, **dirty** commit (`191b001…`, `vcs.modified=true` — Finding A); the two runs were
+built from two different clean commits, and `vcs.revision` is stamped into every binary. This
+report measures reproducibility of the build process **against itself at a fixed commit** — it is
+not a claim that any two builds at different commits should agree, and they demonstrably do not.
 
-## Commit measured
+## Commits measured
 
 ```
-b13dbe8c9b77801b2941b05aa4a2d21d99cbaa1d
+run 1 (warm cache):  b13dbe8c9b77801b2941b05aa4a2d21d99cbaa1d
+run 2 (cold cache):  deebb5b340c7e8e5aea9f6d81b923ba0450fbacb
 ```
 
-One commit past the T-130b tooling commit (`27c5bec`): a dry run of the new script surfaced a
-build-environment bug (Node version too old — see "Build environment" below), fixed in a
-follow-up commit, and *that* clean commit is what was actually measured. Both commits carry only
-tooling/doc changes, not product code.
+Run 1's commit is one past the T-130b tooling commit (`27c5bec`): a dry run of the new script
+surfaced a build-environment bug (Node version too old — see "Build environment" below), fixed in a
+follow-up commit, and *that* clean commit is what was measured. Run 2 was measured at the later
+commit that carries run 1's own report. **Every commit in this range is docs/tooling only — no
+product code** — which is what makes the cross-run hash difference the clean demonstration
+described under "Run 2" below.
+
+Both runs required and verified a clean working tree before building.
 
 ## Build environment
 
@@ -129,32 +141,62 @@ irreproducible against its own commit by construction, and would report a false
 determinism. On a clean tree, `vcs.revision`/`vcs.time` are properties of the **commit**, not the
 build's wall-clock time — so the stamp does not, by itself, make two builds differ.
 
-## ⚠ Caveat — the Go layer's result is weaker than the table suggests
+## Run 2 — the cold-cache measurement (why it was needed, and what it showed)
 
-Both builds mounted the **same** Go module and build-cache Docker volumes (`aireos_gomodcache`,
-`aireos_gocache`), and that cache was already warm — 842 MB of modules and **737 MB of build
-cache**, measured after the run. Go's build cache is **content-addressed**: on identical inputs it
-returns the previously stored output rather than recompiling. So build B very largely replayed
-build A's cached objects, and `bin/* 0/1 differ` is close to a **tautology** for the Go layer
-rather than a demonstration that two independent compilations agree.
+Run 1's two builds mounted the **same** Go module and build-cache volumes, and that cache was
+warm — 842 MB of modules and **737 MB of build cache**, measured after the run. Go's build cache is
+**content-addressed**: on identical inputs it returns the stored output rather than recompiling. So
+run 1's build B very largely replayed build A's objects, and `bin/* 0/1 differ` was close to a
+**tautology** for the Go layer rather than evidence that two independent compilations agree. Run 1
+disclosed the shared cache but drew a conclusion from the Go layer that the cache alone explained.
 
-Stated plainly, so the table above is not read for more than it proves:
+Run 2 removes that ambiguity. The **build** cache was wiped between the two builds; the **module**
+cache was deliberately left shared, because module zips are immutable, `go.sum`-verified *inputs*
+rather than compilation outputs — sharing them cannot mask compilation determinism, while
+re-downloading 842 MB twice would have measured the network instead of the compiler.
 
-- **What was actually measured for the Go binaries:** that a warm content-addressed cache returns
-  identical bytes. That is true essentially by definition.
-- **What was NOT measured:** whether two *cold* compilations of this source produce identical
-  bytes. Establishing that requires wiping the build cache between the two builds, which this run
-  did not do.
+Both builds were verified to start genuinely empty rather than assumed to:
 
-**The layers where this measurement produced genuinely new information are the SPA, the SBOM, the
-manifest and the packaging** — the SPA in particular, because `apps/web/dist` was deleted and
-rebuilt by `vite` from scratch before each build, so `web/ 0/4 differ` reflects a real re-run and
-not a cached artifact. That is also the layer ADR-0070 D6 named as the prime suspect, so the open
-question the measurement existed to answer *was* answered; it is the Go layer, already expected to
-reproduce, whose result is the soft one.
+```
+BUILD A (fresh build cache: repro_coldbuild_a)
+/root/.cache/go-build
+4.0K	/root/.cache/go-build          <- empty at start
+BUILD A exit=0 elapsed=129s
 
-This caveat is recorded rather than quietly folded into "reproducible" because the release's whole
-posture is that an unexamined claim is worth less than a measured one with its limits stated.
+BUILD B (fresh build cache: repro_coldbuild_b)
+/root/.cache/go-build
+4.0K	/root/.cache/go-build          <- empty at start
+BUILD B exit=0 elapsed=124s
+
+tarball A sha256: 69e470a0749da1a8fa7aaefd1491146eb041bdd671a5e604f598a325187db374
+tarball B sha256: 69e470a0749da1a8fa7aaefd1491146eb041bdd671a5e604f598a325187db374
+RESULT: COLD-REPRODUCIBLE
+identical: 26   differing: 0
+```
+
+`go env GOCACHE` was checked against the mount path *before* the run: had `GOCACHE` resolved
+anywhere other than `/root/.cache/go-build`, the fresh volume would have been a no-op and the
+"cold" build would silently have been warm — producing a confident result that proved nothing
+beyond what run 1 already showed.
+
+**Incidental finding: cold and warm builds took the same time** (~124–129 s cold vs ~117 s per
+build warm). The Go build cache was contributing very little here; the module cache does the heavy
+lifting. That is why run 1's result held up under the stricter test.
+
+### The two runs together prove the binaries are commit-bound
+
+Run 2's tarball (`69e470a0…`) differs from run 1's (`6dc9ba70…`), and **the entire source delta
+between the two commits is one documentation file** — `git diff --stat b13dbe8 deebb5b` is
+`docs/releases/v0.13.0/reproducibility-report.md | 216 +`, with zero non-`docs/` changes. No
+product code, no build script, no dependency moved.
+
+So a **documentation-only commit changed every shipped binary's bytes**, via the `vcs.revision`
+stamp and nothing else. That is Finding A demonstrated rather than asserted, and it has a direct
+operational consequence:
+
+> **The bundle's hash changes on every commit, including docs-only commits.** A release artifact
+> must therefore be built at the exact commit being released, and *any* subsequent commit — even a
+> typo fix in a release note — invalidates it. Rebuild and re-sign, or cut the tag first.
 
 This is also a real, checkable, self-reported provenance fact independent of this report — see the
 correction in `docs/devops/offline-install-v3.md` (this ticket): the *signature* does not tie an
@@ -192,11 +234,12 @@ artifacts is itself worth recording rather than leaving implicit.
 
 ## Scope limit
 
-This report measures **same-host, same-container reproducibility only**: two builds run back to
-back on one physical Windows host, from one locally-tagged Docker image, against the same
-**warm** Go module/build-cache Docker volumes (see the caveat under Finding A — that shared cache
-is why the Go-binary layer's result is the weakest part of this report). It is **not** a cross-host
-claim, and **not** a cold-build claim. A genuinely
+This report measures **same-host, same-container reproducibility**: builds run back to back on one
+physical Windows host, from one locally-tagged Docker image. Run 2 extends that to a **cold build
+cache**, so the result is no longer contingent on cached compilation output; the module cache
+remains shared in both runs, which is sound because module zips are `go.sum`-verified inputs.
+
+It is still **not a cross-host claim.** A genuinely
 different host — different OS, different CPU microarchitecture, a different day's
 `golang:1.23`/NodeSource snapshot, a different network path for the Caddy download or the SBOM
 tool fetches — could produce a different result, and this report does not test that. Establishing
@@ -214,3 +257,11 @@ bash infra/offline/measure-reproducibility.sh
 Refuses loudly on a dirty working tree. Builds/reuses a local Docker image
 (`aireos-repro-builder:golang1.23-node`), never touches `dist/offline/` (asserted on exit), and
 cleans up its own scratch directories on exit (`trap`).
+
+That reproduces **run 1** (shared build cache). **Run 2**, the cold-cache measurement, was a
+one-off Commander probe and is not committed as tooling — deliberately, since re-running it is a
+judgement call about when the compilation-determinism question has been re-opened (a Go toolchain
+bump, a change to the build flags in `build-bundle.sh`), not something to run on every release. To
+repeat it, run the same two builds with a **fresh** Docker volume mounted at `/root/.cache/go-build`
+for each build, keeping the module cache shared, and verify each build starts with that directory
+empty before trusting the result.
