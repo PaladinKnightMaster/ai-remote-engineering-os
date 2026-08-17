@@ -167,37 +167,35 @@ const config = [
     },
   },
 
-  // === SEC-7 exception: the createApiClient wrapper IS the chokepoint. ===
-  // Direct fetch() / new Request() are not only allowed inside the wrapper —
-  // they're required for it to do its job. Same exception for the wrapper's
-  // own test file.
+  // === SEC-7 exception for packages/shared-types/src/client.ts — REMOVED at
+  // T-132 (VER-12/VER-15 §SEC-7 empirical probe). History, corrected:
   //
-  // The pattern must contain ONLY segments that appear in the path ESLint
-  // actually matches against. Flat-config `files` globs resolve against the
-  // config file ESLint loads for the run, and every package's own
-  // eslint.config.js is a one-line re-export of this shared array — so
-  // `pnpm --filter @aireos/shared-types run lint` runs `eslint .` from
-  // packages/shared-types/, where this file's relative path is plain
-  // `src/client.ts`. A "packages/shared-types/src/client.ts" pattern therefore
-  // never matches, and neither does "**/shared-types/src/client.ts" — the
-  // `shared-types` segment is not in the relative path at all. (The vendored-
-  // source block below works because `vendor/` IS in its relative path,
-  // `src/vendor/qrcodegen.ts`.) `**/src/client.ts` matches under both
-  // invocations: `**` absorbs zero segments per-package, and
-  // `packages/shared-types` from the repo root.
+  // The block used to live here as `files: ["**/src/client.ts",
+  // "**/src/client.test.ts"], rules: { "no-restricted-syntax": "off" }`, on
+  // the theory that the createApiClient wrapper IS the fetch/Request
+  // chokepoint and needs the exception to do its job. Its own comment then
+  // claimed the block "was dead from the day it was written — verified via
+  // `eslint --print-config`, which reported no-restricted-syntax at severity
+  // 2." **That claim was false.** Re-running the same probe from
+  // packages/shared-types at T-132 showed `no-restricted-syntax => 0` (OFF)
+  // — the override WAS applying, via the `**/src/client.ts` pattern this
+  // comment correctly reasoned through (flat-config `files:` resolves
+  // relative to the invoking package's own `eslint .`, i.e.
+  // packages/shared-types/src/client.ts → `src/client.ts`).
   //
-  // This block was dead from the day it was written — verified via
-  // `eslint --print-config`, which reported no-restricted-syntax at severity 2
-  // (still fully enforced) — and went unnoticed only because client.ts reaches
-  // the network through openapi-fetch's createClient, which trips neither AST
-  // selector. Re-verify with --print-config after touching these patterns; a
-  // silently-dead exception looks identical to a working one.
-  {
-    files: ["**/src/client.ts", "**/src/client.test.ts"],
-    rules: {
-      "no-restricted-syntax": "off",
-    },
-  },
+  // So the override was live, not dead. That still left the operative
+  // question unanswered: was it NECESSARY? T-132 answered it empirically —
+  // delete the block, rerun `pnpm --filter @aireos/shared-types run lint`,
+  // and see what fires. Result: clean, exit 0, zero violations. client.ts
+  // only calls `createClient` from openapi-fetch (never a literal `fetch(…)`
+  // or `new Request(…)`), and client.test.ts stubs the global via
+  // `vi.stubGlobal("fetch", fetchMock)` — a string-keyed call, not a `fetch`
+  // CallExpression — so neither file was ever going to trip the AST
+  // selectors above, override or no override. The exception was applying
+  // and unnecessary at the same time: two independently true facts the
+  // original comment conflated into one false one. Removed rather than kept
+  // dormant — a rule carve-out nothing needs is exactly the pattern this
+  // ticket exists to stop shipping.
 
   // === Test files: relaxed rules. ===
   // Tests legitimately need vi.fn<any>(), console.log for debugging,

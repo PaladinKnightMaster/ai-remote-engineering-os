@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""doc-check (release-criteria DOC-1, §11a-1).
+"""doc-check (release-criteria DOC-1, §11a-1; CSV leg VER-15/T-132).
 
 Assert every in-repo relative path referenced in CANONICAL_SOURCE_OF_TRUTH.md and
 every docs/adr/*.md resolves on disk, so the canonical index + the ADR ladder
@@ -16,7 +16,18 @@ anchors, absolute paths, sibling-repo (`../`) refs (the kit may be absent in CI)
 and placeholders (containing `<`, `>`, `*`, `{`, `}`, `$`, or whitespace). A
 reference resolves if it exists relative to the repo root OR the referencing
 file's directory. Exits non-zero, listing every unresolved reference.
+
+CSV leg (VER-15 §fourth instance, T-132): every `.csv` under
+docs/requirements/ must parse and carry a uniform field count per row. Before
+this leg existed, `.csv` appeared in this script ONLY as a scannable path
+extension (see EXTS below) — nothing here ever opened a CSV and looked inside
+it. That gap let a malformed row into docs/requirements/backlog_v4.csv at
+`239c0e7` unnoticed by any automated gate; the Commander hand-caught it with a
+throwaway `csv`-module script during the T-131 review. This automates exactly
+that check, with a failure message naming the file, the row, and both field
+counts, so the next person doesn't spend the same hour.
 """
+import csv
 import re
 import sys
 import pathlib
@@ -67,6 +78,32 @@ def resolves(ref: str, srcdir: pathlib.Path) -> bool:
     return (ROOT / ref).exists() or (srcdir / ref).exists()
 
 
+def check_csvs() -> list[str]:
+    """Every .csv under docs/requirements/ must parse and have a uniform
+    field count per row (VER-15 §fourth instance). Returns one message per
+    malformed row, naming the file, the row number (1-based, header = row 1),
+    the expected field count (the header's), and the actual one."""
+    issues: list[str] = []
+    for f in sorted((ROOT / "docs" / "requirements").glob("*.csv")):
+        rel = f.relative_to(ROOT)
+        try:
+            with f.open(newline="", encoding="utf-8") as fh:
+                rows = list(csv.reader(fh))
+        except csv.Error as exc:
+            issues.append(f"{rel}: failed to parse as CSV — {exc}")
+            continue
+        if not rows:
+            continue
+        expected = len(rows[0])
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) != expected:
+                issues.append(
+                    f"{rel}  row {i}: expected {expected} fields (per header), "
+                    f"found {len(row)}"
+                )
+    return issues
+
+
 def main() -> int:
     sources = [ROOT / "CANONICAL_SOURCE_OF_TRUTH.md"]
     sources += sorted((ROOT / "docs" / "adr").glob("*.md"))
@@ -82,13 +119,26 @@ def main() -> int:
             if not resolves(ref, f.parent):
                 missing.append(f"{f.relative_to(ROOT)}  ->  {ref}")
 
+    csv_issues = check_csvs()
+    csv_count = len(list((ROOT / "docs" / "requirements").glob("*.csv")))
+
+    ok = True
     if missing:
+        ok = False
         print("doc-check FAIL — unresolved in-repo path references:")
         for m in sorted(set(missing)):
             print(f"  {m}")
+    if csv_issues:
+        ok = False
+        print("doc-check FAIL — malformed CSV row(s) under docs/requirements/:")
+        for m in csv_issues:
+            print(f"  {m}")
+    if not ok:
         return 1
+
     print(f"doc-check OK — {checked} in-repo path references resolve "
-          f"(across {len(sources)} files)")
+          f"(across {len(sources)} files); {csv_count} CSVs under "
+          f"docs/requirements/ well-formed")
     return 0
 
 

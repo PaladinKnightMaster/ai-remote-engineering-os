@@ -29,15 +29,29 @@
 // Style Binding rule: app/UI code references semantic tokens only (e.g.
 // bg-background, text-foreground); raw hex/rgb values are a lint violation
 // (T-012 enforces).
+//
+// No `content:` array (T-132, VER-13). This file used to carry a v3-style
+// `content: [...]` naming three scan roots — but Tailwind v4 is CSS-first
+// (see the comment block two paragraphs up: "this file remains as a typed
+// mirror... token declarations live in apps/web/src/styles.css") and never
+// reads a JS config's `content` field at all. Nothing in this repo's build
+// (`@tailwindcss/vite` in apps/web/vite.config.ts) or test suite imported
+// this file for its `content` value either — grepped at T-132, zero
+// consumers. A stale `content` array sitting next to a comment that already
+// calls this file "a typed mirror only" is the same failure class VER-12
+// hunts in eslint.config.js: something that reads as authoritative and
+// silently isn't. The real, enforced scan roots are apps/web/src/styles.css's
+// automatic per-app detection plus its explicit `@source
+// "../../../packages/ui/src"` directive (T-116) — both covered by a VER-13
+// test in packages/config/config-roots.test.ts. Deleted rather than kept in
+// sync-by-hand: v4's automatic content detection and v3's explicit `content`
+// globs aren't the same mechanism (v4 needs no apps/web entry at all — it
+// auto-scans its own directory), so a "mirror" test binding the two would
+// itself assert a false equivalence instead of a real one.
 
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  content: [
-    "../../apps/*/index.html",
-    "../../apps/*/src/**/*.{ts,tsx}",
-    "../../packages/ui/src/**/*.{ts,tsx}",
-  ],
   theme: {
     extend: {
       colors: {
