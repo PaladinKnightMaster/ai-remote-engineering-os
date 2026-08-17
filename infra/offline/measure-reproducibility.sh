@@ -92,13 +92,23 @@ BUNDLE_VERSION="${BUNDLE_VERSION:-0.13.0}"
 log "measuring commit $COMMIT (clean tree confirmed) at BUNDLE_VERSION=$BUNDLE_VERSION"
 
 # --- 2. build environment: one tagged image, reused for BOTH builds --------
+# node/pnpm come from NodeSource, not plain apt: Debian bookworm's apt
+# nodejs is 18.20.4, but this repo's package.json pins
+# "engines.node": ">=22" (pnpm refuses to run otherwise -- observed directly
+# while authoring this script), and pnpm itself is installed at the exact
+# version this repo's package.json pins ("packageManager": "pnpm@10.32.1"),
+# not left to whatever `corepack`/apt would pick.
 IMAGE_TAG="aireos-repro-builder:golang1.23-node"
 if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-  log "building measurement image $IMAGE_TAG (golang:1.23 + apt nodejs/npm) -- one-time"
+  log "building measurement image $IMAGE_TAG (golang:1.23 + Node 22.x + pnpm 10.32.1) -- one-time"
   BUILD_CTX="$(mktemp -d)"
   cat > "$BUILD_CTX/Dockerfile" <<'EOF'
 FROM golang:1.23
-RUN apt-get update -qq && apt-get install -y -qq nodejs npm && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq \
+ && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && apt-get install -y -qq nodejs \
+ && npm install -g pnpm@10.32.1 --no-fund --no-audit \
+ && rm -rf /var/lib/apt/lists/*
 EOF
   docker build -q -t "$IMAGE_TAG" "$BUILD_CTX" >/dev/null || die "failed to build $IMAGE_TAG"
   rm -rf "$BUILD_CTX"
@@ -107,7 +117,8 @@ else
 fi
 GO_VERSION_STR="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE_TAG" go version)"
 NODE_VERSION_STR="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE_TAG" node -v)"
-log "build environment: image=$IMAGE_TAG go=\"$GO_VERSION_STR\" node=\"$NODE_VERSION_STR\""
+PNPM_VERSION_STR="$(MSYS_NO_PATHCONV=1 docker run --rm "$IMAGE_TAG" pnpm -v)"
+log "build environment: image=$IMAGE_TAG go=\"$GO_VERSION_STR\" node=\"$NODE_VERSION_STR\" pnpm=\"$PNPM_VERSION_STR\""
 
 # --- 3. baseline: dist/offline/*.tar.gz must be byte-unchanged at the end --
 DIST_OFFLINE="$REPO_ROOT/dist/offline"
@@ -135,21 +146,26 @@ GOMOD_VOL="aireos_gomodcache"
 GOCACHE_VOL="aireos_gocache"
 
 # --- 5. build once: rebuild the SPA from scratch, then build-bundle.sh -----
+# Both steps run inside the SAME container invocation (same image, same
+# mounted repo, same go/node/pnpm versions) so "the SPA layer is actually
+# rebuilt" and "the environment is held constant across both builds" are
+# both true at once, rather than trusting the host's own toolchain (which,
+# on this Windows host, cannot run vite build at all -- its node_modules
+# carries linux-x64-gnu optional deps, not win32 ones, from an earlier
+# ticket's container-based `pnpm install`).
 build_once() {
   local out_rel="$1" label="$2"
-  log "=== build $label: removing + rebuilding apps/web/dist from scratch ==="
+  log "=== build $label: removing apps/web/dist, then rebuilding SPA + bundle in $IMAGE_TAG (OUT_DIR=$out_rel) ==="
   rm -rf "$REPO_ROOT/apps/web/dist"
-  ( cd "$REPO_ROOT" && pnpm --filter @aireos/web build ) || die "SPA build failed for $label"
-  [ -d "$REPO_ROOT/apps/web/dist" ] || die "apps/web/dist missing after SPA build for $label"
-
-  log "=== build $label: build-bundle.sh in $IMAGE_TAG (OUT_DIR=$out_rel) ==="
   MSYS_NO_PATHCONV=1 docker run --rm \
     -v "$REPO_ROOT":/w -w /w \
     -v "$GOMOD_VOL":/go/pkg/mod \
     -v "$GOCACHE_VOL":/root/.cache/go-build \
     -e BUNDLE_VERSION="$BUNDLE_VERSION" \
     -e OUT_DIR="/w/$out_rel" \
-    "$IMAGE_TAG" bash infra/offline/build-bundle.sh || die "build-bundle.sh failed for $label"
+    "$IMAGE_TAG" bash -c "set -euo pipefail; pnpm --filter @aireos/web build; bash infra/offline/build-bundle.sh" \
+    || die "SPA build + build-bundle.sh failed for $label"
+  [ -d "$REPO_ROOT/apps/web/dist" ] || die "apps/web/dist missing after SPA build for $label"
 }
 
 build_once "$OUT_A_REL" "A"
@@ -261,6 +277,6 @@ assert_eq "dist/offline/*.tar.gz SHA-256 unchanged (never touched by this measur
 echo
 echo "=== SUMMARY ==="
 echo "commit measured:   $COMMIT"
-echo "build environment: $IMAGE_TAG (go: $GO_VERSION_STR; node: $NODE_VERSION_STR)"
+echo "build environment: $IMAGE_TAG (go: $GO_VERSION_STR; node: $NODE_VERSION_STR; pnpm: $PNPM_VERSION_STR)"
 echo "$pass passed, $fail failed (structural checks; the reproducibility headline above is a FINDING, not a gate -- ADR-0070 D7)"
 [ "$fail" -eq 0 ]
