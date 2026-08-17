@@ -72,8 +72,11 @@ func (s *Store) RecordEvent(ctx context.Context, e outbox.Event) error {
 const selectCols = `SELECT id, type, name, COALESCE(site_id,''), labels FROM resources`
 
 // Create inserts a resource with a server-assigned UUID v7 id (time-ordered, so
-// it doubles as the list cursor).
-func (s *Store) Create(ctx context.Context, in resource.Input) (resource.Resource, error) {
+// it doubles as the list cursor). resource.created chains in the SAME
+// transaction as the row insert (AUD-40) — the symmetric case of Delete's
+// resource.deleted (T-118c): actor, edge, target, and evidence-packet shape
+// all mirror that convention.
+func (s *Store) Create(ctx context.Context, actor string, in resource.Input) (resource.Resource, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("mint id: %w", err)
@@ -82,12 +85,30 @@ func (s *Store) Create(ctx context.Context, in resource.Input) (resource.Resourc
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("marshal labels: %w", err)
 	}
-	_, err = s.pool.Exec(ctx, `
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return resource.Resource{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO resources (id, type, name, site_id, labels)
 		VALUES ($1,$2,$3,NULLIF($4,''),$5::jsonb)`,
-		id.String(), in.Type, in.Name, in.SiteID, string(labels))
-	if err != nil {
+		id.String(), in.Type, in.Name, in.SiteID, string(labels)); err != nil {
 		return resource.Resource{}, fmt.Errorf("insert resource: %w", err)
+	}
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: actor, Edge: resourceEdge,
+		Target: "resource:" + id.String(), Outcome: "resource.created",
+		EvidencePacketID: "resource:" + id.String(),
+	}); err != nil {
+		return resource.Resource{}, fmt.Errorf("enqueue resource.created: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return resource.Resource{}, err
 	}
 	return resource.Resource{ID: id.String(), Type: in.Type, Name: in.Name, SiteID: in.SiteID, Labels: in.Labels}, nil
 }
@@ -130,35 +151,18 @@ func (s *Store) List(ctx context.Context, after string, limit int) ([]resource.R
 	return out, last, rows.Err()
 }
 
-// Update replaces the mutable fields of an existing resource. ErrNotFound if no
-// row matched.
-func (s *Store) Update(ctx context.Context, id string, in resource.Input) (resource.Resource, error) {
-	labels, err := json.Marshal(orEmpty(in.Labels))
-	if err != nil {
-		return resource.Resource{}, fmt.Errorf("marshal labels: %w", err)
-	}
-	ct, err := s.pool.Exec(ctx, `
-		UPDATE resources SET type=$2, name=$3, site_id=NULLIF($4,''), labels=$5::jsonb, updated_at=now()
-		WHERE id=$1`,
-		id, in.Type, in.Name, in.SiteID, string(labels))
-	if err != nil {
-		return resource.Resource{}, fmt.Errorf("update resource: %w", err)
-	}
-	if ct.RowsAffected() == 0 {
-		return resource.Resource{}, ErrNotFound
-	}
-	return resource.Resource{ID: id, Type: in.Type, Name: in.Name, SiteID: in.SiteID, Labels: in.Labels}, nil
-}
-
 // Delete removes a resource IF nothing non-terminal still references it
 // (referentialGuard — sessions.resource_id is a real FK that would otherwise
 // surface as a raw 500; runs/workstreams reference resources via their step
 // tables with no FK at all, so a naive delete would silently orphan Run/
 // Workstream history). ErrInUse on a live reference, ErrNotFound if no row
 // matched. On success, resource.deleted chains in the SAME transaction as the
-// row delete (T-118c) — a NEWLY MINTED convention, not an existing one:
-// Create/Update remain unaudited (a disclosed v1.0 security-audit residual,
-// not fixed here).
+// row delete (T-118c) — the convention Create now mirrors too (resource.created,
+// AUD-40 / T-131). Update no longer exists: its sole route, PUT
+// /v1/resources/{id}, was removed at T-131 (B-035) as genuinely unused —
+// carrying it forward while Create/Delete stay narrowly audited would have
+// left a live, capability-gated mutation of a governed target chaining no
+// audit event at all.
 //
 // A finding from the live-Postgres test, not anticipated by the guard's own
 // doc comment: sessions.resource_id has NO `ON DELETE` clause (migration

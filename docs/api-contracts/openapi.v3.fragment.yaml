@@ -267,27 +267,6 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-    put:
-      tags: [resources]
-      operationId: updateResource
-      summary: Replace a resource's mutable fields
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ResourceInput'
-      responses:
-        '200':
-          description: The updated resource.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Resource'
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [resources]
       operationId: deleteResource

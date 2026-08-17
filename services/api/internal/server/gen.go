@@ -821,9 +821,6 @@ type RedeemPairingRequestJSONRequestBody = PairingRedeemRequest
 // CreateResourceJSONRequestBody defines body for CreateResource for application/json ContentType.
 type CreateResourceJSONRequestBody = ResourceInput
 
-// UpdateResourceJSONRequestBody defines body for UpdateResource for application/json ContentType.
-type UpdateResourceJSONRequestBody = ResourceInput
-
 // CreateRunJSONRequestBody defines body for CreateRun for application/json ContentType.
 type CreateRunJSONRequestBody = RunCreate
 
@@ -925,9 +922,6 @@ type ServerInterface interface {
 	// Fetch a resource
 	// (GET /v1/resources/{id})
 	GetResource(w http.ResponseWriter, r *http.Request, id string)
-	// Replace a resource's mutable fields
-	// (PUT /v1/resources/{id})
-	UpdateResource(w http.ResponseWriter, r *http.Request, id string)
 	// List the caller's Runs (operator-scoped; no cross-operator scope)
 	// (GET /v1/runs)
 	ListRuns(w http.ResponseWriter, r *http.Request, params ListRunsParams)
@@ -1156,12 +1150,6 @@ func (_ Unimplemented) DeleteResource(w http.ResponseWriter, r *http.Request, id
 // Fetch a resource
 // (GET /v1/resources/{id})
 func (_ Unimplemented) GetResource(w http.ResponseWriter, r *http.Request, id string) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Replace a resource's mutable fields
-// (PUT /v1/resources/{id})
-func (_ Unimplemented) UpdateResource(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2161,37 +2149,6 @@ func (siw *ServerInterfaceWrapper) GetResource(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
-// UpdateResource operation middleware
-func (siw *ServerInterfaceWrapper) UpdateResource(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-
-	// ------------- Path parameter "id" -------------
-	var id string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UpdateResource(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // ListRuns operation middleware
 func (siw *ServerInterfaceWrapper) ListRuns(w http.ResponseWriter, r *http.Request) {
 
@@ -2915,9 +2872,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources/{id}", wrapper.GetResource)
-	})
-	r.Group(func(r chi.Router) {
-		r.Put(options.BaseURL+"/v1/resources/{id}", wrapper.UpdateResource)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/runs", wrapper.ListRuns)

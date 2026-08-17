@@ -221,8 +221,7 @@ export interface paths {
         };
         /** Fetch a resource */
         get: operations["getResource"];
-        /** Replace a resource's mutable fields */
-        put: operations["updateResource"];
+        put?: never;
         post?: never;
         /** Delete a resource */
         delete: operations["deleteResource"];
@@ -1521,36 +1520,6 @@ export interface operations {
                     "application/json": components["schemas"]["Resource"];
                 };
             };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-        };
-    };
-    updateResource: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ResourceInput"];
-            };
-        };
-        responses: {
-            /** @description The updated resource. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Resource"];
-                };
-            };
-            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

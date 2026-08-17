@@ -40,7 +40,7 @@ func TestResourceCRUDRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	in := resource.Input{Type: "ssh", Name: "edge-node", SiteID: "site-eu", Labels: map[string]string{"env": "prod"}}
-	created, err := s.Create(ctx, in)
+	created, err := s.Create(ctx, "operator:crud-test", in)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -54,18 +54,6 @@ func TestResourceCRUDRoundTrip(t *testing.T) {
 	}
 	if got.Name != "edge-node" || got.Labels["env"] != "prod" || got.SiteID != "site-eu" {
 		t.Fatalf("get mismatch: %+v", got)
-	}
-
-	upd, err := s.Update(ctx, created.ID, resource.Input{Type: "vnc", Name: "edge-node-2"})
-	if err != nil {
-		t.Fatalf("update: %v", err)
-	}
-	if upd.Type != "vnc" || upd.Name != "edge-node-2" {
-		t.Fatalf("update mismatch: %+v", upd)
-	}
-	reread, _ := s.Get(ctx, created.ID)
-	if reread.Type != "vnc" || reread.SiteID != "" || len(reread.Labels) != 0 {
-		t.Fatalf("update not persisted/cleared: %+v", reread)
 	}
 
 	items, _, err := s.List(ctx, "", 100)
@@ -96,7 +84,7 @@ func TestSessionCRUDRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	// A real resource to satisfy the FK.
-	res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "ssh-target"})
+	res, err := s.Create(ctx, "operator:seed-test", resource.Input{Type: "ssh", Name: "ssh-target"})
 	if err != nil {
 		t.Fatalf("seed resource: %v", err)
 	}
@@ -186,7 +174,7 @@ func TestResourceDeleteReferentialGuard(t *testing.T) {
 	const actor = "operator:guard-test"
 
 	t.Run("session", func(t *testing.T) {
-		res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "guard-session"})
+		res, err := s.Create(ctx, actor, resource.Input{Type: "ssh", Name: "guard-session"})
 		if err != nil {
 			t.Fatalf("seed resource: %v", err)
 		}
@@ -212,7 +200,7 @@ func TestResourceDeleteReferentialGuard(t *testing.T) {
 	})
 
 	t.Run("run", func(t *testing.T) {
-		res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "guard-run"})
+		res, err := s.Create(ctx, actor, resource.Input{Type: "ssh", Name: "guard-run"})
 		if err != nil {
 			t.Fatalf("seed resource: %v", err)
 		}
@@ -231,7 +219,7 @@ func TestResourceDeleteReferentialGuard(t *testing.T) {
 	})
 
 	t.Run("workstream", func(t *testing.T) {
-		res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "guard-workstream"})
+		res, err := s.Create(ctx, actor, resource.Input{Type: "ssh", Name: "guard-workstream"})
 		if err != nil {
 			t.Fatalf("seed resource: %v", err)
 		}
@@ -257,15 +245,40 @@ func TestResourceDeleteReferentialGuard(t *testing.T) {
 	})
 }
 
+// TestResourceCreateChainsAuditEvent proves resource.created lands in the SAME
+// transaction as the row insert (AUD-40 / T-131) — the symmetric case of
+// TestResourceDeleteChainsAuditEvent below (T-118c). Update no longer exists
+// (its sole route was removed at T-131 / B-035), so Create/Delete are now the
+// whole of the resource lifecycle and both chain an event.
+func TestResourceCreateChainsAuditEvent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	res, err := s.Create(ctx, "operator:create-audit-test", resource.Input{Type: "ssh", Name: "create-audit-target"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	var n int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM api_outbox
+		 WHERE payload->>'target' = $1 AND payload->>'outcome' = $2 AND payload->>'actor' = $3 AND payload->>'edge' = $4`,
+		"resource:"+res.ID, "resource.created", "operator:create-audit-test", "human-agent").Scan(&n); err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 resource.created event, got %d", n)
+	}
+}
+
 // TestResourceDeleteChainsAuditEvent proves resource.deleted lands in the SAME
-// transaction as the row delete (T-118c): a newly minted convention (no
-// resource.* event exists anywhere else in production code — Create/Update
-// remain unaudited, a disclosed v1.0 residual).
+// transaction as the row delete (T-118c) — Create now chains resource.created
+// too (AUD-40 / T-131, above).
 func TestResourceDeleteChainsAuditEvent(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "audit-target"})
+	res, err := s.Create(ctx, "operator:audit-test", resource.Input{Type: "ssh", Name: "audit-target"})
 	if err != nil {
 		t.Fatalf("seed resource: %v", err)
 	}
@@ -346,7 +359,7 @@ func TestReapStale(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 
-	res, err := s.Create(ctx, resource.Input{Type: "ssh", Name: "reap-target"})
+	res, err := s.Create(ctx, "operator:reap", resource.Input{Type: "ssh", Name: "reap-target"})
 	if err != nil {
 		t.Fatalf("seed resource: %v", err)
 	}

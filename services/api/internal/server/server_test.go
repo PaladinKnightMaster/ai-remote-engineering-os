@@ -53,12 +53,20 @@ func newFake() *fakeStore {
 	}
 }
 
-func (f *fakeStore) Create(_ context.Context, in resource.Input) (resource.Resource, error) {
+func (f *fakeStore) Create(ctx context.Context, actor string, in resource.Input) (resource.Resource, error) {
 	f.n++
 	id := fmt.Sprintf("res-%05d", f.n)
 	r := resource.Resource{ID: id, Type: in.Type, Name: in.Name, SiteID: in.SiteID, Labels: in.Labels}
 	f.byID[id] = r
 	f.ids = append(f.ids, id)
+	// Mirrors the real store's in-tx resource.created (AUD-40 / T-131) closely
+	// enough for a handler-level assertion — see Delete's resource.deleted
+	// below for the established pattern.
+	_ = f.RecordEvent(ctx, outbox.Event{
+		Timestamp: time.Now(), Actor: actor, Edge: "human-agent",
+		Target: "resource:" + id, Outcome: "resource.created",
+		EvidencePacketID: "resource:" + id,
+	})
 	return r, nil
 }
 
@@ -83,15 +91,6 @@ func (f *fakeStore) List(_ context.Context, after string, limit int) ([]resource
 		}
 	}
 	return out, last, nil
-}
-
-func (f *fakeStore) Update(_ context.Context, id string, in resource.Input) (resource.Resource, error) {
-	if _, ok := f.byID[id]; !ok {
-		return resource.Resource{}, store.ErrNotFound
-	}
-	r := resource.Resource{ID: id, Type: in.Type, Name: in.Name, SiteID: in.SiteID, Labels: in.Labels}
-	f.byID[id] = r
-	return r, nil
 }
 
 func (f *fakeStore) Delete(ctx context.Context, actor, id string) error {
@@ -551,7 +550,7 @@ func TestListAuditEventsUnavailableWithoutAuditURL(t *testing.T) {
 	}
 }
 
-func TestCreateGetUpdateDelete(t *testing.T) {
+func TestCreateGetDelete(t *testing.T) {
 	h := New(newFake(), nil, nil, allowAll{}, "", "")
 
 	// create
@@ -572,14 +571,8 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 		t.Fatalf("get missing: want 404, got %d", rec.Code)
 	}
 
-	// update
-	if rec := req(t, h, http.MethodPut, "/v1/resources/res-00001", `{"type":"vnc","name":"e2"}`, true); rec.Code != http.StatusOK {
-		t.Fatalf("update: want 200, got %d", rec.Code)
-	}
-	// update missing
-	if rec := req(t, h, http.MethodPut, "/v1/resources/nope", `{"type":"vnc","name":"e2"}`, true); rec.Code != http.StatusNotFound {
-		t.Fatalf("update missing: want 404, got %d", rec.Code)
-	}
+	// PUT /v1/resources/{id} (updateResource) was removed at T-131 (B-035): a
+	// live, capability-gated route apps/web never had a call site for.
 
 	// delete
 	if rec := req(t, h, http.MethodDelete, "/v1/resources/res-00001", "", true); rec.Code != http.StatusNoContent {
@@ -614,11 +607,30 @@ func TestDeleteResourceInUseRefused(t *testing.T) {
 	}
 }
 
+// TestCreateResourceChainsAuditEvent — a resource.created event is recorded
+// with the operator actor from the request's capability (AUD-40 / T-131: the
+// symmetric case of TestDeleteResourceChainsAuditEvent below, T-118c).
+func TestCreateResourceChainsAuditEvent(t *testing.T) {
+	f := newFake()
+	h := New(f, nil, nil, allowAll{}, "", "")
+
+	if rec := req(t, h, http.MethodPost, "/v1/resources", validBody, true); rec.Code != http.StatusCreated {
+		t.Fatalf("create: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+
+	if len(f.events) != 1 {
+		t.Fatalf("want 1 audit event, got %d: %+v", len(f.events), f.events)
+	}
+	evt := f.events[0]
+	if evt.Actor != "operator" || evt.Edge != "human-agent" || evt.Target != "resource:res-00001" || evt.Outcome != "resource.created" {
+		t.Fatalf("unexpected event: %+v", evt)
+	}
+}
+
 // TestDeleteResourceChainsAuditEvent — a resource.deleted event is recorded
 // with the operator actor from the request's capability (T-118c: deleting a
-// governed object is an operator action and must be attributable). No such
-// convention exists for Create/Update (server.go never calls RecordEvent for
-// them) — a disclosed v1.0 security-audit residual, not fixed here.
+// governed object is an operator action and must be attributable). Create now
+// chains resource.created too (AUD-40 / T-131, above).
 func TestDeleteResourceChainsAuditEvent(t *testing.T) {
 	f := newFake()
 	h := New(f, nil, nil, allowAll{}, "", "")
@@ -628,10 +640,10 @@ func TestDeleteResourceChainsAuditEvent(t *testing.T) {
 		t.Fatalf("delete: want 204, got %d", rec.Code)
 	}
 
-	if len(f.events) != 1 {
-		t.Fatalf("want 1 audit event, got %d: %+v", len(f.events), f.events)
+	if len(f.events) != 2 {
+		t.Fatalf("want 2 audit events (created + deleted), got %d: %+v", len(f.events), f.events)
 	}
-	evt := f.events[0]
+	evt := f.events[1]
 	if evt.Actor != "operator" || evt.Edge != "human-agent" || evt.Target != "resource:res-00001" || evt.Outcome != "resource.deleted" {
 		t.Fatalf("unexpected event: %+v", evt)
 	}
@@ -1398,7 +1410,7 @@ func TestResolveUnknownSession(t *testing.T) {
 // configured cannot be resolved: 503, the session stays parked.
 func TestResolveNoPolicyConfigured(t *testing.T) {
 	f := newFake()
-	res, _ := f.Create(context.Background(), resource.Input{Type: "ssh", Name: "x", Labels: map[string]string{"requires_approval": "true"}})
+	res, _ := f.Create(context.Background(), "operator", resource.Input{Type: "ssh", Name: "x", Labels: map[string]string{"requires_approval": "true"}})
 	parked, _ := f.ParkForApproval(context.Background(), "operator", session.CreateInput{ResourceID: res.ID, Mode: session.DefaultMode})
 	h := New(f, nil, nil, allowAll{}, "", "") // policyURL ""
 

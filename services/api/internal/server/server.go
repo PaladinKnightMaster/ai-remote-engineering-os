@@ -72,10 +72,12 @@ const (
 
 // Store is the narrow slice of *store.Store the handlers need.
 type Store interface {
-	Create(ctx context.Context, in resource.Input) (resource.Resource, error)
+	// Create registers a resource; actor is the operator subject recorded on
+	// the resource.created audit event the store chains in-tx with the row
+	// insert (AUD-40 / T-131).
+	Create(ctx context.Context, actor string, in resource.Input) (resource.Resource, error)
 	Get(ctx context.Context, id string) (resource.Resource, error)
 	List(ctx context.Context, after string, limit int) ([]resource.Resource, string, error)
-	Update(ctx context.Context, id string, in resource.Input) (resource.Resource, error)
 	// Delete removes a resource IF nothing non-terminal references it (T-118c's
 	// referential guard); actor is the operator subject recorded on the
 	// resource.deleted audit event the store chains in-tx with the row delete.
@@ -836,12 +838,22 @@ func (a *apiHandlers) decodeInput(w http.ResponseWriter, r *http.Request) (resou
 	return in, true
 }
 
+// CreateResource (POST /v1/resources) registers a resource through the
+// governed path. AUD-40: chains resource.created in the same transaction as
+// the row insert, the symmetric case of DeleteResource's resource.deleted
+// (T-118c) — every other governed mutation in the product already chains an
+// event, and a resource-registry create should not be the exception.
 func (a *apiHandlers) CreateResource(w http.ResponseWriter, r *http.Request) {
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
+		return
+	}
 	in, ok := a.decodeInput(w, r)
 	if !ok {
 		return
 	}
-	res, err := a.store.Create(r.Context(), in)
+	res, err := a.store.Create(r.Context(), operator, in)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "create failed")
 		return
@@ -892,23 +904,6 @@ func (a *apiHandlers) GetResource(w http.ResponseWriter, r *http.Request, id str
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "get failed")
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
-}
-
-func (a *apiHandlers) UpdateResource(w http.ResponseWriter, r *http.Request, id string) {
-	in, ok := a.decodeInput(w, r)
-	if !ok {
-		return
-	}
-	res, err := a.store.Update(r.Context(), id, in)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not_found", "resource not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "update failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
