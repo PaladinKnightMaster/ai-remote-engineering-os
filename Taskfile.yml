@@ -132,6 +132,11 @@ tasks:
     cmds:
       - bash infra/offline/check-provenance.sh
 
+  sec45-check:
+    desc: "SEC-45 negative proof (ADR-0070 D1/D2/D9, VER-16, T-130a): mutates ONE byte in a scratch COPY of each already-built+signed dist/offline artifact (core bundle + postgres companion; dist/offline/ itself is never touched) and asserts signature verification fails on that copy — both via raw openssl AND via check-provenance.sh naming the artifact in a 'signature does NOT verify' line — while a control pass on the unmutated copy is proven to verify clean first, on the same code path. A deliberately-invoked release-evidence step, NOT part of the dev-loop release-check gate (not wired into `task release-check`) — it needs the real signed artifacts already on disk, which a dev loop rarely has, and dies loudly rather than self-skipping if they are missing (a negative proof must never graft on a dev-loop self-skip). Hardcodes the fixture public key at infra/offline/testdata/fixture-release-key/ (never a real key). Needs node in addition to openssl. Usage: task sec45-check (after `task offline-bundle` + `task sign-release -- --key <fixture-or-real-key>` for both artifacts)."
+    cmds:
+      - bash infra/offline/sec45_bundle_mutation_test.sh
+
   codegen:
     desc: "Generate per-service Go chi-server stubs + apps/web TS types from the OpenAPI fragment (ADR-0043, ADR-0047; T-014, T-007a). One schema, two consumers."
     vars:
