@@ -4,10 +4,13 @@ Per ADR-0070 D7: **non-reproducibility is a finding, not a blocker.** This repor
 measured result either way. It was produced by `infra/offline/measure-reproducibility.sh`
 (`task measure-reproducibility`), run once, T-130b.
 
-## Result: REPRODUCIBLE
+## Result: REPRODUCIBLE (same host, same container, warm build cache)
 
 Two independent builds of the core offline bundle, from the same clean commit, each rebuilding
-the SPA from scratch, produced a **byte-identical tarball**:
+the SPA from scratch, produced a **byte-identical tarball**. The qualifier in the heading is not
+hedging: the two builds shared a warm Go build cache, which materially weakens the Go-binary half
+of this result — see the caveat under Finding A, and the Scope limit at the end. The SPA, SBOM,
+manifest and packaging results are unaffected by that caveat and are the substantive findings.
 
 ```
 tarball A sha256: 6dc9ba702860f1bd4ade3a950625c8429775effefa21a23f3fa82627c20c4f4f
@@ -124,9 +127,34 @@ not assumed:
 irreproducible against its own commit by construction, and would report a false
 "non-reproducible" finding for a reason that has nothing to do with the build's actual
 determinism. On a clean tree, `vcs.revision`/`vcs.time` are properties of the **commit**, not the
-build's wall-clock time, which is part of why the Go binary layer above reproduced byte-for-byte
-across two separate `go build` invocations, in two separate container instances, run minutes
-apart.
+build's wall-clock time — so the stamp does not, by itself, make two builds differ.
+
+## ⚠ Caveat — the Go layer's result is weaker than the table suggests
+
+Both builds mounted the **same** Go module and build-cache Docker volumes (`aireos_gomodcache`,
+`aireos_gocache`), and that cache was already warm — 842 MB of modules and **737 MB of build
+cache**, measured after the run. Go's build cache is **content-addressed**: on identical inputs it
+returns the previously stored output rather than recompiling. So build B very largely replayed
+build A's cached objects, and `bin/* 0/1 differ` is close to a **tautology** for the Go layer
+rather than a demonstration that two independent compilations agree.
+
+Stated plainly, so the table above is not read for more than it proves:
+
+- **What was actually measured for the Go binaries:** that a warm content-addressed cache returns
+  identical bytes. That is true essentially by definition.
+- **What was NOT measured:** whether two *cold* compilations of this source produce identical
+  bytes. Establishing that requires wiping the build cache between the two builds, which this run
+  did not do.
+
+**The layers where this measurement produced genuinely new information are the SPA, the SBOM, the
+manifest and the packaging** — the SPA in particular, because `apps/web/dist` was deleted and
+rebuilt by `vite` from scratch before each build, so `web/ 0/4 differ` reflects a real re-run and
+not a cached artifact. That is also the layer ADR-0070 D6 named as the prime suspect, so the open
+question the measurement existed to answer *was* answered; it is the Go layer, already expected to
+reproduce, whose result is the soft one.
+
+This caveat is recorded rather than quietly folded into "reproducible" because the release's whole
+posture is that an unexamined claim is worth less than a measured one with its limits stated.
 
 This is also a real, checkable, self-reported provenance fact independent of this report — see the
 correction in `docs/devops/offline-install-v3.md` (this ticket): the *signature* does not tie an
@@ -166,7 +194,9 @@ artifacts is itself worth recording rather than leaving implicit.
 
 This report measures **same-host, same-container reproducibility only**: two builds run back to
 back on one physical Windows host, from one locally-tagged Docker image, against the same
-populated Go module/build-cache Docker volumes. It is **not** a cross-host claim. A genuinely
+**warm** Go module/build-cache Docker volumes (see the caveat under Finding A — that shared cache
+is why the Go-binary layer's result is the weakest part of this report). It is **not** a cross-host
+claim, and **not** a cold-build claim. A genuinely
 different host — different OS, different CPU microarchitecture, a different day's
 `golang:1.23`/NodeSource snapshot, a different network path for the Caddy download or the SBOM
 tool fetches — could produce a different result, and this report does not test that. Establishing
