@@ -101,3 +101,62 @@ describe("@aireos/config/eslint.config.js — override files: globs match real f
     });
   });
 });
+
+// --- Per-PATTERN coverage (Commander addition, T-132 review) ---------------
+//
+// The per-block assertion above is VER-12 as literally worded, and it has a
+// blind spot the criterion's wording does not reach: a block passes as long as
+// ONE of its patterns matches, so a dead pattern can sit inside a live block
+// indefinitely. That is the same false-confidence shape S-25 exists to hunt,
+// one level down — so it is asserted here rather than left to a comment.
+//
+// Two such patterns exist today. Both are recorded below WITH their reason
+// rather than deleted, and both are genuinely inert (each only relaxes rules
+// for files that do not exist). The allowlist is the point: any NEW dead
+// pattern fails this test immediately, and these two cannot be quietly
+// forgotten because removing a reason from this list is a visible diff.
+const KNOWN_UNMATCHED: Record<string, string> = {
+  // Zero .spec.ts/.spec.tsx files exist repo-wide; this repo's convention is
+  // .test.*. Kept rather than deleted: it costs nothing, and dropping it would
+  // silently remove the test-file rule relaxations the day someone adds a
+  // .spec file — a worse failure than an inert pattern.
+  "**/*.spec.{ts,tsx}":
+    "no .spec.* files exist; repo convention is .test.*. Forward-looking, inert.",
+  // `tools/` exists only at the REPO ROOT, and no lint cwd contains it —
+  // nothing runs eslint against tools/ at all. Dead because of the recorded
+  // lint-coverage gap (nothing lints tools/ or packages/config), which the CEO
+  // scoped OUT of T-132. Delete this entry if that gap is ever closed.
+  "tools/**/*.{mjs,js,ts}":
+    "nothing lints tools/ under any cwd — the recorded, out-of-scope lint-coverage gap.",
+};
+
+describe("@aireos/config/eslint.config.js — every individual pattern matches (VER-12, stricter)", () => {
+  const allPatterns = [...new Set(overrideBlocks.flatMap((b) => b.files as string[]))];
+
+  allPatterns.forEach((pattern) => {
+    const known = KNOWN_UNMATCHED[pattern];
+    it(`pattern ${JSON.stringify(pattern)} ${known ? "is a RECORDED inert pattern" : "matches a real file"}`, () => {
+      const matches = LINT_CWDS.reduce((sum, cwd) => sum + realFileCount(pattern, cwd), 0);
+      if (known) {
+        // Assert the recorded exception is still TRUE. If one of these starts
+        // matching, the reason above is stale and the entry must go — a stale
+        // allowlist entry is itself the failure class this file hunts.
+        expect(
+          matches,
+          `pattern ${pattern} now matches ${matches} file(s); its recorded reason ("${known}") is stale — remove it from KNOWN_UNMATCHED`,
+        ).toBe(0);
+      } else {
+        expect(matches, `pattern ${pattern} matches no real file under any lint cwd`).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  it("has no stale KNOWN_UNMATCHED entries for patterns that no longer exist", () => {
+    // A pattern deleted from eslint.config.js must not leave its excuse behind.
+    for (const pattern of Object.keys(KNOWN_UNMATCHED)) {
+      expect(allPatterns, `KNOWN_UNMATCHED lists ${pattern}, which is no longer in eslint.config.js`).toContain(
+        pattern,
+      );
+    }
+  });
+});
