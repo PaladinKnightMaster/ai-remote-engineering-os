@@ -348,7 +348,21 @@ services:
     # lock losing a race against the audit service's own concurrent cadence tick — not a
     # flake worked around, since a losing tester-side checkpoint means the OTHER side
     # already signed the identical tip and the very next verify attempt sees it.
-    command: ["bash", "-c", "set -o pipefail; go test -tags e2e -count=1 -v -timeout 600s ./tests/e2e/... && go test -tags e2e -count=1 -v -timeout 120s ./services/audit-service/internal/checkpoint/... && for i in 1 2 3 4 5; do go run ./services/audit-service checkpoint; if go run ./services/audit-service verify | tee /dev/stderr | grep -q 'INTACT+ATTESTED'; then exit 0; fi; sleep 1; done; echo 'G1 FAILED: audit-service verify never reported INTACT+ATTESTED after 5 forced-checkpoint retries' >&2; exit 1"]
+    #
+    # FINALLY (T-127b, SEC-43/VER-16): run the forged-chain negative proof as its OWN,
+    # EXPLICITLY-SEQUENCED LAST STEP — never folded into the untagged step above by
+    # naming convention alone (one future added test away from an order-dependent,
+    # hard-to-debug failure against a chain that step destroys). It requires BOTH the
+    # "e2e" and "sec43" build tags AND an explicit -run — see sec43_e2e_test.go's header
+    # comment for why the tag is stacked rather than reused. It disables
+    # audit_events_no_mutate on THIS disposable stack only (never the migration),
+    # tampers one event below the last signed head, repairs the chain around it with
+    # chain.Compute so plain chain.Verify reports intact, then proves BOTH the DB-backed
+    # `audit-service verify` and the offline third-party `aireos-verify` binary still
+    # catch it — each shown passing on the clean chain first (VER-16), then failing
+    # correctly on the forged one. Runs LAST because it leaves the chain unusable for
+    # anything after it.
+    command: ["bash", "-c", "set -o pipefail; go test -tags e2e -count=1 -v -timeout 600s ./tests/e2e/... && go test -tags e2e -count=1 -v -timeout 120s ./services/audit-service/internal/checkpoint/... && { ok=0; for i in 1 2 3 4 5; do go run ./services/audit-service checkpoint; if go run ./services/audit-service verify | tee /dev/stderr | grep -q 'INTACT+ATTESTED'; then ok=1; break; fi; sleep 1; done; if [ \"$$ok\" != 1 ]; then echo 'G1 FAILED: audit-service verify never reported INTACT+ATTESTED after 5 forced-checkpoint retries' >&2; exit 1; fi; }  && go test -tags e2e,sec43 -run '^TestSEC43ForgedAuditChainCaughtByBothVerifiers$' -count=1 -v -timeout 180s ./services/audit-service/internal/checkpoint/..."]
 
 volumes:
   gomodcache:

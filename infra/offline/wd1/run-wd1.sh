@@ -265,6 +265,22 @@ case "$VERIFY_OUT" in
   *)
     echo "wd1: audit-service verify did NOT report an attested outcome at all — most likely no chain-head public key reached the CLI, so it fell back to ordering-only (T-126a's resolveVerifyKey). Output above."; exit 1 ;;
 esac
+
+# T-127a leftover, closed here (ADR-0069 D4): the assertion above proves the SIGNED
+# HEAD (the in-Postgres chain_heads row + its signature). It never checked the
+# out-of-Postgres anchor file — the truncation detector that is the whole reason D4
+# exists (a deleted tail is invisible to Postgres alone; only the anchor catches it).
+# Assert it exists AND is non-empty at the path install.sh actually provisioned into
+# aireos.env's AIREOS_AUDIT_ANCHOR_PATH — not a hardcoded path, so this breaks loudly
+# if install.sh's provisioning ever drifts from what it tells the operator.
+log "assert: the out-of-Postgres audit anchor file exists and is non-empty (ADR-0069 D4)"
+docker exec "$HOST" bash -c '
+  AP=$(grep "^AIREOS_AUDIT_ANCHOR_PATH=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+  [ -n "$AP" ] || { echo "aireos.env missing AIREOS_AUDIT_ANCHOR_PATH"; exit 1; }
+  [ -s "$AP" ] || { echo "anchor file $AP does not exist or is empty — the out-of-Postgres truncation detector never wrote anything"; exit 1; }
+  echo "anchor OK — $AP exists and is non-empty ($(wc -l < "$AP") line(s))"
+'
+
 # Includes the WD-5 Run lifecycle events (OI-12, T-061): run.launched + run.completed
 # land via api's in-process outbox relay, proving the Run plane drives on the install.
 # v0.6 (OI-13, T-069) adds the delegation lifecycle: grant.issued/grant.revoked (the
@@ -346,3 +362,201 @@ for attempt in 1 2 3; do
 done
 
 log "T-053a/T-061/T-069/T-077/T-084/T-093/T-102/T-122a PASS — WD-4 + WD-5 + WD-6 + WD-7 + WD-8 + WD-9 + WD-10 + WD-11 on the installed stack via Caddy HTTPS: WD-2 session approval + governed lease + deny leg, the agent surface (Caddy /mcp → gateway block-and-wait → operator approve → broker exec) driven by a KEYLESS gateway (SEC-20), the WD-5 Run plane (OI-12), the WD-6 delegated-launch plane (OI-13), the WD-7 chartered-Workstream plane (OI-14: operator charter → the in-process ticker fires a governed Run on the schedule with nobody present → the flagged step parks with the workstream context → operator approve → completed → retire; the schedule floor is the 60s production default (no new env; the ticker rides the OI-13 GATEWAY_URL, migration 0011 rides the migrate loop)), the WD-8 Persistent Scoped Memory plane (OI-15: the completed tick ACCRUES a content-free pointer with nobody writing it → author/scoped-read/redact + the N1 idempotent no-op → the agent plane is rejected on /v1/memories* (SEC-31) → unknown-id 404s → the sweep at the PRODUCTION 2-min reaper cadence expires the unpinned row exactly once and spares the pinned one → an operator-canceled Run accrues exactly one :canceled pointer; migration 0012 rides the migrate loop, the sweep rides the unconditional reaper goroutine), the WD-9 Adaptive-Workstreams plane (OI-16: a real external MCP client composes the next tick's plan from governed memory it reads over Caddy /mcp, a human reviews the exact plan before anything runs, the engine executes it, the outcome accrues, and the NEXT tick's read proves the loop closed — at the 60s production floor; cross-grant containment + revoke-cascades-with-zero-run.denied + the share gate + the deny cycle + expiry-never-wedges all proven installed; migration 0013 rides the migrate loop, the three control-plane MCP tools ride the existing gateway binary + /mcp route — NO new unit/route/key/env for either v0.8 or v0.9), the WD-10 Layer 1 Live/Context Index plane (OI-17: a real host directory bound to a charter — via the wd1-harness-owned CTXVOL, standing in for the installed api's own filesystem, since api is a systemd service inside $HOST with no bind-mounted repo checkout — is swept by the in-process indexer at the REAL 60s production floor, the composer's context.search over Caddy /mcp reads it (chained context.read, agent-workspace edge, content-free) alongside memory.read, a human reviews and approves the exact grounded plan, the flagged resource's invocation-level park+approve completes it, it accrues, and a live source edit is reflected on the NEXT sweep with no rebuild call; the confined-root guard (N2) holds installed too; migrations 0014+0015 ride the migrate loop, context.search rides the existing gateway binary + /mcp route — NO new unit/route/key/required-env), AND the WD-11 pairing plane (T-122a, ADR-0068: pairing ships OFF by default — proven 404 live on this stack — then enabled the way an operator actually would, a re-run of the real install.sh with AIREOS_PAIRING_ENABLED=1 + a unit restart, OI-23 idempotence preserved; the desk requests a pairing, a device redeems the fragment-carried secret for a revocable paired session, a held invocation is approved FROM the paired session — not the desk — attributably (AUD-34: approval.granted actor=operator:admin#paired), and the desk revokes it, SEC-34 proving the revoked reuse refused live; migration 0016 rides the migrate loop, no new unit/port/key/Caddyfile change); chain intact + complete (incl. workstream.chartered/workstream.retired + workstream-actor run.launched + memory.written/memory.redacted/memory.expired + plan.requested/plan.submitted/plan.expired + memory.read/memory.shared/memory.unshared + run.denied + context.source.registered/context.read + pairing.requested/pairing.redeemed/pairing.revoked + the paired-actor approval.granted)."
+
+# 12. SEC-43/VER-16 (T-127b) — the forged-chain negative proof ADR-0069 §Security
+#     posture pins as binding, run on the INSTALLED stack as its own, EXPLICITLY
+#     SEQUENCED FINAL STEP — after the WD PASS line above, never folded in by a
+#     "runs last" naming convention (one future added assertion away from an
+#     order-dependent failure against a chain THIS step destroys). Nothing may
+#     run after it: the chain is deliberately left broken.
+#
+#     LEG A proves the precondition is real, not asserted: an UPDATE against
+#     audit_events is actually attempted while audit_events_no_mutate is armed
+#     and is REJECTED, then the SAME statement is shown succeeding once the
+#     trigger is disabled — confirming the trigger, not some unrelated
+#     permission, was what blocked it (ADR-0069 §Context's corrected threat
+#     statement: the precondition is OWNER access, not mere write access).
+#
+#     LEG B proves the forgery is caught anyway: disable the trigger (owner
+#     privilege — itself evidence of the precondition), tamper one event's
+#     actor field STRICTLY BELOW the last signed head, then repair
+#     prev_hash/chain_hash forward from Genesis using a SQL translation of
+#     chain.Compute (services/audit-service/internal/chain/chain.go) — pgcrypto's
+#     digest() over the identical length-prefixed framing — so a pure
+#     ordering/hash walk (chain.Verify, called via the REAL installed
+#     audit-service binary in its no-key ordering-only fallback mode, never
+#     reimplemented here) reports INTACT. That "intact" result is the
+#     vacuous-looking green ADR-0069's test-design constraint warns about — it
+#     is the SETUP the proof needs, not the proof itself. What actually catches
+#     the forgery is the signature: both the DB-backed `audit-service verify`
+#     and the offline, third-party `aireos-verify` binary (T-126b) are run as
+#     the REAL INSTALLED BINARIES — first against the clean pre-tamper state
+#     (must PASS, VER-16's "shown passing on the untampered input"), then again
+#     against the tampered state (must FAIL and report BROKEN).
+#
+#     The SQL repair formula was validated byte-for-byte against the real Go
+#     chain.Compute before this script was written (two independently
+#     Go-computed chain hashes, reproduced exactly via this SQL against a
+#     scratch Postgres+pgcrypto instance seeded with the same field values —
+#     not merely asserted to be equivalent).
+log "SEC-43/VER-16: forged-chain negative proof (installed stack, FINAL step — destroys the chain)"
+docker exec -i "$HOST" bash <<'SEC43EOF'
+say() { printf '\033[1;35m[wd1:sec43]\033[0m %s\n' "$*"; }
+fail() { echo "SEC-43 FAILED: $*" >&2; exit 1; }
+
+DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+SK=$(grep "^AIREOS_AUDIT_CHAIN_SIGN_KEY=" /etc/aireos/audit.env | head -1 | cut -d= -f2-)
+PK=$(grep "^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+AP=$(grep "^AIREOS_AUDIT_ANCHOR_PATH=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+[ -n "$DU" ] && [ -n "$SK" ] && [ -n "$PK" ] || fail "could not resolve DATABASE_URL / chain-head keys from the installed env files"
+
+say "forcing a checkpoint (idempotent — a no-op if T-127a's earlier checkpoint already covers the tip)"
+DATABASE_URL="$DU" AIREOS_AUDIT_CHAIN_SIGN_KEY="$SK" /opt/aireos/bin/audit-service checkpoint || fail "checkpoint did not run"
+
+HEAD_SEQ=$(psql "$DU" -tAc "SELECT seq FROM audit_chain_heads ORDER BY seq DESC LIMIT 1")
+[ -n "$HEAD_SEQ" ] || fail "no signed chain head exists — nothing to attest around"
+say "signed head at seq $HEAD_SEQ"
+
+say "pre-tamper control (VER-16): audit-service verify must PASS on the untampered chain"
+PRE_VERIFY=$(DATABASE_URL="$DU" AIREOS_AUDIT_CHAIN_PUBLIC_KEY="$PK" /opt/aireos/bin/audit-service verify 2>&1)
+PRE_VERIFY_CODE=$?
+echo "$PRE_VERIFY"
+[ "$PRE_VERIFY_CODE" = 0 ] || fail "pre-tamper audit-service verify did not exit 0 (exit $PRE_VERIFY_CODE)"
+case "$PRE_VERIFY" in *"INTACT+ATTESTED"*) : ;; *) fail "pre-tamper audit-service verify was not INTACT+ATTESTED" ;; esac
+
+say "pre-tamper control (VER-16): aireos-verify (offline export) must PASS on the untampered chain"
+DATABASE_URL="$DU" AIREOS_AUDIT_ANCHOR_PATH="$AP" /opt/aireos/bin/audit-service export > /tmp/sec43-clean.ndjson
+[ -s /tmp/sec43-clean.ndjson ] || fail "clean export is empty"
+PRE_AV=$(/opt/aireos/bin/aireos-verify --pubkey "$PK" /tmp/sec43-clean.ndjson 2>&1)
+PRE_AV_CODE=$?
+echo "$PRE_AV"
+# SEC-43 is a CHAIN-axis proof. aireos-verify exits 0 only when the chain is
+# INTACT+ATTESTED *AND* the anchor is IN_SYNC — two deliberately INDEPENDENT axes
+# (ADR-0069 D4/D6). On the installed stack the anchor is routinely one head behind
+# (BENIGN_LAG -> exit 3), which is correct designed behaviour, not a fault: the
+# anchor is appended AFTER the DB head commits, so a lag of one is the ordinary
+# crash-window state the classification exists to name.
+#
+# Requiring exit 0 here therefore conflated the two axes and failed this control for
+# a reason that has nothing to do with what SEC-43 proves. Assert the CHAIN verdict,
+# and reject only the codes that mean something is genuinely compromised before we
+# have touched anything: 1 = chain BROKEN, 2 = anchor TRUNCATION_SIGNATURE.
+case "$PRE_AV_CODE" in
+  1|2) fail "pre-tamper aireos-verify reported a COMPROMISED chain/anchor before any tampering (exit $PRE_AV_CODE) — the stack was not in a clean state to prove anything from" ;;
+esac
+case "$PRE_AV" in
+  *"INTACT+ATTESTED"*) : ;;
+  *) fail "pre-tamper aireos-verify chain verdict was not INTACT+ATTESTED (exit $PRE_AV_CODE)" ;;
+esac
+say "pre-tamper controls PASSED on both verifiers — a negative proof that could never have passed proves nothing"
+
+say "LEG A: UPDATE against audit_events while audit_events_no_mutate is ARMED must be REJECTED"
+TIP_SEQ=$(psql "$DU" -tAc "SELECT max(seq) FROM audit_events")
+[ -n "$TIP_SEQ" ] || fail "audit_events is empty — nothing to tamper"
+
+cat > /tmp/sec43-lega.sql <<'SQL'
+UPDATE audit_events SET actor = 'sec43-leg-a-should-be-rejected' WHERE seq = :tip;
+SQL
+LEGA_OUT=$(psql "$DU" -v ON_ERROR_STOP=1 -v tip="$TIP_SEQ" -f /tmp/sec43-lega.sql 2>&1)
+LEGA_CODE=$?
+echo "$LEGA_OUT"
+[ "$LEGA_CODE" != 0 ] || fail "UPDATE against audit_events (seq $TIP_SEQ) succeeded while audit_events_no_mutate should be armed — the append-only barrier did not hold"
+echo "$LEGA_OUT" | grep -qi "append-only" || fail "the UPDATE was rejected, but not by the expected trigger"
+say "LEG A PASSED: UPDATE against audit_events (seq $TIP_SEQ) REJECTED while armed"
+
+say "LEG B step 1: disable audit_events_no_mutate (owner privilege — itself evidence of the ADR-0069 precondition; the migration file is untouched, this is a runtime-only change on this disposable stack)"
+cat > /tmp/sec43-disable.sql <<'SQL'
+ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_mutate;
+SQL
+psql "$DU" -v ON_ERROR_STOP=1 -f /tmp/sec43-disable.sql || fail "disabling audit_events_no_mutate failed"
+
+say "LEG A control: the SAME UPDATE now succeeds with the trigger disabled"
+cat > /tmp/sec43-legactrl.sql <<'SQL'
+UPDATE audit_events SET actor = actor WHERE seq = :tip;
+SQL
+psql "$DU" -v ON_ERROR_STOP=1 -v tip="$TIP_SEQ" -f /tmp/sec43-legactrl.sql || fail "the identical UPDATE still fails after disabling the trigger — LEG A's earlier rejection was not actually caused by audit_events_no_mutate"
+say "LEG A control PASSED — confirms the earlier rejection was the trigger, not an unrelated permission"
+
+FIRST_SEQ=$(psql "$DU" -tAc "SELECT min(seq) FROM audit_events")
+[ -n "$FIRST_SEQ" ] || fail "could not read the lowest event seq"
+[ "$FIRST_SEQ" -lt "$HEAD_SEQ" ] || fail "test precondition violated: the lowest event seq ($FIRST_SEQ) is not STRICTLY BELOW the signed head ($HEAD_SEQ) — tampering at or above the head would be a vacuous proof (ADR-0069 §Security posture)"
+
+ORIG_ACTOR=$(psql "$DU" -tAc "SELECT actor FROM audit_events WHERE seq = $FIRST_SEQ")
+FORGED_ACTOR="${ORIG_ACTOR}-SEC43-FORGED-BELOW-HEAD"
+say "LEG B step 2: tamper actor at seq $FIRST_SEQ (below signed head $HEAD_SEQ) -- $ORIG_ACTOR -> $FORGED_ACTOR"
+cat > /tmp/sec43-tamper.sql <<'SQL'
+UPDATE audit_events SET actor = :'forged' WHERE seq = :seq;
+SQL
+psql "$DU" -v ON_ERROR_STOP=1 -v seq="$FIRST_SEQ" -v forged="$FORGED_ACTOR" -f /tmp/sec43-tamper.sql || fail "tamper UPDATE failed"
+
+say "LEG B step 3: repair prev_hash/chain_hash forward from Genesis (chain.Compute-equivalent SQL)"
+cat > /tmp/sec43-repair.sql <<'SQL'
+CREATE OR REPLACE FUNCTION sec43_compute(prevh text, p_id text, p_ts text, p_actor text, p_edge text, p_target text, p_outcome text, p_evid text, p_idem text)
+RETURNS text AS $$
+DECLARE
+  payload bytea;
+BEGIN
+  payload := convert_to(prevh, 'UTF8');
+  payload := payload || int4send(octet_length(p_id)::int4)      || convert_to(p_id, 'UTF8');
+  payload := payload || int4send(octet_length(p_ts)::int4)      || convert_to(p_ts, 'UTF8');
+  payload := payload || int4send(octet_length(p_actor)::int4)   || convert_to(p_actor, 'UTF8');
+  payload := payload || int4send(octet_length(p_edge)::int4)    || convert_to(p_edge, 'UTF8');
+  payload := payload || int4send(octet_length(p_target)::int4)  || convert_to(p_target, 'UTF8');
+  payload := payload || int4send(octet_length(p_outcome)::int4) || convert_to(p_outcome, 'UTF8');
+  payload := payload || int4send(octet_length(p_evid)::int4)    || convert_to(p_evid, 'UTF8');
+  payload := payload || int4send(octet_length(p_idem)::int4)    || convert_to(p_idem, 'UTF8');
+  RETURN encode(digest(payload, 'sha256'), 'hex');
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE
+  r RECORD;
+  prevh TEXT := repeat('0', 64);
+  newhash TEXT;
+BEGIN
+  FOR r IN
+    SELECT seq, id::text AS id, "timestamp" AS ts, actor, edge, target,
+           COALESCE(outcome, '') AS outcome,
+           COALESCE(evidence_packet_id, '') AS evidence_packet_id,
+           idempotency_key::text AS idempotency_key
+    FROM audit_events ORDER BY seq ASC
+  LOOP
+    newhash := sec43_compute(prevh, r.id, r.ts, r.actor, r.edge, r.target, r.outcome, r.evidence_packet_id, r.idempotency_key);
+    UPDATE audit_events SET prev_hash = prevh, chain_hash = newhash WHERE seq = r.seq;
+    prevh := newhash;
+  END LOOP;
+  RAISE NOTICE 'sec43: chain repaired through seq %, final chain_hash %', (SELECT max(seq) FROM audit_events), prevh;
+END $$;
+SQL
+psql "$DU" -v ON_ERROR_STOP=1 -f /tmp/sec43-repair.sql || fail "chain repair failed"
+
+say "LEG B step 4: chain.Verify (ordering + hash recompute ONLY, no signatures) must return INTACT on the forged chain — the SETUP the proof needs, not the proof itself. If this does not hold, STOP rather than adjust until it goes green (ADR-0069 §Security posture)."
+POST_ORDERING=$(DATABASE_URL="$DU" /opt/aireos/bin/audit-service verify 2>&1)
+POST_ORDERING_CODE=$?
+echo "$POST_ORDERING"
+if [ "$POST_ORDERING_CODE" != 0 ] || ! echo "$POST_ORDERING" | grep -q "ORDERING-ONLY"; then
+  fail "test setup FAILED: chain.Verify (the real function, invoked with no key so audit-service verify falls back to its ordering-only mode) does not report intact on the forged chain — the repair did not fully satisfy the ordering walk, so this test cannot prove what it claims."
+fi
+say "chain.Verify (real ordering-only walk, no signatures) reports INTACT on the forged chain — the forgery is invisible to that check alone"
+
+say "LEG B step 5: BOTH real verifiers must still catch it"
+POST_VERIFY=$(DATABASE_URL="$DU" AIREOS_AUDIT_CHAIN_PUBLIC_KEY="$PK" /opt/aireos/bin/audit-service verify 2>&1)
+POST_VERIFY_CODE=$?
+echo "$POST_VERIFY"
+[ "$POST_VERIFY_CODE" != 0 ] || fail "audit-service verify exited 0 against the forged chain"
+echo "$POST_VERIFY" | grep -q "BROKEN" || fail "audit-service verify did not report BROKEN (exit $POST_VERIFY_CODE)"
+say "LEG B PASSED: audit-service verify (DB-backed) reports BROKEN, exit $POST_VERIFY_CODE"
+
+DATABASE_URL="$DU" AIREOS_AUDIT_ANCHOR_PATH="$AP" /opt/aireos/bin/audit-service export > /tmp/sec43-tampered.ndjson
+POST_AV=$(/opt/aireos/bin/aireos-verify --pubkey "$PK" /tmp/sec43-tampered.ndjson 2>&1)
+POST_AV_CODE=$?
+echo "$POST_AV"
+[ "$POST_AV_CODE" != 0 ] || fail "aireos-verify exited 0 against the tampered export"
+echo "$POST_AV" | grep -q "BROKEN" || fail "aireos-verify did not report BROKEN (exit $POST_AV_CODE)"
+say "LEG B PASSED: aireos-verify (offline, third-party, exported bytes only, NO database access) reports BROKEN, exit $POST_AV_CODE"
+
+say "SEC-43 SUMMARY -- signed head seq=$HEAD_SEQ, tampered event seq=$FIRST_SEQ, chain.Verify=INTACT (ordering-only walk, real function) on the forged chain, audit-service verify=BROKEN (exit $POST_VERIFY_CODE), aireos-verify=BROKEN (exit $POST_AV_CODE)"
+SEC43EOF
+
+log "T-127b PASS — SEC-43/VER-16 on the installed stack: the append-only trigger is a real barrier (LEG A, shown rejecting an UPDATE while armed then succeeding once disabled — confirming the trigger, not an unrelated permission), and a chain tampered below a signed head then repaired end to end to satisfy a pure ordering/hash walk is still caught by BOTH the DB-backed audit-service verify and the offline, third-party aireos-verify (LEG B). This was the FINAL step by design — the chain is now deliberately broken."
