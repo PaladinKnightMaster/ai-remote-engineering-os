@@ -134,8 +134,19 @@ log "uncompressed bundle: ${UNCOMPRESSED_MB} MB (cap ${MAX_UNCOMPRESSED_MB})"
 [ "$UNCOMPRESSED_MB" -le "$MAX_UNCOMPRESSED_MB" ] || die "bundle exceeds ${MAX_UNCOMPRESSED_MB}MB uncompressed (OI-4)"
 
 # --- 8. package + gzipped size gate -----------------------------------------
+# Normalized, deterministic packaging (ADR-0070 D6): --sort=name orders entries
+# independent of directory-walk order, a fixed --mtime removes per-build
+# timestamps, and --owner/--group/--numeric-owner remove the building host's
+# uid/gid from the archive. Without these, two builds of byte-identical
+# CONTENT still produce different tar bytes, which would make T-130's later
+# reproducibility measurement vacuous before it even compares real output.
+# gzip ALSO stamps an mtime by default (`tar -czf`'s built-in gzip does this
+# too) — piping through a standalone `gzip -n` suppresses it, so the
+# compression layer is normalized as well as the tar layer; skipping this
+# would leave the normalization incomplete and T-130 would measure nothing.
 log "package $TARBALL"
-tar -C "$OUT_DIR" -czf "$TARBALL" "aireos-offline-$BUNDLE_VERSION"
+tar -C "$OUT_DIR" --sort=name --mtime="@0" --owner=0 --group=0 --numeric-owner \
+    -cf - "aireos-offline-$BUNDLE_VERSION" | gzip -n > "$TARBALL"
 GZIPPED_MB=$(du -sm "$TARBALL" | cut -f1)
 log "gzipped tarball: ${GZIPPED_MB} MB (cap ${MAX_GZIPPED_MB})"
 [ "$GZIPPED_MB" -le "$MAX_GZIPPED_MB" ] || die "tarball exceeds ${MAX_GZIPPED_MB}MB gzipped (OI-4)"

@@ -122,6 +122,16 @@ tasks:
       - pnpm --filter @aireos/web build
       - BUNDLE_VERSION={{.BUNDLE_VERSION}} bash infra/offline/build-bundle.sh
 
+  sign-release:
+    desc: "HOST-SIDE, out-of-band step (ADR-0070 D1/D3, T-129a): detached Ed25519 signatures over BOTH shipped offline artifacts (core bundle + postgres companion). NEVER run inside build-bundle.sh or any build container — the release key must never enter a build context. Usage: task sign-release -- --key /path/to/release-key.pem [artifact.tar.gz ...] (defaults to every dist/offline/*.tar.gz). The production key is minted out-of-band by the CEO and is NEVER created by this task — see docs/devops/offline-install-v3.md 'Release key custody'; a fixture key for tests lives at infra/offline/testdata/fixture-release-key/. NOTE: this task signs whatever artifact filename/VERSION is on disk — offline-bundle's BUNDLE_VERSION is stale at 0.12.0 as of v0.13.0 (T-136 bumps it); verify the artifact name matches the real release before signing for an actual release."
+    cmds:
+      - bash infra/offline/sign-release.sh {{.CLI_ARGS}}
+
+  provenance-check:
+    desc: "Release provenance gate (ADR-0070 D9, VER-11, T-129a): every dist/offline/*.tar.gz must carry a detached Ed25519 .sig verifying against RELEASE_PUBLIC_KEY. Self-skips (loud) when nothing has been built yet; a missing/invalid signature on an artifact that DOES exist is a hard failure, never silently skipped (the S-25 pattern this gate exists to avoid). Usage: RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub task provenance-check."
+    cmds:
+      - bash infra/offline/check-provenance.sh
+
   codegen:
     desc: "Generate per-service Go chi-server stubs + apps/web TS types from the OpenAPI fragment (ADR-0043, ADR-0047; T-014, T-007a). One schema, two consumers."
     vars:
@@ -204,6 +214,10 @@ tasks:
       # the shipped bundle renders (incl. the xterm.css regression guard). Needs
       # the Playwright image; CI/full-env only, same posture as the e2e leg.
       - task: smoke
+      # Release provenance (ADR-0070 D9, VER-11, T-129a): fails if a shipped
+      # dist/offline/*.tar.gz lacks a valid signature. Self-skips (loud) when
+      # no bundle has been built yet in this run — see the task's own desc.
+      - task: provenance-check
 
   sec13-gate:
     desc: "SEC-13(a) grep gate: connector-service is the SOLE credential-decrypt authority — fail if a pgp_sym_decrypt( call or an os.Getenv(\"AIREOS_RESOURCE_SECRET_KEY\") read exists under services/ or packages/ outside services/connector-service. The runtime half of SEC-13 is proven by the e2e leg (api+broker boot with empty keys)."

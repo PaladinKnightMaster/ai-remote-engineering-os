@@ -13,7 +13,7 @@ built on a connected machine and installed on a host with no public-internet egr
 | Artifact | Contents | Built by |
 |---|---|---|
 | `aireos-offline-<v>.tar.gz` (~28 MB gz) | static `linux/amd64` binaries (api, audit-service, session-broker, **connector-service, policy-service, mcp-gateway** [P1, v0.3.0/v0.4.0 — this table was frozen at v0.1.0 and undercounted them until v0.12.0's DOC-24 pass], **authctl**) + **Caddy** + the SPA + `Caddyfile` + systemd units + `install.sh` + **`setup-loopback-demo.sh`** (the ONB-3 loopback demo target, when present in the source tree — v0.12.0) + `SHA256_MANIFEST.txt` | `task offline-bundle` (T-021a/b) |
-| `aireos-postgres-<ostag>.tar.gz` (~80 MB) | a self-contained postgres-16 + pgcrypto local repo (full closure) + `install-postgres.sh` | `build-postgres-companions.sh` (T-021c) |
+| `aireos-postgres-<ostag>.tar.gz` (~80 MB) | a self-contained postgres-16 + pgcrypto local repo (full closure) + `install-postgres.sh` + **`SHA256_MANIFEST.txt`** (v0.13.0, ADR-0070 D1) | `build-postgres-companions.sh` (T-021c) |
 
 Postgres is a separate per-OS companion (ADR-0052), not in the core bundle.
 v0.1.0 OS scope: Ubuntu 24.04 + Rocky/RHEL-family 9, amd64. Windows = browser
@@ -27,10 +27,90 @@ bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404 rocky9
 # artifacts land in dist/offline/ ; verify with sha256sum -c on the unpacked core bundle.
 ```
 
-Transfer the core bundle + the postgres companion for your target OS to the
-air-gapped host.
+**Sign both artifacts — a separate, host-side step, never part of the build above**
+(ADR-0070 D1/D3, T-129a). `task offline-bundle` builds inside a container on hosts
+without a local Go toolchain; a release key must never enter that container. Signing
+runs afterward, on the machine holding the release private key:
+
+```sh
+task sign-release -- --key /path/to/aireos-release.key      # signs BOTH artifacts present
+# -> dist/offline/aireos-offline-<version>.tar.gz.sig
+# -> dist/offline/aireos-postgres-<ostag>.tar.gz.sig
+```
+
+**Both artifacts are signed, not just the core bundle.** The postgres companion is
+~87 MB, ships a full package repository, and runs `install-postgres.sh` **as root**
+on the target host — leaving it unsigned while signing the artifact that already had
+a manifest would be indefensible (ADR-0070 Context, gap 1).
+
+The signing step prints the public key's SHA-256 fingerprint — publish it in the
+release notes (ADR-0070 D4) so an operator who obtains the public key over a second
+channel can cross-check it. See **"Release key custody"** below for where the
+private key comes from and where it must never live.
+
+Transfer the core bundle, its `.sig`, the postgres companion for your target OS, and
+its `.sig` to the air-gapped host — **and the public key**, `aireos-release.pub`,
+distributed out-of-band (SEC-44: the verifier is `openssl`, already on the target
+host; only the public key needs distributing).
+
+## Release key custody
+
+**The production release key is never generated, stored, printed, or committed by
+any script in this repo.** It is minted out-of-band by the CEO, on a machine that
+never runs untrusted build code:
+
+```sh
+openssl genpkey -algorithm ed25519 -out aireos-release.key
+openssl pkey -in aireos-release.key -pubout -out aireos-release.pub
+```
+
+- The **private key** (`aireos-release.key`) is held by the maintainer, **never**
+  committed to this repository, and **never** placed on a build host — the same host
+  that runs `task offline-bundle`'s container must not also hold this key.
+- It is **distinct from every key `install.sh` mints** (the per-workload PASETO keys,
+  ADR-0069's chain-head key) — those are per-install and machine-generated; this one
+  is per-project and human-held. Never substitute one for the other.
+- The **public key** (`aireos-release.pub`) and its SHA-256 fingerprint are published
+  with each release (out-of-band distribution, SEC-44) and never retired — key
+  rotation is additive-forever (ADR-0070 D8): an operator verifying an older release
+  needs the key it was signed under.
+- **What the signature proves, stated plainly:** this artifact was produced by
+  someone holding the release key and has not been altered since. It does **not**
+  prove the build was clean, does not tie the artifact to a source revision, and
+  claims **no SLSA level** — this repo has no CI and no remote (ADR-0070 D3).
+
+**A throwaway fixture keypair for tests** lives at
+`infra/offline/testdata/fixture-release-key/` — clearly labelled
+`FIXTURE-DO-NOT-USE-*`, committed on purpose, and unsuitable for any real release
+(anyone with this repo already holds it). Use it only to exercise `task sign-release`
+and `task provenance-check`; never point a real verification at it.
 
 ## Install (target host, offline, as root)
+
+**Verify BEFORE you extract anything (ADR-0070 D2/D4, SEC-44).** `install.sh` runs
+*from inside* the extracted bundle, so it can never verify the archive it came from —
+a check that runs after untrusted content is already unpacked is theatre. Verification
+is therefore a separate operator step, using `openssl` (already on the target host —
+nothing extra to distribute; only the public key needs to travel out-of-band):
+
+```sh
+# core bundle — run this in the directory holding the .tar.gz, its .sig, and
+# aireos-release.pub (obtained out-of-band; compare its fingerprint against the
+# one published in the release notes before trusting it):
+openssl pkeyutl -verify -pubin -inkey aireos-release.pub \
+  -rawin -in aireos-offline-<version>.tar.gz -sigfile aireos-offline-<version>.tar.gz.sig
+
+# postgres companion — signed too, and for the same reason it matters most: this
+# is the artifact that runs install-postgres.sh AS ROOT:
+openssl pkeyutl -verify -pubin -inkey aireos-release.pub \
+  -rawin -in aireos-postgres-<ostag>.tar.gz -sigfile aireos-postgres-<ostag>.tar.gz.sig
+```
+
+Both must print `Signature Verified Successfully` before you proceed. A missing
+`.sig`, or any other output, means **stop** — do not extract or run anything from
+that artifact. This deliberately uses no bespoke verifier binary: only the public key
+needs distributing, which is what closes SEC-44's circularity (a trust root must not
+ship solely inside the artifact it validates).
 
 1. **Postgres** — install from the companion (see
    `docs/devops/offline-postgres-install.md`):
@@ -106,8 +186,15 @@ air-gapped host.
 
 ## Verify
 
+Two layers, deliberately (ADR-0070 D1): the **signature** (above, "Install" §1
+preamble) verifies the whole archive **before** extraction — that is the trust
+decision. The **manifest** below then gives per-file granularity **after**
+extraction, and its build-time self-check already worked before this ticket:
+
 ```sh
 # on the unpacked core bundle:
+sha256sum -c SHA256_MANIFEST.txt
+# on the unpacked postgres companion (parity with the core bundle, ADR-0070 D1):
 sha256sum -c SHA256_MANIFEST.txt
 # then the wedge demo (WD-1) against the running stack — see T-021d.
 systemctl status aireos-api aireos-audit aireos-broker aireos-caddy

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# sign-release.sh — detached Ed25519 signatures over BOTH shipped offline
+# artifacts (ADR-0070 D1, T-129a).
+#
+# HOST-SIDE, OUT-OF-BAND STEP. Run this on the machine where the release
+# private key is held. Do NOT run it inside build-bundle.sh, do NOT run it
+# inside a build container, and do NOT wire it into `task offline-bundle` —
+# build-bundle.sh's cross-compile step already runs inside a golang:1.23
+# container on this host (no local go toolchain), and a release key must
+# never enter a build context (ADR-0070 D3: "never on a build host that runs
+# untrusted code"). Build produces the artifact; this distinct, separate step
+# signs it.
+#
+# THE PRODUCTION KEY IS NOT CREATED BY THIS SCRIPT, and this script never
+# generates, prints, or logs a key of any kind — it only CONSUMES a private
+# key path you supply. The real release key is minted out-of-band by the CEO:
+#
+#   openssl genpkey -algorithm ed25519 -out aireos-release.key
+#   openssl pkey -in aireos-release.key -pubout -out aireos-release.pub
+#
+# and is held OUTSIDE this repository, outside any build host, and outside
+# any automated run or transcript — see the "Release key custody" section of
+# docs/devops/offline-install-v3.md for the full procedure and where the key
+# must NOT live. A THROWAWAY fixture keypair for tests only, clearly labelled
+# as a fixture and never suitable for a real release, lives at
+# infra/offline/testdata/fixture-release-key/.
+#
+# RECORDED DEPENDENCY (T-136): Taskfile.yml's `offline-bundle` task still
+# hardcodes BUNDLE_VERSION: "0.12.0" while this ticket (T-129a) ships v0.13.0
+# code — the bump is T-136 (closure), deliberately not done here. Signing an
+# artifact whose filename/embedded VERSION says the wrong release would
+# ATTEST THE WRONG VERSION. Before signing a real release, confirm the
+# artifact filename in dist/offline/ actually matches the version being cut.
+#
+# Usage:
+#   bash infra/offline/sign-release.sh --key <private-key.pem> [artifact.tar.gz ...]
+# With no artifact arguments, signs every dist/offline/*.tar.gz present (both
+# the core bundle and any postgres companions that have been built).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+OUT_DIR="${OUT_DIR:-$REPO_ROOT/dist/offline}"
+
+log() { printf '\033[1;34m[sign]\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31m[sign] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+KEY=""
+ARTIFACTS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --key) KEY="${2:-}"; shift 2 ;;
+    -h|--help) grep '^#' "$0" | sed 's/^#//'; exit 0 ;;
+    *) ARTIFACTS+=("$1"); shift ;;
+  esac
+done
+
+[ -n "$KEY" ] || die "usage: sign-release.sh --key <private-key.pem> [artifact.tar.gz ...]"
+[ -f "$KEY" ] || die "key file not found: $KEY"
+
+if [ "${#ARTIFACTS[@]}" -eq 0 ]; then
+  shopt -s nullglob
+  for f in "$OUT_DIR"/*.tar.gz; do ARTIFACTS+=("$f"); done
+  shopt -u nullglob
+fi
+[ "${#ARTIFACTS[@]}" -gt 0 ] || die "no *.tar.gz artifacts found in $OUT_DIR — build first (task offline-bundle / infra/offline/postgres/build-postgres-companions.sh)"
+
+# Derive the public key ONCE for an immediate self-check per artifact (a bad
+# signature must be caught here, not at an operator's first verify attempt).
+PUB_TMP="$(mktemp)"
+trap 'rm -f "$PUB_TMP"' EXIT
+openssl pkey -in "$KEY" -pubout -out "$PUB_TMP" 2>/dev/null || die "could not derive a public key from $KEY — is it a valid Ed25519 private key?"
+
+log "signing ${#ARTIFACTS[@]} artifact(s) with $KEY"
+for artifact in "${ARTIFACTS[@]}"; do
+  [ -f "$artifact" ] || die "artifact not found: $artifact"
+  sig="${artifact}.sig"
+  log "sign $(basename "$artifact") -> $(basename "$sig")"
+  openssl pkeyutl -sign -rawin -inkey "$KEY" -in "$artifact" -out "$sig"
+  openssl pkeyutl -verify -pubin -inkey "$PUB_TMP" -rawin -in "$artifact" -sigfile "$sig" >/dev/null \
+    || die "self-check FAILED immediately after signing $artifact — refusing to ship a bad signature"
+done
+
+FINGERPRINT="$(openssl pkey -pubin -in "$PUB_TMP" -pubout -outform DER 2>/dev/null | openssl dgst -sha256 | awk '{print $NF}')"
+log "DONE — ${#ARTIFACTS[@]} artifact(s) signed and self-verified."
+log "Publish this public key's SHA-256 fingerprint in the release notes (ADR-0070 D4): $FINGERPRINT"

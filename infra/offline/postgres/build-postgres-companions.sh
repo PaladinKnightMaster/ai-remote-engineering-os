@@ -37,7 +37,24 @@ for os in "${OSES[@]}"; do
     -v "$REPO_ROOT/infra/offline/postgres":/src:ro \
     -v "$stage":/out \
     -w /src "$img" bash /src/fetch-postgres.sh
-  tar -C "$OUT_DIR" -czf "$OUT_DIR/aireos-postgres-$os.tar.gz" "aireos-postgres-$os"
+
+  # --- SHA256_MANIFEST.txt (ADR-0070 D1/D9, T-129a) ---------------------------
+  # Parity with build-bundle.sh's manifest block: this artifact previously
+  # shipped with NO integrity structure at all, while being the one that runs
+  # install-postgres.sh AS ROOT on the target host (ADR-0070 Context gap 1).
+  echo "[companions] generate SHA256_MANIFEST.txt for $os"
+  ( cd "$stage" && find . -type f ! -name SHA256_MANIFEST.txt -print0 | sort -z \
+      | xargs -0 sha256sum > SHA256_MANIFEST.txt )
+  ( cd "$stage" && sha256sum -c SHA256_MANIFEST.txt >/dev/null ) \
+    || { echo "[companions] ERROR: manifest self-check failed for $os" >&2; exit 1; }
+
+  # --- normalized, deterministic packaging (ADR-0070 D6) — same flags and same
+  # rationale as build-bundle.sh: --sort=name/--mtime/--owner/--group remove
+  # build-order and build-host non-determinism from the tar layer, and piping
+  # through a standalone `gzip -n` removes gzip's own embedded mtime so the
+  # compression layer is normalized too.
+  tar -C "$OUT_DIR" --sort=name --mtime="@0" --owner=0 --group=0 --numeric-owner \
+      -cf - "aireos-postgres-$os" | gzip -n > "$OUT_DIR/aireos-postgres-$os.tar.gz"
   echo "[companions] -> $OUT_DIR/aireos-postgres-$os.tar.gz ($(du -sh "$OUT_DIR/aireos-postgres-$os.tar.gz" | cut -f1))"
 done
 echo "[companions] done"
