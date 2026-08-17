@@ -141,8 +141,13 @@ bash "$SCRIPT_DIR/sbom/generate-sbom.sh" --kind bundle --stage "$STAGE" \
 
 # --- 6. VERSION + SHA256 manifest (OI-5) ------------------------------------
 echo "$BUNDLE_VERSION" > "$STAGE/VERSION"
+# LC_ALL=C: GNU sort is locale-collated by default, so an en_US.UTF-8 build
+# host would order SHA256_MANIFEST.txt's entries differently than a C/C.UTF-8
+# host from IDENTICAL file content (T-130b, ADR-0070 D6/D7) -- a determinism
+# property asserted here by construction, not measured (the measurement host
+# is C.UTF-8, so it never shows up locally).
 log "generate SHA256_MANIFEST.txt"
-( cd "$STAGE" && find . -type f ! -name SHA256_MANIFEST.txt -print0 | sort -z \
+( cd "$STAGE" && LC_ALL=C find . -type f ! -name SHA256_MANIFEST.txt -print0 | LC_ALL=C sort -z \
     | xargs -0 sha256sum > SHA256_MANIFEST.txt )
 ( cd "$STAGE" && sha256sum -c SHA256_MANIFEST.txt >/dev/null ) || die "manifest self-check failed"
 
@@ -162,8 +167,11 @@ log "uncompressed bundle: ${UNCOMPRESSED_MB} MB (cap ${MAX_UNCOMPRESSED_MB})"
 # too) — piping through a standalone `gzip -n` suppresses it, so the
 # compression layer is normalized as well as the tar layer; skipping this
 # would leave the normalization incomplete and T-130 would measure nothing.
+# LC_ALL=C for the same reason as the manifest above: GNU tar's --sort=name
+# also locale-collates, so this pins entry order to byte order regardless of
+# the build host's locale (T-130b, ADR-0070 D6/D7).
 log "package $TARBALL"
-tar -C "$OUT_DIR" --sort=name --mtime="@0" --owner=0 --group=0 --numeric-owner \
+LC_ALL=C tar -C "$OUT_DIR" --sort=name --mtime="@0" --owner=0 --group=0 --numeric-owner \
     -cf - "aireos-offline-$BUNDLE_VERSION" | gzip -n > "$TARBALL"
 GZIPPED_MB=$(du -sm "$TARBALL" | cut -f1)
 log "gzipped tarball: ${GZIPPED_MB} MB (cap ${MAX_GZIPPED_MB})"

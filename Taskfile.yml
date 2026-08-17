@@ -137,6 +137,11 @@ tasks:
     cmds:
       - bash infra/offline/sec45_bundle_mutation_test.sh
 
+  measure-reproducibility:
+    desc: "OI-35/VER-6 (ADR-0070 D6/D7, T-130b): build the offline bundle TWICE from the CURRENT commit -- re-running the SPA build from scratch each time -- and diff both the tarball and the unpacked stage, attributed per layer (bin/*, web/, SBOM.cdx.json, SHA256_MANIFEST.txt, VERSION, config/, install.sh, setup-loopback-demo.sh). Non-reproducibility is a published FINDING, not a blocker (D7) -- the result is reported either way. Refuses on a dirty tree (a dirty tree flips vcs.modified between builds, making the measurement meaningless). Needs Docker (builds/reuses a local golang:1.23+node image) and the host's pnpm. NEVER writes into dist/offline/ -- uses scratch OUT_DIRs and asserts dist/offline is byte-unchanged on exit. See docs/releases/v0.13.0/reproducibility-report.md for the last published result."
+    cmds:
+      - bash infra/offline/measure-reproducibility.sh
+
   codegen:
     desc: "Generate per-service Go chi-server stubs + apps/web TS types from the OpenAPI fragment (ADR-0043, ADR-0047; T-014, T-007a). One schema, two consumers."
     vars:

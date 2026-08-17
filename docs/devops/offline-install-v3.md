@@ -75,9 +75,17 @@ openssl pkey -in aireos-release.key -pubout -out aireos-release.pub
   rotation is additive-forever (ADR-0070 D8): an operator verifying an older release
   needs the key it was signed under.
 - **What the signature proves, stated plainly:** this artifact was produced by
-  someone holding the release key and has not been altered since. It does **not**
-  prove the build was clean, does not tie the artifact to a source revision, and
-  claims **no SLSA level** — this repo has no CI and no remote (ADR-0070 D3).
+  someone holding the release key and has not been altered since. **The signature
+  itself** does not prove the build was clean, and does not tie the artifact to a
+  source revision, and claims **no SLSA level** — this repo has no CI and no remote
+  (ADR-0070 D3, unedited by this correction). Separately — and NOT part of what
+  the signature attests — every shipped Go binary embeds its own
+  `vcs.revision`/`vcs.modified` (Go's `buildvcs` stamping, on by default, not
+  stripped by `-trimpath -ldflags "-s -w"`); inspect with `go version -m
+  bin/api`. That is a real, checkable provenance fact, but it is self-reported by
+  the build and unsigned, and it is only trustworthy when the release is cut from
+  a clean tree (`vcs.modified=false`) — a dirty tree stamps `vcs.modified=true`
+  into every binary it ships (see the OI-35 reproducibility report, T-130b).
 
 **A throwaway fixture keypair for tests** lives at
 `infra/offline/testdata/fixture-release-key/` — clearly labelled
