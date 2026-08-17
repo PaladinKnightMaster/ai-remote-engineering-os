@@ -13,8 +13,19 @@
 #
 # Design, point by point (each exists because a prior ticket got it wrong):
 #
-#  - BOTH shipped artifacts (ADR-0070 D1: the core bundle AND the postgres
-#    companion, which is the one that runs install-postgres.sh AS ROOT).
+#  - EVERY shipped artifact, ENUMERATED not hardcoded (ADR-0070 D1: the core
+#    bundle AND the postgres companion, which is the one that runs
+#    install-postgres.sh AS ROOT). The artifact list is globbed from
+#    dist/offline/*.tar.gz, exactly as sign-release.sh:63 and
+#    check-provenance.sh:49 do. Hardcoding names would (a) go stale on every
+#    BUNDLE_VERSION bump -- the v0.12 GATE-4 defect class -- and, worse,
+#    (b) let an artifact that IS signed and IS shipped (a second per-OS
+#    companion, e.g. rocky9 per ADR-0052) go silently unproven while this
+#    script still reported all-green. That is the "looks complete, isn't"
+#    failure T-129b's SBOM coverage check exists to prevent, and a coverage
+#    gap in a NEGATIVE PROOF is the worse instance of it. The summary line
+#    names every artifact actually proven, so the evidence is self-describing
+#    rather than assumed.
 #  - Per-artifact scratch dir, ONE artifact per dir, so check-provenance.sh
 #    (which scans every *.tar.gz in OUT_DIR) can only ever report on the one
 #    artifact under test, and the FAIL line can be asserted unambiguously.
@@ -59,10 +70,19 @@
 #
 # Usage:
 #   bash infra/offline/sec45_bundle_mutation_test.sh
-# Needs dist/offline/{aireos-offline-<ver>.tar.gz,aireos-postgres-*.tar.gz}
-# already built AND signed (task offline-bundle && task sign-release --
-# --key <fixture-or-real-key>), and the fixture public key at
-# infra/offline/testdata/fixture-release-key/FIXTURE-DO-NOT-USE-release.pub.pem.
+#   RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub bash infra/offline/sec45_bundle_mutation_test.sh
+#
+# Needs every dist/offline/*.tar.gz already built AND signed (task
+# offline-bundle && task sign-release -- --key <fixture-or-real-key>).
+#
+# The verification key is RELEASE_PUBLIC_KEY when set -- the same env var
+# check-provenance.sh:43 reads, so both gates are pointed at a release by one
+# variable -- and falls back to the fixture public key for local runs. The
+# fallback must NOT be a hardcode: at T-136 the production signature is cut
+# with the CEO's real release key, and a fixture-only script would fail at
+# exactly that moment, looking like SEC-45 had broken on release day when in
+# fact it was only ever able to check one key. NEVER use the fixture to
+# verify a real release artifact.
 #
 # VER-16 self-test (fail-proof) mode: set SEC45_TEST_SKIP_MUTATION=1 to make
 # the "mutation" step a no-op (write the SAME byte back) for BOTH artifacts,
@@ -75,6 +95,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$REPO_ROOT/dist/offline"
 FIXTURE_PUB="$REPO_ROOT/infra/offline/testdata/fixture-release-key/FIXTURE-DO-NOT-USE-release.pub.pem"
+# RELEASE_PUBLIC_KEY when set (same variable check-provenance.sh reads), else
+# the fixture -- see the header for why this must not be a hardcode.
+PUB="${RELEASE_PUBLIC_KEY:-$FIXTURE_PUB}"
 CHECK_PROVENANCE="$SCRIPT_DIR/check-provenance.sh"
 
 pass=0
@@ -117,7 +140,8 @@ assert_contains() {
   fi
 }
 
-[ -f "$FIXTURE_PUB" ] || { echo "ERROR: fixture public key not found at $FIXTURE_PUB -- this is a negative proof, it must not self-skip"; exit 1; }
+[ -f "$PUB" ] || { echo "ERROR: public key not found at $PUB -- this is a negative proof, it must not self-skip"; exit 1; }
+echo "verification key: $PUB"
 
 SCRATCH_DIRS=()
 cleanup() {
@@ -149,21 +173,29 @@ mutate_one_byte() {
   ' "$file" "$offset" "$skip"
 }
 
-# name:basename pairs -- BOTH shipped artifacts (ADR-0070 D1).
-ARTIFACTS=(
-  "core-bundle:aireos-offline-0.13.0.tar.gz"
-  "postgres-companion:aireos-postgres-ubuntu2404.tar.gz"
-)
+# EVERY shipped artifact, enumerated from disk (ADR-0070 D1) -- the same glob
+# sign-release.sh:63 and check-provenance.sh:49 use. See the header for why
+# this is not a hardcoded list.
+shopt -s nullglob
+ARTIFACTS=("$DIST_DIR"/*.tar.gz)
+shopt -u nullglob
 
-for entry in "${ARTIFACTS[@]}"; do
-  label="${entry%%:*}"
-  base="${entry#*:}"
-  src="$DIST_DIR/$base"
+if [ "${#ARTIFACTS[@]}" -eq 0 ]; then
+  echo "ERROR: no *.tar.gz artifacts in $DIST_DIR -- build+sign them first; this negative proof does not self-skip"
+  exit 1
+fi
+echo "SEC-45 will prove ${#ARTIFACTS[@]} artifact(s):"
+for a in "${ARTIFACTS[@]}"; do echo "  - $(basename "$a")"; done
+
+PROVEN=()
+for src in "${ARTIFACTS[@]}"; do
+  base="$(basename "$src")"
+  label="$base"
   src_sig="$src.sig"
   src_sbom="$src.sbom.json"
 
   echo
-  echo "== $label ($base) =="
+  echo "== $base =="
 
   if [ ! -f "$src" ] || [ ! -f "$src_sig" ] || [ ! -f "$src_sbom" ]; then
     echo "ERROR: missing $src (or its .sig / .sbom.json) -- build+sign it first; this negative proof does not self-skip"
@@ -184,9 +216,9 @@ for entry in "${ARTIFACTS[@]}"; do
   # path the mutation proof below will use, so the control and the proof are
   # not silently exercising different behavior. ---
   assert_true "$label control: raw openssl verify on unmutated copy" \
-    openssl pkeyutl -verify -pubin -inkey "$FIXTURE_PUB" -rawin -in "$copy" -sigfile "$copy_sig"
+    openssl pkeyutl -verify -pubin -inkey "$PUB" -rawin -in "$copy" -sigfile "$copy_sig"
 
-  ctrl_out="$(OUT_DIR="$scratch" RELEASE_PUBLIC_KEY="$FIXTURE_PUB" bash "$CHECK_PROVENANCE" 2>&1)"
+  ctrl_out="$(OUT_DIR="$scratch" RELEASE_PUBLIC_KEY="$PUB" bash "$CHECK_PROVENANCE" 2>&1)"
   ctrl_status=$?
   assert_eq "$label control: check-provenance.sh exits 0 on unmutated copy" "$ctrl_status" "0"
 
@@ -195,7 +227,9 @@ for entry in "${ARTIFACTS[@]}"; do
   size="$(stat -c '%s' "$copy")"
   offset=$((size / 2))
   skip_mutation="0"
-  [ -n "${SEC45_TEST_SKIP_MUTATION:-}" ] && skip_mutation="1"
+  # Exact match on "1", not merely non-empty: SEC45_TEST_SKIP_MUTATION=0 must
+  # not silently neuter the mutation.
+  [ "${SEC45_TEST_SKIP_MUTATION:-}" = "1" ] && skip_mutation="1"
   bytes_out="$(mutate_one_byte "$copy" "$offset" "$skip_mutation")"
   echo "  byte@offset $offset: $bytes_out (orig new)"
 
@@ -212,9 +246,9 @@ for entry in "${ARTIFACTS[@]}"; do
   # --- DETECTION: the signature axis, isolated from any SBOM/tar failure a
   # corrupted archive also triggers (see header). ---
   assert_false "$label detection: raw openssl verify FAILS on the mutated copy" \
-    openssl pkeyutl -verify -pubin -inkey "$FIXTURE_PUB" -rawin -in "$copy" -sigfile "$copy_sig"
+    openssl pkeyutl -verify -pubin -inkey "$PUB" -rawin -in "$copy" -sigfile "$copy_sig"
 
-  prov_out="$(OUT_DIR="$scratch" RELEASE_PUBLIC_KEY="$FIXTURE_PUB" bash "$CHECK_PROVENANCE" 2>&1)"
+  prov_out="$(OUT_DIR="$scratch" RELEASE_PUBLIC_KEY="$PUB" bash "$CHECK_PROVENANCE" 2>&1)"
   prov_status=$?
   if [ "$prov_status" -ne 0 ]; then
     echo "PASS $label detection: check-provenance.sh exits non-zero on the mutated copy"; pass=$((pass + 1))
@@ -223,8 +257,21 @@ for entry in "${ARTIFACTS[@]}"; do
   fi
   assert_contains "$label detection: output names THIS artifact's 'signature does NOT verify'" \
     "$prov_out" "$base signature does NOT verify"
+  PROVEN+=("$base")
 done
 
 echo
+# Name what was actually covered, so the release evidence states its own scope
+# rather than leaving a reader to assume it (T-129b's coverage-asserted rule).
+# The wording is conditional on the result: a FAILING run must never emit the
+# word "proved" about artifacts it did not prove. An artifact reaching the end
+# of the loop is COVERED (it was put through the cycle); it is PROVEN only if
+# no assertion failed. Emitting a fixed success sentence on a failure path is
+# the same defect class as T-125c's manifest that disagreed with its own body.
+if [ "$fail" -eq 0 ]; then
+  echo "SEC-45 PROVED ${#PROVEN[@]} artifact(s) against $(basename "$PUB"): ${PROVEN[*]:-none}"
+else
+  echo "SEC-45 FAILED -- ${#PROVEN[@]} artifact(s) covered against $(basename "$PUB"): ${PROVEN[*]:-none}; NOTHING is proven, see the FAIL lines above"
+fi
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
