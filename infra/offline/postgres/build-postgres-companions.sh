@@ -6,6 +6,9 @@
 #
 # Usage: bash infra/offline/postgres/build-postgres-companions.sh [os...]
 #   default OS set: ubuntu2404 rocky9   (ADR-0051 platform scope)
+#
+# Also generates a CycloneDX 1.6 SBOM per deb-format companion (ADR-0070 D5,
+# T-129b) — needs `node` on the HOST (not inside the per-OS containers).
 set -euo pipefail
 export MSYS_NO_PATHCONV=1   # Windows/git-bash: don't mangle the -v mount paths
 
@@ -37,6 +40,22 @@ for os in "${OSES[@]}"; do
     -v "$REPO_ROOT/infra/offline/postgres":/src:ro \
     -v "$stage":/out \
     -w /src "$img" bash /src/fetch-postgres.sh
+
+  # --- SBOM (ADR-0070 D5, T-129b) --------------------------------------------
+  # CycloneDX 1.6 JSON parsed straight from the companion's OWN repo/Packages
+  # deb index — no new scanner tool. Only "deb" is parsed today; an rpm-format
+  # companion (rocky9) is skipped with a loud NOTE rather than aborting the
+  # whole multi-OS build. That means release-check (T-129b) will correctly
+  # REFUSE to ship an rpm companion without an SBOM (ADR-0070 D9) — this
+  # script does not invent one it cannot honestly produce.
+  pkg_kind="$(cat "$stage/PKG_KIND" 2>/dev/null || echo "")"
+  if [ "$pkg_kind" = "deb" ]; then
+    echo "[companions] generate SBOM for $os"
+    bash "$REPO_ROOT/infra/offline/sbom/generate-sbom.sh" --kind companion --stage "$stage" \
+      --ostag "$os" --out "$OUT_DIR/aireos-postgres-$os.tar.gz.sbom.json"
+  else
+    echo "[companions] NOTE: no SBOM parser for PKG_KIND='$pkg_kind' yet (only deb is supported as of T-129b) — $os ships WITHOUT an SBOM; release-check will correctly refuse to release it until an rpm parser exists (ADR-0070 D9)"
+  fi
 
   # --- SHA256_MANIFEST.txt (ADR-0070 D1/D9, T-129a) ---------------------------
   # Parity with build-bundle.sh's manifest block: this artifact previously

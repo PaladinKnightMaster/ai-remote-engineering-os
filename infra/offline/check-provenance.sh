@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
 # check-provenance.sh — task release-check's provenance gate (ADR-0070 D9,
-# VER-11, T-129a).
+# VER-11, T-129a + T-129b).
 #
-# Fails if any dist/offline/*.tar.gz artifact lacks a detached .sig, or if a
-# .sig does not verify against RELEASE_PUBLIC_KEY. "A provenance gate that
-# cannot fail is the S-25 pattern" (ADR-0070 D9) — this gate must be
-# demonstrated failing on both a missing signature and a mutated artifact,
-# not just shown passing.
+# Fails if any dist/offline/*.tar.gz artifact:
+#   - lacks a detached .sig, or the .sig does not verify against
+#     RELEASE_PUBLIC_KEY (T-129a);
+#   - lacks a sibling "<artifact>.sbom.json", or that SBOM's coverage does
+#     not match what is actually IN the artifact (T-129b) — a presence-only
+#     check ("a file called *.sbom.json exists") is NOT enough per ADR-0070
+#     D9: the gate must catch a component quietly dropped from an otherwise-
+#     present SBOM, not just a wholly-missing one. check-coverage.mjs does
+#     the actual comparison (bin/ executables for the core bundle; the
+#     repo/Packages entry count for the postgres companion).
+#
+# "A provenance gate that cannot fail is the S-25 pattern" (ADR-0070 D9) —
+# this gate must be demonstrated failing on a missing signature, a missing
+# SBOM, AND a SBOM with a component removed, not just shown passing.
 #
 # Self-skips (loud, exit 0) when dist/offline has NO *.tar.gz at all — most
 # release-check runs happen in a dev loop before anyone has run
 # `task offline-bundle`, the same posture as the test-integration leg's
 # self-skip-without-a-configured-DB convention. Once an artifact EXISTS on
 # disk it is held to the gate unconditionally: a missing or invalid signature
-# on an existing artifact is a hard failure, never silently skipped.
+# or SBOM on an existing artifact is a hard failure, never silently skipped.
 #
 # Usage: RELEASE_PUBLIC_KEY=<path to aireos-release.pub> bash infra/offline/check-provenance.sh
 #   (CI / a real release run points RELEASE_PUBLIC_KEY at the published key;
 #   local dev/testing can point it at the fixture at
 #   infra/offline/testdata/fixture-release-key/FIXTURE-DO-NOT-USE-release.pub.pem —
 #   NEVER use the fixture to verify a real release artifact.)
+#
+# Needs `node` (for the SBOM coverage check) in addition to `openssl` and `tar`.
 set -euo pipefail
 
 # NB: this script lives at infra/offline/check-provenance.sh — dist/offline/
@@ -58,6 +69,21 @@ for artifact in "${artifacts[@]}"; do
     log "OK — $(basename "$artifact") verifies against $(basename "$PUB")"
   else
     fail "$(basename "$artifact") signature does NOT verify against $(basename "$PUB")"
+    bad=1
+  fi
+
+  # --- SBOM: present, AND its coverage matches the artifact (ADR-0070 D9,
+  # T-129b) ---------------------------------------------------------------
+  sbom="${artifact}.sbom.json"
+  if [ ! -f "$sbom" ]; then
+    fail "$(basename "$artifact") has NO SBOM (expected $(basename "$sbom"))"
+    bad=1
+    continue
+  fi
+  if cov_out="$(node "$SCRIPT_DIR/sbom/check-coverage.mjs" "$artifact" "$sbom" 2>&1)"; then
+    log "$cov_out"
+  else
+    fail "$cov_out"
     bad=1
   fi
 done

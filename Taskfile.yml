@@ -110,7 +110,7 @@ tasks:
       - go build -o bin/session-broker ./services/session-broker
 
   offline-bundle:
-    desc: "Build the offline-install bundle (§OI-a, ADR-0051): static linux/amd64 service binaries + SPA + Caddy + config + SHA256 manifest, packaged + OI-4 size-gated. Output: dist/offline/. Build host needs go 1.23 + node 22/pnpm + curl|wget. install.sh + staged postgres packages land in §OI-b."
+    desc: "Build the offline-install bundle (§OI-a, ADR-0051): static linux/amd64 service binaries + SPA + Caddy + config + SHA256 manifest + CycloneDX 1.6 SBOM (ADR-0070 D5, T-129b), packaged + OI-4 size-gated. Output: dist/offline/. Build host needs go 1.23 + node 22/pnpm + curl|wget. install.sh + staged postgres packages land in §OI-b."
     vars:
       # The Taskfile is the single source of truth for the release artifact's
       # version (T-122a, OI-29): build-bundle.sh REFUSES to run without
@@ -128,7 +128,7 @@ tasks:
       - bash infra/offline/sign-release.sh {{.CLI_ARGS}}
 
   provenance-check:
-    desc: "Release provenance gate (ADR-0070 D9, VER-11, T-129a): every dist/offline/*.tar.gz must carry a detached Ed25519 .sig verifying against RELEASE_PUBLIC_KEY. Self-skips (loud) when nothing has been built yet; a missing/invalid signature on an artifact that DOES exist is a hard failure, never silently skipped (the S-25 pattern this gate exists to avoid). Usage: RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub task provenance-check."
+    desc: "Release provenance gate (ADR-0070 D9, VER-11, T-129a + T-129b): every dist/offline/*.tar.gz must carry a detached Ed25519 .sig verifying against RELEASE_PUBLIC_KEY, AND a sibling CycloneDX SBOM whose coverage is checked against the artifact's actual contents (not just presence — see infra/offline/sbom/check-coverage.mjs). Self-skips (loud) when nothing has been built yet; a missing/invalid signature, missing SBOM, or SBOM coverage gap on an artifact that DOES exist is a hard failure, never silently skipped (the S-25 pattern this gate exists to avoid). Needs node in addition to openssl. Usage: RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub task provenance-check."
     cmds:
       - bash infra/offline/check-provenance.sh
 
@@ -214,9 +214,10 @@ tasks:
       # the shipped bundle renders (incl. the xterm.css regression guard). Needs
       # the Playwright image; CI/full-env only, same posture as the e2e leg.
       - task: smoke
-      # Release provenance (ADR-0070 D9, VER-11, T-129a): fails if a shipped
-      # dist/offline/*.tar.gz lacks a valid signature. Self-skips (loud) when
-      # no bundle has been built yet in this run — see the task's own desc.
+      # Release provenance (ADR-0070 D9, VER-11, T-129a + T-129b): fails if a
+      # shipped dist/offline/*.tar.gz lacks a valid signature OR a coverage-
+      # checked SBOM. Self-skips (loud) when no bundle has been built yet in
+      # this run — see the task's own desc.
       - task: provenance-check
 
   sec13-gate:

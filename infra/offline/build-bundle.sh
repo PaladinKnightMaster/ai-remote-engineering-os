@@ -10,13 +10,19 @@
 #   install.sh, setup-loopback-demo.sh, postgres/   included when present
 #             (authored in §OI-b; setup-loopback-demo.sh is the ONB-3 demo
 #             quickstart's step 2, T-118b)
-#   VERSION, SHA256_MANIFEST.txt
+#   VERSION, SHA256_MANIFEST.txt, SBOM.cdx.json
 #
 # Enforces the OI-4 size cap (<=500 MB uncompressed / <=150 MB gzipped).
 #
 # Build-host prereqs: go 1.23, curl OR wget, tar, gzip, sha256sum, sha512sum,
 # and a pre-built SPA at apps/web/dist. The `task offline-bundle` target runs
 # `pnpm --filter @aireos/web build` first. See docs/tickets/T-021a.
+#
+# Also needs node/npx with apps/web/node_modules already installed (ADR-0070
+# D5, T-129b) — the SBOM step (5c) shells out to cyclonedx-npm for apps/web's
+# production deps. `task offline-bundle` already runs `pnpm install
+# --frozen-lockfile` before this script; a standalone invocation must do the
+# same first.
 set -euo pipefail
 
 # --- pinned third-party artifacts (verified at build time) ------------------
@@ -120,6 +126,18 @@ if [ -f "$SCRIPT_DIR/setup-loopback-demo.sh" ]; then
 else
   log "NOTE: infra/offline/setup-loopback-demo.sh not present — added by T-118b"
 fi
+
+# --- 5c. SBOM (ADR-0070 D5, OI-34, T-129b) ----------------------------------
+# CycloneDX 1.6 JSON covering every staged Go binary (the six services +
+# authctl + aireos-verify) + apps/web's production deps + Caddy (pinned
+# version/hash from step 3, already verified above). Written to the artifact's
+# published sibling AND copied into $STAGE so it ships EMBEDDED too — an SBOM
+# only readable after extraction is no help to whoever is deciding whether to
+# extract. Runs BEFORE the manifest step so SHA256_MANIFEST.txt covers it.
+log "generate SBOM (CycloneDX 1.6)"
+bash "$SCRIPT_DIR/sbom/generate-sbom.sh" --kind bundle --stage "$STAGE" \
+  --version "$BUNDLE_VERSION" --caddy-version "$CADDY_VERSION" --caddy-sha512 "$CADDY_SHA512" \
+  --out "$OUT_DIR/aireos-offline-$BUNDLE_VERSION.tar.gz.sbom.json"
 
 # --- 6. VERSION + SHA256 manifest (OI-5) ------------------------------------
 echo "$BUNDLE_VERSION" > "$STAGE/VERSION"
