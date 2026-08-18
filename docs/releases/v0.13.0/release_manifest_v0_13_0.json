@@ -1,0 +1,45 @@
+{
+  "release": "v0.13.0",
+  "name": "Evidence Hardening",
+  "adrs_added": [
+    "ADR-0069 audit chain authenticity",
+    "ADR-0070 release provenance"
+  ],
+  "new_walkthrough_demos": "none — no new governed capability (structural rule 2)",
+  "tickets": {
+    "T-123": "ADR-0069 Accepted — Ed25519 head signing at 100 events/60s off the write path, anchoring outside Postgres, a separate aireos-verify, ZERO OpenAPI change, no backfill. Pre-authoring audit corrected the threat statement: audit_events_no_mutate has guarded the table since v0.1.0, so the attack needs OWNER privilege, not write access.",
+    "T-124a/b": "chain_heads migration + signer + cadence sweep + graceful shutdown + checkpoint subcommand. Review caught a lock seam that would have silently defeated single-writer, and a missing golden vector pinning the signed payload format.",
+    "T-125a/b/c": "install.sh mints the keypair into a NEW audit.env (0600) never the shared file; the fail-loud flip; anchor writer + startup re-sync + the three-way divergence rule; evidence export (filter-bypass, no forced checkpoint, streaming). Review caught a manifest that disagreed with its own body.",
+    "T-126a/b": "shared internal/verify; audit-service verify now checks head signatures; aireos-verify ships in the bundle. The manifest-vs-body loop is closed — the writer guarantees and the verifier checks.",
+    "T-127a/b": "wd1 GREEN on the installed stack (WD-1..11); the wd1 gate was blind to head signing and was fixed; SEC-43 proven on BOTH stacks with pre-tamper controls first.",
+    "T-128/T-129a/b": "ADR-0070 Accepted; both artifacts signed; companion gained a manifest; archive normalized; CycloneDX 1.6 SBOMs with coverage asserted (440 + 92 components).",
+    "T-130a/b": "SEC-45 negative proof (both artifacts, axis-separated from the SBOM/tar failure path); reproducibility MEASURED — byte-identical twice, and again with the build cache wiped between builds.",
+    "T-131": "CON-5 PUT /v1/resources/{id} removed; AUD-40 CreateResource chains resource.created in-tx. Codegen drift zero, independently re-verified.",
+    "T-132": "VER-12..15 enforcement-of-enforcement; the SEC-7 override resolved EMPIRICALLY (applying AND unnecessary — deleted); Tailwind mirror's dead content array deleted; CSV well-formedness added to doc-check. Review added per-PATTERN assertion after finding 2 of 10 patterns dead inside live blocks.",
+    "T-133a/b": "OI-36 quickstart-as-gate from the built bundle on a fresh host; OI-37 violation fixed (a default equal to the value it detects staleness in — in our own tooling); OI-38 socket-activated sshd asserted; ONB-4 proven via the resource.created audit event rather than a UI claim.",
+    "T-134": "Threat model published. SEC-46 caught a twice-committed external error: ASI08 is Cascading Failures, not Repudiation and Untraceability (that is T8, a different taxonomy). ADR-0069 not edited (G2); correction recorded in the threat model.",
+    "T-135": "S-21 capstone — GATE-1 PASS, GATE-3 re-proven on the current tree. Seven attacks, one LOW finding (F-1: release-check green does not imply provenance verified).",
+    "T-136a": "Release artifacts, final commit, single build, GATE-2. Steps 3-5 (production key, GATE-5 §human, tag) are the CEO's."
+  },
+  "gates": {
+    "GATE-1 capstone": "PASS — one LOW finding F-1, carried to the cut as an obligation",
+    "GATE-2 WD-1..11 both stacks + smoke": "recorded in this ticket (T-136a)",
+    "GATE-3 two negative proofs": "PASS — SEC-43 re-run at 41da1b9 (636 events, both verifiers BROKEN, LEG A trigger proof); SEC-45 14/14 on the current signed artifacts",
+    "GATE-4 quickstart from the built bundle": "PASS — T-133a/b",
+    "GATE-5 §human offline verification": "PENDING — CEO, runbook Step 4"
+  },
+  "dropped": "none — the designated drop candidate (S-29) was explicitly DECLINED 2026-08-13; recorded per VER-10, because choosing not to drop is as much a decision as a drop",
+  "non_claims": [
+    "no SLSA level",
+    "no external witness",
+    "no containment enforcement",
+    "no generalized session revocation",
+    "no segregation of duties"
+  ],
+  "corrections_of_record": [
+    "OWASP ASI08 mapping was wrong in backlog B-042 and ADR-0069:49 — ASI08 is Cascading Failures; our chain work answers T8 in a separate taxonomy",
+    "docs/devops/offline-install-v3.md previously implied binaries carry no source revision; they embed vcs.revision (unsigned, self-reported)",
+    "DOC-39's sub-clause (a stale v4.2 kit string in CLAUDE.md) was already satisfied before this ticket — no such string exists"
+  ],
+  "review_caught_defects": "11 across the ladder, none caught by a green suite — the diff review is the control that worked on this release"
+}
