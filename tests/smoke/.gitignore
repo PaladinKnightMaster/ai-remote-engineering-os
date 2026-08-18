@@ -3,3 +3,8 @@ node_modules/
 package-lock.json
 test-results/
 playwright-report/
+
+# T-133b: the state-file seam quickstart-a.smoke.spec.ts writes the created
+# resource id to, for infra/offline/wd1/quickstart-browser-gate.sh to read
+# across the browser -> host shell -> browser plane boundary.
+.quickstart-resource-id

@@ -12,6 +12,15 @@
 #
 # Prereqs: a from-HEAD bundle in dist/offline/aireos-offline-*.tar.gz (task
 # offline-bundle, or the Dockerized build-bundle) + the postgres companion.
+#
+# --no-seed-resource (T-133b): skip the "seed the flagged ssh resource" step
+# below. DEFAULT OFF — every existing caller (quickstart-shell-gate.sh, the
+# §human WD-4 walkthrough) keeps getting a pre-seeded resource, byte-for-byte
+# unchanged. This flag exists because that seed makes OnboardingChecklist's
+# "Create loopback demo target" button permanently invisible
+# (apps/web/src/components/OnboardingChecklist.tsx: the button only renders
+# while !resourceExists) — the S-26 browser quickstart gate needs a stack with
+# NO resource yet, so it can actually click that button.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +33,13 @@ KEYVOL=aireos-demo-keys
 DBPW=demosecret
 OPPW=demo-operator-pw
 RID=01900000-0000-7000-8000-0000000000e2
+SEED_RESOURCE=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-seed-resource) SEED_RESOURCE=0 ;;
+    *) echo "unknown argument: $arg" >&2; exit 1 ;;
+  esac
+done
 log() { printf '\033[1;36m[demo]\033[0m %s\n' "$*"; }
 
 # assert_exactly_one_bundle — OI-37's cousin finding (T-133a, Commander audit
@@ -87,15 +103,19 @@ docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-
   AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW \
   AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh"
 
-log "seed the flagged ssh resource (requires_approval=true)"
-HOSTKEY="$(docker exec "$HOST" cat /demokeys/ssh_host_key_pub)"
-LABELS="$(printf '{"ssh_host":"%s","ssh_port":"2222","ssh_user":"aireos","ssh_host_key":"%s","requires_approval":"true"}' "$SSHD" "$HOSTKEY")"
-docker exec -i "$HOST" su - postgres -c "psql -v ON_ERROR_STOP=1 -d cockpit" <<SQL
+if [ "$SEED_RESOURCE" = "1" ]; then
+  log "seed the flagged ssh resource (requires_approval=true)"
+  HOSTKEY="$(docker exec "$HOST" cat /demokeys/ssh_host_key_pub)"
+  LABELS="$(printf '{"ssh_host":"%s","ssh_port":"2222","ssh_user":"aireos","ssh_host_key":"%s","requires_approval":"true"}' "$SSHD" "$HOSTKEY")"
+  docker exec -i "$HOST" su - postgres -c "psql -v ON_ERROR_STOP=1 -d cockpit" <<SQL
 INSERT INTO resources (id, type, name, labels)
 VALUES ('$RID', 'ssh', 'demo-target', '$LABELS'::jsonb)
 ON CONFLICT (id) DO UPDATE SET labels = EXCLUDED.labels;
 SQL
-docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | cut -d= -f2-); RK=$(grep "^AIREOS_RESOURCE_SECRET_KEY=" /etc/aireos/connector.env | cut -d= -f2-); DATABASE_URL="$DU" AIREOS_RESOURCE_SECRET_KEY="$RK" /opt/aireos/bin/connector-service credentials set-secret '"$RID"' --key-file /demokeys/client_ed25519'
+  docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | cut -d= -f2-); RK=$(grep "^AIREOS_RESOURCE_SECRET_KEY=" /etc/aireos/connector.env | cut -d= -f2-); DATABASE_URL="$DU" AIREOS_RESOURCE_SECRET_KEY="$RK" /opt/aireos/bin/connector-service credentials set-secret '"$RID"' --key-file /demokeys/client_ed25519'
+else
+  log "--no-seed-resource: skipping the flagged ssh resource seed (T-133b: leaves the stack with NO resource, so the cockpit's own create action can be exercised)"
+fi
 
 log "stage fire-agent.sh into the host (via stdin — docker cp mangles Windows paths)"
 docker exec -i "$HOST" tee /usr/local/bin/fire-agent.sh >/dev/null < "$SCRIPT_DIR/fire-agent.sh"
