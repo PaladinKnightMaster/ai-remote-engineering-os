@@ -53,7 +53,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 - **Latest release: v0.12.0, tagged `7214f75`.** Tags are local and are **never pushed** — this repo has no git remote.
 - **Release target: v0.13.0 "Evidence Hardening."** Criteria **Accepted** at `docs/releases/v0.13.0/v0.13.0-release-criteria.md`; ticket ladder **T-123…T-136**; adds **ADR-0069** (audit chain authenticity) and **ADR-0070** (release provenance); **no new WD**. The E-06 OpenAPI surface freeze was **deferred to v1.0.0** at the 2026-08-10 scoping consult (no near-term buyer), so the path is **v0.13.0 → v0.14.0 Containment → v1.0.0 Beta 1** (where layer 2 lands *and* the surface freezes). See `docs/requirements/epic_story_catalog_v4.md` §Part 4 for the renumbering map.
 
-> ADR numbering: v3.0.1 ADRs (`docs/adr/ADR-0001.md` through `ADR-0040.md`) cover product decisions. New meta-decisions (language, tooling, frameworks) start at **ADR-0041**. **Current head: ADR-0068** — check `docs/adr/` before minting a number, and **never edit an Accepted ADR** (see §Forbidden work).
+> ADR numbering: v3.0.1 ADRs (`docs/adr/ADR-0001.md` through `ADR-0040.md`) cover product decisions. New meta-decisions (language, tooling, frameworks) start at **ADR-0041**. **Current head: ADR-0070** — check `docs/adr/` before minting a number, and **never edit an Accepted ADR** (see §Forbidden work).
 
 ## Project doctrine
 - Build P0 first. P1/P2/P3 features require an explicit ticket and an approved ADR.

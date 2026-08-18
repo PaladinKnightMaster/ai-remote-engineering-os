@@ -2,7 +2,7 @@
 
 Spec baseline: **v3.0.1** (APPROVED FOR DEVELOPMENT — see `docs/releases/v3.0.1/development_readiness_audit_v3_0_1.md`). This is the **spec-set** version and is unrelated to the agency kit's v4.6.0.
 
-**Shipped state — last updated 2026-08-10.** Latest release **v0.12.0**, tagged `7214f75`. ADR ladder head **ADR-0068**. In progress: **v0.13.0 "Evidence Hardening"** — criteria Accepted, ladder T-123…T-136, adds ADR-0069 + ADR-0070, no new WD. Path from here: **v0.13.0 → v0.14.0 Containment (WD-12) → v1.0.0 Beta 1** (layer 2 lands *and* the OpenAPI surface freezes) → v1.1 → v1.2+. Live planning record: `docs/requirements/epic_story_catalog_v4.md` §Part 4. **Tags are local; this repo has no git remote — never push.**
+**Shipped state — last updated 2026-08-18.** Latest release **v0.12.0**, tagged `7214f75`. ADR ladder head **ADR-0070**. In progress: **v0.13.0 "Evidence Hardening"** — criteria Accepted, ladder T-123…T-136, adds ADR-0069 + ADR-0070 (both **Accepted**), no new WD. Path from here: **v0.13.0 → v0.14.0 Containment (WD-12) → v1.0.0 Beta 1** (layer 2 lands *and* the OpenAPI surface freezes) → v1.1 → v1.2+. Live planning record: `docs/requirements/epic_story_catalog_v4.md` §Part 4. **Tags are local; this repo has no git remote — never push.**
 
 Earlier versions (v1, v2, v2.2, v3.0.0) are retained under `docs/deep-dive/` for historical traceability only. Do not start new work from them.
 

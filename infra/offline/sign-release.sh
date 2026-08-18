@@ -25,12 +25,16 @@
 # as a fixture and never suitable for a real release, lives at
 # infra/offline/testdata/fixture-release-key/.
 #
-# RECORDED DEPENDENCY (T-136): Taskfile.yml's `offline-bundle` task still
-# hardcodes BUNDLE_VERSION: "0.12.0" while this ticket (T-129a) ships v0.13.0
-# code — the bump is T-136 (closure), deliberately not done here. Signing an
-# artifact whose filename/embedded VERSION says the wrong release would
-# ATTEST THE WRONG VERSION. Before signing a real release, confirm the
-# artifact filename in dist/offline/ actually matches the version being cut.
+# VERSION DISCIPLINE (the T-129a dependency, RESOLVED 2026-08-18): Taskfile.yml's
+# `offline-bundle` now sets BUNDLE_VERSION: "0.13.0". It was stale at "0.12.0"
+# from T-129a until the pre-T-133 rebuild, so the signed artifacts on disk in
+# that window were named 0.13.0 only because the build was run with an explicit
+# override. The bump moved EARLIER than its original T-136 slot because T-133's
+# quickstart gate consumes the built bundle, and gating a quickstart on a
+# mislabeled artifact undercuts OI-37 — the criterion about exactly this.
+# Signing an artifact whose filename/embedded VERSION says the wrong release
+# would ATTEST THE WRONG VERSION, so before signing a real release, still
+# confirm the artifact filename in dist/offline/ matches the version being cut.
 #
 # Usage:
 #   bash infra/offline/sign-release.sh --key <private-key.pem> [artifact.tar.gz ...]

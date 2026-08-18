@@ -116,14 +116,14 @@ tasks:
       # version (T-122a, OI-29): build-bundle.sh REFUSES to run without
       # BUNDLE_VERSION set (no silent default — the OI-21 rule), and this is
       # the one place that sets it. Bump on every release.
-      BUNDLE_VERSION: "0.12.0"
+      BUNDLE_VERSION: "0.13.0"
     cmds:
       - pnpm install --frozen-lockfile
       - pnpm --filter @aireos/web build
       - BUNDLE_VERSION={{.BUNDLE_VERSION}} bash infra/offline/build-bundle.sh
 
   sign-release:
-    desc: "HOST-SIDE, out-of-band step (ADR-0070 D1/D3, T-129a): detached Ed25519 signatures over BOTH shipped offline artifacts (core bundle + postgres companion). NEVER run inside build-bundle.sh or any build container — the release key must never enter a build context. Usage: task sign-release -- --key /path/to/release-key.pem [artifact.tar.gz ...] (defaults to every dist/offline/*.tar.gz). The production key is minted out-of-band by the CEO and is NEVER created by this task — see docs/devops/offline-install-v3.md 'Release key custody'; a fixture key for tests lives at infra/offline/testdata/fixture-release-key/. NOTE: this task signs whatever artifact filename/VERSION is on disk — offline-bundle's BUNDLE_VERSION is stale at 0.12.0 as of v0.13.0 (T-136 bumps it); verify the artifact name matches the real release before signing for an actual release."
+    desc: "HOST-SIDE, out-of-band step (ADR-0070 D1/D3, T-129a): detached Ed25519 signatures over BOTH shipped offline artifacts (core bundle + postgres companion). NEVER run inside build-bundle.sh or any build container — the release key must never enter a build context. Usage: task sign-release -- --key /path/to/release-key.pem [artifact.tar.gz ...] (defaults to every dist/offline/*.tar.gz). The production key is minted out-of-band by the CEO and is NEVER created by this task — see docs/devops/offline-install-v3.md 'Release key custody'; a fixture key for tests lives at infra/offline/testdata/fixture-release-key/. NOTE: this task signs whatever artifact filename/VERSION is on disk — offline-bundle's BUNDLE_VERSION was bumped to 0.13.0 on 2026-08-18 (moved earlier than its original T-136 slot, because T-133's quickstart gate consumes the built bundle); still verify the artifact name matches the real release before signing for an actual release."
     cmds:
       - bash infra/offline/sign-release.sh {{.CLI_ARGS}}
 
