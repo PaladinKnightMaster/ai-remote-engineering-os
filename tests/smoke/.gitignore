@@ -8,3 +8,6 @@ playwright-report/
 # resource id to, for infra/offline/wd1/quickstart-browser-gate.sh to read
 # across the browser -> host shell -> browser plane boundary.
 .quickstart-resource-id
+# T-133b (Commander review): spec B's completion marker — proves the test
+# BODY ran, since a skipped Playwright test still exits 0.
+.quickstart-b-done

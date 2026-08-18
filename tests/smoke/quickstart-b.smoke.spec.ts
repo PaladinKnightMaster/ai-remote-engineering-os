@@ -11,10 +11,12 @@
 // spec A created and the orchestrator's shell step 4 bound.
 
 import { test, expect, type Page } from "@playwright/test";
+import fs from "node:fs";
 
 const OPERATOR_USER = process.env.QUICKSTART_OPERATOR_USER ?? "admin";
 const OPERATOR_PASS = process.env.QUICKSTART_OPERATOR_PASS ?? "demo-operator-pw";
 const RESOURCE_ID = process.env.QUICKSTART_RESOURCE_ID;
+const DONE_FILE = process.env.QUICKSTART_DONE_FILE ?? "/smoke/.quickstart-b-done";
 const RESOURCE_LABEL = process.env.QUICKSTART_RESOURCE_LABEL ?? "loopback-demo (ssh)"; // "{name} ({type})", Runs.tsx
 const COMMAND = "whoami";
 
@@ -103,4 +105,15 @@ test("quickstart steps 5/6/7-cockpit: launch a governed Run, see its events in t
   await expect(registerItem.locator('span[aria-hidden="true"]')).toHaveText("○", { timeout: 15_000 });
 
   await testInfo.attach("quickstart-step7-cockpit-removed", { body: await page.screenshot(), contentType: "image/png" });
+
+  // Completion marker, written as the LAST act of the test body (Commander
+  // review, T-133b). A SKIPPED Playwright test still exits 0, so the
+  // orchestrator's exit-code check alone cannot tell "spec B passed" from
+  // "spec B never ran" -- e.g. if QUICKSTART_RESOURCE_ID were ever empty, the
+  // test.skip() above would fire, `npx playwright test` would exit 0, step 7's
+  // --undo would succeed regardless, and the gate would print PASS having
+  // proven nothing. That is the S-25 silent-guardrail shape inside the gate
+  // itself. Spec A is already covered by the state file it writes; this is the
+  // symmetric marker for spec B, and the orchestrator asserts it.
+  fs.writeFileSync(DONE_FILE, "ok", "utf8");
 });

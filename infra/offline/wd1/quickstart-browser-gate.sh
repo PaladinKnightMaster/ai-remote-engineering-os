@@ -48,6 +48,7 @@ ACCOUNT=aireos-demo
 OPPW=demo-operator-pw
 PW_IMAGE=mcr.microsoft.com/playwright:v1.49.1-noble
 STATE_FILE="$SMOKE_DIR/.quickstart-resource-id"
+DONE_FILE="$SMOKE_DIR/.quickstart-b-done"
 RUNNER=aireos-quickstart-runner
 MODE="${1:-happy}" # "no-bind" is VER-16's negative leg
 
@@ -60,7 +61,7 @@ cleanup() {
   docker rm -f "$HOST" "$SSHD" >/dev/null 2>&1 || true
   docker volume rm "$KEYVOL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
-  rm -f "$STATE_FILE"
+  rm -f "$STATE_FILE" "$DONE_FILE"
 }
 trap cleanup EXIT
 
@@ -109,6 +110,11 @@ else
   log "step 4 PASSED -- bind reported success"
 fi
 
+# A SKIPPED Playwright test still exits 0, so the exit code alone cannot
+# distinguish "spec B passed" from "spec B never ran" (its own test.skip fires
+# on an empty QUICKSTART_RESOURCE_ID). Clear the marker, then require it back:
+# a positive marker, not the absence of a failure.
+rm -f "$DONE_FILE"
 log "spec B -- quickstart steps 5/6/7-cockpit (launch a Run, audit events, remove the demo target)"
 docker run --rm --name "$RUNNER" --network "$NET" \
   -v "$SMOKE_DIR":/smoke \
@@ -117,6 +123,9 @@ docker run --rm --name "$RUNNER" --network "$NET" \
   -e QUICKSTART_RESOURCE_ID="$RID" \
   -w /smoke "$PW_IMAGE" \
   sh -c "npm install --no-audit --no-fund && npx playwright test quickstart-b.smoke.spec.ts"
+
+[ -f "$DONE_FILE" ] || die "spec B did not run to completion -- no $DONE_FILE marker. A skipped Playwright test exits 0, so this asserts the test BODY actually executed rather than trusting the exit code."
+log "spec B PASSED -- completion marker present"
 
 log "quickstart step 7 (host half): --undo (bundle copy)"
 UNDO_OUT="$(docker exec "$HOST" bash -c "cd '$BUNDLE_DIR' && ./setup-loopback-demo.sh --undo")"
