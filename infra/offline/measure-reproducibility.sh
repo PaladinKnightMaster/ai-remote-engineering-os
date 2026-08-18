@@ -145,17 +145,28 @@ trap cleanup EXIT
 GOMOD_VOL="aireos_gomodcache"
 GOCACHE_VOL="aireos_gocache"
 
-# --- 5. build once: rebuild the SPA from scratch, then build-bundle.sh -----
-# Both steps run inside the SAME container invocation (same image, same
+# --- 5. build once: the FULL `task offline-bundle` sequence ----------------
+# All three steps run inside the SAME container invocation (same image, same
 # mounted repo, same go/node/pnpm versions) so "the SPA layer is actually
 # rebuilt" and "the environment is held constant across both builds" are
 # both true at once, rather than trusting the host's own toolchain (which,
 # on this Windows host, cannot run vite build at all -- its node_modules
-# carries linux-x64-gnu optional deps, not win32 ones, from an earlier
-# ticket's container-based `pnpm install`).
+# carries LINUX optional deps, not win32 ones).
+#
+# `pnpm install --frozen-lockfile` FIRST -- it is `task offline-bundle`'s
+# first command (Taskfile.yml), and omitting it meant this harness was not
+# measuring the documented build at all. It silently depended on node_modules
+# already holding the right platform binaries, which bit for real on
+# 2026-08-18: T-132 verified in `node:22-alpine` (musl), leaving only
+# @rollup/rollup-linux-x64-musl installed, and the next Debian/glibc build
+# died with "Cannot find module @rollup/rollup-linux-x64-gnu". The harness and
+# the thing it claims to measure had diverged invisibly, because each side was
+# individually correct -- the recurring defect class this release keeps
+# finding. Running the install here also makes dependency RESOLUTION part of
+# what reproducibility is measured over, which is strictly stronger.
 build_once() {
   local out_rel="$1" label="$2"
-  log "=== build $label: removing apps/web/dist, then rebuilding SPA + bundle in $IMAGE_TAG (OUT_DIR=$out_rel) ==="
+  log "=== build $label: removing apps/web/dist, then pnpm install + SPA + bundle in $IMAGE_TAG (OUT_DIR=$out_rel) ==="
   rm -rf "$REPO_ROOT/apps/web/dist"
   MSYS_NO_PATHCONV=1 docker run --rm \
     -v "$REPO_ROOT":/w -w /w \
@@ -163,8 +174,9 @@ build_once() {
     -v "$GOCACHE_VOL":/root/.cache/go-build \
     -e BUNDLE_VERSION="$BUNDLE_VERSION" \
     -e OUT_DIR="/w/$out_rel" \
-    "$IMAGE_TAG" bash -c "set -euo pipefail; pnpm --filter @aireos/web build; bash infra/offline/build-bundle.sh" \
-    || die "SPA build + build-bundle.sh failed for $label"
+    -e CI=true \
+    "$IMAGE_TAG" bash -c "set -euo pipefail; pnpm install --frozen-lockfile; pnpm --filter @aireos/web build; bash infra/offline/build-bundle.sh" \
+    || die "pnpm install + SPA build + build-bundle.sh failed for $label"
   [ -d "$REPO_ROOT/apps/web/dist" ] || die "apps/web/dist missing after SPA build for $label"
 }
 
