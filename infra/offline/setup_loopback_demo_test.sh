@@ -16,6 +16,12 @@
 # sourced (not file-scoped), same caveat install_profile_test.sh documents —
 # every helper call below runs inside an `if`/command-substitution context so
 # a helper's non-zero return never aborts this script under -e.
+#
+# ADDED (T-133a, OI-38): one live check below DOES need root + a fake
+# `systemctl` on PATH — it invokes the real CLI entry (below the sourceable
+# guard) to prove `generate` accepts a socket-activated-only sshd rather than
+# rejecting it. It SKIPS rather than failing when not run as root, same
+# pattern as install_audit_key_test.sh.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -165,6 +171,64 @@ expect_strip "empty content stays empty" "" ""
 expect_strip "a line that merely CONTAINS the marker word, but not as its comment, is untouched" \
   "ssh-ed25519 CCCC a-comment-that-mentions-${MARKER}-in-passing-but-isnt-the-tag" \
   "ssh-ed25519 CCCC a-comment-that-mentions-${MARKER}-in-passing-but-isnt-the-tag"
+
+echo
+echo "== OI-38: socket-activated sshd is a supported precondition, and this test asserts it (T-133a) =="
+# Everything above sources the script to unit-test its pure helpers -- no
+# root, no sshd, no systemd. This check is different: OI-38 is about the
+# `generate` mode's REAL sshd-reachability probe (lines ~257-262 of
+# setup-loopback-demo.sh), which lives below the sourceable guard and runs
+# only when the script is invoked as its own process. Proving it needs root
+# (the script's own `[ "$(id -u)" = "0" ]` gate) and a way to control
+# `systemctl is-active`, so — same pattern as install_audit_key_test.sh —
+# this SKIPS rather than failing when not run as root; run inside golang:1.23
+# (or another root container) to actually exercise it.
+if [ "$(id -u)" != "0" ]; then
+  echo "SKIP OI-38 live check -- needs root to reach setup-loopback-demo.sh's real CLI entry; run inside golang:1.23 (or another root container)"
+else
+  FAKEBIN="$(mktemp -d)"
+  # A minimal `systemctl is-active --quiet <unit>` stand-in: only ssh.socket
+  # reports active -- ssh/sshd themselves stay inactive, exactly Ubuntu
+  # 24.04's socket-activated sshd shape (this product's own primary install
+  # target) that blocked the documented quickstart at v0.12.0's GATE-4.
+  cat > "$FAKEBIN/systemctl" <<'FAKE'
+#!/bin/sh
+unit=""
+for a in "$@"; do unit="$a"; done
+case "$unit" in
+  ssh.socket) exit 0 ;;
+  ssh|sshd) exit 1 ;;
+  *) exit 1 ;;
+esac
+FAKE
+  chmod +x "$FAKEBIN/systemctl"
+
+  OI38_ACCOUNT="aireos-oi38-nonexistent-$$"
+  OI38_PORT=39217   # an ephemeral port nothing listens on in this test container
+  # The sourced setup-loopback-demo.sh left `set -e` shell-global (see this
+  # file's header note) -- a bare `var="$(failing-cmd)"` would abort THIS
+  # script right here, before ever inspecting the result. Same `if`-guarded
+  # idiom the expect_* helpers above use.
+  if OI38_OUT="$(PATH="$FAKEBIN:$PATH" bash "$SCRIPT_DIR/setup-loopback-demo.sh" generate --account "$OI38_ACCOUNT" --port "$OI38_PORT" 2>&1)"; then
+    OI38_RC=0
+  else
+    OI38_RC=$?
+  fi
+  rm -rf "$FAKEBIN"
+
+  # The reachability check must NOT reject a socket-activated-only sshd (that
+  # is the OI-38 regression). The script should instead pass it and die LATER
+  # at the next, unrelated check (the account does not exist) -- proving it
+  # actually got past the sshd gate rather than never reaching it for some
+  # other reason.
+  if echo "$OI38_OUT" | grep -q "no sshd reachable"; then
+    bad "OI-38: accepts a socket-activated sshd" "the script rejected ssh.socket-only as if no sshd were reachable at all -- output: $OI38_OUT"
+  elif [ "$OI38_RC" -ne 0 ] && echo "$OI38_OUT" | grep -q "no such account"; then
+    ok "OI-38: accepts a socket-activated sshd -- passed the reachability check, died later at the unrelated/expected 'no such account' check"
+  else
+    bad "OI-38: accepts a socket-activated sshd" "unexpected outcome (rc=$OI38_RC): $OI38_OUT"
+  fi
+fi
 
 echo
 echo "== summary: $pass passed, $fail failed =="

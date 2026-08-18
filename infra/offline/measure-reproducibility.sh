@@ -88,7 +88,15 @@ DIRTY="$(git status --porcelain)"
 $DIRTY"
 
 COMMIT="$(git rev-parse HEAD)"
-BUNDLE_VERSION="${BUNDLE_VERSION:-0.13.0}"
+# BUNDLE_VERSION is REQUIRED and never silently defaulted (OI-37: no default
+# may equal the value it is meant to detect staleness in — the same rule
+# build-bundle.sh:60 already enforces for the same reason). This script used
+# to default to "0.13.0", which is exactly the failure mode OI-37 generalizes
+# from: the default was invisible only because it happened to match the real
+# value, and would silently measure a bundle labelled 0.13.0 once the repo
+# moved to v0.14.0. `task offline-bundle` (Taskfile.yml) is the single source
+# of truth for the current release version; set BUNDLE_VERSION explicitly.
+[ -n "${BUNDLE_VERSION:-}" ] || die "BUNDLE_VERSION is required and is never defaulted (OI-37) — set it explicitly, e.g. BUNDLE_VERSION=0.13.0 bash infra/offline/measure-reproducibility.sh (see Taskfile.yml's offline-bundle task for the current release version)"
 log "measuring commit $COMMIT (clean tree confirmed) at BUNDLE_VERSION=$BUNDLE_VERSION"
 
 # --- 2. build environment: one tagged image, reused for BOTH builds --------

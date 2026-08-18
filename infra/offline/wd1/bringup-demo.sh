@@ -26,12 +26,31 @@ OPPW=demo-operator-pw
 RID=01900000-0000-7000-8000-0000000000e2
 log() { printf '\033[1;36m[demo]\033[0m %s\n' "$*"; }
 
+# assert_exactly_one_bundle — OI-37's cousin finding (T-133a, Commander audit
+# finding B): a bare `aireos-offline-*.tar.gz` glob, and this script's own
+# `ls -d aireos-offline-*/ | head -1` further down, silently pick the FIRST
+# match if two bundle versions sit in dist/offline at once (e.g. a stale
+# build left behind by a prior release). Ambiguous selection that resolves
+# quietly is the same family of defect as a stale default — fail loud and
+# name every candidate instead.
+assert_exactly_one_bundle() {
+  local matches=("$OUT"/aireos-offline-*.tar.gz)
+  if [ ! -e "${matches[0]}" ]; then
+    echo "missing a from-HEAD bundle in $OUT — run task offline-bundle (or the Dockerized build-bundle) first"
+    exit 1
+  fi
+  if [ "${#matches[@]}" -gt 1 ]; then
+    echo "ambiguous bundle selection in $OUT — expected exactly ONE aireos-offline-*.tar.gz, found ${#matches[@]}: ${matches[*]} — remove the stale one(s) before running $(basename "$0")"
+    exit 1
+  fi
+}
+
 log "tear down any previous demo stack"
 docker rm -f "$HOST" "$SSHD" >/dev/null 2>&1 || true
 docker volume rm "$KEYVOL" >/dev/null 2>&1 || true
 docker network rm "$NET" >/dev/null 2>&1 || true
 
-ls "$OUT"/aireos-offline-*.tar.gz >/dev/null 2>&1 || { echo "missing a from-HEAD bundle in $OUT — run task offline-bundle (or the Dockerized build-bundle) first"; exit 1; }
+assert_exactly_one_bundle
 ls "$OUT"/aireos-postgres-ubuntu2404.tar.gz >/dev/null || { echo "missing postgres companion in $OUT"; exit 1; }
 
 docker network create "$NET" >/dev/null

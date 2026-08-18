@@ -48,9 +48,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# assert_exactly_one_bundle — OI-37's cousin finding (T-133a, Commander audit
+# finding B): a bare `aireos-offline-*.tar.gz` glob, and this script's own
+# `ls -d aireos-offline-*/ | head -1` further down, silently pick the FIRST
+# match if two bundle versions sit in dist/offline at once (e.g. a stale
+# build left behind by a prior release). Ambiguous selection that resolves
+# quietly is the same family of defect as a stale default — fail loud and
+# name every candidate instead.
+assert_exactly_one_bundle() {
+  local matches=("$OUT"/aireos-offline-*.tar.gz)
+  if [ ! -e "${matches[0]}" ]; then
+    echo "missing core bundle — build it (see T-021a)"
+    exit 1
+  fi
+  if [ "${#matches[@]}" -gt 1 ]; then
+    echo "ambiguous bundle selection in $OUT — expected exactly ONE aireos-offline-*.tar.gz, found ${#matches[@]}: ${matches[*]} — remove the stale one(s) before running $(basename "$0")"
+    exit 1
+  fi
+}
+
 # 1. require artifacts.
-ls "$OUT"/aireos-offline-*.tar.gz >/dev/null 2>&1 \
-  || { echo "missing core bundle — build it (see T-021a)"; exit 1; }
+assert_exactly_one_bundle
 ls "$OUT"/aireos-postgres-ubuntu2404.tar.gz >/dev/null 2>&1 \
   || { echo "missing postgres companion — bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404"; exit 1; }
 
