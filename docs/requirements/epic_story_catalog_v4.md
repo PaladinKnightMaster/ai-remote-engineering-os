@@ -119,7 +119,7 @@ modal would actually make these surfaces **testable in-pane**, which is a second
 | S-24 | **Session-revocation posture stated explicitly** — operator sessions are stateless bearer tokens with an 8h TTL; `logout` clears the cookie but does not invalidate the token; the paired tier is the product's only revocable session. Mitigations: TTL, HttpOnly/Secure/SameSite=Strict, same-origin. Fix is B-032 at **v1.1**, pre-authorised by S-20's security-strengthening clause. **Pulled into the hardening half at the split** (with S-23, S-30) — a non-revocable bearer token is a live posture a reviewer will probe, so leaving it unstated until the freeze release was the sharper omission of the two. | S |
 | S-25 | **Enforcement-of-enforcement (B-038)** — every lint override, config scan root and whole-module test mock carries a test asserting it matches / covers / exercises real code. Three known: the dead SEC-7 ESLint override, Tailwind's `packages/ui/src` scan gap, the workspace-package whole-module mock. *A freeze is only credible if the enforcement protecting it demonstrably runs.* | M |
 | S-26 | **The documented quickstart is a gate** — an automated run executes the published quickstart from the **built bundle on a fresh host**, not from the repo and not with repo defaults. GATE-4 §human caught two step-1 blockers no automated gate could (a bundle version hard-coded stale for eight releases, concealed because `BUNDLE_VERSION` defaulted to the same value; `setup-loopback-demo.sh` rejecting socket-activated sshd — Ubuntu 24.04's default and our primary target). **A default that matches the stale value hides the staleness.** | M |
-| S-27 | **OWASP ASI01–10 control mapping** — map our controls to *OWASP Top 10 for Agentic Applications* (released 2025-12-09; note the name is "Agentic **Applications**", not "Agentic AI"). Strong: ASI06, ASI09. Gapped: ASI02/03/05 (→ S-30), ASI08 (→ S-28), ASI04 (→ S-29). **State ASI07 as out of scope** (single-plane, no agent-to-agent path) rather than leaving it silent — reviewers will ask. A published external taxonomy is worth more to a commercial buyer than any internal checklist. | M |
+| S-27 | **OWASP ASI01–10 control mapping** — map our controls to *OWASP Top 10 for Agentic Applications* (released 2025-12-09; note the name is "Agentic **Applications**", not "Agentic AI"). Strong: ASI06, ASI09. Gapped: ASI02/03/05 (→ S-30), ASI04 (→ S-29). **Correction of record 2026-08-19: this row previously mapped "ASI08 (→ S-28)". ASI08 is *Cascading Failures*; the audit-chain work answers **T8 — Repudiation and Untraceability**, a different taxonomy.** This was the FOURTH live instance of that error — `docs/security/threat-model.md` §1.1 named `backlog_v4.csv` B-042 and `ADR-0069:49` but missed this line, which is the one a scoping consult actually reads. Against genuine ASI08 our posture is **partial** (no blast-radius limiter across individually approved steps). **State ASI07 as out of scope** (single-plane, no agent-to-agent path) rather than leaving it silent — reviewers will ask. A published external taxonomy is worth more to a commercial buyer than any internal checklist. | M |
 | S-28 | **Audit-chain external verifiability** — our chain is unkeyed SHA-256 computed and stored by `audit-service` itself, so it proves *ordering*, not *authenticity*: an attacker with write access recomputes from genesis and it verifies clean. Sign chain heads with a key the writing service does not hold (and/or periodic witness). **No new capability — this hardens the control the whole product claim rests on.** ASI08. | M |
 | S-29 | **Bundle signing + SBOM** — for an air-gapped product **the offline bundle is the trust root**, and today's release gates are functional (size/version), not provenance. An operator on a disconnected network has no cryptographic way to confirm the bundle is the one we built. Release engineering, not product capability. ASI04. | M |
 | S-30 | **Containment boundary stated explicitly** — our controls hold for actions traversing the gateway; **a process spawned by an approved `remote.exec` is not contained, and its own network activity is ungoverned**. Say so in the threat model. Enforcement lands at **v0.14**; **v0.13** states the boundary honestly rather than letting a red-teamer discover it. ASI02/03/05. | S |
@@ -185,8 +185,8 @@ material to audit responses, so freezing first would have frozen a surface we we
 |---|---|---|---|
 | **v0.11** ✅ | **Operator Experience** | E-01 audit read surface · E-07 live refresh · E-08 charter-scope accrual | **No new WD** — WD-1..10 regression + smoke + a §human spot-check |
 | **v0.12** ✅ | **Access & Onboarding** | E-02 mobile/QR · E-03 deployment profiles · E-04 onboarding · E-05a Button (E-05b cut) | **WD-11** for pairing (new security semantics) · profiles ride `task wd1` · the rest ride smoke + §human |
-| **v0.13.0** | **Evidence Hardening** — *the E-06 hardening half* | S-21 capstone · S-23 single-operator · S-24 session-revocation · S-25 enforcement-of-enforcement · S-26 quickstart-as-gate · S-27 ASI01–10 mapping · S-28 audit-chain external verifiability · S-29 bundle signing + SBOM · S-30 containment boundary · B-033 (narrowed to `CreateResource`) · B-035 **removal** | The **security audit is the gate**; full WD-1..11 regression; **no new WD**; two negative proofs + a §human offline verification |
-| **v0.14.0** | **Containment** | Adopt a sandbox so the "sole tool-execution path" becomes *enforced* rather than assumed. Own ADR. Lead candidates: **matchlock** (Firecracker + self-programmed nftables + Unix-socket allow/block hook) paired with **iron-proxy** (fail-closed gRPC reject transform + MCP tool allowlists). | **WD-12** |
+| **v0.13.0** ✅ | **Evidence Hardening** — *the E-06 hardening half* | S-21 capstone · S-23 single-operator · S-24 session-revocation · S-25 enforcement-of-enforcement · S-26 quickstart-as-gate · S-27 ASI01–10 mapping · S-28 audit-chain external verifiability · S-29 bundle signing + SBOM · S-30 containment boundary · B-033 (narrowed to `CreateResource`) · B-035 **removal** | The **security audit is the gate**; full WD-1..11 regression; **no new WD**; two negative proofs + a §human offline verification |
+| **v0.14.0** | **Governed Tool Surface** — *re-scoped 2026-08-19* | Widen the **egress** tool surface, which today is one tool (`remote.exec`). Five further gateway tools exist (`run.launch`, `workstream.poll`, `plan.submit`, `memory.read`, `context.search`) but are **control-plane only**, so the product governs exactly one outward capability. **File transfer is absent from the repo entirely** — no SFTP, no SCP — which is the conspicuous gap for an agent-driven remote engineering OS. Rides the ADR-0057 typed catalog with policy, approval, connector lease, audit, Runs and grants **unchanged**, and reuses ADR-0049's `evidencePacketId = sha256:<bytes>` rather than inventing an evidence model. One ADR for the tool family. | **TBD at the criteria consult** — likely no new WD under the §2 gate-sizing rule, since the governance semantics are unchanged |
 | **v1.0.0** | **Beta 1 — Governed Remote Operations** — *layer 2 lands, and the surface freezes* | Reference integrations of **OpenHands SDK** (`POST /respond_to_confirmation`) and **openworker** (`GET /v1/inbox` + `POST /v1/inbox/{id}/resolve`) via their HTTP approval endpoints, inside the v0.14 boundary. **Zero fork.** **Plus the E-06 freeze half — S-20 surface freeze + compatibility policy, S-22 upgrade statement.** | **WD-13** |
 | **v1.1** | **Session & Evidence** | B-032 generalized revocation · B-034 provenance field · B-036 FK/deletion · B-037 design pass · B-031 re-ask backoff | **WD-14** |
 | **v1.2+** | **Post-Beta reach** | Mobile PWA + `cockpit@1` · Mattermost as a governed connector · B-008 (agent-device) · B-024 (pgGraph) · voice (KittenTTS) | per epic |
@@ -195,6 +195,58 @@ material to audit responses, so freezing first would have frozen a surface we we
 war-room **v1.0** → *split* into **v0.13.0** (hardening) + the freeze half folded into **v1.0.0** ·
 war-room **v1.1** Containment → **v0.14.0** · war-room **v1.2** Governed Harness → **v1.0.0** ·
 war-room **v1.3** → **v1.1** · war-room **v1.4+** → **v1.2+**.
+
+### ⭐ v0.14 RE-SCOPE — **RATIFIED 2026-08-19 (CEO)**, at the v0.14 checkpoint consult
+
+**v0.14.0 is no longer Containment.** The checkpoint ran a pre-authoring audit against the as-built
+and a re-scan of `references/` against a new reference collection, then re-ranked the candidate
+tracks. Two decisions were taken.
+
+**Decision 1 — v0.14.0 becomes "Governed Tool Surface."** The diagnosis is a deep governance spine
+wrapped around a narrow capability surface: seven controls, but exactly one *egress* tool. Widening
+that surface is the cheapest available capability release — no new daemon, no new runtime dependency,
+no OpenAPI fragment change (gateway tools are off-fragment), no new evidence model, and it
+parallelises one tool per implementer. It is also what makes **dogfooding** possible: the standing
+blocker was always that one tool is not enough to do real work with.
+
+**Screenshare / remote PC control was considered and deliberately deferred**, on evidence rather than
+preference. It is well-scouted (REF-084 Guacamole, REF-138 MeshCentral, REF-165 RustDesk, WARPGATE)
+and **pre-authorized** — ADR-0048 §Held-in-reserve carries the promotion trigger "first RDP or VNC
+resource type ticket" — so it is G2-clean whenever it starts. But the audit found the work is far
+larger than the data model suggests:
+
+- ⛔ **There is no evidence model for a GUI session.** Recording is asciinema v2 (`cast.go`), a
+  text-terminal format that cannot represent a framebuffer, and audit granularity is
+  **Enter-delimited input lines** (`sshpty.go:174`). RDP/VNC carry mouse coordinates and raw
+  keystrokes: no line boundary, no command, **nothing to approve and nothing to anchor**. The
+  product's core claim does not carry over. ADR-0048 anticipated this ("Guacamole's audit format is
+  not chained-hash").
+- The session `mode` enum is `[terminal]` only, so it needs an OpenAPI fragment change — better
+  before the v1.0 freeze than after, but it is not "no contract change."
+- **Size is not the blocker.** The core bundle is 42.5 MB gz against the 150 MB OI-4 cap, and
+  ADR-0052's companion-artifact pattern already ships heavy dependencies outside the core bundle.
+  The real conflict is `guacd` as a **C daemon with X11 dependencies and its own CVE feed** against
+  ADR-0051's static-binary systemd host.
+
+It re-enters as a **deliberate two-release program**, sequenced after a dogfooding pass tells us
+whether operators want a desktop or better tools.
+
+**Decision 2 — Containment (B-040 / WD-12) is DEFERRED, not cancelled, and the consequence is
+recorded rather than drifted into.** The 2026-08-10 record states *"Containment is the PREREQUISITE
+for layer 2, not a parallel track."* On re-examination that dependency is **weaker than stated**:
+without containment, governance of a third-party harness is **cooperative rather than enforced** —
+the harness must choose to call us. That is a weaker *claim*, not an impossible build, and **it is
+the identical posture the product already ships for its own gateway** and already discloses as a
+self-finding ("our sole tool-execution path is an assumption, not a boundary").
+
+**So layer 2 may proceed without containment, on one condition: the limitation is STATED.** v1.0.0's
+criteria must say plainly that harness governance is cooperative until B-040 lands. Containment
+keeps its own ADR + WD-12 whenever it is scheduled, and remains the thing that upgrades the claim
+from cooperative to enforced.
+
+⚠ **Backlog targets reconciled in the same pass:** `backlog_v4.csv` still carried the **pre-split**
+war-room numbers (B-040 → v1.1, B-041 → v1.2). Both are corrected — B-041 to **v1.0.0**, B-040 to
+**deferred / unscheduled**.
 
 ### Why this ordering (the three dependencies that force it)
 
