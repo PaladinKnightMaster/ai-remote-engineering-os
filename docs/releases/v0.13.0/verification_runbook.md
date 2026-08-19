@@ -89,28 +89,46 @@ Record the public key's SHA-256 fingerprint — `sign-release` prints it — for
 **This is the release's entire claim: a stranger, with no database and no product install, can prove
 our audit chain is authentic.** Drive it as a third party would.
 
+**4.0 — Make sure the chain has something in it.** A fresh stack may have an empty chain, and
+verifying zero events proves nothing. Log in to the cockpit and perform one governed action first
+(creating the demo target is enough). Confirmed during T-136a: a login plus a resource creation
+yields a verifiable chain.
+
 **4.1 — On the installed host, export the evidence.**
 
+The `export` subcommand needs the same environment `systemd` gives the service — it is **not**
+self-configuring. Read the values with `grep`/`cut`, never by `source`-ing the file (a config file is
+data, not code):
+
 ```bash
-sudo /opt/aireos/bin/audit-service export > /tmp/evidence.ndjson
+DB=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+```
+```bash
+AN=$(grep "^AIREOS_AUDIT_ANCHOR_PATH=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
+```
+```bash
+sudo DATABASE_URL="$DB" AIREOS_AUDIT_ANCHOR_PATH="$AN" /opt/aireos/bin/audit-service export > evidence.ndjson
 ```
 
-Confirm line 1 is a manifest carrying `formatVersion`, `attestedThroughSeq`, `exportedThroughSeq`,
-and a key **fingerprint only** — never the key itself.
+⚠ **The export must be the only thing writing to that file.** If you run `checkpoint` in the same
+redirect its output lands in the export and line 1 stops being valid JSON.
+
+Confirm line 1 is a manifest carrying `formatVersion`, `eventCount`, `attestedThroughSeq`,
+`anchorAvailable` — and a key **fingerprint only**, never the key itself.
 
 **4.2 — Read the public key from the installed host.**
 
 ```bash
-grep '^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=' /etc/aireos/aireos.env | cut -d= -f2-
+grep "^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=" /etc/aireos/aireos.env | cut -d= -f2-
 ```
 
-Note this is a *different* key from the release key in Step 3 — per-install and machine-minted,
-versus per-project and human-held. They must never be substituted for one another.
+A different key from the release key in Step 3 — per-install and machine-minted, versus per-project
+and human-held. Never substitute one for the other.
 
 **4.3 — Move to a machine with NO database access and NO product install.**
 
-Copy only two things: `evidence.ndjson` and the public key string. Copying anything else weakens the
-test. Take `aireos-verify` from the bundle's `bin/` — it needs no configuration.
+Copy only two things: `evidence.ndjson` and the public key string. Take `aireos-verify` from the
+bundle's `bin/`. Copying anything else weakens the test.
 
 **4.4 — Verify as a third party.**
 
@@ -118,20 +136,30 @@ test. Take `aireos-verify` from the bundle's `bin/` — it needs no configuratio
 ./aireos-verify --pubkey <the-hex-public-key> evidence.ndjson
 ```
 
-**Expected:** `INTACT+ATTESTED`, exit **0**, with the event count and the sequence attested through.
+**Expected:**
 
-**4.5 — Prove it can fail** (do not skip: a verifier you have not seen refuse is not known to work).
-Change one character inside `evidence.ndjson` and re-run:
-
-```bash
-./aireos-verify --pubkey <the-hex-public-key> evidence.ndjson
+```
+chain:  INTACT+ATTESTED — N event(s) verified, attested through seq N
+anchor: IN_SYNC — the anchor's last recorded head agrees with the exported heads
+verdict: OK (exit 0)
 ```
 
-**Expected:** `BROKEN`, exit **1**, naming the first divergent event. Restore the file afterwards.
+**4.5 — Prove it can fail.** Do not skip: a verifier you have not seen refuse is not known to work.
+Change any actor or value inside `evidence.ndjson` and re-run:
+
+**Expected:**
+
+```
+chain:  BROKEN — first divergence at event index 0 (seq=1 id=...)
+verdict: TAMPERED (exit 1)
+```
 
 **4.6 — Confirm what was *not* required.** You used no database, no credentials, no running service
 and no network. If any of those turned out to be necessary, GATE-5 has failed regardless of the
 verdict printed.
+
+> **Windows note:** git-bash `/tmp` is not a path Docker can bind-mount. If you run the clean room as
+> a container, stage the files under the repo and mount that directory instead.
 
 ---
 
