@@ -793,7 +793,7 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 		if isTerminal(inv.Status) {
 			return inv.ID, toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
 		}
-		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.Tool, req.WaitTimeout)
+		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
 		return inv.ID, res, werr
 	}
 
@@ -805,13 +805,22 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 	}
 	if decision == PolicyAllow {
 		_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
-		res, eerr := s.performAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject, req.Tool)
+		// The dispatch tool comes from the PERSISTED row (inv.Tool), not req.Tool: on an
+		// idempotent conflict inv is the ORIGINAL invocation (store.go's ON CONFLICT is
+		// keyed on agent_subject+idempotency_key, not tool), so a caller-supplied tool
+		// could otherwise diverge from what was actually persisted and approved
+		// (SEC-49 — approval binds to persisted state, never to what the caller says
+		// afterwards). On the freshly-created path inv.Tool always equals req.Tool
+		// anyway (store.Create persists req.Tool verbatim), so this is a no-op rename
+		// of the source, not a behavior change, for the only path that reaches here
+		// with created=true.
+		res, eerr := s.performAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject, inv.Tool)
 		return inv.ID, res, eerr
 	}
 
 	// requires_approval → park, then block until the operator resolves it (T-040).
 	_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
-	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.Tool, req.WaitTimeout)
+	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
 	return inv.ID, res, werr
 }
 
@@ -820,11 +829,8 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 // atomically claim + exec; deny/failed → typed error; the gateway's own deadline →
 // finalize failed (policy's TTL timeout runs in parallel). An agent disconnect (ctx)
 // leaves the row parked for the reaper or an idempotent re-attach. It polls the row —
-// a short query per tick, never a held transaction. tool is the CALLER's already-known
-// tool name (ADR-0071 §D2) — Tool is set once at Create and never changes, so the
-// dispatch at performAndFinish uses the caller's value rather than re-reading it off
-// the claimed row.
-func (s *Service) waitForApproval(ctx context.Context, id, agent, tool string, timeout time.Duration) (mcp.ToolResult, error) {
+// a short query per tick, never a held transaction.
+func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout time.Duration) (mcp.ToolResult, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(s.pollInterval)
@@ -859,7 +865,7 @@ func (s *Service) waitForApproval(ctx context.Context, id, agent, tool string, t
 						return mcp.ToolResult{}, fmt.Errorf("claim invocation: %w", cerr)
 					}
 					if won {
-						return s.performAndFinish(ctx, id, claimed.ResourceID, claimed.Command, agent, tool)
+						return s.performAndFinish(ctx, id, claimed.ResourceID, claimed.Command, agent, claimed.Tool)
 					}
 				}
 			}

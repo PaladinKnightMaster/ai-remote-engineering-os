@@ -165,11 +165,18 @@ func (fakeSeamPolicy) Decide(context.Context, string, string, string, string, st
 
 // fakeSeamBroker MUST NOT be called by TestPerformAndFinishFailsClosedForUnknownTool —
 // that is exactly what the test asserts (an unknown tool must never reach the broker).
-type fakeSeamBroker struct{ called bool }
+// gotCommand/gotResource let TestReattachDispatchesOnPersistedToolNotCallerTool assert
+// WHICH invocation actually ran.
+type fakeSeamBroker struct {
+	called      bool
+	gotResource string
+	gotCommand  string
+}
 
-func (f *fakeSeamBroker) Exec(context.Context, string, string, string, string) (string, int, bool, error) {
+func (f *fakeSeamBroker) Exec(_ context.Context, _, resource, command, _ string) (string, int, bool, error) {
 	f.called = true
-	return "", 0, false, nil
+	f.gotResource, f.gotCommand = resource, command
+	return "ok", 0, false, nil
 }
 
 // TestPerformAndFinishFailsClosedForUnknownTool is the VER-20/CON-11 capstone for this
@@ -218,5 +225,112 @@ func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 	}
 	if st.finishOutcome != "tool.result:error" {
 		t.Fatalf("finish outcome = %q, want tool.result:error", st.finishOutcome)
+	}
+}
+
+// fakeIdempotentStore models the ONE property the reattach vulnerability turns on:
+// store.Create's ON CONFLICT is keyed on (agent_subject, idempotency_key), NOT tool
+// (store.go:110/118) — so a second call sharing the first call's idempotency key gets
+// back the ORIGINAL invocation regardless of what tool the second call declares. Get
+// and ClaimForExec likewise echo the PERSISTED tool, exactly like the real store's row
+// (whose `tool` column was written once, at the first Create, and never updated).
+type fakeIdempotentStore struct {
+	createCalled     bool
+	persistedTool    string
+	persistedCommand string
+	claimCalled      int
+}
+
+func (f *fakeIdempotentStore) Create(_ context.Context, in store.CreateInput) (store.Invocation, bool, error) {
+	if !f.createCalled {
+		f.createCalled = true
+		f.persistedTool, f.persistedCommand = in.Tool, in.Command
+		return store.Invocation{ID: "inv-reattach", Status: "pending_approval",
+			ResourceID: in.ResourceID, Tool: in.Tool, Command: in.Command}, true, nil
+	}
+	// Idempotent hit: the ORIGINAL row comes back untouched — in.Tool (the SECOND
+	// call's declared tool) is discarded, exactly as the real store's ON CONFLICT
+	// clause discards it.
+	return store.Invocation{ID: "inv-reattach", Status: "pending_approval",
+		ResourceID: "r-1", Tool: f.persistedTool, Command: f.persistedCommand}, false, nil
+}
+func (f *fakeIdempotentStore) CountInFlight(context.Context, string) (int, error) { return 0, nil }
+func (f *fakeIdempotentStore) SetStatus(context.Context, string, string, string) error {
+	return nil
+}
+func (f *fakeIdempotentStore) Finish(context.Context, string, string, string) error { return nil }
+func (f *fakeIdempotentStore) RequiresApproval(context.Context, string) (bool, error) {
+	return true, nil
+}
+func (f *fakeIdempotentStore) Get(_ context.Context, id string) (store.Invocation, error) {
+	return store.Invocation{ID: id, Status: "pending_approval", Decision: PolicyAllow,
+		ResourceID: "r-1", Tool: f.persistedTool, Command: f.persistedCommand}, nil
+}
+func (f *fakeIdempotentStore) ClaimForExec(_ context.Context, id string) (store.Invocation, bool, error) {
+	f.claimCalled++
+	return store.Invocation{ID: id, Status: "running", ResourceID: "r-1",
+		Tool: f.persistedTool, Command: f.persistedCommand}, true, nil
+}
+
+// TestReattachDispatchesOnPersistedToolNotCallerTool is the regression test for the
+// tool-confusion vector the T-138 review caught: on the idempotent-reattach path
+// (runGovernedStep's `!created` branch), the SECOND call's stepRequest.Tool must NOT
+// drive performAndFinish's dispatch, because a conflicting idempotency key returns the
+// ORIGINAL invocation, not a row matching the second call's declared tool. Only the
+// PERSISTED tool (read back via Get/ClaimForExec) may decide what runs — never the
+// caller's restated value (SEC-49: approval binds to persisted state).
+//
+// The first call creates an invocation under remote.exec. The second call shares its
+// idempotency key but declares a DIFFERENT (unregistered) tool name. If dispatch used
+// the caller's value, this would fail closed on the second call even though nothing
+// about the original, persisted, approved remote.exec invocation changed. The correct
+// behavior — proven here — is that it still runs remote.exec, because that is what was
+// actually persisted and approved.
+func TestReattachDispatchesOnPersistedToolNotCallerTool(t *testing.T) {
+	st := &fakeIdempotentStore{}
+	brk := &fakeSeamBroker{}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: brk,
+		MaxInFlight: 4, WaitTimeout: 200 * time.Millisecond, PollInterval: time.Millisecond,
+	})
+	ctx := context.Background()
+
+	// First call: creates the invocation under remote.exec.
+	firstID, _, err := svc.runGovernedStep(ctx, stepRequest{
+		Subject: "agent:test", Tool: remoteExecTool, ResourceID: "r-1", Command: "echo hi",
+		Edge: "agent-remote-session", Action: "remote.exec", Target: "resource:r-1",
+		BracketEdge: "agent-tool", IdempotencyKey: "shared-key", WaitTimeout: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("first call: unexpected error %v", err)
+	}
+
+	// Second call: SAME idempotency key, but declares a tool the registry has never
+	// heard of. Under the pre-fix code (dispatch on the CALLER's req.Tool) this would
+	// fail closed; under the fix (dispatch on the PERSISTED tool) it must still run the
+	// original remote.exec invocation.
+	secondID, res, err := svc.runGovernedStep(ctx, stepRequest{
+		Subject: "agent:test", Tool: "remote.file.write", ResourceID: "r-1", Command: "attacker payload",
+		Edge: "agent-remote-session", Action: "remote.file.write", Target: "resource:r-1",
+		BracketEdge: "agent-tool", IdempotencyKey: "shared-key", WaitTimeout: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("reattach call: unexpected error %v, want the persisted remote.exec invocation to run", err)
+	}
+	if secondID != firstID {
+		t.Fatalf("reattach id = %q, want the original invocation id %q", secondID, firstID)
+	}
+	if res.IsError {
+		t.Fatalf("reattach result = %+v, want a successful remote.exec result", res)
+	}
+	if !brk.called {
+		t.Fatal("broker.Exec was never called — the reattach failed closed instead of dispatching on the persisted tool")
+	}
+	if brk.gotCommand != "echo hi" {
+		t.Fatalf("broker ran command %q, want the ORIGINAL persisted command %q (not the reattach caller's %q)",
+			brk.gotCommand, "echo hi", "attacker payload")
+	}
+	if st.claimCalled != 1 {
+		t.Fatalf("ClaimForExec called %d times, want 1", st.claimCalled)
 	}
 }

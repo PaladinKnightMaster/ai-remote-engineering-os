@@ -174,6 +174,7 @@ type fakeStore struct {
 	claimOK          bool   // ClaimForExec wins (a granted invocation)
 	gotCommand       string // the command persisted at Create (ADR-0059)
 	gotEdge          string // the bracket edge persisted at Create (RUN-5)
+	gotTool          string // the tool persisted at Create — echoed by Get/ClaimForExec like the real store's row (ADR-0071 §D2)
 	setStatus        []string
 	finished         []string
 }
@@ -186,7 +187,7 @@ func (f *fakeStore) status() string {
 }
 
 func (f *fakeStore) Create(_ context.Context, in store.CreateInput) (store.Invocation, bool, error) {
-	f.gotCommand, f.gotEdge = in.Command, in.Edge
+	f.gotCommand, f.gotEdge, f.gotTool = in.Command, in.Edge, in.Tool
 	return store.Invocation{ID: "inv-1", Status: f.status(), AgentSubject: in.AgentSubject,
 		ResourceID: in.ResourceID, Tool: in.Tool, Command: in.Command}, !f.idempotentHit, nil
 }
@@ -204,13 +205,13 @@ func (f *fakeStore) RequiresApproval(context.Context, string) (bool, error) {
 }
 func (f *fakeStore) Get(_ context.Context, id string) (store.Invocation, error) {
 	return store.Invocation{ID: id, Status: f.getStatus, Decision: f.getDecision,
-		ResourceID: "r1", Command: f.gotCommand}, nil
+		ResourceID: "r1", Command: f.gotCommand, Tool: f.gotTool}, nil
 }
 func (f *fakeStore) ClaimForExec(_ context.Context, id string) (store.Invocation, bool, error) {
 	if !f.claimOK {
 		return store.Invocation{}, false, nil
 	}
-	return store.Invocation{ID: id, Status: "running", ResourceID: "r1", Command: f.gotCommand}, true, nil
+	return store.Invocation{ID: id, Status: "running", ResourceID: "r1", Command: f.gotCommand, Tool: f.gotTool}, true, nil
 }
 
 type fakePolicy struct {
