@@ -47,3 +47,7 @@ tests/e2e/.wd10-scratch/
 /tests/e2e/seed
 /tools/migrate-lint/migrate-lint
 /tools/forbidden-features-check/forbidden-features-check
+
+# GATE-5 §human scratch: evidence exports + a copied aireos-verify binary.
+# Swept into c104a72 by an unguarded `git add -A` (T-136a); never track these.
+gate5/
