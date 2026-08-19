@@ -793,7 +793,7 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 		if isTerminal(inv.Status) {
 			return inv.ID, toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
 		}
-		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.Tool, req.WaitTimeout)
 		return inv.ID, res, werr
 	}
 
@@ -805,13 +805,13 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 	}
 	if decision == PolicyAllow {
 		_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
-		res, eerr := s.execAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject)
+		res, eerr := s.performAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject, req.Tool)
 		return inv.ID, res, eerr
 	}
 
 	// requires_approval → park, then block until the operator resolves it (T-040).
 	_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
-	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.Tool, req.WaitTimeout)
 	return inv.ID, res, werr
 }
 
@@ -820,8 +820,11 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 // atomically claim + exec; deny/failed → typed error; the gateway's own deadline →
 // finalize failed (policy's TTL timeout runs in parallel). An agent disconnect (ctx)
 // leaves the row parked for the reaper or an idempotent re-attach. It polls the row —
-// a short query per tick, never a held transaction.
-func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout time.Duration) (mcp.ToolResult, error) {
+// a short query per tick, never a held transaction. tool is the CALLER's already-known
+// tool name (ADR-0071 §D2) — Tool is set once at Create and never changes, so the
+// dispatch at performAndFinish uses the caller's value rather than re-reading it off
+// the claimed row.
+func (s *Service) waitForApproval(ctx context.Context, id, agent, tool string, timeout time.Duration) (mcp.ToolResult, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(s.pollInterval)
@@ -856,7 +859,7 @@ func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout
 						return mcp.ToolResult{}, fmt.Errorf("claim invocation: %w", cerr)
 					}
 					if won {
-						return s.execAndFinish(ctx, id, claimed.ResourceID, claimed.Command, agent)
+						return s.performAndFinish(ctx, id, claimed.ResourceID, claimed.Command, agent, tool)
 					}
 				}
 			}
@@ -864,26 +867,41 @@ func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout
 	}
 }
 
-// execAndFinish runs the governed command on the broker (the sole SSH egress,
-// ADR-0058) and records the terminal outcome. The caller has already moved the
-// invocation to running (allow-now via SetStatus, post-approval via ClaimForExec).
-func (s *Service) execAndFinish(ctx context.Context, id, resourceID, command, agent string) (mcp.ToolResult, error) {
-	stdout, exitCode, truncated, err := s.broker.Exec(ctx, id, resourceID, command, agent)
-	if err != nil {
+// performAndFinish is the seam's terminal step (ADR-0071 §D2): it dispatches on the
+// invocation's TOOL to the operation that actually crosses the trust boundary, and
+// records the terminal outcome. The caller has already moved the invocation to
+// running (allow-now via SetStatus, post-approval via ClaimForExec). Today there is
+// exactly one case — remote.exec → the broker's non-interactive exec (ADR-0058),
+// unchanged byte-for-byte from the prior execAndFinish. The default branch is the
+// whole point of this seam: an unrecognized tool fails closed (SEC-19) rather than
+// falling through to exec, so a later tool addition (T-139+) cannot silently reuse
+// exec's egress by omission.
+func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command, agent, tool string) (mcp.ToolResult, error) {
+	switch tool {
+	case remoteExecTool:
+		stdout, exitCode, truncated, err := s.broker.Exec(ctx, id, resourceID, command, agent)
+		if err != nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return mcp.ToolResult{}, fmt.Errorf("exec failed: %w", err)
+		}
+		isErr := exitCode != 0
+		outcome := "tool.result"
+		if isErr {
+			outcome = "tool.result:error"
+		}
+		_ = s.store.Finish(ctx, id, "completed", outcome) // it ran; non-zero exit is a tool error, not a transport failure
+		text := stdout
+		if truncated {
+			text += "\n[output truncated]"
+		}
+		return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: text}}, IsError: isErr}, nil
+	default:
+		// Fail closed (SEC-19): no operation is implemented for this tool at the
+		// terminal step, so nothing runs and the invocation cannot be left parked in
+		// "running".
 		_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
-		return mcp.ToolResult{}, fmt.Errorf("exec failed: %w", err)
+		return mcp.ToolResult{}, fmt.Errorf("no governed operation for tool %q", tool)
 	}
-	isErr := exitCode != 0
-	outcome := "tool.result"
-	if isErr {
-		outcome = "tool.result:error"
-	}
-	_ = s.store.Finish(ctx, id, "completed", outcome) // it ran; non-zero exit is a tool error, not a transport failure
-	text := stdout
-	if truncated {
-		text += "\n[output truncated]"
-	}
-	return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: text}}, IsError: isErr}, nil
 }
 
 // isTerminal reports whether an invocation has reached a final status.

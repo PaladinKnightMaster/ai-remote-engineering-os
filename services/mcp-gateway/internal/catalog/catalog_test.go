@@ -1,10 +1,13 @@
 package catalog
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"aireos.local/services/mcp-gateway/internal/mcp"
+	"aireos.local/services/mcp-gateway/internal/store"
 )
 
 // The Service must satisfy the wire seam.
@@ -126,3 +129,94 @@ func TestTargetResolution(t *testing.T) {
 // fail-closed) is exercised through the wired server with real agent-tool tokens +
 // fakes in server_test (it needs the capability the gate stashes); the Registry
 // tests above cover the pure data layer.
+
+// fakeSeamStore is a minimal Store fake that only supports the allow-now path
+// (Create → SetStatus → performAndFinish → Finish) — exactly what
+// TestPerformAndFinishFailsClosedForUnknownTool needs to drive the seam directly.
+type fakeSeamStore struct {
+	finishStatus  string
+	finishOutcome string
+	finishCalls   int
+}
+
+func (f *fakeSeamStore) Create(_ context.Context, in store.CreateInput) (store.Invocation, bool, error) {
+	return store.Invocation{ID: "inv-seam-1", ResourceID: in.ResourceID, Tool: in.Tool, Command: in.Command}, true, nil
+}
+func (f *fakeSeamStore) CountInFlight(context.Context, string) (int, error)      { return 0, nil }
+func (f *fakeSeamStore) SetStatus(context.Context, string, string, string) error { return nil }
+func (f *fakeSeamStore) Finish(_ context.Context, _, status, outcome string) error {
+	f.finishCalls++
+	f.finishStatus, f.finishOutcome = status, outcome
+	return nil
+}
+func (f *fakeSeamStore) RequiresApproval(context.Context, string) (bool, error) { return false, nil }
+func (f *fakeSeamStore) Get(context.Context, string) (store.Invocation, error) {
+	return store.Invocation{}, nil
+}
+func (f *fakeSeamStore) ClaimForExec(context.Context, string) (store.Invocation, bool, error) {
+	return store.Invocation{}, false, nil
+}
+
+type fakeSeamPolicy struct{}
+
+func (fakeSeamPolicy) Decide(context.Context, string, string, string, string, string, bool) (string, error) {
+	return PolicyAllow, nil
+}
+
+// fakeSeamBroker MUST NOT be called by TestPerformAndFinishFailsClosedForUnknownTool —
+// that is exactly what the test asserts (an unknown tool must never reach the broker).
+type fakeSeamBroker struct{ called bool }
+
+func (f *fakeSeamBroker) Exec(context.Context, string, string, string, string) (string, int, bool, error) {
+	f.called = true
+	return "", 0, false, nil
+}
+
+// TestPerformAndFinishFailsClosedForUnknownTool is the VER-20/CON-11 capstone for this
+// ticket (ADR-0071 §D2): the seam's terminal step dispatches on the invocation's tool,
+// and an unrecognized tool must fail closed (SEC-19) rather than silently falling
+// through to remote.exec. It drives the real, shared runGovernedStep (the same core the
+// agent path and the operator Run engine both use) with a tool name the registry has
+// never heard of — proving the default: branch, not just asserting it exists.
+func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
+	st := &fakeSeamStore{}
+	brk := &fakeSeamBroker{}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: brk,
+		MaxInFlight: 4, WaitTimeout: 50 * time.Millisecond, PollInterval: time.Millisecond,
+	})
+
+	id, res, err := svc.runGovernedStep(context.Background(), stepRequest{
+		Subject:     "agent:test",
+		Tool:        "remote.file.read", // not yet a registered tool — the seam must still fail closed
+		ResourceID:  "r-1",
+		Command:     "irrelevant",
+		Edge:        "agent-remote-session",
+		Action:      "remote.file.read",
+		Target:      "resource:r-1",
+		BracketEdge: "agent-tool",
+		WaitTimeout: 50 * time.Millisecond,
+	})
+
+	if err == nil {
+		t.Fatal("runGovernedStep with an unrecognized tool = nil error, want a fail-closed error")
+	}
+	if id != "inv-seam-1" {
+		t.Fatalf("invocation id = %q, want inv-seam-1 (the invocation was created before dispatch)", id)
+	}
+	if res.Content != nil || res.IsError {
+		t.Fatalf("result = %+v, want zero-value (the caller surfaces the Go error, not a tool result)", res)
+	}
+	if brk.called {
+		t.Fatal("broker.Exec was called for an unrecognized tool — the seam did not fail closed")
+	}
+	if st.finishCalls != 1 {
+		t.Fatalf("Finish called %d times, want 1", st.finishCalls)
+	}
+	if st.finishStatus != "failed" {
+		t.Fatalf("finish status = %q, want failed", st.finishStatus)
+	}
+	if st.finishOutcome != "tool.result:error" {
+		t.Fatalf("finish outcome = %q, want tool.result:error", st.finishOutcome)
+	}
+}
