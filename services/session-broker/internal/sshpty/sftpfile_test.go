@@ -257,6 +257,20 @@ func TestWriteFile_HappyPath(t *testing.T) {
 	if info.Mode().Perm() != 0o640 {
 		t.Fatalf("got mode %v, want 0640", info.Mode().Perm())
 	}
+
+	// The temp sibling used for the atomic rename must not linger after a
+	// successful write.
+	leftovers, err := os.ReadDir(rootDir)
+	if err != nil {
+		t.Fatalf("read rootDir: %v", err)
+	}
+	if len(leftovers) != 1 || leftovers[0].Name() != "out.txt" {
+		names := make([]string, len(leftovers))
+		for i, e := range leftovers {
+			names[i] = e.Name()
+		}
+		t.Fatalf("want only out.txt in rootDir, got %v", names)
+	}
 }
 
 func TestWriteFile_RefusesDirectory(t *testing.T) {
@@ -291,6 +305,63 @@ func TestWriteFile_RefusesOverCap(t *testing.T) {
 	}
 }
 
+// TestWriteFile_OriginalIntactWhenRenameFails is the review-fix proof: a
+// pre-existing target with known content, a write that fails AFTER its temp
+// sibling has been created, written, and chmod'd — and the assertion that
+// matters is that the ORIGINAL FILE'S BYTES ARE UNCHANGED, not merely that an
+// error came back. The failure is injected by disabling the server's
+// posix-rename@openssh.com extension (sftp.SetSFTPExtensions is
+// process-global state in pkg/sftp, restored via t.Cleanup before any other
+// test can observe it — these tests are not run with t.Parallel), which
+// means the temp file is genuinely written to disk before the final rename
+// is refused. This single scenario also proves the ErrFileUnsupportedRename
+// sentinel the fix's fail-closed requirement depends on: WriteFile must
+// refuse, not fall back to remove-then-rename.
+func TestWriteFile_OriginalIntactWhenRenameFails(t *testing.T) {
+	if err := sftp.SetSFTPExtensions(); err != nil {
+		t.Fatalf("disable server extensions: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sftp.SetSFTPExtensions("hardlink@openssh.com", "posix-rename@openssh.com", "statvfs@openssh.com"); err != nil {
+			t.Fatalf("restore server extensions: %v", err)
+		}
+	})
+
+	rootDir := t.TempDir()
+	original := []byte("do not touch me")
+	target := filepath.Join(rootDir, "nginx.conf")
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatalf("seed original: %v", err)
+	}
+	addr, hostKeyLine := startSSHServer(t, sftpSubsystemHandler(rootDir))
+	cfg := testConfig(t, addr, hostKeyLine)
+
+	err := WriteFile(cfg, "nginx.conf", []byte("attempted replacement"), 0o644, 1024, 5*time.Second)
+	if !errors.Is(err, ErrFileUnsupportedRename) {
+		t.Fatalf("want ErrFileUnsupportedRename, got %v", err)
+	}
+
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read target after failed write: %v", readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("ORIGINAL FILE WAS MODIFIED: got %q, want unchanged %q", got, original)
+	}
+
+	leftovers, err := os.ReadDir(rootDir)
+	if err != nil {
+		t.Fatalf("read rootDir: %v", err)
+	}
+	if len(leftovers) != 1 || leftovers[0].Name() != "nginx.conf" {
+		names := make([]string, len(leftovers))
+		for i, e := range leftovers {
+			names[i] = e.Name()
+		}
+		t.Fatalf("want only nginx.conf in rootDir (temp cleaned up), got %v", names)
+	}
+}
+
 // --- ListDir ---
 
 func TestListDir_HappyPath(t *testing.T) {
@@ -304,7 +375,7 @@ func TestListDir_HappyPath(t *testing.T) {
 	addr, hostKeyLine := startSSHServer(t, sftpSubsystemHandler(rootDir))
 	cfg := testConfig(t, addr, hostKeyLine)
 
-	entries, err := ListDir(cfg, ".", 5*time.Second)
+	entries, err := ListDir(cfg, ".", 0, 5*time.Second)
 	if err != nil {
 		t.Fatalf("ListDir: %v", err)
 	}
@@ -330,8 +401,40 @@ func TestListDir_RefusesNonDirectory(t *testing.T) {
 	addr, hostKeyLine := startSSHServer(t, sftpSubsystemHandler(rootDir))
 	cfg := testConfig(t, addr, hostKeyLine)
 
-	if _, err := ListDir(cfg, "a.txt", 5*time.Second); !errors.Is(err, ErrFileNotADir) {
+	if _, err := ListDir(cfg, "a.txt", 0, 5*time.Second); !errors.Is(err, ErrFileNotADir) {
 		t.Fatalf("want ErrFileNotADir, got %v", err)
+	}
+}
+
+// TestListDir_RefusesOverCap is the review-fix proof for the entry-count
+// bound: a directory with more entries than maxEntries must be refused
+// SPECIFICALLY with ErrFileOverCap, not silently truncated to maxEntries
+// results (which would look like a complete, small directory to a caller
+// with no way to tell it was cut).
+func TestListDir_RefusesOverCap(t *testing.T) {
+	rootDir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		name := filepath.Join(rootDir, fmt.Sprintf("f%d.txt", i))
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed file %d: %v", i, err)
+		}
+	}
+	addr, hostKeyLine := startSSHServer(t, sftpSubsystemHandler(rootDir))
+	cfg := testConfig(t, addr, hostKeyLine)
+
+	if entries, err := ListDir(cfg, ".", 5, 5*time.Second); err != nil || len(entries) != 5 {
+		t.Fatalf("list at exact cap must succeed with 5 entries: entries=%d err=%v", len(entries), err)
+	}
+
+	entries, err := ListDir(cfg, ".", 4, 5*time.Second)
+	if err == nil {
+		t.Fatal("want refusal listing 5 entries with a 4-entry cap, got nil error")
+	}
+	if !errors.Is(err, ErrFileOverCap) {
+		t.Fatalf("want ErrFileOverCap, got %v", err)
+	}
+	if entries != nil {
+		t.Fatalf("want no partial listing on refusal, got %d entries", len(entries))
 	}
 }
 
@@ -349,7 +452,7 @@ func TestWithSFTP_TimesOut(t *testing.T) {
 	cfg := testConfig(t, addr, hostKeyLine)
 
 	start := time.Now()
-	_, err := ListDir(cfg, ".", 100*time.Millisecond)
+	_, err := ListDir(cfg, ".", 0, 100*time.Millisecond)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, ErrFileTimeout) {

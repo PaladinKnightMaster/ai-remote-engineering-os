@@ -12,10 +12,13 @@ package sshpty
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -32,6 +35,13 @@ var (
 	ErrFileDenied   = errors.New("permission denied")
 	ErrFileNotADir  = errors.New("path is not a directory")
 	ErrFileIsADir   = errors.New("path is a directory")
+
+	// ErrFileUnsupportedRename means the remote server did not advertise the
+	// posix-rename@openssh.com extension WriteFile requires for an atomic
+	// replace (ADR-0071 §D5, review fix). This is fail-closed and terminal:
+	// WriteFile never falls back to remove-then-rename, because that
+	// reopens the destructive window an atomic rename exists to close.
+	ErrFileUnsupportedRename = errors.New("remote server does not support atomic rename")
 )
 
 // FileEntry describes one directory entry (ListDir).
@@ -105,6 +115,19 @@ func readCapped(r io.Reader, maxBytes int64) ([]byte, error) {
 // WriteFile writes data to path with the given mode. maxBytes <= 0 means no
 // cap; timeout <= 0 defaults to 60s. It REFUSES an over-cap payload before
 // opening the remote file at all — no partial file is ever created.
+//
+// Fail-closed here means the TARGET IS UNCHANGED on any failure, not that the
+// target is removed (review fix, ADR-0071 §D5): an operator-approved write to
+// e.g. /etc/nginx/nginx.conf that fails partway must never destroy the config
+// it was replacing — that is a worse outcome than the ungoverned remote.exec
+// this tool replaces. WriteFile therefore never opens path itself: it writes
+// a temp file in the same directory (rename is not atomic across
+// filesystems), and only once the write, chmod, AND the remote's atomic
+// posix-rename all succeed does it become path. Any failure before that
+// final rename removes only the temp file; path is never touched. If the
+// remote does not support posix-rename, WriteFile refuses with
+// ErrFileUnsupportedRename rather than falling back to a
+// remove-then-rename that would reopen the exact window this closes.
 func WriteFile(cfg Config, path string, data []byte, mode os.FileMode, maxBytes int64, timeout time.Duration) error {
 	if maxBytes > 0 && int64(len(data)) > maxBytes {
 		return fmt.Errorf("%w: %d bytes exceeds cap of %d", ErrFileOverCap, len(data), maxBytes)
@@ -120,33 +143,77 @@ func WriteFile(cfg Config, path string, data []byte, mode os.FileMode, maxBytes 
 			return ErrFileIsADir
 		}
 
-		f, openErr := sc.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+		tmp := tempSiblingName(path)
+		f, openErr := sc.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
 		if openErr != nil {
 			return mapSFTPError(openErr)
 		}
-		ok := false
+		// cleanupTemp stays true until the rename below succeeds. On any
+		// return before that point, only tmp is removed — path is never
+		// referenced by this defer, so it can never be the thing deleted.
+		cleanupTemp := true
 		defer func() {
 			_ = f.Close()
-			if !ok {
-				// Best-effort: never leave a corrupt partial file at path.
-				_ = sc.Remove(path)
+			if cleanupTemp {
+				_ = sc.Remove(tmp)
 			}
 		}()
 
 		if _, writeErr := f.Write(data); writeErr != nil {
-			return fmt.Errorf("write: %w", mapSFTPError(writeErr))
+			return fmt.Errorf("write temp: %w", mapSFTPError(writeErr))
 		}
 		if chmodErr := f.Chmod(mode); chmodErr != nil {
-			return fmt.Errorf("chmod: %w", mapSFTPError(chmodErr))
+			return fmt.Errorf("chmod temp: %w", mapSFTPError(chmodErr))
 		}
-		ok = true
+		if closeErr := f.Close(); closeErr != nil {
+			return fmt.Errorf("close temp: %w", mapSFTPError(closeErr))
+		}
+
+		if _, ok := sc.HasExtension("posix-rename@openssh.com"); !ok {
+			return ErrFileUnsupportedRename
+		}
+		if renameErr := sc.PosixRename(tmp, path); renameErr != nil {
+			return fmt.Errorf("rename into place: %w", mapSFTPError(renameErr))
+		}
+		cleanupTemp = false
 		return nil
 	})
 }
 
-// ListDir lists one directory's immediate entries. timeout <= 0 defaults to
-// 60s.
-func ListDir(cfg Config, path string, timeout time.Duration) ([]FileEntry, error) {
+// tempSiblingName derives an unpredictable temp path in the same directory as
+// path (never a different directory — rename is not guaranteed atomic across
+// filesystems, and SFTP has no cross-filesystem-safe rename at all).
+func tempSiblingName(path string) string {
+	dir, base := "", path
+	if idx := strings.LastIndexByte(path, '/'); idx >= 0 {
+		dir, base = path[:idx+1], path[idx+1:]
+	}
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		// crypto/rand.Read is documented not to fail on any platform this
+		// product targets; this branch exists only so the function stays
+		// total rather than panicking on an unreachable error.
+		return dir + "." + base + ".aireos-tmp"
+	}
+	return dir + "." + base + ".aireos-tmp-" + hex.EncodeToString(suffix)
+}
+
+// ListDir lists one directory's immediate entries, refusing rather than
+// silently truncating if there are more than maxEntries — the D5
+// refuse-don't-truncate rule applied to entry count, not just bytes (review
+// fix): a truncated directory listing looks like a complete one, and the
+// caller has no way to tell it was cut. maxEntries <= 0 means no cap;
+// timeout <= 0 defaults to 60s.
+//
+// Caveat, stated rather than silently assumed: pkg/sftp v1.13.9's Client
+// exposes no incremental directory read at this package's disposal — ReadDir
+// accumulates the full listing internally before returning it here, so the
+// cap below bounds what this function allocates and returns, not pkg/sftp's
+// own transient peak while it collects entries. A directory large enough to
+// matter for that transient cost is a capacity/DoS concern for a future
+// ticket, not one this primitive can close against this library's public
+// API.
+func ListDir(cfg Config, path string, maxEntries int, timeout time.Duration) ([]FileEntry, error) {
 	var out []FileEntry
 	err := withSFTP(cfg, timeout, func(sc *sftp.Client) error {
 		info, statErr := sc.Stat(path)
@@ -159,6 +226,9 @@ func ListDir(cfg Config, path string, timeout time.Duration) ([]FileEntry, error
 		entries, readErr := sc.ReadDir(path)
 		if readErr != nil {
 			return mapSFTPError(readErr)
+		}
+		if maxEntries > 0 && len(entries) > maxEntries {
+			return fmt.Errorf("%w: %d entries exceeds cap of %d", ErrFileOverCap, len(entries), maxEntries)
 		}
 		out = make([]FileEntry, 0, len(entries))
 		for _, e := range entries {
