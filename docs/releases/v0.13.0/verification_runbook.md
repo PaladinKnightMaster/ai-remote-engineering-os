@@ -158,6 +158,49 @@ verdict: TAMPERED (exit 1)
 and no network. If any of those turned out to be necessary, GATE-5 has failed regardless of the
 verdict printed.
 
+**4.7 — The two tests that make 4.6 provable rather than asserted.** 4.6 as originally written was an
+assertion; a `§human` reviewer correctly asked how to *test* it. Both were run at T-136a.
+
+**Test A — destroy the stack, then verify again.** The strongest form of "no database, no service, no
+product install": delete every container and network, then re-run 4.4 against a clean export.
+
+```bash
+docker rm -f aireos-demo-host aireos-demo-sshd && docker network rm aireos-demo
+```
+
+**Expected — unchanged, with the product erased:**
+
+```
+chain:  INTACT+ATTESTED — N event(s) verified, attested through seq N
+verdict: OK (exit 0)
+```
+
+⚠ Take the clean export **before** destroying the stack, and keep it separate from the file mutated
+in 4.5. (Learned the hard way at T-136a: this test was first run against the tampered copy and
+reported BROKEN for the wrong reason.)
+
+**Test B — verify with the WRONG key. This is the test that proves the *signature*.**
+
+4.5 proves the hash chain detects tampering — but a hash chain would catch that with no signatures at
+all, so 4.5 alone does not demonstrate what this release added. A wrong key isolates it:
+
+```bash
+./aireos-verify --pubkey $(openssl rand -hex 32) evidence.ndjson
+```
+
+**Expected:**
+
+```
+chain:  BROKEN — head at seq N was signed under key id <id>, which does not match
+        any of the 1 supplied key(s) (a rotation/operator question per ADR-0069 D5,
+        not by itself a tamper finding — but this key cannot verify it)
+verdict: TAMPERED (exit 1)
+```
+
+The verifier names the key id it expected and refuses — and distinguishes a rotation question from a
+tamper finding rather than crying wolf. **This is the difference between v0.13.0 and every release
+before it: the chain now proves authenticity, not merely ordering.**
+
 > **Windows note:** git-bash `/tmp` is not a path Docker can bind-mount. If you run the clean room as
 > a container, stage the files under the repo and mount that directory instead.
 
