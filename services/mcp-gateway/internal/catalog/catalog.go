@@ -37,7 +37,8 @@ type ToolDef struct {
 	Action      string // the audited action (policy.Decide + the audit chain)
 	Operation   string // the agent-token scope verb gating this tool (SEC-16; e.g. "exec")
 
-	target func(args json.RawMessage) (string, error)
+	target   func(args json.RawMessage) (string, error)
+	describe func(args json.RawMessage) (string, error)
 }
 
 // Tool returns the MCP wire view; the governance metadata stays internal.
@@ -48,6 +49,13 @@ func (d ToolDef) Tool() mcp.Tool {
 // Target resolves the audited target ("resource:<id>") from the invocation's raw
 // arguments, validating them in the process.
 func (d ToolDef) Target(args json.RawMessage) (string, error) { return d.target(args) }
+
+// Describe renders the human-readable descriptor persisted as the invocation's Command
+// (ADR-0059) from the invocation's raw arguments (ADR-0071 §D3). remote.exec's
+// descriptor is the command verbatim; a future operation family (T-140b) whose payload
+// is not itself reviewable (e.g. file bytes) renders a summary instead — informed
+// approval becomes "the operator approves the intent and the digest, not the bytes."
+func (d ToolDef) Describe(args json.RawMessage) (string, error) { return d.describe(args) }
 
 // Registry is the immutable set of tool definitions. No execution, no
 // downstream-service dependency — the durable artifact the orchestrator reads.
@@ -108,6 +116,7 @@ func remoteExec() ToolDef {
 		Action:      "remote.exec",
 		Operation:   "exec",
 		target:      remoteExecTarget,
+		describe:    remoteExecDescribe,
 	}
 }
 
@@ -126,6 +135,22 @@ func remoteExecTarget(raw json.RawMessage) (string, error) {
 		return "", errors.New("remote.exec requires resourceId and command")
 	}
 	return "resource:" + a.ResourceID, nil
+}
+
+// remoteExecDescribe renders remote.exec's ADR-0071 §D3 descriptor: the command
+// verbatim, byte-identical to what Invoke persisted before this ticket. Target already
+// guarantees a present, non-empty command by the time Invoke reaches Describe, so this
+// validation is defensive — it matters for a caller that invokes Describe directly
+// (or a future tool whose Target and Describe diverge), not for today's dispatch order.
+func remoteExecDescribe(raw json.RawMessage) (string, error) {
+	var a remoteExecArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid remote.exec arguments: %w", err)
+	}
+	if a.Command == "" {
+		return "", errors.New("remote.exec requires a command")
+	}
+	return a.Command, nil
 }
 
 // runLaunchTool is the v0.6 control-plane tool name (ADR-0062, T-065b).
@@ -460,11 +485,15 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		return toolError("operation is outside the agent token's scope"), nil
 	}
 
-	// The command is persisted on the invocation (ADR-0059) so the operator approves
-	// the exact payload and any waiter execs what was approved. def.Target already
-	// validated it is present.
-	var execArgs remoteExecArgs
-	_ = json.Unmarshal(args, &execArgs)
+	// The descriptor is persisted on the invocation as Command (ADR-0059/ADR-0071 §D3)
+	// so the operator approves the exact payload and any waiter runs what was approved.
+	// remote.exec's descriptor is the command verbatim; a future operation family
+	// renders a human-readable summary instead. A descriptor failure is a tool-level
+	// refusal (the agent's call was malformed), not a Go error and not a panic.
+	command, descErr, isDescErr := describeCommand(def, args)
+	if isDescErr {
+		return descErr, nil
+	}
 
 	// The idempotency key is read HERE (the agent's Idempotency-Key header, via ctx)
 	// and passed in — the core never reads it from ctx, so it equally serves the Run
@@ -474,7 +503,7 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		Subject:        capb.Subject,
 		Tool:           def.Name,
 		ResourceID:     resourceID,
-		Command:        execArgs.Command,
+		Command:        command,
 		Edge:           def.Edge,
 		Action:         def.Action,
 		Target:         target,
@@ -483,6 +512,22 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		WaitTimeout:    s.waitTimeout,
 	})
 	return res, err
+}
+
+// describeCommand renders a tool's ADR-0071 §D3 descriptor and maps a rendering
+// failure to a tool-level refusal — never a bubbled Go error, never a panic. It is kept
+// as its own function (rather than inlined into Invoke) so that mapping is directly
+// testable without the agent-capability context Invoke otherwise requires: today
+// def.Target already guarantees valid args by the time Invoke reaches this call, so the
+// error branch is unreachable through remote.exec's real dispatch, but it is the
+// contract every future operation family (T-140b) depends on the moment its Target and
+// Describe validation diverge.
+func describeCommand(def ToolDef, args json.RawMessage) (string, mcp.ToolResult, bool) {
+	command, err := def.Describe(args)
+	if err != nil {
+		return "", toolError(err.Error()), true
+	}
+	return command, mcp.ToolResult{}, false
 }
 
 // launchRun handles the run.launch control-plane tool (ADR-0062, T-065b): it parses the

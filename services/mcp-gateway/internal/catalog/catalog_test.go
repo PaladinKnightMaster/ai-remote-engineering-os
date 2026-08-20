@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +124,84 @@ func TestTargetResolution(t *testing.T) {
 		if _, err := def.Target(json.RawMessage(raw)); err == nil {
 			t.Fatalf("Target(%q) = nil error, want rejection", raw)
 		}
+	}
+}
+
+// TestRemoteExecDescribeVerbatim is the ADR-0071 §D3 seam proof for T-140a: remote.exec's
+// descriptor must be the command verbatim, byte-identical to what Invoke persisted as
+// the invocation's Command before this ticket's refactor (the old hardcoded
+// remoteExecArgs unmarshal at Invoke's call site).
+func TestRemoteExecDescribeVerbatim(t *testing.T) {
+	def, _ := NewRegistry().Lookup("remote.exec")
+	desc, err := def.Describe(json.RawMessage(`{"resourceId":"r-9","command":"uname -a"}`))
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if desc != "uname -a" {
+		t.Fatalf("Describe = %q, want the command verbatim", desc)
+	}
+}
+
+// TestRemoteExecDescribeMalformedArgs proves remote.exec's descriptor rejects malformed
+// or incomplete arguments with a Go error (Describe's own function contract) rather than
+// panicking or silently returning an empty descriptor — the case the old
+// `_ = json.Unmarshal(args, &execArgs)` in Invoke ignored.
+func TestRemoteExecDescribeMalformedArgs(t *testing.T) {
+	def, _ := NewRegistry().Lookup("remote.exec")
+	for _, raw := range []string{`{"resourceId":"r-9"}`, `{`, `{}`} {
+		if _, err := def.Describe(json.RawMessage(raw)); err == nil {
+			t.Fatalf("Describe(%q) = nil error, want rejection", raw)
+		}
+	}
+}
+
+// TestDescribeCommandMapsDescriptorErrorToToolError is the ADR-0071 §D3 guard proof: a
+// tool's descriptor failure must become a tool-level refusal (mcp.ToolResult{IsError:
+// true}), never a bubbled Go error and never a panic — the treatment Invoke's SEC-16
+// scope checks already get via toolError(), extended here to descriptor rendering.
+// remote.exec's own Target validation makes this branch unreachable through the real
+// dispatch (Target already guarantees valid args by the time Invoke reaches Describe),
+// so this drives describeCommand directly with a synthetic ToolDef whose describe
+// fails — the exact mapping every future operation family (T-140b) depends on the
+// moment its Target and Describe validation diverge.
+func TestDescribeCommandMapsDescriptorErrorToToolError(t *testing.T) {
+	def := ToolDef{
+		Name: "test.synthetic",
+		describe: func(json.RawMessage) (string, error) {
+			return "", errors.New("cannot render descriptor")
+		},
+	}
+	command, res, isErr := describeCommand(def, json.RawMessage(`{}`))
+	if !isErr {
+		t.Fatal("describeCommand isErr = false, want true for a descriptor failure")
+	}
+	if command != "" {
+		t.Fatalf("command = %q, want empty on a descriptor failure", command)
+	}
+	if !res.IsError {
+		t.Fatalf("result = %+v, want a tool-level error result (IsError true)", res)
+	}
+	if len(res.Content) == 0 || !strings.Contains(res.Content[0].Text, "cannot render descriptor") {
+		t.Fatalf("result content = %+v, want the descriptor error surfaced", res.Content)
+	}
+}
+
+// TestDescribeCommandSuccessPassesThrough proves the non-error branch of describeCommand
+// returns the rendered descriptor unmodified and no error result — the counterpart to
+// the failure-mapping test above.
+func TestDescribeCommandSuccessPassesThrough(t *testing.T) {
+	def := ToolDef{
+		Name: "test.synthetic",
+		describe: func(json.RawMessage) (string, error) {
+			return "rendered descriptor", nil
+		},
+	}
+	command, res, isErr := describeCommand(def, json.RawMessage(`{}`))
+	if isErr {
+		t.Fatalf("describeCommand isErr = true, want false; result = %+v", res)
+	}
+	if command != "rendered descriptor" {
+		t.Fatalf("command = %q, want the rendered descriptor", command)
 	}
 }
 
