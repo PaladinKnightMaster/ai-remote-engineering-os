@@ -132,8 +132,19 @@ func TestFileAcceptsGatewaySubject(t *testing.T) {
 // would fail at json.Decode with "invalid body" (400) before the cap check
 // below ever ran. fileBodyLimit derives the limit FROM FileMaxBytes so this
 // succeeds.
+//
+// The cap here (256 KiB) is deliberately NOT small (T-139b review finding): at
+// a 4 KiB cap, fileEnvelopeHeadroom (8 KiB) alone exceeds the entire base64
+// payload, so this end-to-end test would pass identically whether fileBodyLimit
+// correctly accounts for base64 expansion or not — a mutation that drops the
+// base64 factor entirely is invisible at that size. 256 KiB is comfortably past
+// the point (~192 KiB) where base64 growth exceeds the headroom, so this test
+// only passes if the derivation is actually doing its job. The
+// headroom-independent proof of the underlying property lives in
+// TestFileBodyLimitCoversBase64Expansion (file_internal_test.go); this test is
+// the end-to-end companion at a cap size where that property is load-bearing.
 func TestFileWriteAtExactCapSucceeds(t *testing.T) {
-	const cap = 4096
+	const cap = 256 * 1024
 	dir := t.TempDir()
 	st := &fakeStore{target: store.Target{Host: "h", User: "u", HostKey: "ssh-ed25519 AAAA"}}
 	var gotLen int

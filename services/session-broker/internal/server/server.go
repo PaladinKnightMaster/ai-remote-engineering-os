@@ -454,9 +454,16 @@ const (
 // subject, JSON punctuation — plus slack so a payload MODESTLY over the content
 // cap still reaches the application-level cap check below and gets a clean 413,
 // rather than being silently swallowed by the transport limit into a misleading
-// 400 (see fileBodyLimit). It is deliberately generous relative to the envelope
-// fields' actual size, not tight.
-const fileEnvelopeHeadroom = 64 * 1024 // 64 KiB
+// 400 (see fileBodyLimit). 8 KiB is deliberately chosen tight, not generous:
+// the envelope fields' actual worst case is low hundreds of bytes even for an
+// unusually long path, so 8 KiB is already ~10x that. It is NOT sized to tens
+// of KiB, because a review finding (T-139b) showed that an oversized headroom
+// can mask the very bug fileBodyLimit exists to prevent: at a small test cap
+// the headroom can dwarf the whole payload, so a mutated derivation that
+// forgets the base64 factor entirely still passes an end-to-end test using
+// that cap. See TestFileBodyLimitCoversBase64Expansion (file_internal_test.go)
+// for the headroom-independent proof of the property that actually matters.
+const fileEnvelopeHeadroom = 8 * 1024 // 8 KiB
 
 // fileBodyLimit derives the /v1/file body-decode cap from maxContentBytes rather
 // than hard-coding a second literal. Content travels JSON-embedded as a []byte
