@@ -193,11 +193,19 @@ func serve(dsn string) error {
 	handler := server.New(server.Config{
 		Verifier:     v,
 		ExecVerifier: sv,
-		Store:        store.New(pool),
-		Leaser:       leaser,
-		CastDir:      castDir,
-		ExecMaxBytes: execMaxBytes(),
-		ExecTimeout:  execTimeout(),
+		// FileVerifier reuses the same service-service verifier as ExecVerifier
+		// (same audience "session-broker", same gateway/dual-mode setup) — it is a
+		// separate Config field, not a shared one, so /v1/exec and /v1/file remain
+		// independently toggleable even though this deployment always wires both.
+		FileVerifier:   sv,
+		Store:          store.New(pool),
+		Leaser:         leaser,
+		CastDir:        castDir,
+		ExecMaxBytes:   execMaxBytes(),
+		ExecTimeout:    execTimeout(),
+		FileMaxBytes:   fileMaxBytes(),
+		FileTimeout:    fileTimeout(),
+		FileMaxEntries: fileMaxEntries(),
 	})
 
 	// h2c lets the cleartext dev/CI listener speak HTTP/2; under TLS, http.Server
@@ -361,6 +369,41 @@ func execTimeout() time.Duration {
 		log.Printf("ignoring invalid BROKER_EXEC_TIMEOUT_SECONDS=%q", s)
 	}
 	return 60 * time.Second
+}
+
+// fileMaxBytes / fileTimeout / fileMaxEntries resolve the file plane's content
+// cap, per-operation timeout, and ListDir entry cap (PERF-17/19, ADR-0071 §D5)
+// from env, mirroring execMaxBytes/execTimeout's shape and defaults exactly
+// (1 MiB / 60s), plus fileMaxEntries with no ADR-stated number (default 1000,
+// a resource-safety bound chosen here, not security-load-bearing).
+func fileMaxBytes() int {
+	if s := os.Getenv("BROKER_FILE_MAX_BYTES"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("ignoring invalid BROKER_FILE_MAX_BYTES=%q", s)
+	}
+	return 1 << 20
+}
+
+func fileTimeout() time.Duration {
+	if s := os.Getenv("BROKER_FILE_TIMEOUT_SECONDS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		log.Printf("ignoring invalid BROKER_FILE_TIMEOUT_SECONDS=%q", s)
+	}
+	return 60 * time.Second
+}
+
+func fileMaxEntries() int {
+	if s := os.Getenv("BROKER_FILE_MAX_ENTRIES"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("ignoring invalid BROKER_FILE_MAX_ENTRIES=%q", s)
+	}
+	return 1000
 }
 
 func firstNonEmpty(vals ...string) string {
