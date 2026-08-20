@@ -30,6 +30,7 @@ import (
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/mcp-gateway/internal/apiforward"
 	"aireos.local/services/mcp-gateway/internal/brokerexec"
+	"aireos.local/services/mcp-gateway/internal/brokerfile"
 	"aireos.local/services/mcp-gateway/internal/catalog"
 	"aireos.local/services/mcp-gateway/internal/cmdcrypt"
 	"aireos.local/services/mcp-gateway/internal/mcp"
@@ -124,10 +125,14 @@ func serve() error {
 		fwd := apiforward.New(apiURL, signer)
 		forwarder, pollForwarder, submitForwarder, readForwarder, searchForwarder = fwd, fwd, fwd, fwd, fwd
 	}
+	// BrokerFile (ADR-0071 §D4, T-140b): remote.file.read's broker leg, on the SAME
+	// BROKER_URL + signer as Broker above — same peer, same credential, a
+	// separate client (BrokerExecer stays untouched per the T-138 seam).
 	cat := catalog.New(catalog.Config{
 		Store:           gw,
 		Policy:          pol,
 		Broker:          brokerexec.New(os.Getenv("BROKER_URL"), signer),
+		BrokerFile:      brokerfile.New(os.Getenv("BROKER_URL"), signer),
 		MaxInFlight:     maxInFlight(),
 		WaitTimeout:     durationEnvSeconds("MCP_APPROVAL_WAIT_SECONDS", 125*time.Second),
 		RunWaitTimeout:  durationEnvSeconds("MCP_RUN_WAIT_SECONDS", 600*time.Second),
@@ -154,7 +159,7 @@ func serve() error {
 		// No WriteTimeout: a governed tools/call may block on synchronous human
 		// approval (ADR-0054/0057 block-and-wait) once T-040 wires it.
 	}
-	log.Printf("mcp-gateway listening on %s (catalog: remote.exec, governed)", srv.Addr)
+	log.Printf("mcp-gateway listening on %s (catalog: remote.exec, remote.file.read, governed)", srv.Addr)
 	return srv.ListenAndServe()
 }
 

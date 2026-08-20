@@ -241,13 +241,39 @@ func (f *fakeBroker) Exec(_ context.Context, _, resource, command, _ string) (st
 	return f.stdout, f.exit, f.truncated, f.err
 }
 
+// fakeBrokerFile fakes catalog.BrokerFiler for the T-140b remote.file.read tests.
+type fakeBrokerFile struct {
+	content     []byte
+	sha         string
+	err         error
+	called      bool
+	gotResource string
+	gotPath     string
+}
+
+func (f *fakeBrokerFile) Read(_ context.Context, _, resource, path, _ string) ([]byte, string, error) {
+	f.called = true
+	f.gotResource, f.gotPath = resource, path
+	return f.content, f.sha, f.err
+}
+
 func governedHandler(t *testing.T, st catalog.Store, pol catalog.PolicyDecider, brk catalog.BrokerExecer) (http.Handler, *auth.Signer) {
+	t.Helper()
+	return governedHandlerWithFile(t, st, pol, brk, nil)
+}
+
+// governedHandlerWithFile is governedHandler plus a wired (or nil, T-140b's
+// nil-able-BrokerFile pattern) file client — the SEC-48/SEC-50 D7 tests and the
+// remote.file.read wiring proofs need to reach the broker file leg; the existing
+// exec-only tests keep using governedHandler unchanged (brokerFile stays nil there
+// too, but they never dispatch remote.file.read so it never matters).
+func governedHandlerWithFile(t *testing.T, st catalog.Store, pol catalog.PolicyDecider, brk catalog.BrokerExecer, brokerFile catalog.BrokerFiler) (http.Handler, *auth.Signer) {
 	t.Helper()
 	key, _ := auth.GenerateKey()
 	v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, "", "mcp-gateway"))
 	// Fast block-and-wait clocks so the approval tests stay sub-second.
 	cat := catalog.New(catalog.Config{
-		Store: st, Policy: pol, Broker: brk, MaxInFlight: 4,
+		Store: st, Policy: pol, Broker: brk, BrokerFile: brokerFile, MaxInFlight: 4,
 		WaitTimeout: 200 * time.Millisecond, PollInterval: 5 * time.Millisecond,
 	})
 	return New(Config{Verifier: v, Catalog: cat}), auth.NewSigner(key, "")
@@ -269,6 +295,13 @@ func callRemoteExec(t *testing.T, h http.Handler, tok, resourceID, command strin
 	t.Helper()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.exec","arguments":` +
 		`{"resourceId":"` + resourceID + `","command":"` + command + `"}}}`
+	return decodeRPC(t, postMCP(t, h, body, tok))
+}
+
+func callRemoteFileRead(t *testing.T, h http.Handler, tok, resourceID, path string) rpcResponse {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.file.read","arguments":` +
+		`{"resourceId":"` + resourceID + `","path":"` + path + `"}}}`
 	return decodeRPC(t, postMCP(t, h, body, tok))
 }
 
@@ -356,6 +389,85 @@ func TestInvokeOperationScopeAllowed(t *testing.T) {
 	resp := callRemoteExec(t, h, scopedTokenOps(t, s, "r1", []string{"exec"}), "r1", "echo hi")
 	if isErr, _ := toolResult(t, resp); isErr || !brk.called {
 		t.Fatalf("the exec operation should be in scope: isError=%v called=%v", isErr, brk.called)
+	}
+}
+
+// TestSEC48EmptyOperationsRejectsFileReadAllowsExec is SEC-48 (ADR-0071 §D7), the
+// ticket's block gate: a token with an EMPTY operations list must be REJECTED for
+// remote.file.read and ACCEPTED for remote.exec — proven on the SAME token in the SAME
+// test, so the distinction between "exec's back-compat allowance" and "every other verb
+// requires explicit scope" is what is actually under test. An implementation that
+// always allows on an empty list, or always denies on one, fails exactly one half of
+// this test and not the other.
+func TestSEC48EmptyOperationsRejectsFileReadAllowsExec(t *testing.T) {
+	fileBrk := &fakeBrokerFile{content: []byte("server {}"), sha: "deadbeef"}
+	execBrk := &fakeBroker{stdout: "hi\n"}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, execBrk, fileBrk)
+	tok := scopedToken(t, s, "r1") // Operations left empty — the back-compat scope shape
+
+	// Direction A: remote.file.read must be REFUSED for an empty-ops token.
+	fileResp := callRemoteFileRead(t, h, tok, "r1", "/etc/nginx/nginx.conf")
+	isErr, text := toolResult(t, fileResp)
+	if !isErr || !strings.Contains(text, "operation") {
+		t.Fatalf("empty-ops token on remote.file.read: isError=%v text=%q, want an operation-scope refusal (D7)", isErr, text)
+	}
+	if fileBrk.called {
+		t.Fatal("broker file Read must not run for an empty-ops token (D7 fail-closed)")
+	}
+
+	// Direction B: the SAME token must still be ACCEPTED for remote.exec — the
+	// exec-only back-compat allowance is unchanged.
+	execResp := callRemoteExec(t, h, tok, "r1", "echo hi")
+	if isErr, _ := toolResult(t, execResp); isErr || !execBrk.called {
+		t.Fatalf("empty-ops token on remote.exec must still be allowed (D7 exec back-compat unchanged): isError=%v called=%v", isErr, execBrk.called)
+	}
+}
+
+// TestSEC50FileReadScopedTokenRejectsRemoteExec is SEC-50 (partial): a token scoped to
+// exactly ["file.read"] — the narrowest possible file grant — must NOT also unlock
+// remote.exec. Operation scope is per-verb, never additive.
+func TestSEC50FileReadScopedTokenRejectsRemoteExec(t *testing.T) {
+	execBrk := &fakeBroker{}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, execBrk, &fakeBrokerFile{})
+	tok := scopedTokenOps(t, s, "r1", []string{"file.read"})
+	resp := callRemoteExec(t, h, tok, "r1", "echo hi")
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "operation") {
+		t.Fatalf("file.read-scoped token on remote.exec: isError=%v text=%q, want an operation-scope refusal", isErr, text)
+	}
+	if execBrk.called {
+		t.Fatal("broker exec must not run for a file.read-scoped token")
+	}
+}
+
+// TestInvokeFileReadAllowPath proves remote.file.read's end-to-end wiring (T-140b): a
+// token explicitly scoped for file.read reaches the broker file client via the SAME
+// governed pipeline as remote.exec (concurrency cap, invocation create, policy decide,
+// terminal dispatch) and returns the file's content plus its digest to the agent.
+func TestInvokeFileReadAllowPath(t *testing.T) {
+	fileBrk := &fakeBrokerFile{content: []byte("server {}"), sha: "9f2c00a41b"}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, fileBrk)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.read"})
+	resp := callRemoteFileRead(t, h, tok, "r1", "/etc/nginx/nginx.conf")
+	isErr, text := toolResult(t, resp)
+	if isErr || !strings.Contains(text, "server {}") || !strings.Contains(text, fileBrk.sha) {
+		t.Fatalf("file read allow path: isError=%v text=%q", isErr, text)
+	}
+	if !fileBrk.called || fileBrk.gotResource != "r1" || fileBrk.gotPath != "/etc/nginx/nginx.conf" {
+		t.Fatalf("broker file Read not called correctly: %+v", fileBrk)
+	}
+}
+
+// TestInvokeFileReadNilBrokerFileAnswersToolError proves the nil-able pattern (Part 3 of
+// the brief): an unwired BrokerFile answers a tool error, never a panic — mirroring
+// Forwarder/PollForwarder/etc.
+func TestInvokeFileReadNilBrokerFileAnswersToolError(t *testing.T) {
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, nil)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.read"})
+	resp := callRemoteFileRead(t, h, tok, "r1", "/etc/nginx/nginx.conf")
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "not available") {
+		t.Fatalf("nil BrokerFile: isError=%v text=%q, want a tool-level refusal, not a panic", isErr, text)
 	}
 }
 

@@ -70,7 +70,7 @@ type Registry struct {
 // pattern — the exact set the F-b WD-8/WD-9 amendment now asserts.
 func NewRegistry() *Registry {
 	r := &Registry{defs: map[string]ToolDef{}}
-	for _, d := range []ToolDef{remoteExec(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead(), contextSearch()} {
+	for _, d := range []ToolDef{remoteExec(), remoteFileRead(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead(), contextSearch()} {
 		r.defs[d.Name] = d
 		r.list = append(r.list, d.Tool())
 	}
@@ -151,6 +151,90 @@ func remoteExecDescribe(raw json.RawMessage) (string, error) {
 		return "", errors.New("remote.exec requires a command")
 	}
 	return a.Command, nil
+}
+
+// remoteFileReadTool is the T-140b file-family tool name (ADR-0071 §D1) — the
+// first tool on the SAME agent-remote-session edge as remote.exec (§D1: same
+// trust boundary, same credential, same host). Only the read verb ships this
+// ticket; write/list are T-141/T-142.
+const remoteFileReadTool = "remote.file.read"
+
+// remoteFileReadDescriptorPrefix anchors the ADR-0071 §D3 descriptor. The
+// invocation persists exactly ONE field for the approval payload (Command,
+// F3-encrypted at rest) — there is no separate args column, and adding one is
+// a migration this ticket may not make (C4). So the descriptor doubles as the
+// operational parameter: describe renders "remote.file.read <path>" and
+// performAndFinish strips this exact, self-controlled prefix back off to
+// recover path when it dispatches post-approval. This is not a parse of
+// untrusted input — the gateway is stripping a literal it itself wrote.
+const remoteFileReadDescriptorPrefix = remoteFileReadTool + " "
+
+// remote.file.read — read one file from a governed remote resource (ADR-0071
+// §D1/§D4). Same edge as remote.exec: reading a file over the leased SSH
+// credential crosses the identical trust boundary as running a command over it.
+func remoteFileRead() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "required": ["resourceId", "path"],
+  "additionalProperties": false,
+  "properties": {
+    "resourceId": {
+      "type": "string",
+      "description": "The governed SSH resource to read the file from — a resource id from the operator's registry."
+    },
+    "path": {
+      "type": "string",
+      "description": "The absolute path of the file to read on the resource."
+    }
+  }
+}`
+	return ToolDef{
+		Name: remoteFileReadTool,
+		Description: "Read one file from a governed remote (SSH) resource. " +
+			"The call is policy-checked and may require human operator approval before it runs — " +
+			"it can block until approved, or be denied — and every invocation is audited. Returns the " +
+			"file's content and its sha256 digest. Bounded by a maximum transfer size (default 1 MiB); " +
+			"a file over the cap is refused rather than truncated.",
+		InputSchema: json.RawMessage(inputSchema),
+		Edge:        "agent-remote-session",
+		Action:      remoteFileReadTool,
+		Operation:   "file.read",
+		target:      remoteFileReadTarget,
+		describe:    remoteFileReadDescribe,
+	}
+}
+
+// remoteFileReadArgs is the typed argument set for remote.file.read.
+type remoteFileReadArgs struct {
+	ResourceID string `json:"resourceId"`
+	Path       string `json:"path"`
+}
+
+func remoteFileReadTarget(raw json.RawMessage) (string, error) {
+	var a remoteFileReadArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid remote.file.read arguments: %w", err)
+	}
+	if a.ResourceID == "" || a.Path == "" {
+		return "", errors.New("remote.file.read requires resourceId and path")
+	}
+	return "resource:" + a.ResourceID, nil
+}
+
+// remoteFileReadDescribe renders remote.file.read's ADR-0071 §D3 descriptor:
+// the tool name plus the path, e.g. "remote.file.read /etc/nginx/nginx.conf" —
+// what the operator sees in the approval prompt, and (via
+// remoteFileReadDescriptorPrefix) what performAndFinish recovers the path
+// from post-approval.
+func remoteFileReadDescribe(raw json.RawMessage) (string, error) {
+	var a remoteFileReadArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid remote.file.read arguments: %w", err)
+	}
+	if a.Path == "" {
+		return "", errors.New("remote.file.read requires a path")
+	}
+	return remoteFileReadDescriptorPrefix + a.Path, nil
 }
 
 // runLaunchTool is the v0.6 control-plane tool name (ADR-0062, T-065b).
@@ -365,6 +449,13 @@ type BrokerExecer interface {
 	Exec(ctx context.Context, invocationID, resourceID, command, subject string) (stdout string, exitCode int, truncated bool, err error)
 }
 
+// BrokerFiler runs the governed remote.file.read leg on the broker (ADR-0071
+// §D4). Kept SEPARATE from BrokerExecer — the T-138 seam constraint holds:
+// BrokerExecer is not renamed or widened for this second egress family.
+type BrokerFiler interface {
+	Read(ctx context.Context, invocationID, resourceID, path, subject string) (content []byte, sha256sum string, err error)
+}
+
 // Service is the governed orchestrator: it satisfies mcp.Catalog, turning an
 // agent's tools/call into a persisted, policy-decided, audited invocation that
 // drives the broker exec (ADR-0057). List delegates to the pure Registry; Invoke
@@ -374,6 +465,7 @@ type Service struct {
 	store          Store
 	policy         PolicyDecider
 	broker         BrokerExecer
+	brokerFile     BrokerFiler // remote.file.read's broker leg (ADR-0071); nil → tool error, mirrors Forwarder et al.
 	maxInFlight    int
 	waitTimeout    time.Duration       // agent block-and-wait deadline for a parked invocation (ADR-0059)
 	runWaitTimeout time.Duration       // operator Run-step block-and-wait deadline (T-055b)
@@ -394,6 +486,7 @@ type Config struct {
 	Store          Store
 	Policy         PolicyDecider
 	Broker         BrokerExecer
+	BrokerFile     BrokerFiler         // remote.file.read's broker leg (ADR-0071); nil → remote.file.read answers a tool error
 	MaxInFlight    int                 // per-agent concurrency cap (PERF-3); ≤ 0 → 4
 	WaitTimeout    time.Duration       // agent block-and-wait deadline; ≤ 0 → 125s (just over policy's 120s TTL)
 	RunWaitTimeout time.Duration       // operator Run-step block-and-wait; ≤ 0 → 10m (Run approval window ≫ 125s)
@@ -423,7 +516,7 @@ func New(cfg Config) *Service {
 		cfg.RunWaitTimeout = 10 * time.Minute
 	}
 	return &Service{
-		registry: NewRegistry(), store: cfg.Store, policy: cfg.Policy, broker: cfg.Broker,
+		registry: NewRegistry(), store: cfg.Store, policy: cfg.Policy, broker: cfg.Broker, brokerFile: cfg.BrokerFile,
 		maxInFlight: cfg.MaxInFlight, waitTimeout: cfg.WaitTimeout, pollInterval: cfg.PollInterval,
 		runWaitTimeout: cfg.RunWaitTimeout, forwarder: cfg.Forwarder,
 		pollForwarder: cfg.PollForwarder, submitForwarder: cfg.SubmitForwarder, readForwarder: cfg.ReadForwarder,
@@ -476,12 +569,24 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 	resourceID := strings.TrimPrefix(target, "resource:")
 
 	// SEC-16: the invocation must stay within the agent token's scope — both the
-	// resource and (when the token declares operations) the operation. An empty
-	// Operations set is unrestricted (back-compat for resource-only scoped tokens).
+	// resource and the operation.
 	if capb.Scope.Resource != "" && capb.Scope.Resource != resourceID {
 		return toolError("resource is outside the agent token's scope"), nil
 	}
-	if len(capb.Scope.Operations) > 0 && !slices.Contains(capb.Scope.Operations, def.Operation) {
+	// ADR-0071 §D7: an empty Operations list is unrestricted ONLY for "exec" —
+	// back-compat for resource-only scoped tokens minted before SEC-16, which
+	// predates every operation but exec. Every other verb, including
+	// remote.file.read's "file.read", requires its verb to be explicitly present;
+	// an empty list is a REFUSAL, not a pass. Without this, the moment a second
+	// operation verb existed, every pre-existing (and every future
+	// operations-unaware) agent token would silently acquire it. When the token
+	// DOES declare operations, the check is identical for every verb including
+	// exec — this branch only ever changes behavior for the empty-list case.
+	if len(capb.Scope.Operations) > 0 {
+		if !slices.Contains(capb.Scope.Operations, def.Operation) {
+			return toolError("operation is outside the agent token's scope"), nil
+		}
+	} else if def.Operation != "exec" {
 		return toolError("operation is outside the agent token's scope"), nil
 	}
 
@@ -921,12 +1026,12 @@ func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout
 // performAndFinish is the seam's terminal step (ADR-0071 §D2): it dispatches on the
 // invocation's TOOL to the operation that actually crosses the trust boundary, and
 // records the terminal outcome. The caller has already moved the invocation to
-// running (allow-now via SetStatus, post-approval via ClaimForExec). Today there is
-// exactly one case — remote.exec → the broker's non-interactive exec (ADR-0058),
-// unchanged byte-for-byte from the prior execAndFinish. The default branch is the
-// whole point of this seam: an unrecognized tool fails closed (SEC-19) rather than
-// falling through to exec, so a later tool addition (T-139+) cannot silently reuse
-// exec's egress by omission.
+// running (allow-now via SetStatus, post-approval via ClaimForExec). remote.exec's
+// case is unchanged byte-for-byte from the prior execAndFinish; remote.file.read
+// (T-140b, ADR-0071 §D4) is the second, dispatching to BrokerFiler.Read instead of
+// BrokerExecer.Exec. The default branch is the whole point of this seam: an
+// unrecognized tool fails closed (SEC-19) rather than falling through to exec, so a
+// later tool addition (T-141+) cannot silently reuse exec's egress by omission.
 func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command, agent, tool string) (mcp.ToolResult, error) {
 	switch tool {
 	case remoteExecTool:
@@ -946,6 +1051,24 @@ func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command,
 			text += "\n[output truncated]"
 		}
 		return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: text}}, IsError: isErr}, nil
+	case remoteFileReadTool:
+		// The nil-able pattern (Forwarder/PollForwarder/etc.): an unwired broker
+		// file client answers a tool error, never a panic.
+		if s.brokerFile == nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return toolError("file operations are not available on this gateway"), nil
+		}
+		// command IS the persisted ADR-0071 §D3 descriptor (there is no separate
+		// args column, C4); strip the self-controlled prefix back off to recover
+		// the path the agent asked to read.
+		path := strings.TrimPrefix(command, remoteFileReadDescriptorPrefix)
+		content, sha, err := s.brokerFile.Read(ctx, id, resourceID, path, agent)
+		if err != nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return mcp.ToolResult{}, fmt.Errorf("file read failed: %w", err)
+		}
+		_ = s.store.Finish(ctx, id, "completed", "tool.result")
+		return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: string(content) + "\n[sha256:" + sha + "]"}}}, nil
 	default:
 		// Fail closed (SEC-19): no operation is implemented for this tool at the
 		// terminal step, so nothing runs and the invocation cannot be left parked in

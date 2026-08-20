@@ -20,9 +20,10 @@ func TestRegistryListsRemoteExec(t *testing.T) {
 	// v0.9 (ADR-0065, T-090): the registry advertises remote.exec, the control-plane
 	// run.launch (agent-initiated Runs), and the three new control-plane tools
 	// (workstream.poll/plan.submit/memory.read). v0.10 (ADR-0066, T-099) adds a sixth,
-	// context.search — the exact set the F-b WD-8/WD-9 amendment now asserts.
-	if len(tools) != 6 || tools[0].Name != "remote.exec" || tools[1].Name != "run.launch" {
-		t.Fatalf("List() = %+v, want [remote.exec run.launch workstream.poll plan.submit memory.read context.search]", tools)
+	// context.search. v0.14.0 (ADR-0071, T-140b) adds the SEVENTH: remote.file.read, the
+	// first tool on the second egress family — the exact set that assertion now covers.
+	if len(tools) != 7 || tools[0].Name != "remote.exec" || tools[1].Name != "remote.file.read" || tools[2].Name != "run.launch" {
+		t.Fatalf("List() = %+v, want [remote.exec remote.file.read run.launch workstream.poll plan.submit memory.read context.search]", tools)
 	}
 	// The advertised inputSchema is a valid JSON Schema object requiring the
 	// two typed args — this is the agent's interface (ADR-0057 / UX).
@@ -124,6 +125,55 @@ func TestTargetResolution(t *testing.T) {
 		if _, err := def.Target(json.RawMessage(raw)); err == nil {
 			t.Fatalf("Target(%q) = nil error, want rejection", raw)
 		}
+	}
+}
+
+// TestRemoteFileReadTargetAndDescribe is the T-140b registration proof (ADR-0071
+// §D1/§D3/§D4): remote.file.read carries the SAME edge as remote.exec (no new
+// boundary), its own Action/Operation, and a descriptor that round-trips back to the
+// raw path via the exact prefix performAndFinish strips post-approval — the property
+// this design depends on, since the invocation persists only ONE field (Command) and
+// there is no separate args column (C4).
+func TestRemoteFileReadTargetAndDescribe(t *testing.T) {
+	def, ok := NewRegistry().Lookup("remote.file.read")
+	if !ok {
+		t.Fatal("remote.file.read not found")
+	}
+	if def.Edge != "agent-remote-session" {
+		t.Fatalf("edge = %q, want agent-remote-session (ADR-0071 §D1: same trust boundary as remote.exec)", def.Edge)
+	}
+	if def.Action != "remote.file.read" {
+		t.Fatalf("action = %q, want remote.file.read", def.Action)
+	}
+	if def.Operation != "file.read" {
+		t.Fatalf("operation = %q, want file.read", def.Operation)
+	}
+	if def.Description == "" {
+		t.Fatal("remote.file.read must carry a description (CON-10: honest about policy/approval/audit)")
+	}
+
+	tgt, err := def.Target(json.RawMessage(`{"resourceId":"r-9","path":"/etc/nginx/nginx.conf"}`))
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if tgt != "resource:r-9" {
+		t.Fatalf("Target = %q, want resource:r-9", tgt)
+	}
+	for _, raw := range []string{`{"resourceId":"r-9"}`, `{"path":"/x"}`, `{`} {
+		if _, err := def.Target(json.RawMessage(raw)); err == nil {
+			t.Fatalf("Target(%q) = nil error, want rejection", raw)
+		}
+	}
+
+	desc, err := def.Describe(json.RawMessage(`{"resourceId":"r-9","path":"/etc/nginx/nginx.conf"}`))
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if desc != "remote.file.read /etc/nginx/nginx.conf" {
+		t.Fatalf("Describe = %q, want the ADR-0071 §D3 descriptor", desc)
+	}
+	if got := strings.TrimPrefix(desc, remoteFileReadDescriptorPrefix); got != "/etc/nginx/nginx.conf" {
+		t.Fatalf("TrimPrefix(desc, prefix) = %q, want the raw path back (performAndFinish's recovery step)", got)
 	}
 }
 
@@ -265,6 +315,12 @@ func (f *fakeSeamBroker) Exec(_ context.Context, _, resource, command, _ string)
 // through to remote.exec. It drives the real, shared runGovernedStep (the same core the
 // agent path and the operator Run engine both use) with a tool name the registry has
 // never heard of — proving the default: branch, not just asserting it exists.
+//
+// Uses "remote.file.write" as the still-unregistered placeholder (T-141, not this
+// ticket) — T-140b registered "remote.file.read" and gave performAndFinish a real case
+// for it, so that name would no longer exercise this branch; this test's job is the
+// default: branch, and it must keep naming a tool that is actually absent from the
+// registry for that to hold.
 func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 	st := &fakeSeamStore{}
 	brk := &fakeSeamBroker{}
@@ -275,11 +331,11 @@ func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 
 	id, res, err := svc.runGovernedStep(context.Background(), stepRequest{
 		Subject:     "agent:test",
-		Tool:        "remote.file.read", // not yet a registered tool — the seam must still fail closed
+		Tool:        "remote.file.write", // not yet a registered tool — the seam must still fail closed
 		ResourceID:  "r-1",
 		Command:     "irrelevant",
 		Edge:        "agent-remote-session",
-		Action:      "remote.file.read",
+		Action:      "remote.file.write",
 		Target:      "resource:r-1",
 		BracketEdge: "agent-tool",
 		WaitTimeout: 50 * time.Millisecond,
