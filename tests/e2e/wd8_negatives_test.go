@@ -66,12 +66,19 @@ func TestWD8RedactIdempotent(t *testing.T) {
 // TestWD8AgentPlaneRejected — N2 (SEC-31): a VALID agent-tool token (aud=mcp-gateway)
 // against services/api's operator-plane /v1/memories* routes is rejected — the wrong
 // edge/wrong plane, not a signature failure (the WD-4 forge-test precedent applied to
-// the memory boundary). The gateway's tools/list exposes exactly the six control-plane
-// tools (F-b, T-090 + T-099 amendment): remote.exec, run.launch, workstream.poll,
-// plan.submit, memory.read, context.search — and, memory.read's/context.search's own
-// governance carve-outs aside, NO memory-WRITE tool of any kind (no author/redact/
-// share/pin verb reaches the agent plane; the read plane is memory.read + context.search
-// alone, each chained per ADR-0065 §3/R4 and ADR-0066 §4/SEC-33 respectively).
+// the memory boundary). The gateway's tools/list exposes exactly NINE control-plane
+// tools (F-b, T-090 + T-099 amendment, widened at v0.14.0/ADR-0071 T-140b/141/142):
+// remote.exec, remote.file.read, remote.file.write, remote.file.list, run.launch,
+// workstream.poll, plan.submit, memory.read, context.search — and, memory.read's/
+// context.search's own governance carve-outs aside, NO memory-WRITE tool of any kind
+// (no author/redact/share/pin verb reaches the agent plane; the read plane is
+// memory.read + context.search alone, each chained per ADR-0065 §3/R4 and ADR-0066
+// §4/SEC-33 respectively). T-144a note: this `want` set went stale when the file
+// family shipped (T-140b/141/142 ran unit + lint gates, not e2e, so nothing caught
+// it) — a caller-of-a-correct-control-not-updated defect, not a product bug. Kept as
+// SET EQUALITY deliberately, not loosened to a subset check: the whole point of this
+// guard is that no memory-write tool (or any other unexpected tool) can silently join
+// the agent-plane surface — an extra or renamed entry must still fail this assertion.
 func TestWD8AgentPlaneRejected(t *testing.T) {
 	apiURL := env("E2E_API_URL", "http://api:8080")
 	mcpURL := env("E2E_MCP_URL", "http://mcp-gateway:8085")
@@ -151,15 +158,17 @@ func TestWD8AgentPlaneRejected(t *testing.T) {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	// F-b (T-090 + T-099 amendment): the exact tool surface is six, not two — the v0.9
-	// adaptive-workstream control-plane tools plus the v0.10 context.search ride
-	// alongside remote.exec/run.launch. The set-equality check below still enforces the
-	// N2 spirit intact: no memory tool OTHER THAN memory.read reaches the agent plane —
-	// no write/author/redact/share/pin verb of any kind, because any such tool would
-	// inflate len(tools) or introduce a name outside `want` and fail this assertion.
+	// F-b (T-090 + T-099 amendment, widened T-140b/141/142 — ADR-0071): the exact tool
+	// surface is NINE, not six — the v0.14.0 file family (remote.file.read/write/list)
+	// joins remote.exec on the same agent-remote-session edge, alongside the v0.9
+	// adaptive-workstream control-plane tools and the v0.10 context.search. The
+	// set-equality check below still enforces the N2 spirit intact: no memory tool
+	// OTHER THAN memory.read reaches the agent plane — no write/author/redact/share/pin
+	// verb of any kind, because any such tool would inflate len(tools) or introduce a
+	// name outside `want` and fail this assertion.
 	want := map[string]bool{
-		"remote.exec": true, "run.launch": true,
-		"workstream.poll": true, "plan.submit": true, "memory.read": true,
+		"remote.exec": true, "remote.file.read": true, "remote.file.write": true, "remote.file.list": true,
+		"run.launch": true, "workstream.poll": true, "plan.submit": true, "memory.read": true,
 		"context.search": true,
 	}
 	if len(tools) != len(want) {
