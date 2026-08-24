@@ -44,13 +44,21 @@ var (
 	ErrFileUnsupportedRename = errors.New("remote server does not support atomic rename")
 )
 
-// FileEntry describes one directory entry (ListDir).
+// FileEntry describes one directory entry (ListDir). JSON tags are explicit
+// (T-142, ADR-0071 §D1) rather than left to the default Go-field-name
+// capitalization: this struct crosses the wire as the broker's /v1/file list
+// response, and the gateway mirrors it in its OWN type (it cannot import this
+// internal/ package — different module) rather than sharing it. An implicit
+// contract there is a silent-corruption risk (a key mismatch unmarshal to zero
+// values, not an error) — see brokerfile.Entry and the golden-JSON fixture
+// tests on both sides that guard the two structs staying byte-identical on
+// the wire.
 type FileEntry struct {
-	Name    string
-	Size    int64
-	Mode    os.FileMode
-	ModTime time.Time
-	IsDir   bool
+	Name    string      `json:"name"`
+	Size    int64       `json:"size"`
+	Mode    os.FileMode `json:"mode"`
+	ModTime time.Time   `json:"modTime"`
+	IsDir   bool        `json:"isDir"`
 }
 
 // ReadFile fetches path's bytes. maxBytes <= 0 means no cap; timeout <= 0

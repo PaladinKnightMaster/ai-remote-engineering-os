@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -485,5 +486,37 @@ func TestMapSFTPError_NotFound(t *testing.T) {
 	wrapped := fmt.Errorf("stat: %w", os.ErrNotExist)
 	if err := mapSFTPError(wrapped); !errors.Is(err, ErrFileNotFound) {
 		t.Fatalf("want ErrFileNotFound, got %v", err)
+	}
+}
+
+// --- FileEntry wire contract (T-142, ADR-0071 §D1/Finding 2) ---
+//
+// The gateway's /v1/file list response is []FileEntry, and the gateway cannot
+// import this internal/ package (different module: aireos.local/services/
+// session-broker vs aireos.local/services/mcp-gateway) — so it defines its own
+// mirror struct (brokerfile.Entry) rather than sharing this type. Neither side
+// can import the other, so this golden literal is the ONLY thing that proves
+// the two structs agree on the wire: this test asserts FileEntry marshals to
+// EXACTLY this JSON, and brokerfile's own test (services/mcp-gateway/internal/
+// brokerfile/brokerfile_test.go) asserts Entry unmarshals the SAME literal
+// with every field populated non-zero. A test that only checks its own side
+// proves nothing — see that file's test for the other half.
+const fileEntryGoldenJSON = `{"name":"nginx.conf","size":1234,"mode":420,"modTime":"2024-01-02T03:04:05Z","isDir":false}`
+
+func TestFileEntryMarshalsGoldenJSON(t *testing.T) {
+	modTime, err := time.Parse(time.RFC3339, "2024-01-02T03:04:05Z")
+	if err != nil {
+		t.Fatalf("parse fixture time: %v", err)
+	}
+	entry := FileEntry{
+		Name: "nginx.conf", Size: 1234, Mode: 0o644, // 0o644 decimal = 420, matches the golden literal
+		ModTime: modTime, IsDir: false,
+	}
+	got, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(got) != fileEntryGoldenJSON {
+		t.Fatalf("Marshal(FileEntry) = %s, want the golden literal %s (the gateway's mirror type depends on these exact keys)", got, fileEntryGoldenJSON)
 	}
 }

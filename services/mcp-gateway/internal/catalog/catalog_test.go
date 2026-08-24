@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"aireos.local/services/mcp-gateway/internal/brokerfile"
 	"aireos.local/services/mcp-gateway/internal/mcp"
 	"aireos.local/services/mcp-gateway/internal/store"
 )
@@ -23,11 +24,12 @@ func TestRegistryListsRemoteExec(t *testing.T) {
 	// v0.9 (ADR-0065, T-090): the registry advertises remote.exec, the control-plane
 	// run.launch (agent-initiated Runs), and the three new control-plane tools
 	// (workstream.poll/plan.submit/memory.read). v0.10 (ADR-0066, T-099) adds a sixth,
-	// context.search. v0.14.0 (ADR-0071) adds the SEVENTH, remote.file.read (T-140b),
-	// then the EIGHTH, remote.file.write (T-141) — the exact set that assertion now covers.
-	if len(tools) != 8 || tools[0].Name != "remote.exec" || tools[1].Name != "remote.file.read" ||
-		tools[2].Name != "remote.file.write" || tools[3].Name != "run.launch" {
-		t.Fatalf("List() = %+v, want [remote.exec remote.file.read remote.file.write run.launch workstream.poll plan.submit memory.read context.search]", tools)
+	// context.search. v0.14.0 (ADR-0071) adds remote.file.read (T-140b), remote.file.write
+	// (T-141), then remote.file.list (T-142) — the NINTH tool and the exact set this
+	// assertion now covers.
+	if len(tools) != 9 || tools[0].Name != "remote.exec" || tools[1].Name != "remote.file.read" ||
+		tools[2].Name != "remote.file.write" || tools[3].Name != "remote.file.list" || tools[4].Name != "run.launch" {
+		t.Fatalf("List() = %+v, want [remote.exec remote.file.read remote.file.write remote.file.list run.launch workstream.poll plan.submit memory.read context.search]", tools)
 	}
 	// The advertised inputSchema is a valid JSON Schema object requiring the
 	// two typed args — this is the agent's interface (ADR-0057 / UX).
@@ -308,6 +310,92 @@ func TestParseFileWriteDescriptorFailsClosedOnMalformed(t *testing.T) {
 	}
 }
 
+// TestRemoteFileListTargetAndDescribe is the T-142 registration proof (ADR-0071
+// §D1/§D3/§D4): remote.file.list carries the SAME edge as the rest of the file
+// family (no new boundary), and — the deliberate D1 choice — shares
+// remote.file.read's "file.read" Operation rather than minting a third verb.
+func TestRemoteFileListTargetAndDescribe(t *testing.T) {
+	def, ok := NewRegistry().Lookup("remote.file.list")
+	if !ok {
+		t.Fatal("remote.file.list not found")
+	}
+	if def.Edge != "agent-remote-session" {
+		t.Fatalf("edge = %q, want agent-remote-session (ADR-0071 §D1: same trust boundary)", def.Edge)
+	}
+	if def.Action != "remote.file.list" {
+		t.Fatalf("action = %q, want remote.file.list", def.Action)
+	}
+	if def.Operation != "file.read" {
+		t.Fatalf("operation = %q, want file.read (ADR-0071 §D1: listing shares the read verb, deliberately no new one)", def.Operation)
+	}
+	if def.Description == "" {
+		t.Fatal("remote.file.list must carry a description (CON-10: honest about policy/approval/audit)")
+	}
+
+	tgt, err := def.Target(json.RawMessage(`{"resourceId":"r-9","path":"/etc"}`))
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if tgt != "resource:r-9" {
+		t.Fatalf("Target = %q, want resource:r-9", tgt)
+	}
+	for _, raw := range []string{`{"resourceId":"r-9"}`, `{"path":"/x"}`, `{`} {
+		if _, err := def.Target(json.RawMessage(raw)); err == nil {
+			t.Fatalf("Target(%q) = nil error, want rejection", raw)
+		}
+	}
+
+	desc, err := def.Describe(json.RawMessage(`{"resourceId":"r-9","path":"/etc"}`))
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if desc != "remote.file.list /etc" {
+		t.Fatalf("Describe = %q, want the ADR-0071 §D3 descriptor", desc)
+	}
+	if got := strings.TrimPrefix(desc, remoteFileListDescriptorPrefix); got != "/etc" {
+		t.Fatalf("TrimPrefix(desc, prefix) = %q, want the raw path back (performAndFinish's recovery step)", got)
+	}
+	// CON-9: additionalProperties: false — the schema must reject a stray field.
+	var schema struct {
+		AdditionalProperties bool `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
+		t.Fatalf("inputSchema is not valid JSON: %v", err)
+	}
+	if schema.AdditionalProperties {
+		t.Fatal("inputSchema additionalProperties = true, want false (CON-9)")
+	}
+}
+
+// TestParseFileListDescriptorFailsClosedOnMalformed mirrors
+// TestParseFileReadDescriptorFailsClosedOnMalformed exactly: CutPrefix plus an
+// explicit refusal, never TrimPrefix's silent whole-string fallback.
+//
+// Mutation guard (VER-16): replacing parseFileListDescriptor's strings.CutPrefix
+// with strings.TrimPrefix makes this test fail on the "not the right prefix at
+// all" case specifically — TrimPrefix returns that string UNCHANGED (no
+// trimming occurs), so `ok` is lost and the malformed input is silently
+// accepted as a literal path instead of refused. The failing assertion is
+// `parseFileListDescriptor(%q) = nil error, want a fail-closed refusal`.
+func TestParseFileListDescriptorFailsClosedOnMalformed(t *testing.T) {
+	for _, bad := range []string{
+		"",
+		"not the right prefix at all",
+		"remote.file.list",  // missing the trailing space — no prefix match
+		"remote.file.list ", // prefix matches, but strips to an empty path
+		"remote.file.read /etc/passwd",
+	} {
+		if _, err := parseFileListDescriptor(bad); err == nil {
+			t.Fatalf("parseFileListDescriptor(%q) = nil error, want a fail-closed refusal", bad)
+		}
+	}
+	// The positive control: a well-formed descriptor still round-trips.
+	path, err := parseFileListDescriptor(remoteFileListDescriptorPrefix + "/etc")
+	if err != nil || path != "/etc" {
+		t.Fatalf("parseFileListDescriptor(well-formed) = (%q, %v), want (/etc, nil)", path, err)
+	}
+}
+
 // TestRemoteExecDescribeVerbatim is the ADR-0071 §D3 seam proof for T-140a: remote.exec's
 // descriptor must be the command verbatim, byte-identical to what Invoke persisted as
 // the invocation's Command before this ticket's refactor (the old hardcoded
@@ -447,11 +535,13 @@ func (f *fakeSeamBroker) Exec(_ context.Context, _, resource, command, _ string)
 // agent path and the operator Run engine both use) with a tool name the registry has
 // never heard of — proving the default: branch, not just asserting it exists.
 //
-// Uses "remote.file.list" as the still-unregistered placeholder (T-142, not this
-// ticket) — T-140b registered "remote.file.read" and T-141 registered
-// "remote.file.write", each giving performAndFinish a real case, so neither name
-// would still exercise this branch; this test's job is the default: branch, and it
-// must keep naming a tool that is actually absent from the registry for that to hold.
+// Uses "test.never.registered" — a RESERVED SENTINEL, not a real (future) tool name —
+// as the placeholder (T-142 review finding). T-140b registered "remote.file.read",
+// T-141 registered "remote.file.write", and T-142 registers "remote.file.list", so a
+// real tool name placeholder has now needed re-pointing twice across those three
+// tickets. This sentinel is deliberately never claimed by any tool: no future ticket
+// should ever register "test.never.registered", so this test's correctness no longer
+// depends on staying ahead of the registry.
 func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 	st := &fakeSeamStore{}
 	brk := &fakeSeamBroker{}
@@ -462,11 +552,11 @@ func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 
 	id, res, err := svc.runGovernedStep(context.Background(), stepRequest{
 		Subject:     "agent:test",
-		Tool:        "remote.file.list", // not yet a registered tool — the seam must still fail closed
+		Tool:        "test.never.registered", // reserved sentinel — never a registered tool, so the seam must always fail closed on it
 		ResourceID:  "r-1",
 		Command:     "irrelevant",
 		Edge:        "agent-remote-session",
-		Action:      "remote.file.list",
+		Action:      "test.never.registered",
 		Target:      "resource:r-1",
 		BracketEdge: "agent-tool",
 		WaitTimeout: 50 * time.Millisecond,
@@ -572,13 +662,13 @@ func TestReattachDispatchesOnPersistedToolNotCallerTool(t *testing.T) {
 		t.Fatalf("first call: unexpected error %v", err)
 	}
 
-	// Second call: SAME idempotency key, but declares a tool the registry has never
-	// heard of. Under the pre-fix code (dispatch on the CALLER's req.Tool) this would
-	// fail closed; under the fix (dispatch on the PERSISTED tool) it must still run the
-	// original remote.exec invocation.
+	// Second call: SAME idempotency key, but declares "test.never.registered" — the
+	// reserved sentinel (never a registered tool). Under the pre-fix code (dispatch on
+	// the CALLER's req.Tool) this would fail closed; under the fix (dispatch on the
+	// PERSISTED tool) it must still run the original remote.exec invocation.
 	secondID, res, err := svc.runGovernedStep(ctx, stepRequest{
-		Subject: "agent:test", Tool: "remote.file.list", ResourceID: "r-1", Command: "attacker payload",
-		Edge: "agent-remote-session", Action: "remote.file.list", Target: "resource:r-1",
+		Subject: "agent:test", Tool: "test.never.registered", ResourceID: "r-1", Command: "attacker payload",
+		Edge: "agent-remote-session", Action: "test.never.registered", Target: "resource:r-1",
 		BracketEdge: "agent-tool", IdempotencyKey: "shared-key", WaitTimeout: 200 * time.Millisecond,
 	})
 	if err != nil {
@@ -602,10 +692,11 @@ func TestReattachDispatchesOnPersistedToolNotCallerTool(t *testing.T) {
 	}
 }
 
-// fakeSeamBrokerFile fakes catalog.BrokerFiler (Read+Write) to drive performAndFinish's
-// remote.file.write case directly — the SEC-49 proofs below MUST NOT reach Write on a
-// digest mismatch or an unparseable descriptor, which is exactly what writeCalled lets
-// them assert.
+// fakeSeamBrokerFile fakes catalog.BrokerFiler (Read+Write+List) to drive
+// performAndFinish's remote.file.{write,list} cases directly — the SEC-49 proofs
+// below MUST NOT reach Write on a digest mismatch or an unparseable descriptor,
+// which is exactly what writeCalled lets them assert; the list proofs use
+// listCalled/listEntries/listErr the same way.
 type fakeSeamBrokerFile struct {
 	writeCalled bool
 	gotPath     string
@@ -613,10 +704,23 @@ type fakeSeamBrokerFile struct {
 	gotMode     uint32
 	writeErr    error
 	writeSHA    string
+
+	listCalled  bool
+	gotListPath string
+	listEntries []brokerfile.Entry
+	listErr     error
 }
 
 func (f *fakeSeamBrokerFile) Read(context.Context, string, string, string, string) ([]byte, string, error) {
 	return nil, "", errors.New("Read not used by the SEC-49 proofs")
+}
+func (f *fakeSeamBrokerFile) List(_ context.Context, _, _, path, _ string) ([]brokerfile.Entry, error) {
+	f.listCalled = true
+	f.gotListPath = path
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listEntries, nil
 }
 func (f *fakeSeamBrokerFile) Write(_ context.Context, _, _, path string, content []byte, mode uint32, _ string) (string, error) {
 	f.writeCalled = true
@@ -743,5 +847,145 @@ func TestPerformAndFinishFileWriteNilBrokerFileAnswersToolError(t *testing.T) {
 	}
 	if !res.IsError || !strings.Contains(res.Content[0].Text, "not available") {
 		t.Fatalf("nil BrokerFile: isError=%v content=%+v, want a tool-level refusal, not a panic", res.IsError, res.Content)
+	}
+}
+
+// TestPerformAndFinishFileListReturnsEntries is the T-142 happy-path proof: a
+// well-formed descriptor dispatches to BrokerFiler.List with the recovered path,
+// and the entries come back rendered as readable text (not silently dropped or
+// left as a Go struct the agent could never read).
+func TestPerformAndFinishFileListReturnsEntries(t *testing.T) {
+	st := &fakeSeamStore{}
+	modTime := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	fileBrk := &fakeSeamBrokerFile{listEntries: []brokerfile.Entry{
+		{Name: "nginx.conf", Size: 1234, Mode: 0o644, ModTime: modTime, IsDir: false},
+		{Name: "sites-enabled", Size: 4096, Mode: 0o755, ModTime: modTime, IsDir: true},
+	}}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{}, BrokerFile: fileBrk,
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	descriptor := remoteFileListDescriptorPrefix + "/etc/nginx"
+
+	res, err := svc.performAndFinish(context.Background(), "inv-l1", "r-1", descriptor, "agent:test", remoteFileListTool, nil)
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected error %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("result = %+v, want a successful list result", res)
+	}
+	if !fileBrk.listCalled || fileBrk.gotListPath != "/etc/nginx" {
+		t.Fatalf("BrokerFiler.List called=%v path=%q, want called=true path=/etc/nginx", fileBrk.listCalled, fileBrk.gotListPath)
+	}
+	text := res.Content[0].Text
+	if !strings.Contains(text, "nginx.conf") || !strings.Contains(text, "sites-enabled") {
+		t.Fatalf("result text = %q, want both entry names present", text)
+	}
+	if !strings.Contains(text, "dir") || !strings.Contains(text, "file") {
+		t.Fatalf("result text = %q, want both entry kinds (dir/file) rendered", text)
+	}
+	if st.finishCalls != 1 || st.finishStatus != "completed" || st.finishOutcome != "tool.result" {
+		t.Fatalf("finish = (%d calls, %q, %q), want (1, completed, tool.result)", st.finishCalls, st.finishStatus, st.finishOutcome)
+	}
+}
+
+// TestPerformAndFinishFileListEmptyDirectory proves an empty directory renders an
+// explicit marker rather than an empty string — the caller must be able to tell
+// "listed, zero entries" apart from "no text came back."
+func TestPerformAndFinishFileListEmptyDirectory(t *testing.T) {
+	st := &fakeSeamStore{}
+	fileBrk := &fakeSeamBrokerFile{listEntries: nil}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{}, BrokerFile: fileBrk,
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	descriptor := remoteFileListDescriptorPrefix + "/empty"
+
+	res, err := svc.performAndFinish(context.Background(), "inv-l2", "r-1", descriptor, "agent:test", remoteFileListTool, nil)
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected error %v", err)
+	}
+	if res.IsError || len(res.Content) == 0 || res.Content[0].Text == "" {
+		t.Fatalf("result = %+v, want non-empty text even for zero entries", res)
+	}
+	if !strings.Contains(res.Content[0].Text, "empty") {
+		t.Fatalf("result text = %q, want an explicit empty-directory marker", res.Content[0].Text)
+	}
+}
+
+// TestPerformAndFinishFileListSurfacesBrokerErrorNotEmptyListing is the PERF-18
+// proof: when BrokerFiler.List fails (e.g. the broker's 413 over-cap refusal,
+// T-139b's ListDir refuse-don't-truncate rule), performAndFinish must return a Go
+// error, NOT a successful result with an empty or partial entry list — those are
+// indistinguishable from "this directory has zero entries" to the agent.
+//
+// Mutation guard (VER-16): if the `if err != nil` check on BrokerFiler.List's
+// return were dropped (or its error swallowed), this test fails on
+// `performAndFinish with a failing BrokerFiler.List = nil error`, because the
+// call would fall through to render whatever zero-value entries slice came back
+// as a successful (and misleadingly empty) listing instead of refusing.
+func TestPerformAndFinishFileListSurfacesBrokerErrorNotEmptyListing(t *testing.T) {
+	st := &fakeSeamStore{}
+	fileBrk := &fakeSeamBrokerFile{listErr: errors.New("broker file: unexpected status 413")}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{}, BrokerFile: fileBrk,
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	descriptor := remoteFileListDescriptorPrefix + "/huge"
+
+	res, err := svc.performAndFinish(context.Background(), "inv-l3", "r-1", descriptor, "agent:test", remoteFileListTool, nil)
+	if err == nil {
+		t.Fatalf("performAndFinish with a failing BrokerFiler.List = nil error, want the broker's refusal surfaced")
+	}
+	if res.Content != nil || res.IsError {
+		t.Fatalf("result = %+v, want zero-value (the caller surfaces the Go error, not a tool result)", res)
+	}
+	if st.finishCalls != 1 || st.finishStatus != "failed" {
+		t.Fatalf("finish = (%d calls, status %q), want (1, failed)", st.finishCalls, st.finishStatus)
+	}
+}
+
+// TestPerformAndFinishFileListNilBrokerFileAnswersToolError mirrors the
+// read/write nil-able pattern for the list leg.
+func TestPerformAndFinishFileListNilBrokerFileAnswersToolError(t *testing.T) {
+	st := &fakeSeamStore{}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{},
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	descriptor := remoteFileListDescriptorPrefix + "/etc"
+	res, err := svc.performAndFinish(context.Background(), "inv-l4", "r-1", descriptor, "agent:test", remoteFileListTool, nil)
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected error %v", err)
+	}
+	if !res.IsError || !strings.Contains(res.Content[0].Text, "not available") {
+		t.Fatalf("nil BrokerFile: isError=%v content=%+v, want a tool-level refusal, not a panic", res.IsError, res.Content)
+	}
+}
+
+// TestPerformAndFinishFileListMalformedDescriptorRefuses proves the descriptor
+// parse failure path is fail-closed at the performAndFinish level too (not just
+// parseFileListDescriptor's own unit test): BrokerFiler.List must never be
+// called for a malformed descriptor.
+func TestPerformAndFinishFileListMalformedDescriptorRefuses(t *testing.T) {
+	st := &fakeSeamStore{}
+	fileBrk := &fakeSeamBrokerFile{}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{}, BrokerFile: fileBrk,
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+
+	res, err := svc.performAndFinish(context.Background(), "inv-l5", "r-1", "not a valid descriptor", "agent:test", remoteFileListTool, nil)
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected Go error %v, want a tool-level refusal", err)
+	}
+	if !res.IsError || len(res.Content) == 0 || !strings.Contains(res.Content[0].Text, "malformed") {
+		t.Fatalf("result = %+v, want an IsError result naming the malformed descriptor", res)
+	}
+	if fileBrk.listCalled {
+		t.Fatal("BrokerFiler.List was called for an unparseable descriptor — must refuse, not proceed")
+	}
+	if st.finishCalls != 1 || st.finishStatus != "failed" {
+		t.Fatalf("finish = (%d calls, status %q), want (1, failed)", st.finishCalls, st.finishStatus)
 	}
 }

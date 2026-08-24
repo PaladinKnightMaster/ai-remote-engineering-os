@@ -23,6 +23,7 @@ import (
 	"time"
 
 	mw "aireos.local/packages/go/middleware"
+	"aireos.local/services/mcp-gateway/internal/brokerfile"
 	"aireos.local/services/mcp-gateway/internal/mcp"
 	"aireos.local/services/mcp-gateway/internal/policy"
 	"aireos.local/services/mcp-gateway/internal/store"
@@ -82,12 +83,13 @@ type Registry struct {
 // NewRegistry builds the registry. v0.9 (ADR-0065, T-090) adds three control-plane
 // tools on the run.launch pattern (workstream.poll / plan.submit / memory.read); v0.10
 // (ADR-0066 §4, T-099) adds a sixth, context.search, on the SAME memory.read forward
-// pattern; v0.14.0 (ADR-0071) adds remote.file.read (T-140b) then remote.file.write
-// (T-141) — the EIGHTH tool, and the only one besides remote.exec that mutates a
-// target host (SEC-47).
+// pattern; v0.14.0 (ADR-0071) adds remote.file.read (T-140b), remote.file.write
+// (T-141) — the only tool besides remote.exec that mutates a target host (SEC-47) —
+// then remote.file.list (T-142), the NINTH tool and the last of the file family:
+// listing shares file.read's Operation verb rather than minting a new one (§D1).
 func NewRegistry() *Registry {
 	r := &Registry{defs: map[string]ToolDef{}}
-	for _, d := range []ToolDef{remoteExec(), remoteFileRead(), remoteFileWrite(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead(), contextSearch()} {
+	for _, d := range []ToolDef{remoteExec(), remoteFileRead(), remoteFileWrite(), remoteFileList(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead(), contextSearch()} {
 		r.defs[d.Name] = d
 		r.list = append(r.list, d.Tool())
 	}
@@ -433,6 +435,110 @@ func parseFileWriteDescriptor(command string) (path, digest string, mode uint32,
 	return path, digest, uint32(m), nil
 }
 
+// remoteFileListTool is the T-142 file-family tool name (ADR-0071 §D1) — the
+// THIRD and last member of the family, same edge as remote.exec/remote.file.read/
+// remote.file.write (§D1: same trust boundary). Listing is a read of the
+// filesystem, so it shares remote.file.read's "file.read" Operation verb
+// rather than minting a third checkbox no threat model distinguishes (§D1) —
+// a token scoped ["file.read"] can both read and list, but still cannot write
+// (SEC-50).
+const remoteFileListTool = "remote.file.list"
+
+// remoteFileListDescriptorPrefix anchors the ADR-0071 §D3 descriptor, same
+// convention as remote.file.read's prefix: the invocation persists exactly ONE
+// field (Command) for the approval payload, so the descriptor doubles as the
+// operational parameter. The per-tool prefix is load-bearing (§14e): it is one
+// of two independent controls against tool confusion, so it is never collapsed
+// into a shared format with remote.file.read's or remote.file.write's prefix.
+const remoteFileListDescriptorPrefix = remoteFileListTool + " "
+
+// remote.file.list — list one directory's immediate entries on a governed
+// remote (SSH) resource (ADR-0071 §D1/§D4/§D5). Same edge as the rest of the
+// file family: listing over the leased SSH credential crosses the identical
+// trust boundary as reading or writing a file over it.
+func remoteFileList() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "required": ["resourceId", "path"],
+  "additionalProperties": false,
+  "properties": {
+    "resourceId": {
+      "type": "string",
+      "description": "The governed SSH resource to list the directory on — a resource id from the operator's registry."
+    },
+    "path": {
+      "type": "string",
+      "description": "The absolute path of the directory to list on the resource."
+    }
+  }
+}`
+	return ToolDef{
+		Name: remoteFileListTool,
+		Description: "List one directory's immediate entries on a governed remote (SSH) resource. " +
+			"The call is policy-checked and may require human operator approval before it runs — " +
+			"it can block until approved, or be denied — and every invocation is audited. Returns each " +
+			"entry's name, size, permission mode, modification time and whether it is a directory. " +
+			"Bounded by a maximum entry count (default 1000); a directory over the cap is refused " +
+			"rather than truncated.",
+		InputSchema: json.RawMessage(inputSchema),
+		Edge:        "agent-remote-session",
+		Action:      remoteFileListTool,
+		Operation:   "file.read", // ADR-0071 §D1: listing is a read, deliberately no separate verb
+		target:      remoteFileListTarget,
+		describe:    remoteFileListDescribe,
+	}
+}
+
+// remoteFileListArgs is the typed argument set for remote.file.list.
+type remoteFileListArgs struct {
+	ResourceID string `json:"resourceId"`
+	Path       string `json:"path"`
+}
+
+func remoteFileListTarget(raw json.RawMessage) (string, error) {
+	var a remoteFileListArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid remote.file.list arguments: %w", err)
+	}
+	if a.ResourceID == "" || a.Path == "" {
+		return "", errors.New("remote.file.list requires resourceId and path")
+	}
+	return "resource:" + a.ResourceID, nil
+}
+
+// remoteFileListDescribe renders remote.file.list's ADR-0071 §D3 descriptor:
+// the tool name plus the path, e.g. "remote.file.list /etc/nginx" — what the
+// operator sees in the approval prompt, and (via remoteFileListDescriptorPrefix)
+// what performAndFinish recovers the path from post-approval.
+func remoteFileListDescribe(raw json.RawMessage) (string, error) {
+	var a remoteFileListArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid remote.file.list arguments: %w", err)
+	}
+	if a.Path == "" {
+		return "", errors.New("remote.file.list requires a path")
+	}
+	return remoteFileListDescriptorPrefix + a.Path, nil
+}
+
+// parseFileListDescriptor recovers the path from a persisted remote.file.list
+// descriptor (ADR-0071 §D3, mirrors parseFileReadDescriptor exactly): CutPrefix,
+// not TrimPrefix — TrimPrefix silently returns the whole string when the prefix
+// is absent, which would reinterpret a malformed descriptor as a path rather
+// than refuse it. Fail loud, not fail silent: a descriptor missing the prefix,
+// or one that strips down to an empty path, is refused rather than passed
+// through.
+func parseFileListDescriptor(command string) (string, error) {
+	path, ok := strings.CutPrefix(command, remoteFileListDescriptorPrefix)
+	if !ok {
+		return "", fmt.Errorf("descriptor missing the %q prefix", remoteFileListDescriptorPrefix)
+	}
+	if path == "" {
+		return "", errors.New("descriptor carries an empty path")
+	}
+	return path, nil
+}
+
 // runLaunchTool is the v0.6 control-plane tool name (ADR-0062, T-065b).
 const runLaunchTool = "run.launch"
 
@@ -645,14 +751,19 @@ type BrokerExecer interface {
 	Exec(ctx context.Context, invocationID, resourceID, command, subject string) (stdout string, exitCode int, truncated bool, err error)
 }
 
-// BrokerFiler runs the governed remote.file.{read,write} legs on the broker
+// BrokerFiler runs the governed remote.file.{read,write,list} legs on the broker
 // (ADR-0071 §D4). Kept SEPARATE from BrokerExecer — the T-138 seam constraint holds:
 // BrokerExecer is not renamed or widened for this second egress family. Write is
 // T-141: performAndFinish calls it ONLY after SEC-49's digest check has already
 // passed, so it never needs to re-verify — it trusts its caller within this package.
+// List is T-142: it returns brokerfile.Entry (this package's mirror of the broker's
+// sshpty.FileEntry — see Finding 2 in the T-142 brief), not a type this package
+// defines itself, since brokerfile is the only place that already owns the wire
+// contract with a golden-JSON fixture test guarding it.
 type BrokerFiler interface {
 	Read(ctx context.Context, invocationID, resourceID, path, subject string) (content []byte, sha256sum string, err error)
 	Write(ctx context.Context, invocationID, resourceID, path string, content []byte, mode uint32, subject string) (sha256sum string, err error)
+	List(ctx context.Context, invocationID, resourceID, path, subject string) (entries []brokerfile.Entry, err error)
 }
 
 // Service is the governed orchestrator: it satisfies mcp.Catalog, turning an
@@ -1329,6 +1440,31 @@ func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command,
 		_ = s.store.Finish(ctx, id, "completed", "tool.result")
 		return mcp.ToolResult{Content: []mcp.Content{{Type: "text",
 			Text: fmt.Sprintf("wrote %d bytes to %s [sha256:%s]", len(content), path, sha)}}}, nil
+	case remoteFileListTool:
+		// The nil-able pattern, same as remote.file.read/write above.
+		if s.brokerFile == nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return toolError("file operations are not available on this gateway"), nil
+		}
+		// command IS the persisted ADR-0071 §D3 descriptor; recover the directory
+		// path the agent asked to list — fail closed on a malformed descriptor,
+		// same as read/write.
+		path, perr := parseFileListDescriptor(command)
+		if perr != nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return toolError("malformed file list descriptor, refusing: " + perr.Error()), nil
+		}
+		entries, err := s.brokerFile.List(ctx, id, resourceID, path, agent)
+		if err != nil {
+			// PERF-18: the broker's error (including its 413 over-cap refusal, T-139b)
+			// becomes a Go error here, exactly like read/write's client failures — NEVER
+			// an empty or partial listing. A refusal must be distinguishable from "this
+			// directory has zero entries."
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return mcp.ToolResult{}, fmt.Errorf("file list failed: %w", err)
+		}
+		_ = s.store.Finish(ctx, id, "completed", "tool.result")
+		return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: renderFileEntries(path, entries)}}}, nil
 	default:
 		// Fail closed (SEC-19): no operation is implemented for this tool at the
 		// terminal step, so nothing runs and the invocation cannot be left parked in
@@ -1336,6 +1472,30 @@ func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command,
 		_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
 		return mcp.ToolResult{}, fmt.Errorf("no governed operation for tool %q", tool)
 	}
+}
+
+// renderFileEntries renders remote.file.list's result as readable text for the
+// agent (ADR-0071 §D1): one line per entry, "name\tsize\tmode\tmodTime\tkind".
+// Mode is masked to its permission bits (& 0o777) since brokerfile.Entry.Mode
+// carries the broker's full os.FileMode bits, of which the agent only needs the
+// POSIX permissions. An empty directory renders an explicit marker rather than
+// an empty string, so the agent (and a human reading the audit trail) can tell
+// "listed, zero entries" apart from "no text came back."
+func renderFileEntries(path string, entries []brokerfile.Entry) string {
+	if len(entries) == 0 {
+		return path + ": (empty directory)"
+	}
+	lines := make([]string, 0, len(entries)+1)
+	lines = append(lines, path+":")
+	for _, e := range entries {
+		kind := "file"
+		if e.IsDir {
+			kind = "dir"
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%d\t%04o\t%s\t%s",
+			e.Name, e.Size, e.Mode&0o777, e.ModTime.Format(time.RFC3339), kind))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // isTerminal reports whether an invocation has reached a final status.

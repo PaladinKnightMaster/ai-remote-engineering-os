@@ -60,11 +60,31 @@ type fileRequest struct {
 	Subject      string  `json:"subject"`
 }
 
-// fileResponse mirrors the broker's fileResponse wire shape; Entries is
-// omitted here (list is T-142, out of scope for this client).
+// fileResponse mirrors the broker's fileResponse wire shape exactly, including
+// Entries (list only, T-142).
 type fileResponse struct {
-	Content []byte `json:"content,omitempty"`
-	SHA256  string `json:"sha256,omitempty"`
+	Content []byte  `json:"content,omitempty"`
+	SHA256  string  `json:"sha256,omitempty"`
+	Entries []Entry `json:"entries,omitempty"`
+}
+
+// Entry mirrors the broker's sshpty.FileEntry wire shape (T-142, ADR-0071 §D1).
+// It is an INDEPENDENT struct, not a shared type: services/session-broker/
+// internal/sshpty is internal/ to a different module
+// (aireos.local/services/session-broker), so this package cannot import
+// sshpty.FileEntry — it can only agree with it on the wire. The JSON tags here
+// must stay byte-identical to FileEntry's (sftpfile.go); a mismatch would
+// silently unmarshal to zero values rather than error, which is exactly the
+// failure mode the golden-JSON fixture tests on both sides exist to catch —
+// see TestEntryUnmarshalsGoldenJSON here and TestFileEntryMarshalsGoldenJSON
+// in services/session-broker/internal/sshpty/sftpfile_test.go, which assert
+// the two structs agree on the SAME literal JSON string.
+type Entry struct {
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	Mode    uint32    `json:"mode"` // os.FileMode on the broker side; a plain number on the wire either way
+	ModTime time.Time `json:"modTime"`
+	IsDir   bool      `json:"isDir"`
 }
 
 // Read fetches one file's content plus its sha256 digest via the broker's
@@ -153,4 +173,47 @@ func (c *Client) Write(ctx context.Context, invocationID, resourceID, path strin
 		return "", fmt.Errorf("decode file response: %w", err)
 	}
 	return r.SHA256, nil
+}
+
+// List fetches one directory's immediate entries via the broker's POST /v1/file
+// (op="list"). Mirrors Read's shape exactly. PERF-18: the broker REFUSES an
+// over-cap listing (413) rather than truncating it (T-139b's ListDir), and this
+// client does not paper over that — a non-200 status becomes a Go error here,
+// exactly like Read/Write, so the caller (catalog.performAndFinish) never mistakes
+// a refusal for an empty or partial directory.
+func (c *Client) List(ctx context.Context, invocationID, resourceID, path, subject string) ([]Entry, error) {
+	if c.baseURL == "" {
+		return nil, errors.New("broker URL not configured")
+	}
+	body, err := json.Marshal(fileRequest{
+		Op: "list", ResourceID: resourceID, Path: path, InvocationID: invocationID, Subject: subject,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal file request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/file", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build file request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	tok, err := c.token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mint broker token: %w", err)
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("file request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("broker file: unexpected status %d", resp.StatusCode)
+	}
+	var r fileResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&r); err != nil {
+		return nil, fmt.Errorf("decode file response: %w", err)
+	}
+	return r.Entries, nil
 }

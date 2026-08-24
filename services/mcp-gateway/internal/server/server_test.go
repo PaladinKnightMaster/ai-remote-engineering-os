@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"aireos.local/packages/go/auth"
+	"aireos.local/services/mcp-gateway/internal/brokerfile"
 	"aireos.local/services/mcp-gateway/internal/catalog"
 	"aireos.local/services/mcp-gateway/internal/mcp"
 	"aireos.local/services/mcp-gateway/internal/store"
@@ -242,10 +243,10 @@ func (f *fakeBroker) Exec(_ context.Context, _, resource, command, _ string) (st
 	return f.stdout, f.exit, f.truncated, f.err
 }
 
-// fakeBrokerFile fakes catalog.BrokerFiler for the T-140b remote.file.read and T-141
-// remote.file.write tests. Read/Write fields are kept separate (readCalled vs
-// writeCalled) so a test can assert one leg ran and the other did not — e.g. SEC-47
-// (only write mutates).
+// fakeBrokerFile fakes catalog.BrokerFiler for the T-140b remote.file.read, T-141
+// remote.file.write, and T-142 remote.file.list tests. Read/Write/List fields are
+// kept separate (readCalled vs writeCalled vs listCalled) so a test can assert one
+// leg ran and the others did not — e.g. SEC-47 (only write mutates).
 type fakeBrokerFile struct {
 	content     []byte
 	sha         string
@@ -260,6 +261,11 @@ type fakeBrokerFile struct {
 	gotWritePath    string
 	gotWriteContent []byte
 	gotWriteMode    uint32
+
+	listEntries []brokerfile.Entry
+	listErr     error
+	listCalled  bool
+	gotListPath string
 }
 
 func (f *fakeBrokerFile) Read(_ context.Context, _, resource, path, _ string) ([]byte, string, error) {
@@ -275,6 +281,15 @@ func (f *fakeBrokerFile) Write(_ context.Context, _, resource, path string, cont
 		return "", f.writeErr
 	}
 	return f.writeSHA, nil
+}
+
+func (f *fakeBrokerFile) List(_ context.Context, _, resource, path, _ string) ([]brokerfile.Entry, error) {
+	f.listCalled = true
+	f.gotResource, f.gotListPath = resource, path
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listEntries, nil
 }
 
 func governedHandler(t *testing.T, st catalog.Store, pol catalog.PolicyDecider, brk catalog.BrokerExecer) (http.Handler, *auth.Signer) {
@@ -331,6 +346,13 @@ func callRemoteFileWrite(t *testing.T, h http.Handler, tok, resourceID, path, co
 	t.Helper()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.file.write","arguments":` +
 		`{"resourceId":"` + resourceID + `","path":"` + path + `","content":"` + contentB64 + `"}}}`
+	return decodeRPC(t, postMCP(t, h, body, tok))
+}
+
+func callRemoteFileList(t *testing.T, h http.Handler, tok, resourceID, path string) rpcResponse {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.file.list","arguments":` +
+		`{"resourceId":"` + resourceID + `","path":"` + path + `"}}}`
 	return decodeRPC(t, postMCP(t, h, body, tok))
 }
 
@@ -548,6 +570,75 @@ func TestSEC47FileReadScopedTokenRejectsRemoteFileWrite(t *testing.T) {
 	}
 	if fileBrk.writeCalled {
 		t.Fatal("broker file Write must not run for a file.read-scoped token")
+	}
+}
+
+// TestInvokeFileListAllowPath proves remote.file.list's end-to-end wiring (T-142): a
+// token scoped ["file.read"] — the SAME scope remote.file.read uses, per ADR-0071
+// §D1's deliberate choice not to mint a third verb — reaches the broker file client's
+// List leg via the SAME governed pipeline as remote.exec/remote.file.read, and the
+// entries come back rendered for the agent.
+func TestInvokeFileListAllowPath(t *testing.T) {
+	fileBrk := &fakeBrokerFile{listEntries: []brokerfile.Entry{
+		{Name: "nginx.conf", Size: 1234, Mode: 0o644, ModTime: time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)},
+	}}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, fileBrk)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.read"})
+	resp := callRemoteFileList(t, h, tok, "r1", "/etc/nginx")
+	isErr, text := toolResult(t, resp)
+	if isErr || !strings.Contains(text, "nginx.conf") {
+		t.Fatalf("file list allow path: isError=%v text=%q", isErr, text)
+	}
+	if !fileBrk.listCalled || fileBrk.gotResource != "r1" || fileBrk.gotListPath != "/etc/nginx" {
+		t.Fatalf("broker file List not called correctly: %+v", fileBrk)
+	}
+}
+
+// TestInvokeFileListNilBrokerFileAnswersToolError mirrors the read/write nil-able
+// pattern for the list leg.
+func TestInvokeFileListNilBrokerFileAnswersToolError(t *testing.T) {
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, nil)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.read"})
+	resp := callRemoteFileList(t, h, tok, "r1", "/etc")
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "not available") {
+		t.Fatalf("nil BrokerFile: isError=%v text=%q, want a tool-level refusal, not a panic", isErr, text)
+	}
+}
+
+// TestSEC50FileReadScopedTokenRejectsRemoteFileList's INVERSE would be wrong per
+// ADR-0071 §D1 (list deliberately shares file.read's verb) — so this instead proves
+// the D1 sharing itself: a token scoped to exactly ["file.write"] (NOT file.read) must
+// be REJECTED for remote.file.list, since file.write and file.read remain distinct
+// verbs (SEC-50) even though list piggybacks on read rather than minting its own.
+func TestFileWriteScopedTokenRejectsRemoteFileList(t *testing.T) {
+	fileBrk := &fakeBrokerFile{}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, fileBrk)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.write"})
+	resp := callRemoteFileList(t, h, tok, "r1", "/etc")
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "operation") {
+		t.Fatalf("file.write-scoped token on remote.file.list: isError=%v text=%q, want an operation-scope refusal", isErr, text)
+	}
+	if fileBrk.listCalled {
+		t.Fatal("broker file List must not run for a file.write-scoped token")
+	}
+}
+
+// TestSEC47FileListNeverMutates is SEC-47's file.list half: no argument shape reaches
+// the broker's Write leg through remote.file.list — the tool has no content extractor
+// at all (ToolDef.content is nil for it, same as read), so Invoke's Content() call
+// always yields nil regardless of what the caller's raw arguments contain.
+func TestSEC47FileListNeverMutates(t *testing.T) {
+	fileBrk := &fakeBrokerFile{listEntries: []brokerfile.Entry{{Name: "x"}}}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, fileBrk)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.read"})
+	resp := callRemoteFileList(t, h, tok, "r1", "/etc")
+	if isErr, _ := toolResult(t, resp); isErr {
+		t.Fatalf("file list allow path unexpectedly errored: isError=%v", isErr)
+	}
+	if fileBrk.writeCalled {
+		t.Fatal("SEC-47 FAILED: broker file Write was called by remote.file.list — list must never mutate")
 	}
 }
 
