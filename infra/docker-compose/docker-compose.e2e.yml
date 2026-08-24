@@ -94,6 +94,8 @@ services:
           01900000-0000-7000-8000-0000000000d5 --key-file /seed-keys/client_ed25519
         go run ./services/connector-service credentials set-secret \
           01900000-0000-7000-8000-0000000000d6 --key-file /seed-keys/client_ed25519
+        go run ./services/connector-service credentials set-secret \
+          01900000-0000-7000-8000-0000000000f1 --key-file /seed-keys/client_ed25519
 
   audit:
     <<: *go

@@ -50,6 +50,7 @@ PasswordAuthentication no
 PermitRootLogin no
 AllowUsers aireos
 AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp internal-sftp
 EOF
 
 echo "sshd: starting on :2222 (user aireos, pubkey-only)"

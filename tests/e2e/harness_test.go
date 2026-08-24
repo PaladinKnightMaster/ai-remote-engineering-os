@@ -86,6 +86,7 @@ const (
 	delegatedFlaggedResourceID  = "01900000-0000-7000-8000-0000000000d4" // requires_approval=true; the T-068 WD-6 flagged delegated leg
 	workstreamResourceID        = "01900000-0000-7000-8000-0000000000d5" // ungated; the T-076 WD-7 chartered-Workstream capstone
 	workstreamFlaggedResourceID = "01900000-0000-7000-8000-0000000000d6" // requires_approval=true; the T-076 WD-7 flagged-tick leg
+	fileResourceID              = "01900000-0000-7000-8000-0000000000f1" // ungated; the T-144a file-family capstone (isolated from every other resource's chain — see AUD-41/42/43)
 	operatorUser                = "admin"
 	operatorPass                = "e2e-operator-pw"
 	sessionCookieName           = "aireos_session"
@@ -226,10 +227,26 @@ func pollEvidenceOutcome(t *testing.T, auditURL, token, evidence, outcome string
 // mintAgentTokenViaAPI provisions a scoped agent-tool token through the operator's
 // session (POST /v1/agent-tokens — human-agent + CSRF, ADR-0056/0057; T-036/AG-3),
 // the real operator-provisions-agent path used by the WD-3 capstone (not the
-// cluster-key shortcut). The token subject is agent:<agentID>, scoped to resID.
+// cluster-key shortcut). The token subject is agent:<agentID>, scoped to resID, with
+// the "exec" operation only — every existing caller wants exactly that, so the
+// signature (and every call site) stays unchanged. mintAgentTokenViaAPIOps below is
+// the same mint with an explicit operations list, for callers that need a
+// non-exec verb (T-144a: the file family's "file.read"/"file.write", ADR-0071 §D7).
 func mintAgentTokenViaAPI(t *testing.T, client *http.Client, apiURL, session, csrf, agentID, resID string) string {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"agentId": agentID, "resourceId": resID, "operations": []string{"exec"}})
+	return mintAgentTokenViaAPIOps(t, client, apiURL, session, csrf, agentID, resID, []string{"exec"})
+}
+
+// mintAgentTokenViaAPIOps is mintAgentTokenViaAPI with the operations list exposed
+// (ADR-0071 §D7): an agent token's empty Operations list is unrestricted ONLY for
+// "exec" (back-compat for tokens minted before SEC-16 predates every verb but exec)
+// — every other verb, including the file family's "file.read"/"file.write", is
+// refused unless explicitly declared. A token minted via mintAgentTokenViaAPI (whose
+// operations are always ["exec"]) therefore cannot call remote.file.read/write/list;
+// callers exercising the file family must mint through this instead.
+func mintAgentTokenViaAPIOps(t *testing.T, client *http.Client, apiURL, session, csrf, agentID, resID string, operations []string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"agentId": agentID, "resourceId": resID, "operations": operations})
 	req, _ := http.NewRequest(http.MethodPost, apiURL+"/v1/agent-tokens", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", cookieHeader(session, csrf))

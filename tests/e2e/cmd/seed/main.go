@@ -41,6 +41,7 @@ const (
 	delegatedFlaggedResourceID  = "01900000-0000-7000-8000-0000000000d4" // requires_approval=true; the T-068 WD-6 flagged delegated leg (isolated from flaggedResourceID's audit chain)
 	workstreamResourceID        = "01900000-0000-7000-8000-0000000000d5" // ungated; the T-076 WD-7 chartered-Workstream capstone (the autonomous ticker fires continuously — isolated from d3 so its churn cannot pollute other suites' polls)
 	workstreamFlaggedResourceID = "01900000-0000-7000-8000-0000000000d6" // requires_approval=true; the T-076 WD-7 flagged-tick leg (isolated from d4)
+	fileResourceID              = "01900000-0000-7000-8000-0000000000f1" // ungated; the T-144a file-family capstone (own id so its credential.leased/remote.file.* events cannot be mistaken for another leg's, the T-144a pollLeased/pollExecEvent isolation pattern)
 )
 
 func main() {
@@ -134,6 +135,7 @@ func run() error {
 		{delegatedFlaggedResourceID, "e2e-target-delegated-gated", string(flaggedLabels)},   // gated (T-068 WD-6)
 		{workstreamResourceID, "e2e-target-workstream", string(labels)},                     // ungated (T-076 WD-7)
 		{workstreamFlaggedResourceID, "e2e-target-workstream-gated", string(flaggedLabels)}, // gated (T-076 WD-7)
+		{fileResourceID, "e2e-target-file", string(labels)},                                 // ungated (T-144a file-family capstone)
 	} {
 		if _, err := pool.Exec(context.Background(), `
 			INSERT INTO resources (id, type, name, labels)
