@@ -76,7 +76,7 @@ describe("ApprovalPrompt", () => {
       expect(screen.queryByRole("status")).toBeNull(); // no mutating badge for exec
     });
 
-    it("renders the read sentence and a 'file descriptor' label for remote.file.read", () => {
+    it("renders the read sentence, the disclosure consequence, and a 'file descriptor' label for remote.file.read", () => {
       render(
         <ApprovalPrompt
           onApprove={() => {}}
@@ -86,13 +86,17 @@ describe("ApprovalPrompt", () => {
         />,
       );
       expect(screen.getByText(/requesting to read a file/i)).toBeTruthy();
+      // T-143 review: read is a DISCLOSURE, and the prompt must say so — this is
+      // the single most consequential fact about approving a read.
+      expect(screen.getByText(/file's contents will be disclosed to the agent/i)).toBeTruthy();
       expect(screen.getByLabelText("file descriptor").textContent).toBe(
         "remote.file.read /etc/nginx/nginx.conf",
       );
       expect(screen.queryByLabelText("command")).toBeNull(); // wrong label must not linger
+      expect(screen.queryByRole("status")).toBeNull(); // read does not change the host
     });
 
-    it("renders the list sentence and a 'directory descriptor' label for remote.file.list", () => {
+    it("renders the list sentence, the listing-disclosure consequence, and a 'directory descriptor' label for remote.file.list", () => {
       render(
         <ApprovalPrompt
           onApprove={() => {}}
@@ -102,10 +106,16 @@ describe("ApprovalPrompt", () => {
         />,
       );
       expect(screen.getByText(/requesting to list a directory/i)).toBeTruthy();
+      // T-143 review: a listing discloses filenames/sizes/timestamps — considered
+      // deliberately, not overlooked, per the review's "your call" on list.
+      expect(
+        screen.getByText(/filenames, sizes and timestamps will be disclosed to the agent/i),
+      ).toBeTruthy();
       expect(screen.getByLabelText("directory descriptor").textContent).toBe("remote.file.list /etc/nginx");
+      expect(screen.queryByRole("status")).toBeNull(); // list does not change the host
     });
 
-    it("marks remote.file.write as mutating: badge, MUTATES copy, and the not-content consent line", () => {
+    it("marks remote.file.write as host-changing: badge (plain, not shouting), plain description, and the not-content consent line", () => {
       render(
         <ApprovalPrompt
           onApprove={() => {}}
@@ -114,14 +124,17 @@ describe("ApprovalPrompt", () => {
           command="remote.file.write /etc/nginx/nginx.conf (4218 bytes, sha256:9f2c00000000000000000000000000000000000000000000000000000a41b, mode 0644)"
         />,
       );
-      expect(screen.getByRole("status").textContent).toMatch(/mutates target host/i);
-      expect(screen.getByText(/MUTATES the target host/)).toBeTruthy();
+      // T-143 review: plain language, no shouting caps — the badge carries the
+      // emphasis, the sentence does not need to.
+      expect(screen.getByRole("status").textContent).toBe("Changes the host");
+      expect(screen.getByText(/this changes the target host/i)).toBeTruthy();
+      expect(screen.queryByText(/MUTATES/)).toBeNull(); // the shouting copy must not linger
       expect(screen.getByText(/approving the path, size, digest and mode/i)).toBeTruthy();
       expect(screen.getByText(/not the file's contents/i)).toBeTruthy();
       expect(screen.getByLabelText("file descriptor").textContent).toMatch(/^remote\.file\.write /);
     });
 
-    it("does not show the mutating badge or not-content line for a non-write tool", () => {
+    it("does not show the host-changing badge for a non-write tool", () => {
       render(
         <ApprovalPrompt
           onApprove={() => {}}
@@ -131,7 +144,7 @@ describe("ApprovalPrompt", () => {
         />,
       );
       expect(screen.queryByRole("status")).toBeNull();
-      expect(screen.queryByText(/not the file's contents/i)).toBeNull();
+      expect(screen.queryByText(/not the file's contents/i)).toBeNull(); // that's write's line, not read's
     });
 
     it("falls back to the caller's description override even when tool is set", () => {

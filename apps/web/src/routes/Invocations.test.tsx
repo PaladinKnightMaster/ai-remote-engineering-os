@@ -185,11 +185,39 @@ describe("Invocations route", () => {
     await waitFor(() => expect(screen.getByText(/agent:smoke/)).toBeTruthy());
     expect(screen.getByText(/requesting to write a file/i)).toBeTruthy();
     expect(screen.queryByText(/requesting to run a command/i)).toBeNull(); // the fixed falsehood
-    expect(screen.getByRole("status").textContent).toMatch(/mutates target host/i);
+    expect(screen.getByRole("status").textContent).toBe("Changes the host"); // plain, not shouting caps
+    expect(screen.getByText(/approving the path, size, digest and mode/i)).toBeTruthy(); // the write consequence
     expect(screen.getByLabelText("file descriptor").textContent).toBe(
       "remote.file.write /etc/nginx/nginx.conf (4218 bytes, sha256:9f2c00000000000000000000000000000000000000000000000000000a41b, mode 0644)",
     );
     expect(screen.queryByLabelText("command")).toBeNull();
+  });
+
+  // T-143 review: read is a DISCLOSURE, not merely a request — the operator must
+  // be told the file's contents will be handed to the agent, which the prompt
+  // was previously silent about.
+  it("discloses that a remote.file.read invocation will hand the file's contents to the agent", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: {
+        invocations: [
+          {
+            id: "inv-8",
+            agent: "agent:smoke",
+            resourceId: "r-1",
+            tool: "remote.file.read",
+            command: "remote.file.read /etc/nginx/nginx.conf",
+            status: "pending_approval",
+          },
+        ],
+      },
+      error: undefined,
+    } as never);
+    renderInvocations();
+
+    await waitFor(() => expect(screen.getByText(/agent:smoke/)).toBeTruthy());
+    expect(screen.getByText(/requesting to read a file/i)).toBeTruthy();
+    expect(screen.getByText(/file's contents will be disclosed to the agent/i)).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull(); // reading does not change the host
   });
 
   it("still describes a remote.exec invocation as running a command, unregressed", async () => {

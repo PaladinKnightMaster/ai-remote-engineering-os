@@ -31,6 +31,18 @@
 // second parser of that format, in this language, would drift silently from the
 // gateway's own descriptor parser). `tool` is optional and additive: omitting it
 // (the v0.2.0 session-start caller) keeps the original default copy untouched.
+//
+// T-143 review (CEO): two copy fixes, both governance-facing, not decoration.
+// (1) The description dropped its all-caps "MUTATES" — shouting caps risk being
+// spelled out letter-by-letter by some screen readers, and "mutates" is
+// developer vocabulary; the badge (role="status", destructive styling, next to
+// the heading) already carries the emphasis, so the sentence just needs to be
+// plain. (2) `consequence` generalizes what was a write-only "not the content"
+// line: write, read AND list each have a real, DIFFERENT consequence the
+// operator is authorising — write approves a limited review (path/size/digest/
+// mode, not bytes); read and list approve a DISCLOSURE (file contents; a
+// directory's filenames/sizes/timestamps, which is reconnaissance-relevant even
+// though it is not file content) — so each tool states its own.
 
 import { Button } from "./Button";
 
@@ -41,6 +53,12 @@ interface ToolCopy {
   payloadLabel: string;
   /** True only for the one tool that changes the target host (remote.file.write). */
   mutating?: boolean;
+  /**
+   * What approving actually authorises, beyond the verb in `description` — a
+   * limited review (write) or a disclosure to the agent (read/list). Absent for
+   * exec, where the command itself IS the full, literal thing approved.
+   */
+  consequence?: string;
 }
 
 // Keyed by the PersistedInvocation `tool` field (ADR-0071 §D1's four registered
@@ -54,16 +72,21 @@ const TOOL_COPY: Record<string, ToolCopy> = {
   "remote.file.read": {
     description: "An AI agent is requesting to read a file from a governed resource.",
     payloadLabel: "file descriptor",
+    consequence: "The file's contents will be disclosed to the agent.",
   },
   "remote.file.list": {
     description: "An AI agent is requesting to list a directory on a governed resource.",
     payloadLabel: "directory descriptor",
+    // Less sensitive than file contents, but not nothing: a directory listing
+    // (filenames, sizes, timestamps) can itself be reconnaissance. Included
+    // deliberately, not overlooked (T-143 review).
+    consequence: "This directory's filenames, sizes and timestamps will be disclosed to the agent.",
   },
   "remote.file.write": {
-    description:
-      "An AI agent is requesting to write a file on a governed resource — this MUTATES the target host.",
+    description: "An AI agent is requesting to write a file on a governed resource — this changes the target host.",
     payloadLabel: "file descriptor",
     mutating: true,
+    consequence: "You are approving the path, size, digest and mode shown below — not the file's contents.",
   },
 };
 
@@ -78,9 +101,10 @@ export interface ApprovalPromptProps {
   command?: string;
   /**
    * The invocation's persisted tool name (e.g. "remote.exec", "remote.file.write";
-   * ADR-0071 §D1). Drives the per-tool description, payload aria-label, and the
-   * write-only mutating affordance (T-143, FE-43). Omit for the non-invocation
-   * (session-start) use of this component.
+   * ADR-0071 §D1). Drives the per-tool description, payload aria-label, the
+   * write-only "changes the host" affordance, and the per-tool consequence line
+   * (T-143, FE-43). Omit for the non-invocation (session-start) use of this
+   * component.
    */
   tool?: string;
   /** Heading override; defaults to "Approval required". */
@@ -137,7 +161,7 @@ export function ApprovalPrompt({
               role="status"
               className="inline-flex items-center rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
             >
-              Mutates target host
+              Changes the host
             </span>
           ) : null}
         </div>
@@ -156,10 +180,8 @@ export function ApprovalPrompt({
             </>
           ) : null}
         </p>
-        {copy?.mutating ? (
-          <p className="text-xs text-muted-foreground">
-            You are approving the path, size, digest and mode shown below — not the file's contents.
-          </p>
+        {copy?.consequence ? (
+          <p className="text-xs text-muted-foreground">{copy.consequence}</p>
         ) : null}
       </div>
 

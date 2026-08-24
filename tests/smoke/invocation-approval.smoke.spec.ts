@@ -137,11 +137,17 @@ test("operator sees a remote.file.write invocation described and marked as mutat
     await expect(prompt).toBeVisible({ timeout: 5_000 });
   }).toPass({ timeout: 60_000 });
 
-  // The fixed description: accurate for a write, not the exec sentence.
+  // The fixed description: accurate for a write, not the exec sentence, and
+  // plain language — no shouting caps (T-143 review).
   await expect(prompt).toContainText(/requesting to write a file/i);
   await expect(prompt).not.toContainText(/requesting to run a command/i);
-  // The mutating affordance (FE-43: visually distinguishable as changing the host).
-  await expect(prompt.getByRole("status")).toContainText(/mutates target host/i);
+  await expect(prompt).not.toContainText(/MUTATES/);
+  // The host-changing affordance (FE-43: visually distinguishable) — plain
+  // badge text, the emphasis lives in role="status" + styling, not shouting copy.
+  await expect(prompt.getByRole("status")).toHaveText("Changes the host");
+  // The write consequence (T-143 review): the operator approves a LIMITED
+  // review — path/size/digest/mode — never the raw bytes.
+  await expect(prompt).toContainText(/approving the path, size, digest and mode/i);
   // The verbatim §D3 descriptor, under the CORRECT label — path + mode, and a
   // sha256 digest, never the raw base64 content.
   const descriptor = page.getByLabel("file descriptor");
