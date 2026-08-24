@@ -121,7 +121,7 @@ tasks:
       # version (T-122a, OI-29): build-bundle.sh REFUSES to run without
       # BUNDLE_VERSION set (no silent default — the OI-21 rule), and this is
       # the one place that sets it. Bump on every release.
-      BUNDLE_VERSION: "0.13.0"
+      BUNDLE_VERSION: "0.14.0"
     cmds:
       - pnpm install --frozen-lockfile
       - pnpm --filter @aireos/web build
