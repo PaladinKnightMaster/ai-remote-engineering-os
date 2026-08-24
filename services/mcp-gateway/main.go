@@ -125,9 +125,10 @@ func serve() error {
 		fwd := apiforward.New(apiURL, signer)
 		forwarder, pollForwarder, submitForwarder, readForwarder, searchForwarder = fwd, fwd, fwd, fwd, fwd
 	}
-	// BrokerFile (ADR-0071 §D4, T-140b): remote.file.read's broker leg, on the SAME
-	// BROKER_URL + signer as Broker above — same peer, same credential, a
-	// separate client (BrokerExecer stays untouched per the T-138 seam).
+	// BrokerFile (ADR-0071 §D4, T-140b + T-141): remote.file.read's AND
+	// remote.file.write's broker leg, on the SAME BROKER_URL + signer as Broker
+	// above — same peer, same credential, a separate client (BrokerExecer stays
+	// untouched per the T-138 seam).
 	cat := catalog.New(catalog.Config{
 		Store:           gw,
 		Policy:          pol,
@@ -159,7 +160,7 @@ func serve() error {
 		// No WriteTimeout: a governed tools/call may block on synchronous human
 		// approval (ADR-0054/0057 block-and-wait) once T-040 wires it.
 	}
-	log.Printf("mcp-gateway listening on %s (catalog: remote.exec, remote.file.read, governed)", srv.Addr)
+	log.Printf("mcp-gateway listening on %s (catalog: remote.exec, remote.file.read, remote.file.write, governed)", srv.Addr)
 	return srv.ListenAndServe()
 }
 

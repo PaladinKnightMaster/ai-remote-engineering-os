@@ -2,8 +2,11 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -20,10 +23,11 @@ func TestRegistryListsRemoteExec(t *testing.T) {
 	// v0.9 (ADR-0065, T-090): the registry advertises remote.exec, the control-plane
 	// run.launch (agent-initiated Runs), and the three new control-plane tools
 	// (workstream.poll/plan.submit/memory.read). v0.10 (ADR-0066, T-099) adds a sixth,
-	// context.search. v0.14.0 (ADR-0071, T-140b) adds the SEVENTH: remote.file.read, the
-	// first tool on the second egress family — the exact set that assertion now covers.
-	if len(tools) != 7 || tools[0].Name != "remote.exec" || tools[1].Name != "remote.file.read" || tools[2].Name != "run.launch" {
-		t.Fatalf("List() = %+v, want [remote.exec remote.file.read run.launch workstream.poll plan.submit memory.read context.search]", tools)
+	// context.search. v0.14.0 (ADR-0071) adds the SEVENTH, remote.file.read (T-140b),
+	// then the EIGHTH, remote.file.write (T-141) — the exact set that assertion now covers.
+	if len(tools) != 8 || tools[0].Name != "remote.exec" || tools[1].Name != "remote.file.read" ||
+		tools[2].Name != "remote.file.write" || tools[3].Name != "run.launch" {
+		t.Fatalf("List() = %+v, want [remote.exec remote.file.read remote.file.write run.launch workstream.poll plan.submit memory.read context.search]", tools)
 	}
 	// The advertised inputSchema is a valid JSON Schema object requiring the
 	// two typed args — this is the agent's interface (ADR-0057 / UX).
@@ -177,6 +181,133 @@ func TestRemoteFileReadTargetAndDescribe(t *testing.T) {
 	}
 }
 
+// TestParseFileReadDescriptorFailsClosedOnMalformed is T-141 Part 4's proof for
+// remote.file.read: strings.CutPrefix plus an explicit refusal, not TrimPrefix's
+// silent whole-string fallback. A descriptor missing the exact prefix, or one that
+// strips down to an empty path, must be REFUSED, never reinterpreted as a path.
+func TestParseFileReadDescriptorFailsClosedOnMalformed(t *testing.T) {
+	for _, bad := range []string{
+		"",
+		"not the right prefix at all",
+		"remote.file.read",  // missing the trailing space — no prefix match
+		"remote.file.read ", // prefix matches, but strips to an empty path
+		"remote.exec /etc/passwd",
+	} {
+		if _, err := parseFileReadDescriptor(bad); err == nil {
+			t.Fatalf("parseFileReadDescriptor(%q) = nil error, want a fail-closed refusal", bad)
+		}
+	}
+	// The positive control: a well-formed descriptor still round-trips.
+	path, err := parseFileReadDescriptor(remoteFileReadDescriptorPrefix + "/etc/nginx/nginx.conf")
+	if err != nil || path != "/etc/nginx/nginx.conf" {
+		t.Fatalf("parseFileReadDescriptor(well-formed) = (%q, %v), want (/etc/nginx/nginx.conf, nil)", path, err)
+	}
+}
+
+// TestRemoteFileWriteTargetAndDescribe is the T-141 registration proof (ADR-0071
+// §D1/§D3/§D4): remote.file.write carries the SAME edge as remote.exec/remote.file.read
+// (no new boundary), its own Action/Operation ("file.write", distinct from "file.read"
+// per SEC-50), and a §D3 descriptor that carries path, size, digest and mode — never
+// the bytes (§14c option (c)) — plus a Content extractor that recovers exactly the
+// bytes the descriptor's digest was computed over.
+func TestRemoteFileWriteTargetAndDescribe(t *testing.T) {
+	def, ok := NewRegistry().Lookup("remote.file.write")
+	if !ok {
+		t.Fatal("remote.file.write not found")
+	}
+	if def.Edge != "agent-remote-session" {
+		t.Fatalf("edge = %q, want agent-remote-session (ADR-0071 §D1: same trust boundary)", def.Edge)
+	}
+	if def.Action != "remote.file.write" {
+		t.Fatalf("action = %q, want remote.file.write", def.Action)
+	}
+	if def.Operation != "file.write" {
+		t.Fatalf("operation = %q, want file.write (distinct from file.read, SEC-50)", def.Operation)
+	}
+	if def.Description == "" || !strings.Contains(def.Description, "MODIFIES A FILE") {
+		t.Fatalf("description = %q, want it to plainly state the tool mutates a real host (CON-10)", def.Description)
+	}
+
+	tgt, err := def.Target(json.RawMessage(`{"resourceId":"r-9","path":"/etc/nginx/nginx.conf","content":"c2VydmVyIHt9"}`))
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if tgt != "resource:r-9" {
+		t.Fatalf("Target = %q, want resource:r-9", tgt)
+	}
+	for _, raw := range []string{`{"resourceId":"r-9"}`, `{"path":"/x"}`, `{`} {
+		if _, err := def.Target(json.RawMessage(raw)); err == nil {
+			t.Fatalf("Target(%q) = nil error, want rejection", raw)
+		}
+	}
+
+	// content = base64("server {}") — encoding/json base64-decodes []byte fields
+	// automatically, so the wire arg is base64 and the descriptor's digest/size are
+	// computed over the DECODED bytes.
+	args := json.RawMessage(`{"resourceId":"r-9","path":"/etc/nginx/nginx.conf","content":"c2VydmVyIHt9"}`)
+	content, err := def.Content(args)
+	if err != nil {
+		t.Fatalf("Content: %v", err)
+	}
+	if string(content) != "server {}" {
+		t.Fatalf("Content = %q, want the base64-decoded payload %q", content, "server {}")
+	}
+	sum := sha256.Sum256(content)
+	wantDigest := hex.EncodeToString(sum[:])
+
+	desc, err := def.Describe(args)
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	wantDesc := fmt.Sprintf("remote.file.write /etc/nginx/nginx.conf (%d bytes, sha256:%s, mode 0644)", len(content), wantDigest)
+	if desc != wantDesc {
+		t.Fatalf("Describe = %q, want the ADR-0071 §D3 descriptor %q", desc, wantDesc)
+	}
+
+	// A default-mode descriptor round-trips through parseFileWriteDescriptor to the
+	// SAME path/digest/mode the operator approved.
+	gotPath, gotDigest, gotMode, perr := parseFileWriteDescriptor(desc)
+	if perr != nil {
+		t.Fatalf("parseFileWriteDescriptor(well-formed): %v", perr)
+	}
+	if gotPath != "/etc/nginx/nginx.conf" || gotDigest != wantDigest || gotMode != 0o644 {
+		t.Fatalf("parseFileWriteDescriptor = (%q, %q, %o), want (/etc/nginx/nginx.conf, %q, 0644)", gotPath, gotDigest, gotMode, wantDigest)
+	}
+
+	// An explicit mode is honored end to end (384 decimal = 0600 octal).
+	descMode, err := def.Describe(json.RawMessage(`{"resourceId":"r-9","path":"/x","content":"YWJj","mode":384}`))
+	if err != nil {
+		t.Fatalf("Describe with mode: %v", err)
+	}
+	if !strings.Contains(descMode, "mode 0600") {
+		t.Fatalf("Describe with mode 384 (0600) = %q, want it to render mode 0600", descMode)
+	}
+}
+
+// TestParseFileWriteDescriptorFailsClosedOnMalformed is SEC-49's second guard
+// (T-141 Part 3): a descriptor whose digest cannot be parsed must REFUSE, never
+// proceed as if verification were unnecessary.
+func TestParseFileWriteDescriptorFailsClosedOnMalformed(t *testing.T) {
+	valid := sha256.Sum256([]byte("x"))
+	validHex := hex.EncodeToString(valid[:])
+	for _, bad := range []string{
+		"",
+		"remote.exec /etc/passwd (1 bytes, sha256:" + validHex + ", mode 0644)", // wrong tool prefix
+		"remote.file.write ",                                                             // no metadata block at all
+		"remote.file.write /etc/x.conf",                                                  // missing "(...)"
+		"remote.file.write /etc/x.conf (1 bytes, mode 0644)",                             // missing digest field
+		"remote.file.write /etc/x.conf (1 bytes, sha256:" + validHex + ")",               // missing mode field
+		"remote.file.write /etc/x.conf (1 bytes, sha256:deadbeef, mode 0644)",            // digest too short
+		"remote.file.write /etc/x.conf (1 bytes, notsha256:" + validHex + ", mode 0644)", // wrong digest key
+		"remote.file.write /etc/x.conf (1 bytes, sha256:" + validHex + ", mode nine)",    // non-octal mode
+		"remote.file.write  (1 bytes, sha256:" + validHex + ", mode 0644)",               // empty path
+	} {
+		if _, _, _, err := parseFileWriteDescriptor(bad); err == nil {
+			t.Fatalf("parseFileWriteDescriptor(%q) = nil error, want a fail-closed refusal", bad)
+		}
+	}
+}
+
 // TestRemoteExecDescribeVerbatim is the ADR-0071 §D3 seam proof for T-140a: remote.exec's
 // descriptor must be the command verbatim, byte-identical to what Invoke persisted as
 // the invocation's Command before this ticket's refactor (the old hardcoded
@@ -316,11 +447,11 @@ func (f *fakeSeamBroker) Exec(_ context.Context, _, resource, command, _ string)
 // agent path and the operator Run engine both use) with a tool name the registry has
 // never heard of — proving the default: branch, not just asserting it exists.
 //
-// Uses "remote.file.write" as the still-unregistered placeholder (T-141, not this
-// ticket) — T-140b registered "remote.file.read" and gave performAndFinish a real case
-// for it, so that name would no longer exercise this branch; this test's job is the
-// default: branch, and it must keep naming a tool that is actually absent from the
-// registry for that to hold.
+// Uses "remote.file.list" as the still-unregistered placeholder (T-142, not this
+// ticket) — T-140b registered "remote.file.read" and T-141 registered
+// "remote.file.write", each giving performAndFinish a real case, so neither name
+// would still exercise this branch; this test's job is the default: branch, and it
+// must keep naming a tool that is actually absent from the registry for that to hold.
 func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 	st := &fakeSeamStore{}
 	brk := &fakeSeamBroker{}
@@ -331,11 +462,11 @@ func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 
 	id, res, err := svc.runGovernedStep(context.Background(), stepRequest{
 		Subject:     "agent:test",
-		Tool:        "remote.file.write", // not yet a registered tool — the seam must still fail closed
+		Tool:        "remote.file.list", // not yet a registered tool — the seam must still fail closed
 		ResourceID:  "r-1",
 		Command:     "irrelevant",
 		Edge:        "agent-remote-session",
-		Action:      "remote.file.write",
+		Action:      "remote.file.list",
 		Target:      "resource:r-1",
 		BracketEdge: "agent-tool",
 		WaitTimeout: 50 * time.Millisecond,
@@ -446,8 +577,8 @@ func TestReattachDispatchesOnPersistedToolNotCallerTool(t *testing.T) {
 	// fail closed; under the fix (dispatch on the PERSISTED tool) it must still run the
 	// original remote.exec invocation.
 	secondID, res, err := svc.runGovernedStep(ctx, stepRequest{
-		Subject: "agent:test", Tool: "remote.file.write", ResourceID: "r-1", Command: "attacker payload",
-		Edge: "agent-remote-session", Action: "remote.file.write", Target: "resource:r-1",
+		Subject: "agent:test", Tool: "remote.file.list", ResourceID: "r-1", Command: "attacker payload",
+		Edge: "agent-remote-session", Action: "remote.file.list", Target: "resource:r-1",
 		BracketEdge: "agent-tool", IdempotencyKey: "shared-key", WaitTimeout: 200 * time.Millisecond,
 	})
 	if err != nil {
@@ -468,5 +599,149 @@ func TestReattachDispatchesOnPersistedToolNotCallerTool(t *testing.T) {
 	}
 	if st.claimCalled != 1 {
 		t.Fatalf("ClaimForExec called %d times, want 1", st.claimCalled)
+	}
+}
+
+// fakeSeamBrokerFile fakes catalog.BrokerFiler (Read+Write) to drive performAndFinish's
+// remote.file.write case directly — the SEC-49 proofs below MUST NOT reach Write on a
+// digest mismatch or an unparseable descriptor, which is exactly what writeCalled lets
+// them assert.
+type fakeSeamBrokerFile struct {
+	writeCalled bool
+	gotPath     string
+	gotContent  []byte
+	gotMode     uint32
+	writeErr    error
+	writeSHA    string
+}
+
+func (f *fakeSeamBrokerFile) Read(context.Context, string, string, string, string) ([]byte, string, error) {
+	return nil, "", errors.New("Read not used by the SEC-49 proofs")
+}
+func (f *fakeSeamBrokerFile) Write(_ context.Context, _, _, path string, content []byte, mode uint32, _ string) (string, error) {
+	f.writeCalled = true
+	f.gotPath, f.gotContent, f.gotMode = path, content, mode
+	if f.writeErr != nil {
+		return "", f.writeErr
+	}
+	return f.writeSHA, nil
+}
+
+// fileWriteDescriptor builds a well-formed ADR-0071 §D3 descriptor for the given
+// content, mirroring exactly what remoteFileWriteDescribe renders — so these tests
+// exercise the same string shape performAndFinish parses in production.
+func fileWriteDescriptor(path string, content []byte, mode uint32) string {
+	sum := sha256.Sum256(content)
+	return fmt.Sprintf("remote.file.write %s (%d bytes, sha256:%s, mode %04o)", path, len(content), hex.EncodeToString(sum[:]), mode)
+}
+
+// TestPerformAndFinishSEC49RefusesDigestMismatch is the ticket's block gate (proof 1):
+// an invocation approved for digest X, executed with bytes hashing to Y, must be
+// refused — nothing written, invocation failed, broker Write never called. The
+// descriptor here is built over "approved bytes" (digest X); performAndFinish is
+// handed "swapped bytes" (hashing to Y) as the content parameter — modeling either a
+// tampered reattach or a direct mutation of the SEC-49 check.
+func TestPerformAndFinishSEC49RefusesDigestMismatch(t *testing.T) {
+	st := &fakeSeamStore{}
+	fileBrk := &fakeSeamBrokerFile{}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{}, BrokerFile: fileBrk,
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	approved := []byte("approved config bytes")
+	swapped := []byte("attacker swapped these bytes")
+	descriptor := fileWriteDescriptor("/etc/nginx/nginx.conf", approved, 0o644)
+
+	res, err := svc.performAndFinish(context.Background(), "inv-w1", "r-1", descriptor, "agent:test", remoteFileWriteTool, swapped)
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected Go error %v, want a tool-level refusal", err)
+	}
+	if !res.IsError || len(res.Content) == 0 || !strings.Contains(res.Content[0].Text, "digest") {
+		t.Fatalf("result = %+v, want an IsError result mentioning the digest mismatch (SEC-49)", res)
+	}
+	if fileBrk.writeCalled {
+		t.Fatal("SEC-49 FAILED: broker Write was called despite a digest mismatch — nothing may be written")
+	}
+	if st.finishCalls != 1 || st.finishStatus != "failed" {
+		t.Fatalf("finish = (%d calls, status %q), want (1, failed)", st.finishCalls, st.finishStatus)
+	}
+}
+
+// TestPerformAndFinishSEC49AllowsMatchingDigest is the ticket's proof 2 (the happy
+// path): when the content handed to performAndFinish hashes to EXACTLY the digest in
+// the approved descriptor, the write proceeds and the broker receives the right
+// path/content/mode.
+func TestPerformAndFinishSEC49AllowsMatchingDigest(t *testing.T) {
+	st := &fakeSeamStore{}
+	fileBrk := &fakeSeamBrokerFile{writeSHA: "abc123"}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{}, BrokerFile: fileBrk,
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	content := []byte("server { listen 80; }")
+	descriptor := fileWriteDescriptor("/etc/nginx/nginx.conf", content, 0o644)
+
+	res, err := svc.performAndFinish(context.Background(), "inv-w2", "r-1", descriptor, "agent:test", remoteFileWriteTool, content)
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected error %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("result = %+v, want a successful write result", res)
+	}
+	if !fileBrk.writeCalled {
+		t.Fatal("the matching-digest happy path must call broker Write")
+	}
+	if fileBrk.gotPath != "/etc/nginx/nginx.conf" || string(fileBrk.gotContent) != string(content) || fileBrk.gotMode != 0o644 {
+		t.Fatalf("broker Write got (path=%q content=%q mode=%o), want (/etc/nginx/nginx.conf, %q, 0644)",
+			fileBrk.gotPath, fileBrk.gotContent, fileBrk.gotMode, content)
+	}
+	if st.finishCalls != 1 || st.finishStatus != "completed" || st.finishOutcome != "tool.result" {
+		t.Fatalf("finish = (%d calls, %q, %q), want (1, completed, tool.result)", st.finishCalls, st.finishStatus, st.finishOutcome)
+	}
+}
+
+// TestPerformAndFinishSEC49RefusesUnparseableDescriptor is proof 3: a descriptor whose
+// digest cannot be parsed must refuse rather than proceed unverified — the failure
+// mode is distinct from a digest MISMATCH (proof 1) but must fire the SAME "never call
+// Write" guarantee, for its own reason (a parse failure, not a hash comparison).
+func TestPerformAndFinishSEC49RefusesUnparseableDescriptor(t *testing.T) {
+	st := &fakeSeamStore{}
+	fileBrk := &fakeSeamBrokerFile{}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{}, BrokerFile: fileBrk,
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	malformed := "remote.file.write /etc/nginx/nginx.conf this is not a valid metadata block"
+
+	res, err := svc.performAndFinish(context.Background(), "inv-w3", "r-1", malformed, "agent:test", remoteFileWriteTool, []byte("anything"))
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected Go error %v, want a tool-level refusal", err)
+	}
+	if !res.IsError || len(res.Content) == 0 || !strings.Contains(res.Content[0].Text, "malformed") {
+		t.Fatalf("result = %+v, want an IsError result naming the malformed descriptor", res)
+	}
+	if fileBrk.writeCalled {
+		t.Fatal("SEC-49 FAILED: broker Write was called for an unparseable descriptor — must refuse, not proceed unverified")
+	}
+	if st.finishCalls != 1 || st.finishStatus != "failed" {
+		t.Fatalf("finish = (%d calls, status %q), want (1, failed)", st.finishCalls, st.finishStatus)
+	}
+}
+
+// TestPerformAndFinishFileWriteNilBrokerFileAnswersToolError mirrors the read side's
+// nil-able pattern for the write leg.
+func TestPerformAndFinishFileWriteNilBrokerFileAnswersToolError(t *testing.T) {
+	st := &fakeSeamStore{}
+	svc := New(Config{
+		Store: st, Policy: fakeSeamPolicy{}, Broker: &fakeSeamBroker{},
+		MaxInFlight: 4, WaitTimeout: time.Second, PollInterval: time.Millisecond,
+	})
+	descriptor := fileWriteDescriptor("/etc/x.conf", []byte("x"), 0o644)
+	res, err := svc.performAndFinish(context.Background(), "inv-w4", "r-1", descriptor, "agent:test", remoteFileWriteTool, []byte("x"))
+	if err != nil {
+		t.Fatalf("performAndFinish: unexpected error %v", err)
+	}
+	if !res.IsError || !strings.Contains(res.Content[0].Text, "not available") {
+		t.Fatalf("nil BrokerFile: isError=%v content=%+v, want a tool-level refusal, not a panic", res.IsError, res.Content)
 	}
 }

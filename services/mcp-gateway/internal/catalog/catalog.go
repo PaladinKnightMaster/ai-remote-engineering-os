@@ -12,10 +12,13 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +42,7 @@ type ToolDef struct {
 
 	target   func(args json.RawMessage) (string, error)
 	describe func(args json.RawMessage) (string, error)
+	content  func(args json.RawMessage) ([]byte, error) // T-141: only remote.file.write carries a payload; nil for every other tool
 }
 
 // Tool returns the MCP wire view; the governance metadata stays internal.
@@ -57,6 +61,17 @@ func (d ToolDef) Target(args json.RawMessage) (string, error) { return d.target(
 // approval becomes "the operator approves the intent and the digest, not the bytes."
 func (d ToolDef) Describe(args json.RawMessage) (string, error) { return d.describe(args) }
 
+// Content extracts a tool's payload bytes from its raw arguments (T-141, ADR-0071
+// §D3/option-c): the ONLY caller-supplied field that must never be persisted. nil for
+// every tool that carries no separate payload (remote.exec's payload IS its
+// descriptor; remote.file.read has none).
+func (d ToolDef) Content(args json.RawMessage) ([]byte, error) {
+	if d.content == nil {
+		return nil, nil
+	}
+	return d.content(args)
+}
+
 // Registry is the immutable set of tool definitions. No execution, no
 // downstream-service dependency — the durable artifact the orchestrator reads.
 type Registry struct {
@@ -67,10 +82,12 @@ type Registry struct {
 // NewRegistry builds the registry. v0.9 (ADR-0065, T-090) adds three control-plane
 // tools on the run.launch pattern (workstream.poll / plan.submit / memory.read); v0.10
 // (ADR-0066 §4, T-099) adds a sixth, context.search, on the SAME memory.read forward
-// pattern — the exact set the F-b WD-8/WD-9 amendment now asserts.
+// pattern; v0.14.0 (ADR-0071) adds remote.file.read (T-140b) then remote.file.write
+// (T-141) — the EIGHTH tool, and the only one besides remote.exec that mutates a
+// target host (SEC-47).
 func NewRegistry() *Registry {
 	r := &Registry{defs: map[string]ToolDef{}}
-	for _, d := range []ToolDef{remoteExec(), remoteFileRead(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead(), contextSearch()} {
+	for _, d := range []ToolDef{remoteExec(), remoteFileRead(), remoteFileWrite(), runLaunch(), workstreamPoll(), planSubmit(), memoryRead(), contextSearch()} {
 		r.defs[d.Name] = d
 		r.list = append(r.list, d.Tool())
 	}
@@ -235,6 +252,185 @@ func remoteFileReadDescribe(raw json.RawMessage) (string, error) {
 		return "", errors.New("remote.file.read requires a path")
 	}
 	return remoteFileReadDescriptorPrefix + a.Path, nil
+}
+
+// parseFileReadDescriptor recovers the path from a persisted remote.file.read
+// descriptor (T-141 Part 4, ADR-0071 §D3/§14c): strings.CutPrefix, not TrimPrefix —
+// TrimPrefix silently returns the whole string when the prefix is absent, which would
+// reinterpret a malformed descriptor as a path rather than refuse it. This is not a
+// parse of untrusted caller input (the gateway is stripping a literal it itself wrote
+// via remoteFileReadDescribe), but it is a governance path and this product's rule is
+// fail loud, not fail silent — so a descriptor missing the prefix, or one that strips
+// down to an empty path, is refused rather than passed through.
+func parseFileReadDescriptor(command string) (string, error) {
+	path, ok := strings.CutPrefix(command, remoteFileReadDescriptorPrefix)
+	if !ok {
+		return "", fmt.Errorf("descriptor missing the %q prefix", remoteFileReadDescriptorPrefix)
+	}
+	if path == "" {
+		return "", errors.New("descriptor carries an empty path")
+	}
+	return path, nil
+}
+
+// remoteFileWriteTool is the T-141 file-family mutator (ADR-0071 §D1) — the ONLY
+// member of the family that mutates a target host (SEC-47). Same edge as
+// remote.file.read and remote.exec (§D1: same trust boundary).
+const remoteFileWriteTool = "remote.file.write"
+
+// remoteFileWriteDescriptorPrefix anchors the ADR-0071 §D3 descriptor. Per the T-141
+// consult (§14c, option (c)): the invocation's persisted Command carries path, size,
+// digest and mode — NEVER the bytes, which C4 forbids a column for and D3 forbids an
+// operator from approving blind anyway. The bytes themselves are held in memory for
+// the life of the blocking call (never persisted) and threaded straight to
+// performAndFinish as a parameter.
+const remoteFileWriteDescriptorPrefix = remoteFileWriteTool + " "
+
+// remote.file.write — write bytes to one path on a governed remote resource
+// (ADR-0071 §D1/§D3/§D4). Same edge as remote.exec/remote.file.read: writing over the
+// leased SSH credential crosses the identical trust boundary.
+func remoteFileWrite() ToolDef {
+	const inputSchema = `{
+  "type": "object",
+  "required": ["resourceId", "path", "content"],
+  "additionalProperties": false,
+  "properties": {
+    "resourceId": {
+      "type": "string",
+      "description": "The governed SSH resource to write the file to — a resource id from the operator's registry."
+    },
+    "path": {
+      "type": "string",
+      "description": "The absolute path to write on the resource."
+    },
+    "content": {
+      "type": "string",
+      "description": "Base64-encoded bytes to write to path. Bounded by a maximum transfer size (default 1 MiB)."
+    },
+    "mode": {
+      "type": "integer",
+      "description": "Optional POSIX permission bits for the file (e.g. 420 for 0644, decimal). Defaults to 0644."
+    }
+  }
+}`
+	return ToolDef{
+		Name: remoteFileWriteTool,
+		Description: "Write bytes to one path on a governed remote (SSH) resource. THIS MODIFIES A FILE " +
+			"ON A REAL HOST — it can overwrite or create the target file. The call is policy-checked and " +
+			"may require human operator approval before it runs — it can block until approved, or be " +
+			"denied — and every invocation is audited. The operator approves the path, size and content " +
+			"digest, not the raw bytes. Bounded by a maximum transfer size (default 1 MiB).",
+		InputSchema: json.RawMessage(inputSchema),
+		Edge:        "agent-remote-session",
+		Action:      remoteFileWriteTool,
+		Operation:   "file.write",
+		target:      remoteFileWriteTarget,
+		describe:    remoteFileWriteDescribe,
+		content:     remoteFileWriteContent,
+	}
+}
+
+// remoteFileWriteArgs is the typed argument set for remote.file.write. Content is
+// []byte so encoding/json base64-decodes it for us on Unmarshal (and base64-encodes
+// on Marshal) — the same convention the broker's own fileRequest uses (T-139b).
+type remoteFileWriteArgs struct {
+	ResourceID string  `json:"resourceId"`
+	Path       string  `json:"path"`
+	Content    []byte  `json:"content"`
+	Mode       *uint32 `json:"mode,omitempty"`
+}
+
+// remoteFileWriteMode resolves the POSIX mode to persist/write: the caller's value if
+// given, else the documented default 0644.
+func remoteFileWriteMode(a remoteFileWriteArgs) uint32 {
+	if a.Mode != nil {
+		return *a.Mode
+	}
+	return 0o644
+}
+
+func remoteFileWriteTarget(raw json.RawMessage) (string, error) {
+	var a remoteFileWriteArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid remote.file.write arguments: %w", err)
+	}
+	if a.ResourceID == "" || a.Path == "" {
+		return "", errors.New("remote.file.write requires resourceId and path")
+	}
+	return "resource:" + a.ResourceID, nil
+}
+
+// remoteFileWriteDescribe renders remote.file.write's ADR-0071 §D3 descriptor:
+// path, size, sha256 digest and mode — never the content. This is what the operator
+// approves (the intent and the digest, not the bytes, per D3's explicit narrowing)
+// and what performAndFinish parses back post-approval to learn WHERE and WITH WHAT
+// PERMISSIONS to write, and against WHICH digest to verify the bytes it is handed
+// (SEC-49).
+func remoteFileWriteDescribe(raw json.RawMessage) (string, error) {
+	var a remoteFileWriteArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid remote.file.write arguments: %w", err)
+	}
+	if a.Path == "" {
+		return "", errors.New("remote.file.write requires a path")
+	}
+	sum := sha256.Sum256(a.Content)
+	digest := hex.EncodeToString(sum[:])
+	return fmt.Sprintf("%s%s (%d bytes, sha256:%s, mode %04o)",
+		remoteFileWriteDescriptorPrefix, a.Path, len(a.Content), digest, remoteFileWriteMode(a)), nil
+}
+
+// remoteFileWriteContent extracts the payload bytes (ADR-0071 §14c option (c)): this is
+// the ONLY value in the whole family that must never reach the invocations store — it
+// is read here, from the caller's raw arguments, and handed straight to the governed
+// core as a stepRequest field, never persisted.
+func remoteFileWriteContent(raw json.RawMessage) ([]byte, error) {
+	var a remoteFileWriteArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, fmt.Errorf("invalid remote.file.write arguments: %w", err)
+	}
+	return a.Content, nil
+}
+
+// parseFileWriteDescriptor recovers path, digest and mode from a persisted
+// remote.file.write descriptor (T-141, ADR-0071 §D3/§14c). Fail-closed throughout
+// (SEC-49): CutPrefix (not TrimPrefix, same reasoning as parseFileReadDescriptor)
+// plus an explicit refusal at every stage — a descriptor that doesn't parse cleanly
+// must never be treated as "no digest to check," it must refuse outright. This is the
+// gateway parsing a literal it itself wrote via remoteFileWriteDescribe, not untrusted
+// external input, but a governance-critical field silently defaulting on a parse miss
+// is exactly the failure class SEC-49 exists to close.
+func parseFileWriteDescriptor(command string) (path, digest string, mode uint32, err error) {
+	rest, ok := strings.CutPrefix(command, remoteFileWriteDescriptorPrefix)
+	if !ok {
+		return "", "", 0, fmt.Errorf("descriptor missing the %q prefix", remoteFileWriteDescriptorPrefix)
+	}
+	idx := strings.LastIndex(rest, " (")
+	if idx < 0 || !strings.HasSuffix(rest, ")") {
+		return "", "", 0, errors.New("descriptor missing its (size/digest/mode) metadata block")
+	}
+	path = rest[:idx]
+	if path == "" {
+		return "", "", 0, errors.New("descriptor carries an empty path")
+	}
+	meta := rest[idx+2 : len(rest)-1] // strip the leading " (" and trailing ")"
+	parts := strings.Split(meta, ", ")
+	if len(parts) != 3 {
+		return "", "", 0, fmt.Errorf("descriptor metadata has %d fields, want 3 (size, digest, mode)", len(parts))
+	}
+	digest, ok = strings.CutPrefix(parts[1], "sha256:")
+	if !ok || len(digest) != 64 {
+		return "", "", 0, errors.New("descriptor carries a malformed or absent sha256 digest")
+	}
+	modeField, ok := strings.CutPrefix(parts[2], "mode ")
+	if !ok {
+		return "", "", 0, errors.New("descriptor carries a malformed mode field")
+	}
+	m, merr := strconv.ParseUint(modeField, 8, 32)
+	if merr != nil {
+		return "", "", 0, fmt.Errorf("descriptor mode field does not parse as octal: %w", merr)
+	}
+	return path, digest, uint32(m), nil
 }
 
 // runLaunchTool is the v0.6 control-plane tool name (ADR-0062, T-065b).
@@ -449,11 +645,14 @@ type BrokerExecer interface {
 	Exec(ctx context.Context, invocationID, resourceID, command, subject string) (stdout string, exitCode int, truncated bool, err error)
 }
 
-// BrokerFiler runs the governed remote.file.read leg on the broker (ADR-0071
-// §D4). Kept SEPARATE from BrokerExecer — the T-138 seam constraint holds:
-// BrokerExecer is not renamed or widened for this second egress family.
+// BrokerFiler runs the governed remote.file.{read,write} legs on the broker
+// (ADR-0071 §D4). Kept SEPARATE from BrokerExecer — the T-138 seam constraint holds:
+// BrokerExecer is not renamed or widened for this second egress family. Write is
+// T-141: performAndFinish calls it ONLY after SEC-49's digest check has already
+// passed, so it never needs to re-verify — it trusts its caller within this package.
 type BrokerFiler interface {
 	Read(ctx context.Context, invocationID, resourceID, path, subject string) (content []byte, sha256sum string, err error)
+	Write(ctx context.Context, invocationID, resourceID, path string, content []byte, mode uint32, subject string) (sha256sum string, err error)
 }
 
 // Service is the governed orchestrator: it satisfies mcp.Catalog, turning an
@@ -600,6 +799,16 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		return descErr, nil
 	}
 
+	// T-141 (ADR-0071 §14c, option (c)): the payload bytes (remote.file.write only —
+	// nil for every other tool) are extracted HERE, from the caller's raw arguments,
+	// and threaded through stepRequest as a plain parameter for the life of this
+	// blocking call. They are never persisted — Create below writes only `command`,
+	// the descriptor, never the content.
+	content, contentErr := def.Content(args)
+	if contentErr != nil {
+		return toolError(contentErr.Error()), nil
+	}
+
 	// The idempotency key is read HERE (the agent's Idempotency-Key header, via ctx)
 	// and passed in — the core never reads it from ctx, so it equally serves the Run
 	// engine's deterministic per-step keys (T-055b).
@@ -609,6 +818,7 @@ func (s *Service) Invoke(ctx context.Context, name string, args json.RawMessage)
 		Tool:           def.Name,
 		ResourceID:     resourceID,
 		Command:        command,
+		Content:        content,
 		Edge:           def.Edge,
 		Action:         def.Action,
 		Target:         target,
@@ -887,7 +1097,8 @@ type stepRequest struct {
 	Principal      string        // the PRINCIPAL (ADR-0062 §4): the delegating operator when an agent drives under a grant; "" for a direct operator Run or a direct agent call
 	Tool           string        // the tool name (def.Name)
 	ResourceID     string        // target resource
-	Command        string        // the command to persist + execute
+	Command        string        // the command / descriptor to persist + execute
+	Content        []byte        // T-141: remote.file.write's payload bytes; NEVER persisted (ADR-0071 §14c option (c)); nil for every other tool
 	Edge           string        // capability edge for policy.Decide (def.Edge)
 	Action         string        // audited action for policy.Decide (def.Action)
 	Target         string        // "resource:<id>" for policy.Decide
@@ -943,7 +1154,7 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 		if isTerminal(inv.Status) {
 			return inv.ID, toolError(fmt.Sprintf("duplicate invocation (idempotent); original %s is %s", inv.ID, inv.Status)), nil
 		}
-		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout, req.Content)
 		return inv.ID, res, werr
 	}
 
@@ -964,13 +1175,13 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 		// anyway (store.Create persists req.Tool verbatim), so this is a no-op rename
 		// of the source, not a behavior change, for the only path that reaches here
 		// with created=true.
-		res, eerr := s.performAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject, inv.Tool)
+		res, eerr := s.performAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject, inv.Tool, req.Content)
 		return inv.ID, res, eerr
 	}
 
 	// requires_approval → park, then block until the operator resolves it (T-040).
 	_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
-	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout)
+	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout, req.Content)
 	return inv.ID, res, werr
 }
 
@@ -980,7 +1191,7 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 // finalize failed (policy's TTL timeout runs in parallel). An agent disconnect (ctx)
 // leaves the row parked for the reaper or an idempotent re-attach. It polls the row —
 // a short query per tick, never a held transaction.
-func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout time.Duration) (mcp.ToolResult, error) {
+func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout time.Duration, content []byte) (mcp.ToolResult, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(s.pollInterval)
@@ -1015,7 +1226,13 @@ func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout
 						return mcp.ToolResult{}, fmt.Errorf("claim invocation: %w", cerr)
 					}
 					if won {
-						return s.performAndFinish(ctx, id, claimed.ResourceID, claimed.Command, agent, claimed.Tool)
+						// content is THIS CALL's own bytes (T-141, ADR-0071 §14c) — never
+						// the original caller's, since those were never persisted and this
+						// may be a different goroutine entirely (idempotent reattach).
+						// SEC-49 is what makes that safe: performAndFinish verifies these
+						// bytes against the persisted descriptor's digest before writing
+						// anything, regardless of whose call supplied them.
+						return s.performAndFinish(ctx, id, claimed.ResourceID, claimed.Command, agent, claimed.Tool, content)
 					}
 				}
 			}
@@ -1028,11 +1245,12 @@ func (s *Service) waitForApproval(ctx context.Context, id, agent string, timeout
 // records the terminal outcome. The caller has already moved the invocation to
 // running (allow-now via SetStatus, post-approval via ClaimForExec). remote.exec's
 // case is unchanged byte-for-byte from the prior execAndFinish; remote.file.read
-// (T-140b, ADR-0071 §D4) is the second, dispatching to BrokerFiler.Read instead of
-// BrokerExecer.Exec. The default branch is the whole point of this seam: an
+// (T-140b, ADR-0071 §D4) and remote.file.write (T-141) dispatch to BrokerFiler
+// instead of BrokerExecer. content is remote.file.write's payload ONLY — every other
+// case ignores it. The default branch is the whole point of this seam: an
 // unrecognized tool fails closed (SEC-19) rather than falling through to exec, so a
-// later tool addition (T-141+) cannot silently reuse exec's egress by omission.
-func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command, agent, tool string) (mcp.ToolResult, error) {
+// later tool addition (T-142+) cannot silently reuse exec's egress by omission.
+func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command, agent, tool string, content []byte) (mcp.ToolResult, error) {
 	switch tool {
 	case remoteExecTool:
 		stdout, exitCode, truncated, err := s.broker.Exec(ctx, id, resourceID, command, agent)
@@ -1059,16 +1277,58 @@ func (s *Service) performAndFinish(ctx context.Context, id, resourceID, command,
 			return toolError("file operations are not available on this gateway"), nil
 		}
 		// command IS the persisted ADR-0071 §D3 descriptor (there is no separate
-		// args column, C4); strip the self-controlled prefix back off to recover
-		// the path the agent asked to read.
-		path := strings.TrimPrefix(command, remoteFileReadDescriptorPrefix)
-		content, sha, err := s.brokerFile.Read(ctx, id, resourceID, path, agent)
+		// args column, C4); recover the path the agent asked to read — fail closed
+		// (T-141 Part 4) rather than silently reinterpreting a malformed descriptor.
+		path, perr := parseFileReadDescriptor(command)
+		if perr != nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return toolError("malformed file read descriptor, refusing: " + perr.Error()), nil
+		}
+		readContent, sha, err := s.brokerFile.Read(ctx, id, resourceID, path, agent)
 		if err != nil {
 			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
 			return mcp.ToolResult{}, fmt.Errorf("file read failed: %w", err)
 		}
 		_ = s.store.Finish(ctx, id, "completed", "tool.result")
-		return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: string(content) + "\n[sha256:" + sha + "]"}}}, nil
+		return mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: string(readContent) + "\n[sha256:" + sha + "]"}}}, nil
+	case remoteFileWriteTool:
+		// The nil-able pattern, same as remote.file.read above.
+		if s.brokerFile == nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return toolError("file operations are not available on this gateway"), nil
+		}
+		// command IS the persisted ADR-0071 §D3 descriptor (path, size, digest, mode
+		// — never the bytes, per the T-141 consult's option (c)). Fail closed on a
+		// descriptor that doesn't parse cleanly (T-141 Part 4 / SEC-49): it must
+		// never proceed as if there were no digest to check.
+		path, digest, mode, perr := parseFileWriteDescriptor(command)
+		if perr != nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return toolError("malformed file write descriptor, refusing to write: " + perr.Error()), nil
+		}
+		// SEC-49, the load-bearing check (ADR-0071 §14c): the approved descriptor
+		// carries the digest of the bytes the operator approved; recompute the
+		// digest over the bytes actually about to be written and refuse on ANY
+		// mismatch, BEFORE calling the broker. This is what makes it safe that
+		// content is never persisted and never re-verified against anything but
+		// this digest — a swapped payload (the T-138 tool-confusion shape) is
+		// refused cryptographically, not by convention.
+		sum := sha256.Sum256(content)
+		actual := hex.EncodeToString(sum[:])
+		if actual != digest {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return toolError(fmt.Sprintf(
+				"content digest sha256:%s does not match the approved descriptor's sha256:%s; refusing to write (SEC-49)",
+				actual, digest)), nil
+		}
+		sha, err := s.brokerFile.Write(ctx, id, resourceID, path, content, mode, agent)
+		if err != nil {
+			_ = s.store.Finish(ctx, id, "failed", "tool.result:error")
+			return mcp.ToolResult{}, fmt.Errorf("file write failed: %w", err)
+		}
+		_ = s.store.Finish(ctx, id, "completed", "tool.result")
+		return mcp.ToolResult{Content: []mcp.Content{{Type: "text",
+			Text: fmt.Sprintf("wrote %d bytes to %s [sha256:%s]", len(content), path, sha)}}}, nil
 	default:
 		// Fail closed (SEC-19): no operation is implemented for this tool at the
 		// terminal step, so nothing runs and the invocation cannot be left parked in

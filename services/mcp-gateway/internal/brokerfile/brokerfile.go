@@ -46,15 +46,18 @@ func New(baseURL string, signer *auth.AsymmetricSigner) *Client {
 	}
 }
 
-// fileRequest mirrors the broker's fileRequest wire shape (T-139b,
-// session-broker/internal/server/server.go) — only the fields a read needs are
-// populated; Content/Mode stay zero (omitempty on the broker side).
+// fileRequest mirrors the broker's fileRequest wire shape exactly (T-139b,
+// session-broker/internal/server/server.go). Read populates only the fields a read
+// needs; Content/Mode stay zero (omitempty on the broker side). Write (T-141)
+// populates Content and Mode too.
 type fileRequest struct {
-	Op           string `json:"op"`
-	ResourceID   string `json:"resourceId"`
-	Path         string `json:"path"`
-	InvocationID string `json:"invocationId"`
-	Subject      string `json:"subject"`
+	Op           string  `json:"op"`
+	ResourceID   string  `json:"resourceId"`
+	Path         string  `json:"path"`
+	Content      []byte  `json:"content,omitempty"` // write only; base64 in JSON
+	Mode         *uint32 `json:"mode,omitempty"`    // write only; POSIX perm bits
+	InvocationID string  `json:"invocationId"`
+	Subject      string  `json:"subject"`
 }
 
 // fileResponse mirrors the broker's fileResponse wire shape; Entries is
@@ -106,4 +109,48 @@ func (c *Client) Read(ctx context.Context, invocationID, resourceID, path, subje
 		return nil, "", fmt.Errorf("decode file response: %w", err)
 	}
 	return r.Content, r.SHA256, nil
+}
+
+// Write pushes content to resourceID/path via the broker's POST /v1/file
+// (op="write"). Mirrors Read's shape exactly. The caller (catalog.performAndFinish)
+// has already verified content against the approved descriptor's digest (SEC-49)
+// BEFORE this is ever reached — Write itself performs no digest check, it trusts its
+// caller within this codebase, same as brokerexec.Client.Exec trusts its caller to
+// have already resolved policy.
+func (c *Client) Write(ctx context.Context, invocationID, resourceID, path string, content []byte, mode uint32, subject string) (sha256sum string, err error) {
+	if c.baseURL == "" {
+		return "", errors.New("broker URL not configured")
+	}
+	body, err := json.Marshal(fileRequest{
+		Op: "write", ResourceID: resourceID, Path: path, Content: content, Mode: &mode,
+		InvocationID: invocationID, Subject: subject,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal file request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/file", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build file request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	tok, err := c.token(ctx)
+	if err != nil {
+		return "", fmt.Errorf("mint broker token: %w", err)
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("file request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("broker file: unexpected status %d", resp.StatusCode)
+	}
+	var r fileResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&r); err != nil {
+		return "", fmt.Errorf("decode file response: %w", err)
+	}
+	return r.SHA256, nil
 }

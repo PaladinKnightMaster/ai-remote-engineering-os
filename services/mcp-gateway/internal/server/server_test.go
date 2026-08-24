@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -241,7 +242,10 @@ func (f *fakeBroker) Exec(_ context.Context, _, resource, command, _ string) (st
 	return f.stdout, f.exit, f.truncated, f.err
 }
 
-// fakeBrokerFile fakes catalog.BrokerFiler for the T-140b remote.file.read tests.
+// fakeBrokerFile fakes catalog.BrokerFiler for the T-140b remote.file.read and T-141
+// remote.file.write tests. Read/Write fields are kept separate (readCalled vs
+// writeCalled) so a test can assert one leg ran and the other did not — e.g. SEC-47
+// (only write mutates).
 type fakeBrokerFile struct {
 	content     []byte
 	sha         string
@@ -249,12 +253,28 @@ type fakeBrokerFile struct {
 	called      bool
 	gotResource string
 	gotPath     string
+
+	writeSHA        string
+	writeErr        error
+	writeCalled     bool
+	gotWritePath    string
+	gotWriteContent []byte
+	gotWriteMode    uint32
 }
 
 func (f *fakeBrokerFile) Read(_ context.Context, _, resource, path, _ string) ([]byte, string, error) {
 	f.called = true
 	f.gotResource, f.gotPath = resource, path
 	return f.content, f.sha, f.err
+}
+
+func (f *fakeBrokerFile) Write(_ context.Context, _, resource, path string, content []byte, mode uint32, _ string) (string, error) {
+	f.writeCalled = true
+	f.gotResource, f.gotWritePath, f.gotWriteContent, f.gotWriteMode = resource, path, content, mode
+	if f.writeErr != nil {
+		return "", f.writeErr
+	}
+	return f.writeSHA, nil
 }
 
 func governedHandler(t *testing.T, st catalog.Store, pol catalog.PolicyDecider, brk catalog.BrokerExecer) (http.Handler, *auth.Signer) {
@@ -302,6 +322,15 @@ func callRemoteFileRead(t *testing.T, h http.Handler, tok, resourceID, path stri
 	t.Helper()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.file.read","arguments":` +
 		`{"resourceId":"` + resourceID + `","path":"` + path + `"}}}`
+	return decodeRPC(t, postMCP(t, h, body, tok))
+}
+
+// callRemoteFileWrite issues a remote.file.write tools/call with contentB64 (base64,
+// caller-encoded) as the "content" arg — mirroring the real wire shape (ADR-0071 §D1).
+func callRemoteFileWrite(t *testing.T, h http.Handler, tok, resourceID, path, contentB64 string) rpcResponse {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remote.file.write","arguments":` +
+		`{"resourceId":"` + resourceID + `","path":"` + path + `","content":"` + contentB64 + `"}}}`
 	return decodeRPC(t, postMCP(t, h, body, tok))
 }
 
@@ -468,6 +497,57 @@ func TestInvokeFileReadNilBrokerFileAnswersToolError(t *testing.T) {
 	isErr, text := toolResult(t, resp)
 	if !isErr || !strings.Contains(text, "not available") {
 		t.Fatalf("nil BrokerFile: isError=%v text=%q, want a tool-level refusal, not a panic", isErr, text)
+	}
+}
+
+// TestInvokeFileWriteAllowPath proves remote.file.write's end-to-end wiring (T-141): a
+// token explicitly scoped for file.write reaches the broker file client's Write leg via
+// the SAME governed pipeline as remote.exec/remote.file.read — including the SEC-49
+// digest check, which passes here because content and descriptor come from the SAME
+// call (Invoke computes both from the same args).
+func TestInvokeFileWriteAllowPath(t *testing.T) {
+	fileBrk := &fakeBrokerFile{writeSHA: "9f2c00a41b"}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, fileBrk)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.write"})
+	content := "server { listen 80; }"
+	resp := callRemoteFileWrite(t, h, tok, "r1", "/etc/nginx/nginx.conf", base64.StdEncoding.EncodeToString([]byte(content)))
+	isErr, text := toolResult(t, resp)
+	if isErr || !strings.Contains(text, fileBrk.writeSHA) {
+		t.Fatalf("file write allow path: isError=%v text=%q", isErr, text)
+	}
+	if !fileBrk.writeCalled || fileBrk.gotWritePath != "/etc/nginx/nginx.conf" ||
+		string(fileBrk.gotWriteContent) != content || fileBrk.gotWriteMode != 0o644 {
+		t.Fatalf("broker file Write not called correctly: %+v", fileBrk)
+	}
+}
+
+// TestInvokeFileWriteNilBrokerFileAnswersToolError mirrors the read side's nil-able
+// pattern for the write leg.
+func TestInvokeFileWriteNilBrokerFileAnswersToolError(t *testing.T) {
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, nil)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.write"})
+	resp := callRemoteFileWrite(t, h, tok, "r1", "/etc/nginx/nginx.conf", base64.StdEncoding.EncodeToString([]byte("x")))
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "not available") {
+		t.Fatalf("nil BrokerFile: isError=%v text=%q, want a tool-level refusal, not a panic", isErr, text)
+	}
+}
+
+// TestSEC47FileReadScopedTokenRejectsRemoteFileWrite is SEC-47/SEC-50's write-side
+// half: a token scoped to exactly ["file.read"] must NOT also unlock
+// remote.file.write — remote.file.write is the ONLY family member that mutates a
+// target, and operation scope is per-verb, never additive.
+func TestSEC47FileReadScopedTokenRejectsRemoteFileWrite(t *testing.T) {
+	fileBrk := &fakeBrokerFile{}
+	h, s := governedHandlerWithFile(t, &fakeStore{}, &fakePolicy{decision: "allow"}, &fakeBroker{}, fileBrk)
+	tok := scopedTokenOps(t, s, "r1", []string{"file.read"})
+	resp := callRemoteFileWrite(t, h, tok, "r1", "/etc/nginx/nginx.conf", base64.StdEncoding.EncodeToString([]byte("x")))
+	isErr, text := toolResult(t, resp)
+	if !isErr || !strings.Contains(text, "operation") {
+		t.Fatalf("file.read-scoped token on remote.file.write: isError=%v text=%q, want an operation-scope refusal", isErr, text)
+	}
+	if fileBrk.writeCalled {
+		t.Fatal("broker file Write must not run for a file.read-scoped token")
 	}
 }
 
