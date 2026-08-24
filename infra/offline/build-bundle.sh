@@ -69,7 +69,17 @@ fetch() { # fetch <url> <outfile>
 }
 
 log "clean stage $STAGE"
-rm -rf "$STAGE" "$TARBALL"
+# Clear any stale sibling .sig from a PRIOR build of this same filename too.
+# sign-release.sh is a separate, out-of-band step (never run by this script),
+# so a rebuild that changes the artifact's bytes would otherwise leave a
+# now-mismatched-but-still-present-looking .sig sitting next to the new
+# tarball — exactly what R4 (v0.14.0 security review) found: a directory
+# listing shows a signature that *looks* valid but verifies against nothing.
+# check-provenance.sh WOULD catch the mismatch on the next `task
+# release-check`, but only if someone actually runs it before shipping — the
+# misleading intermediate state on disk is the problem this removes. A
+# missing .sig is honest (must re-sign); a wrong one is dangerous.
+rm -rf "$STAGE" "$TARBALL" "$TARBALL.sig"
 mkdir -p "$STAGE/bin" "$STAGE/web" "$STAGE/config"
 
 # --- 1. cross-compile the Go services + authctl (static linux/amd64) --------

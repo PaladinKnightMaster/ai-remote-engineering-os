@@ -1277,16 +1277,22 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 	}
 	if decision == PolicyAllow {
 		_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
-		// The dispatch tool comes from the PERSISTED row (inv.Tool), not req.Tool: on an
-		// idempotent conflict inv is the ORIGINAL invocation (store.go's ON CONFLICT is
-		// keyed on agent_subject+idempotency_key, not tool), so a caller-supplied tool
-		// could otherwise diverge from what was actually persisted and approved
+		// All four dispatch arguments come from the PERSISTED row (inv.*), not req.*
+		// (SEC-52-1, T-145: zero-behavior-change hardening of the SEC-49/T-138 fix
+		// below). This branch is reachable only when created==true, so inv.Command
+		// and inv.ResourceID equal req.Command/req.ResourceID by construction
+		// (store.Create persists req verbatim) — but that equality was an invariant
+		// invisible at this call site, not something read here. Reading inv.* makes
+		// it unnecessary rather than merely satisfied, matching the post-approval
+		// call site below, which has always read entirely from the persisted row.
+		//
+		// The tool half of this was already true and is why it matters: on an
+		// idempotent conflict inv is the ORIGINAL invocation (store.go's ON CONFLICT
+		// is keyed on agent_subject+idempotency_key, not tool), so a caller-supplied
+		// tool could otherwise diverge from what was actually persisted and approved
 		// (SEC-49 — approval binds to persisted state, never to what the caller says
-		// afterwards). On the freshly-created path inv.Tool always equals req.Tool
-		// anyway (store.Create persists req.Tool verbatim), so this is a no-op rename
-		// of the source, not a behavior change, for the only path that reaches here
-		// with created=true.
-		res, eerr := s.performAndFinish(ctx, inv.ID, req.ResourceID, req.Command, req.Subject, inv.Tool, req.Content)
+		// afterwards).
+		res, eerr := s.performAndFinish(ctx, inv.ID, inv.ResourceID, inv.Command, req.Subject, inv.Tool, req.Content)
 		return inv.ID, res, eerr
 	}
 

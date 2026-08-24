@@ -33,7 +33,17 @@ for os in "${OSES[@]}"; do
   [ -n "$img" ] || { echo "unknown OS tag '$os' (want ubuntu2404|rocky9)" >&2; exit 1; }
   stage="$OUT_DIR/aireos-postgres-$os"
   echo "[companions] build $os from $img"
-  rm -rf "$stage"; mkdir -p "$stage"
+  # Clear the previous tarball AND any stale sibling .sig from a prior build
+  # (sign-release.sh is a separate, out-of-band step never run by this
+  # script). Without this, a rebuild that changes the artifact's bytes
+  # leaves an old-but-still-present .sig next to the new tarball — the exact
+  # R4 finding (v0.14.0 security review): a directory listing showed a
+  # signature dated days before the artifact it sat beside, looking
+  # entirely valid. check-provenance.sh WOULD catch the mismatch, but only
+  # if someone runs it before shipping; a missing .sig is honest, a wrong
+  # one is dangerous.
+  rm -rf "$stage" "$OUT_DIR/aireos-postgres-$os.tar.gz" "$OUT_DIR/aireos-postgres-$os.tar.gz.sig"
+  mkdir -p "$stage"
   # fetch-postgres.sh runs in the base image; mount the repo (for the script) +
   # the output stage. MSYS_NO_PATHCONV is set by the caller on Windows hosts.
   docker run --rm \
