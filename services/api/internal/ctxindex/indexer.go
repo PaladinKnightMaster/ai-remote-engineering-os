@@ -2,6 +2,7 @@
 // CTX-3/K6, T-097). It rides the api's existing background-goroutine pattern (the
 // memory expiry sweep + the workstream schedule ticker precedent, main.go) — no new
 // systemd unit, env, or key (OI-17); the internal/* extraction trigger stays unfired.
+
 package ctxindex
 
 import (

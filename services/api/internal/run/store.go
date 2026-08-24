@@ -329,7 +329,7 @@ func (s *Store) Get(ctx context.Context, id string) (Run, error) {
 	return r, nil
 }
 
-// List returns up to limit runs in id (≈ creation) order with id > after
+// ListForOperator returns up to limit runs in id (≈ creation) order with id > after
 // (after="" starts at the head), without their steps (steps load on Get). The cursor
 // is the last id, or "" when empty.
 // It is operator-scoped (owner-only, matching GetRun): an operator never lists another

@@ -202,6 +202,7 @@ func TestWD11OutOfScopeDeniedInstalled(t *testing.T) {
 // either. Closing this for real on the installed stack would need one of:
 //   - a test-only env-overridable PairedTTL (mirroring the memory-sweep precedent), or
 //   - a narrow debug/admin force-expire route,
+//
 // both of which are product-code changes and out of T-122a's ratified scope.
 // SEC-34's REVOKED sub-case IS driven on this stack (TestWD11RevokedSessionRefusedInstalled)
 // and the EXPIRED sub-case IS driven on compose (wd11_negatives_test.go, tag e2e) —

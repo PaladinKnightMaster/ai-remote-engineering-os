@@ -30,7 +30,10 @@ tasks:
   lint:
     desc: "Run all linters. JS-side T-012 + Go-side T-011 close v0.1.0 SEC-7 + SEC-8 release-blockers."
     vars:
-      GOLANGCI_LINT: github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0
+      # v2 line (T-146/VER-25): v1.x does not compile under a Go 1.26
+      # builder (vendored x/tools failure). `.golangci.yaml` was migrated
+      # to the v2 schema in the same ticket -- see its header comment.
+      GOLANGCI_LINT: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.0
     cmds:
       # === JS side (T-012) ===
       - pnpm -r --if-present run lint
@@ -39,10 +42,12 @@ tasks:
       # golangci-lint via go run keeps the binary out of the host
       # toolchain (offline-install posture; ADR-0042 "smallest viable
       # tooling kit"). First run downloads + caches; subsequent runs
-      # are fast (gomodcache volume).
+      # are fast (gomodcache volume). --timeout: v2 dropped run.timeout
+      # from the config file (disabled by default), so the 5m bound that
+      # used to live in .golangci.yaml is passed here instead.
       - |
         for mod in packages/go/auth packages/go/middleware packages/go/migrate services/api services/audit-service services/connector-service services/mcp-gateway services/policy-service services/session-broker tools/migrate-lint tools/forbidden-features-check; do
-          (cd "$mod" && go run {{.GOLANGCI_LINT}} run ./... --config "$(git rev-parse --show-toplevel)/.golangci.yaml")
+          (cd "$mod" && go run {{.GOLANGCI_LINT}} run ./... --timeout 5m --config "$(git rev-parse --show-toplevel)/.golangci.yaml")
         done
       - go run ./tools/migrate-lint services/audit-service/migrations
       - go run ./tools/forbidden-features-check .
@@ -57,7 +62,7 @@ tasks:
       # resolve from the workspace root (the modules live one level deeper).
       - go test ./packages/go/auth/... ./packages/go/middleware/... ./packages/go/migrate/... ./services/api/... ./services/audit-service/... ./services/connector-service/... ./services/mcp-gateway/... ./services/policy-service/... ./services/session-broker/...
       # install.sh deployment-profile helpers (T-112a, OI-22's named live test).
-      # bash-only (no python3/go needed); needs bash, so run in golang:1.23 on
+      # bash-only (no python3/go needed); needs bash, so run in golang:1.26 on
       # the offline-only dev box (node:22-alpine has no bash).
       - bash infra/offline/install_profile_test.sh
       # setup-loopback-demo.sh's pure helpers (T-118b, ONB-3/ONB-4's named live
@@ -69,7 +74,7 @@ tasks:
       # body (root, useradd, chown) to prove byte-identical key reuse across a
       # re-install — a claim a pure-function test can't make. SKIPS (does not
       # fail) when not running as root, e.g. a bare non-container dev machine;
-      # it must be run inside golang:1.23 (or another root container) to
+      # it must be run inside golang:1.26 (or another root container) to
       # actually exercise the assertion. See the script's own header.
       - bash infra/offline/install_audit_key_test.sh
       # JS workspace unit tests (T-007a). `--if-present` skips packages
@@ -138,7 +143,7 @@ tasks:
       - bash infra/offline/sec45_bundle_mutation_test.sh
 
   measure-reproducibility:
-    desc: "OI-35/VER-6 (ADR-0070 D6/D7, T-130b): build the offline bundle TWICE from the CURRENT commit -- re-running the SPA build from scratch each time -- and diff both the tarball and the unpacked stage, attributed per layer (bin/*, web/, SBOM.cdx.json, SHA256_MANIFEST.txt, VERSION, config/, install.sh, setup-loopback-demo.sh). Non-reproducibility is a published FINDING, not a blocker (D7) -- the result is reported either way. Refuses on a dirty tree (a dirty tree flips vcs.modified between builds, making the measurement meaningless). Needs Docker (builds/reuses a local golang:1.23+node image) and the host's pnpm. NEVER writes into dist/offline/ -- uses scratch OUT_DIRs and asserts dist/offline is byte-unchanged on exit. See docs/releases/v0.13.0/reproducibility-report.md for the last published result."
+    desc: "OI-35/VER-6 (ADR-0070 D6/D7, T-130b): build the offline bundle TWICE from the CURRENT commit -- re-running the SPA build from scratch each time -- and diff both the tarball and the unpacked stage, attributed per layer (bin/*, web/, SBOM.cdx.json, SHA256_MANIFEST.txt, VERSION, config/, install.sh, setup-loopback-demo.sh). Non-reproducibility is a published FINDING, not a blocker (D7) -- the result is reported either way. Refuses on a dirty tree (a dirty tree flips vcs.modified between builds, making the measurement meaningless). Needs Docker (builds/reuses a local golang:1.26+node image) and the host's pnpm. NEVER writes into dist/offline/ -- uses scratch OUT_DIRs and asserts dist/offline is byte-unchanged on exit. See docs/releases/v0.13.0/reproducibility-report.md for the last published result."
     cmds:
       - bash infra/offline/measure-reproducibility.sh
 

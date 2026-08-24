@@ -86,10 +86,7 @@ func (c *Client) Decide(ctx context.Context, in DecideInput) (Decision, error) {
 	if c.BaseURL == "" {
 		return Decision{}, fmt.Errorf("policy URL not configured")
 	}
-	body, err := json.Marshal(decideRequest{
-		SessionID: in.SessionID, Subject: in.Subject, Edge: in.Edge,
-		Target: in.Target, Action: in.Action, RequiresApproval: in.RequiresApproval,
-	})
+	body, err := json.Marshal(decideRequest(in))
 	if err != nil {
 		return Decision{}, fmt.Errorf("marshal decide request: %w", err)
 	}

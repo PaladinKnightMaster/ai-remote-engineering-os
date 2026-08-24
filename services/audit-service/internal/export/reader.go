@@ -66,6 +66,7 @@
 // fed directly into internal/verify.Chain as the streaming EventSource.
 // This mirrors Exporter.Export's own two-bounded-passes design on the write
 // side (package doc (b)): the read side is the same idiom in reverse.
+
 package export
 
 import (

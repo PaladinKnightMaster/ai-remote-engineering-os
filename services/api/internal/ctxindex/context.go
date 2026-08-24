@@ -34,8 +34,9 @@ package ctxindex
 
 import "time"
 
-// Context-source scope types (ADR-0066 §1, K1): charter-bound only at v0.10.
-// Operator-shared / run-scoped sources are deferred (their own future scope values).
+// ScopeWorkstream is the only context-source scope value at v0.10 (ADR-0066 §1, K1):
+// sources are charter-bound. Operator-shared / run-scoped sources are deferred (their
+// own future scope values).
 const ScopeWorkstream = "workstream"
 
 // Context-source status values (CTX-5): active is the normal indexed state; errored

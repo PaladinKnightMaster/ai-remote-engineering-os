@@ -3,6 +3,7 @@
 // runs ONE command (no PTY, no shell), and returns its captured stdout/stderr
 // bounded to maxBytes under a command timeout. The broker stays the sole SSH
 // egress engine; the gateway never dials SSH.
+
 package sshpty
 
 import (

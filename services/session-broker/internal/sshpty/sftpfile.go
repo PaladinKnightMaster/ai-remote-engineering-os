@@ -8,6 +8,7 @@
 // Unlike Exec's stdout/stderr, a file's bytes cannot be safely truncated: a
 // truncated file is a corrupt file and a digest that matches nothing. So the
 // read and write paths here REFUSE an over-cap transfer instead of capping it.
+
 package sshpty
 
 import (

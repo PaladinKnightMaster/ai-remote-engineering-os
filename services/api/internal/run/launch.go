@@ -14,6 +14,7 @@
 // The refusal REASON strings are wire contract: the gateway surfaces them to the agent
 // ("run launch refused: <reason>") and the live e2e asserts their substrings — change one
 // and the gate breaks by design.
+
 package run
 
 import (
