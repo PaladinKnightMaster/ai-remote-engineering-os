@@ -85,3 +85,84 @@ test("operator resolves a parked tool invocation in the browser", async ({ page 
   }
   await agent.dispose();
 });
+
+// T-143 (FE-43/44/45, ADR-0071 §D3): the file-family leg. Proves, against the
+// BUILT bundle in a real browser (jsdom does not satisfy this — CLAUDE.md
+// §Definition of done), that a remote.file.write invocation renders with the
+// FIXED per-tool copy (not the old hardcoded "run a command" sentence), the
+// mutating affordance, and its verbatim §D3 descriptor (path/size/digest/mode)
+// under an accurate "file descriptor" label — never a "command" label, and
+// never the raw file content (which the gateway never persists — T-141).
+test("operator sees a remote.file.write invocation described and marked as mutating", async ({
+  page,
+}, testInfo) => {
+  await login(page);
+
+  const csrf = (await page.context().cookies()).find((c) => c.name === "aireos_csrf")?.value ?? "";
+  // D7: file operations require the verb explicitly in scope — "exec" alone
+  // (as the first test mints) would be rejected for remote.file.write.
+  const mint = await page.request.post("/v1/agent-tokens", {
+    headers: { "X-CSRF-Token": csrf },
+    data: { agentId: "smoke-file", resourceId: FLAGGED_RESOURCE_ID, operations: ["file.write"] },
+  });
+  expect(mint.ok(), "operator must be able to mint a file.write-scoped agent token").toBeTruthy();
+  const { token } = await mint.json();
+
+  const path = "/tmp/t143-smoke.txt";
+  const content = Buffer.from("T-143 SMOKE CONTENT — must never render in the approval prompt").toString(
+    "base64",
+  );
+
+  const agent = await pwRequest.newContext({ baseURL: GATEWAY_URL, ignoreHTTPSErrors: true });
+  const held = agent
+    .post("/mcp", {
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      data: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "remote.file.write",
+          arguments: { resourceId: FLAGGED_RESOURCE_ID, path, content },
+        },
+      },
+      timeout: 180_000,
+    })
+    .catch(() => null);
+
+  const prompt = page.getByRole("region", { name: "approval required" });
+  await expect(async () => {
+    await page.goto("/invocations");
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(prompt).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 60_000 });
+
+  // The fixed description: accurate for a write, not the exec sentence.
+  await expect(prompt).toContainText(/requesting to write a file/i);
+  await expect(prompt).not.toContainText(/requesting to run a command/i);
+  // The mutating affordance (FE-43: visually distinguishable as changing the host).
+  await expect(prompt.getByRole("status")).toContainText(/mutates target host/i);
+  // The verbatim §D3 descriptor, under the CORRECT label — path + mode, and a
+  // sha256 digest, never the raw base64 content.
+  const descriptor = page.getByLabel("file descriptor");
+  await expect(descriptor).toContainText(path);
+  await expect(descriptor).toContainText(/sha256:[0-9a-f]{64}/);
+  await expect(descriptor).toContainText(/mode 0[0-7]{3}/);
+  await expect(descriptor).not.toContainText("T-143 SMOKE CONTENT");
+  await expect(page.getByLabel("command")).toHaveCount(0); // wrong label must not linger
+
+  await testInfo.attach("pending-file-write-invocation", {
+    body: await page.screenshot(),
+    contentType: "image/png",
+  });
+
+  await page.getByRole("button", { name: "Deny" }).click();
+  await expect(prompt).toHaveCount(0, { timeout: 30_000 });
+
+  const res = await held;
+  if (res) {
+    expect(res.ok()).toBeTruthy();
+    expect(JSON.stringify(await res.json())).toContain("denied");
+  }
+  await agent.dispose();
+});

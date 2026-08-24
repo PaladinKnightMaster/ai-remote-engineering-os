@@ -3,7 +3,12 @@
 // (GET /v1/invocations, proxied by services/api to the gateway) and lets the
 // operator approve/deny each one, reusing <ApprovalPrompt>. The approval is enforced
 // server-side (api → gateway → policy); this UI only drives the audited control
-// plane. Each row shows the EXACT command (ADR-0059) so consent is informed.
+// plane. Each row shows the EXACT descriptor (ADR-0059/§D3) so consent is informed.
+//
+// T-143 (FE-43): the description/label/mutating-affordance are driven by `inv.tool`
+// (already a required PendingInvocation field — no fragment change) rather than a
+// hardcoded "run a command" sentence, which was accurate for remote.exec alone and
+// became a live falsehood once remote.file.read/write/list registered (ADR-0071).
 
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -108,7 +113,7 @@ export function Invocations() {
               ) : null}
               <ApprovalPrompt
                 title="Tool invocation approval"
-                description="An AI agent is requesting to run a command on a governed resource."
+                tool={inv.tool}
                 agent={inv.agent}
                 resourceId={inv.resourceId}
                 command={inv.command}

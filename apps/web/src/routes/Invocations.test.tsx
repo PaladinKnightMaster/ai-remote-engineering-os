@@ -158,4 +158,45 @@ describe("Invocations route", () => {
     renderInvocations();
     await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/could not load/i));
   });
+
+  // T-143 (FE-43/FE-44): the description must be accurate per tool, not the
+  // hardcoded "run a command" sentence — that sentence is now WRONG for a file
+  // invocation. Also proves FE-44: a file write renders its verbatim §D3
+  // descriptor (path/size/digest/mode) without leaking content, and is visually
+  // distinguishable as mutating.
+  it("describes a remote.file.write invocation accurately and marks it as mutating (FE-43/44)", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue({
+      data: {
+        invocations: [
+          {
+            id: "inv-7",
+            agent: "agent:smoke",
+            resourceId: "r-1",
+            tool: "remote.file.write",
+            command: "remote.file.write /etc/nginx/nginx.conf (4218 bytes, sha256:9f2c00000000000000000000000000000000000000000000000000000a41b, mode 0644)",
+            status: "pending_approval",
+          },
+        ],
+      },
+      error: undefined,
+    } as never);
+    renderInvocations();
+
+    await waitFor(() => expect(screen.getByText(/agent:smoke/)).toBeTruthy());
+    expect(screen.getByText(/requesting to write a file/i)).toBeTruthy();
+    expect(screen.queryByText(/requesting to run a command/i)).toBeNull(); // the fixed falsehood
+    expect(screen.getByRole("status").textContent).toMatch(/mutates target host/i);
+    expect(screen.getByLabelText("file descriptor").textContent).toBe(
+      "remote.file.write /etc/nginx/nginx.conf (4218 bytes, sha256:9f2c00000000000000000000000000000000000000000000000000000a41b, mode 0644)",
+    );
+    expect(screen.queryByLabelText("command")).toBeNull();
+  });
+
+  it("still describes a remote.exec invocation as running a command, unregressed", async () => {
+    vi.mocked(apiClient.GET).mockResolvedValue(onePending as never);
+    renderInvocations();
+    await waitFor(() => expect(screen.getByText(/agent:smoke/)).toBeTruthy());
+    expect(screen.getByText(/requesting to run a command on a governed resource/i)).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
 });

@@ -62,4 +62,89 @@ describe("ApprovalPrompt", () => {
     expect(screen.getByText(/requires approval before it can start/i)).toBeTruthy();
     expect(screen.queryByLabelText("command")).toBeNull();
   });
+
+  // T-143 (FE-43, ADR-0071 §D3): description/payload-label are driven off `tool`,
+  // not hardcoded by the caller — this is the fix for the live falsehood where every
+  // invocation (file ops included) was told "run a command".
+  describe("tool-derived copy (T-143)", () => {
+    it("renders the exec sentence and 'command' label for remote.exec, unchanged", () => {
+      render(
+        <ApprovalPrompt onApprove={() => {}} onDeny={() => {}} tool="remote.exec" command="echo hi" />,
+      );
+      expect(screen.getByText(/requesting to run a command on a governed resource/i)).toBeTruthy();
+      expect(screen.getByLabelText("command").textContent).toBe("echo hi");
+      expect(screen.queryByRole("status")).toBeNull(); // no mutating badge for exec
+    });
+
+    it("renders the read sentence and a 'file descriptor' label for remote.file.read", () => {
+      render(
+        <ApprovalPrompt
+          onApprove={() => {}}
+          onDeny={() => {}}
+          tool="remote.file.read"
+          command="remote.file.read /etc/nginx/nginx.conf"
+        />,
+      );
+      expect(screen.getByText(/requesting to read a file/i)).toBeTruthy();
+      expect(screen.getByLabelText("file descriptor").textContent).toBe(
+        "remote.file.read /etc/nginx/nginx.conf",
+      );
+      expect(screen.queryByLabelText("command")).toBeNull(); // wrong label must not linger
+    });
+
+    it("renders the list sentence and a 'directory descriptor' label for remote.file.list", () => {
+      render(
+        <ApprovalPrompt
+          onApprove={() => {}}
+          onDeny={() => {}}
+          tool="remote.file.list"
+          command="remote.file.list /etc/nginx"
+        />,
+      );
+      expect(screen.getByText(/requesting to list a directory/i)).toBeTruthy();
+      expect(screen.getByLabelText("directory descriptor").textContent).toBe("remote.file.list /etc/nginx");
+    });
+
+    it("marks remote.file.write as mutating: badge, MUTATES copy, and the not-content consent line", () => {
+      render(
+        <ApprovalPrompt
+          onApprove={() => {}}
+          onDeny={() => {}}
+          tool="remote.file.write"
+          command="remote.file.write /etc/nginx/nginx.conf (4218 bytes, sha256:9f2c00000000000000000000000000000000000000000000000000000a41b, mode 0644)"
+        />,
+      );
+      expect(screen.getByRole("status").textContent).toMatch(/mutates target host/i);
+      expect(screen.getByText(/MUTATES the target host/)).toBeTruthy();
+      expect(screen.getByText(/approving the path, size, digest and mode/i)).toBeTruthy();
+      expect(screen.getByText(/not the file's contents/i)).toBeTruthy();
+      expect(screen.getByLabelText("file descriptor").textContent).toMatch(/^remote\.file\.write /);
+    });
+
+    it("does not show the mutating badge or not-content line for a non-write tool", () => {
+      render(
+        <ApprovalPrompt
+          onApprove={() => {}}
+          onDeny={() => {}}
+          tool="remote.file.read"
+          command="remote.file.read /etc/nginx/nginx.conf"
+        />,
+      );
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByText(/not the file's contents/i)).toBeNull();
+    });
+
+    it("falls back to the caller's description override even when tool is set", () => {
+      render(
+        <ApprovalPrompt
+          onApprove={() => {}}
+          onDeny={() => {}}
+          tool="remote.file.write"
+          description="custom override text"
+          command="remote.file.write /a (1 bytes, sha256:aa, mode 0644)"
+        />,
+      );
+      expect(screen.getByText("custom override text")).toBeTruthy();
+    });
+  });
 });
