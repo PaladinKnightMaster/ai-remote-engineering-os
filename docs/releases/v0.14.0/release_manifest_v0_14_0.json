@@ -1,0 +1,45 @@
+{
+  "release": "v0.14.0",
+  "name": "Governed Tool Surface",
+  "adrs_added": [
+    "ADR-0071 governed file transfer",
+    "ADR-0072 Go toolchain support-window policy"
+  ],
+  "new_walkthrough_demos": "none — no new WD minted (structural rule #2: new tools on an existing edge/trust boundary, not new governance semantics)",
+  "tickets": {
+    "T-137": "ADR-0071 Accepted + release criteria authored; pre-authoring audit changed scope twice before ratification (2026-08-19).",
+    "T-138": "The seam — execAndFinish + the Broker interface become operation-dispatching; runGovernedStep and everything above it byte-for-byte unchanged. Review caught the dispatch source: the tool must come from the PERSISTED invocation row, not caller-supplied input, or a reattach could select a different operation than the one approved (tool confusion).",
+    "T-139a/b": "Broker /v1/file leg over the existing lease (pkg/sftp, SEC-51 subject pin). Review caught that the first write implementation opened with O_TRUNC and removed the target on ANY failure — a transient chmod error deleted a correctly-written file. Fixed: temp sibling + O_CREATE|O_EXCL + chmod + PosixRename, so a non-succeeding write leaves the target byte-for-byte unchanged.",
+    "T-140a/b": "remote.file.read end-to-end + the D7 SEC-16 scope narrowing (empty operations list unrestricted for exec only, every other verb explicit). SEC-48 proven in both directions in one test.",
+    "T-141": "remote.file.write + the D3 approval descriptor + SEC-49 digest binding. Consult decided option (c) for parked content: held in memory for the blocking call, never persisted — option (b), packing content into the command blob, was rejected on the fact that no code path ever deletes an invocations row, which would have retained every written file forever with no erasure path.",
+    "T-142": "remote.file.list completes the family — the release's designated drop candidate, not dropped. Review corrected a Commander brief's mutation-fidelity reasoning: encoding/json's case-insensitive fallback meant the asserted silent-corruption mode was wrong, though the fix (explicit tags + golden fixture) was still correct for the real failure mode (a renamed key).",
+    "T-143": "Operator surface — <ApprovalPrompt> derives description/payload-label/consequence from the persisted tool name (FE-43/44/45). Review fixed two copy issues: dropped an all-caps 'MUTATES' (screen-reader/tone), and generalized the write-only 'not the content' line into a per-tool consequence (write/read/list each disclose something different).",
+    "T-144": "Capstone — live e2e both stacks, both negative proofs, chain intact, zero codegen/fragment drift. THE FINDING: SFTP had never once worked end-to-end — the e2e fixture's sshd_config registered no SFTP subsystem, so every live file call failed through five tickets and three reviews because every unit test stubbed the SFTP layer. One-line fixture fix. Also found: a postgres companion rebuild left a stale .sig beside a mismatched artifact (-> VER-21/T-145), and the file family is proven on compose only, not the installed stack (-> SEC-52 R2).",
+    "T-144b": "SEC-52 cumulative security review before tag. Verdict: no exploitable defect in what this release changed. One latent finding SEC-52-1 (mixed provenance at the allow-now performAndFinish call site, zero-behavior-change remediation recommended for T-145) plus seven stated residuals R1-R7.",
+    "T-146": "Toolchain currency (VER-23..28), sequenced to run before the T-144 capstone so the capstone/SBOM/reproducibility measurement certify the toolchain that actually shipped. Builder moved to golang:1.26 (the go.mod directive is NOT raised — a separate, deferred decision); golangci-lint migrated v1.61.0 -> v2.13.0 (the entire v1 line does not run on Go 1.26); ADR-0072 supersedes ADR-0041's point-in-time toolchain clause with a standing support-window rule.",
+    "T-145": "Closure — VER-21 (F-1 closed: task release-check now states plainly whether provenance was verified or self-skipped, rather than leaving the two outcomes indistinguishable), the concrete stale-.sig fix in both build scripts, SEC-52-1's zero-behavior-change fix, DOC-37/38/39/40, BUNDLE_VERSION already at 0.14.0 (T-144 OI-44)."
+  },
+  "gates": {
+    "VER-17 WD-1..11 both stacks": "PASS at T-144 — compose 61 PASS/0 FAIL, INTACT+ATTESTED through seq 653; installed WD1_EXIT=0, 8 PASS/0 FAIL, INTACT+ATTESTED through seq 242, SEC-43 negative proof correct on both",
+    "VER-18 smoke": "PASS at T-144 — 21 passed, including the T-143 remote.file.write leg",
+    "VER-19 CEO human pass": "PENDING — CEO, verification_runbook.md Step 4 (mint a scoped token, read a file, write a file under approval, watch a denial)",
+    "VER-20 seam neutrality": "PASS at T-138 — existing suite green with zero test edits",
+    "VER-2/CON-13 zero fragment+codegen drift": "PASS at T-144, re-verified across the whole release (git diff 8aaeecc..dev)",
+    "VER-26/OI-4 bundle size": "PASS at T-144 — 44.7 MB gz vs the 150 MB cap (42.5 MB at v0.13.0; +2.2 MB for the file family + Go 1.26)",
+    "SEC-52 cumulative security review": "DONE 2026-08-24 (T-144b) — no exploitable defect; SEC-52-1 fixed at T-145",
+    "VER-21 F-1 closed": "DONE at T-145 — release-check states verified vs self-skipped; the concrete T-144 stale-.sig instance fixed in both build scripts"
+  },
+  "dropped": "none — the designated drop candidate (remote.file.list, T-142) was shipped, not dropped",
+  "non_claims": [
+    "no live proof of remote.file.* on the installed stack (compose only, R2)",
+    "no survival of a parked write across a gateway restart (R5, correct failure direction, stated not discovered)",
+    "no containment of what an approved remote.exec (or file write) does once it runs (R1, deferred to v1.0.0 Beta 1)",
+    "no raised go directive in go.mod (builder moved, directive deliberately held, its own deferred decision)"
+  ],
+  "corrections_of_record": [
+    "threat-model.md residual #1 previously read 'closes at v0.14' for containment (B-040/WD-12); corrected to v1.0.0 Beta 1 per the 2026-08-19 CEO-ratified deferral, rather than left to read stale beside this release's own file-tool residuals",
+    "a T-142 Commander brief's mutation-fidelity reasoning was wrong (encoding/json case-insensitive fallback); the resulting fix was still correct for the real failure mode, a renamed JSON key",
+    "a T-140a brief self-contradicted (asked for both 'a tool error, not a Go error' and 'the same treatment def.Target gets', which differ); the implementer flagged it and implemented the explicitly testable clause rather than silently picking one"
+  ],
+  "review_caught_defects": "at least 5 across the ladder before this ticket (T-138 tool-confusion dispatch source; T-139a/b destructive-write-on-failure; T-143 copy issues x2; T-144 capstone's SFTP-never-worked-until-now finding), plus SEC-52-1 found by the T-144b cumulative security review — consistent with the standing v0.9-v0.13 record that diff review, not a green suite, is the control that catches defects on this project"
+}

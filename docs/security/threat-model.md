@@ -35,10 +35,10 @@ rest of the document.
 | | Category | Our posture |
 |---|---|---|
 | **ASI01** | Agent Goal Hijack | **Partial.** An agent cannot widen its own authority: the delegation grant is operator-issued and the agent never mints a token (ADR-0062). A hijacked goal still executes only through governed, audited steps — but nothing detects that the *goal* changed. |
-| **ASI02** | Tool Misuse & Exploitation | **Gapped → §2.** One tool exists (`remote.exec`); every invocation is policy-gated and audited, but what a spawned process then does is not contained. |
+| **ASI02** | Tool Misuse & Exploitation | **Gapped → §2.** Four tools now cross the boundary (`remote.exec` plus the v0.14.0 `remote.file.read`/`write`/`list` family, ADR-0071); every invocation is policy-gated and audited, but what a spawned `remote.exec` process then does is still not contained — see §2a. |
 | **ASI03** | Identity & Privilege Abuse | **Gapped → §2.** Per-workload asymmetric keys (ADR-0060) mean an agent-plane compromise cannot mint foreign-edge tokens — **measured** by WD-4's negative test. The residual is post-execution, not token-level. |
 | **ASI04** | Agentic Supply Chain Vulnerabilities | **Closed this release.** Both shipped artifacts carry detached Ed25519 signatures and CycloneDX 1.6 SBOMs whose coverage is asserted against actual contents (ADR-0070). **No SLSA level is claimed** — see §6. |
-| **ASI05** | Unexpected Code Execution (RCE) | **Gapped → §2.** `remote.exec` *is* sanctioned remote code execution; the boundary is what happens after approval. |
+| **ASI05** | Unexpected Code Execution (RCE) | **Gapped → §2.** `remote.exec` *is* sanctioned remote code execution; the boundary is what happens after approval. Unaffected by the v0.14.0 file family — see §2a. |
 | **ASI06** | Memory & Context Poisoning | **Strong.** The `agent-memory` edge is **read-only** — `memory.read` is the one lit path (`services/mcp-gateway/internal/catalog/catalog.go:253`), containment is enforced inside the query by CTE rather than by filtering after the fact, and sharing is gated. An agent cannot write to memory at all. |
 | **ASI07** | Insecure Inter-Agent Communication | **Out of scope, stated rather than left silent.** The product is single-plane: there is no agent-to-agent path. An agent that attempted to sub-delegate was stopped by construction (observed at v0.9, T-092). If a second agent plane is ever added this row becomes live and needs its own ADR. |
 | **ASI08** | Cascading Failures | **See §1.1 — this repo previously mapped ASI08 to the wrong category.** |
@@ -83,9 +83,41 @@ contained, and its own network activity is entirely ungoverned.** It can open so
 Nothing structurally compels an agent to reach the target *through* us — "the gateway is the sole
 tool-execution path" is an architectural assumption, not an enforced property.
 
-We state this rather than let a red-teamer discover it. Enforcement lands at **v0.14** (B-040, gated
-by WD-12, under its own ADR): a microVM sandbox that programs the packet filter itself, so
-egress-through-proxy becomes a deployment property rather than a runbook step.
+We state this rather than let a red-teamer discover it. **Containment (B-040, WD-12) is deferred, not
+cancelled — the path is v0.14.0 → v1.0.0 Beta 1**, where layer 2 lands and the tool surface freezes
+(`CLAUDE.md`, `docs/requirements/epic_story_catalog_v4.md` §Part 4, CEO-ratified 2026-08-19). It did
+not land at v0.14.0 as an earlier revision of this document anticipated; the residual register below is
+corrected accordingly rather than left to read stale.
+
+### 2a. v0.14.0 addendum — the file tool family narrows the audit gap, not the containment gap (DOC-40)
+
+ADR-0071 (v0.14.0 "Governed Tool Surface") added `remote.file.read`, `remote.file.write` and
+`remote.file.list` on the **same** `agent-remote-session` edge, same credential custody, same
+sole-SSH-egress broker (§ADR-0071 "Security posture"). Two things follow, carried here verbatim from
+that section because they are residuals a reader of *this* document should not have to find in an ADR:
+
+- **The new tools are better governed than the one beside them.** They are typed, bounded (1 MiB
+  default, fail-closed on over-cap rather than truncated — a truncated file is a corrupt file), digest-
+  anchored (§5 below never carries raw content; the sha256 is what execution and audit both bind to),
+  and separately grantable (an agent token must name `file.read`/`file.write` explicitly — an empty
+  operations list is unrestricted for `exec` alone, never for the file verbs). `remote.exec` predates
+  all four properties.
+- **`remote.exec` can still do everything the file tools do, less legibly (R1).** `cat`/shell
+  redirection reads and writes the same bytes on the same resources with no typed bounds, no digest
+  anchor, and no disclosure line in the approval prompt. This release does not and cannot close that
+  gap — it narrows the space of actions that are typed and legible, but the untyped path stays open
+  beside it. **Only containment constrains what an approved command may do once it runs**, and
+  containment is the deferred item immediately above.
+- **An operator approving a file write approves the path, size, digest and mode — not the file's
+  contents** (ADR-0071 §D3). `<ApprovalPrompt>` renders this as a plain-language consequence line
+  (`packages/ui/src/components/ApprovalPrompt.tsx`) rather than only in the descriptor payload,
+  because an accurate prompt that omits the consequence is still uninformed consent. This is a genuine
+  narrowing of "informed" for a write, and the read/list disclosure line ("the file's contents will be
+  disclosed to the agent" / "this directory's filenames, sizes and timestamps will be disclosed to the
+  agent") carries the equivalent honesty for the two non-mutating members.
+- **Live file transfer is proven on one stack, not two.** The family is exercised end-to-end on compose
+  only (T-144); WD-1 does not exercise it and VER-17 does not require it. Stated here rather than left
+  to be assumed at parity with `remote.exec`, which both stacks do exercise.
 
 ---
 
@@ -196,7 +228,7 @@ Recorded because a buyer will discover it, and it is better said by us.
 
 | # | Residual | Closes at |
 |---|---|---|
-| 1 | Spawned-process network activity is ungoverned (§2) | v0.14 — B-040, WD-12 |
+| 1 | Spawned-process network activity is ungoverned (§2) | **v1.0.0 Beta 1** — B-040, WD-12 (deferred past v0.14.0, CEO-ratified 2026-08-19; corrected here from an earlier "v0.14" target) |
 | 2 | `audit-service` RCE can sign forged heads (§5) | v0.14 — external witness |
 | 3 | The Postgres owner role can drop the append-only trigger (§5) | v0.14 — privilege separation |
 | 4 | Operator logout does not invalidate the token (§3) | v1.1 — B-032 |
@@ -205,7 +237,9 @@ Recorded because a buyer will discover it, and it is better said by us.
 | 7 | A compromised build host produces a validly-signed artifact (§6) | needs a trusted builder |
 | 8 | First-contact trust: artifact and key over one channel (§6) | fingerprint published; cannot be forced |
 | 9 | No behavioural anomaly detection for in-grant rogue behaviour (ASI10) | unscheduled |
+| 10 | **`remote.exec` can do everything the v0.14.0 file tools do, less legibly** — no typed bounds, no digest anchor, no disclosure line (§2a, ADR-0071 R1) | same as #1 — containment is what closes it |
+| 11 | Live file transfer (`remote.file.*`) is proven end-to-end on the compose stack only, not the installed stack (§2a, ADR-0071 R2) | promotion trigger: the first release that adds a WD touching file transfer |
 
-Residuals 1, 2 and 3 share one shape: **the enforcement and the thing being enforced sit inside a
+Residuals 1, 2, 3 and 10 share one shape: **the enforcement and the thing being enforced sit inside a
 single trust boundary.** That is the honest through-line of this release, and it is what a containment
 layer and an external witness begin to address.

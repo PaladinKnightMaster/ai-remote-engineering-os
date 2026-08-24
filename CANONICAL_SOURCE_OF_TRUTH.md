@@ -67,7 +67,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | v0.11.0 release artifacts (DOC-22) | `docs/releases/v0.11.0/` (release notes + manifest + verification runbook + criteria) |
 | v0.12.0 release artifacts (DOC-29) | `docs/releases/v0.12.0/` (release notes + manifest + verification runbook + criteria) |
 | v0.13.0 release artifacts (DOC-36) | `docs/releases/v0.13.0/` (release notes + manifest + verification runbook + criteria + security capstone + threat model + reproducibility report) |
-| **v0.14.0 — IN PROGRESS** | `docs/releases/v0.14.0/` (**criteria only so far** — Accepted 2026-08-19; notes + manifest + runbook are authored at closure, DOC-38/T-145) |
+| v0.14.0 release artifacts (DOC-38) | `docs/releases/v0.14.0/` (release notes + manifest + verification runbook + criteria + security review — closed at T-145; §human GATE pending, VER-19) |
 | Reference inventory | **`references/references_v4.csv`** (live). `references/references_v3.csv` is **frozen as history** |
 | Reference tags | `references/reference-tags-v3.md` |
 | Deep-dive / historical docs | `docs/deep-dive/` |
