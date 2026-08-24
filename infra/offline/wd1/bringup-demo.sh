@@ -75,7 +75,7 @@ docker volume create "$KEYVOL" >/dev/null
 log "generate ssh keys (keys-only seed)"
 docker run --rm -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod -v "$KEYVOL":/seed-keys \
   -e SEED_KEYS_ONLY=1 -e SEED_KEY_DIR=/seed-keys -e AIREOS_RESOURCE_SECRET_KEY=unused -e DATABASE_URL=unused \
-  golang:1.23 bash -c 'go run ./tests/e2e/cmd/seed' >/dev/null
+  golang:1.26 bash -c 'go run ./tests/e2e/cmd/seed' >/dev/null
 
 log "start test sshd"
 docker run -d --name "$SSHD" --network "$NET" --network-alias "$SSHD" \

@@ -86,7 +86,7 @@ docker volume create "$CTXVOL" >/dev/null
 log "generate ssh keys (keys-only seed)"
 docker run --rm -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod -v "$KEYVOL":/seed-keys \
   -e SEED_KEYS_ONLY=1 -e SEED_KEY_DIR=/seed-keys -e AIREOS_RESOURCE_SECRET_KEY=unused -e DATABASE_URL=unused \
-  golang:1.23 bash -c 'go run ./tests/e2e/cmd/seed' >/dev/null
+  golang:1.26 bash -c 'go run ./tests/e2e/cmd/seed' >/dev/null
 
 # 4. test sshd target (reads its host key + authorized client key from KEYVOL).
 log "start test sshd"
@@ -232,7 +232,7 @@ log "run the WD-1 walkthrough driver (Caddy HTTPS, verified)"
 docker run --rm --network "$NET" -v "$REPO_ROOT":/work -w /work -v aireos_gomodcache:/go/pkg/mod \
   -v "$CA_FILE":/wd1ca/root.crt:ro -v "$CTXVOL":"$CTXPATH" \
   -e WD1_BASE_URL="https://$HOST" -e WD1_CA_FILE=/wd1ca/root.crt -e WD1_CONTEXT_ROOT="$CTXPATH" \
-  golang:1.23 bash -c 'go test -tags wd1 -count=1 -v -timeout 1500s ./tests/e2e/...' 2>&1 | tail -60
+  golang:1.26 bash -c 'go test -tags wd1 -count=1 -v -timeout 1500s ./tests/e2e/...' 2>&1 | tail -60
 
 # 11. assert the audit chain host-internally (WD-2.4: integrity + the governed
 #     wedge events in one chain). Retry: policy/connector relays deliver via

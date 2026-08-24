@@ -181,10 +181,10 @@ echo "== OI-38: socket-activated sshd is a supported precondition, and this test
 # only when the script is invoked as its own process. Proving it needs root
 # (the script's own `[ "$(id -u)" = "0" ]` gate) and a way to control
 # `systemctl is-active`, so — same pattern as install_audit_key_test.sh —
-# this SKIPS rather than failing when not run as root; run inside golang:1.23
+# this SKIPS rather than failing when not run as root; run inside golang:1.26
 # (or another root container) to actually exercise it.
 if [ "$(id -u)" != "0" ]; then
-  echo "SKIP OI-38 live check -- needs root to reach setup-loopback-demo.sh's real CLI entry; run inside golang:1.23 (or another root container)"
+  echo "SKIP OI-38 live check -- needs root to reach setup-loopback-demo.sh's real CLI entry; run inside golang:1.26 (or another root container)"
 else
   FAKEBIN="$(mktemp -d)"
   # A minimal `systemctl is-active --quiet <unit>` stand-in: only ssh.socket

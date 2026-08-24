@@ -24,7 +24,7 @@
 name: aireos-e2e
 
 x-go: &go
-  image: golang:1.23
+  image: golang:1.26
   working_dir: /work
   volumes:
     - ../../:/work

@@ -5,7 +5,7 @@
 # HOST-SIDE, OUT-OF-BAND STEP. Run this on the machine where the release
 # private key is held. Do NOT run it inside build-bundle.sh, do NOT run it
 # inside a build container, and do NOT wire it into `task offline-bundle` —
-# build-bundle.sh's cross-compile step already runs inside a golang:1.23
+# build-bundle.sh's cross-compile step already runs inside a golang:1.26
 # container on this host (no local go toolchain), and a release key must
 # never enter a build context (ADR-0070 D3: "never on a build host that runs
 # untrusted code"). Build produces the artifact; this distinct, separate step

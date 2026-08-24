@@ -13,7 +13,7 @@
 # container rather than on a bare host:
 #
 #   docker run --rm -v "$PWD":/work -w /work -v aireos_gomodcache:/go/pkg/mod \
-#     golang:1.23 bash infra/offline/install_audit_key_test.sh
+#     golang:1.26 bash infra/offline/install_audit_key_test.sh
 #
 # If invoked as a non-root user (e.g. accidentally reached via `task test` on
 # a bare developer machine) it SKIPS rather than mutating a real host's

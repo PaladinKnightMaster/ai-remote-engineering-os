@@ -39,7 +39,7 @@
 # already C.UTF-8) — this script does not and cannot measure it, and the
 # report says so rather than implying same-host coverage proves it.
 #
-# Build environment: a local Docker image is built ONCE from `golang:1.23`
+# Build environment: a local Docker image is built ONCE from `golang:1.26`
 # (Debian bookworm) with `nodejs`/`npm` added via apt (needed for
 # build-bundle.sh step 5c, the CycloneDX SBOM's node/npx fragment — see
 # infra/offline/sbom/generate-sbom.sh). The SAME tagged image is used for
@@ -106,12 +106,12 @@ log "measuring commit $COMMIT (clean tree confirmed) at BUNDLE_VERSION=$BUNDLE_V
 # while authoring this script), and pnpm itself is installed at the exact
 # version this repo's package.json pins ("packageManager": "pnpm@10.32.1"),
 # not left to whatever `corepack`/apt would pick.
-IMAGE_TAG="aireos-repro-builder:golang1.23-node"
+IMAGE_TAG="aireos-repro-builder:golang1.26-node"
 if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-  log "building measurement image $IMAGE_TAG (golang:1.23 + Node 22.x + pnpm 10.32.1) -- one-time"
+  log "building measurement image $IMAGE_TAG (golang:1.26 + Node 22.x + pnpm 10.32.1) -- one-time"
   BUILD_CTX="$(mktemp -d)"
   cat > "$BUILD_CTX/Dockerfile" <<'EOF'
-FROM golang:1.23
+FROM golang:1.26
 RUN apt-get update -qq \
  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y -qq nodejs \
