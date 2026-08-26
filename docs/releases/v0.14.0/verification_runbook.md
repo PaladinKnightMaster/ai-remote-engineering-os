@@ -126,6 +126,71 @@ that its digest matches what the prompt showed.
 resolves to `denied` (not `failed`), the target host is unchanged, and the denial is visible on
 `/audit` or `/invocations` with the correct terminal outcome (AUD-44).
 
+**⚠ 3.4a — KNOWN, found during the §human pass itself (2026-08-25): the approval queue goes stale.**
+`/invocations` does **not** auto-refresh, and a parked approval expires on policy's **120-second TTL** —
+after which the TTL sweeper marks it `denied` and the invocation `failed`. So an operator who leaves the
+page open for more than two minutes is looking at **approval prompts that are already dead**, with live
+Approve/Deny buttons. The backend is correct (`GET /v1/invocations` returns `[]`, and the DB shows
+`denied` + `failed` consistently) — **only the rendered page is stale.** Hit **Refresh** before trusting
+the queue. Recorded rather than fixed: v0.11's E-07 live refresh does not cover this route, and adding
+it is a UI change this release explicitly excludes. **Consequence to weigh at v1.0: a 120s TTL against a
+manually-refreshed queue is a short window, and the operator's mental model breaks silently.**
+
+**⚠ 3.3a — FINDING from the §human pass (2026-08-25): the digest wraps MID-HASH.**
+The descriptor block uses `break-all` (T-143, chosen to avoid a horizontal scrollbar), so at the
+cockpit's width the sha256 splits across lines at an arbitrary character:
+
+```
+remote.file.write /tmp/aireos-human-pass.txt (25
+bytes, sha256:e3339a969bfd2d73e7c5b61fbccd830aa2
+7bd15aab6d2c8774177ec9c23129b3, mode 0644)
+```
+
+**The digest is the ONE value the consent model asks the operator to compare character-by-character** —
+D3's whole narrowing is "you are approving the digest, not the bytes." Breaking it at an unpredictable
+point makes that comparison harder than it needs to be: the operator must mentally rejoin the hash
+across a line break before diffing it against the source. The prompt is *accurate*; the **affordance for
+the thing it asks you to verify is weaker than the claim it rests on.**
+
+Not fixed in v0.14.0: the obvious fixes either change the **descriptor format** (whose per-tool prefixes
+are a security control, criteria §14e) or need client-side parsing of it (explicitly forbidden at T-143
+— a second parser in a second language would drift). **A CSS-only fix cannot isolate the digest without
+parsing.** → **v1.0 candidate**, with the honest framing: *if we ask an operator to verify a digest, the
+UI should make verifying it easy.*
+
+### ✅ VER-19 RESULT — §human pass COMPLETE, 2026-08-25. All four legs passed.
+
+Driven by the CEO on the review stack (compose + the cockpit dev proxy). **Chain evidence captured
+live**, not asserted:
+
+| Leg | Result |
+|---|---|
+| **3.2 read** | Approved. Content + digest returned; chain seq 30-37. |
+| **3.3 write** | Approved. **FOUR independently-computed digests agreed** — client-side before the call, the approval prompt, the broker's response, and `sha256sum` **on the target host**. File landed 25 bytes, mode 0644, matching the descriptor exactly. |
+| **3.4 denial** | Denied. Agent got a clean tool error (`isError:true`), **not** a crash. |
+
+⭐ **The read/write chains prove the central claim in order:** `approval.granted` (34/42) precedes
+`credential.leased` (35/43). **The credential is not leased until a human approves.**
+
+⭐ **The denial proves it by absence.** Its chain is four events —
+`tool.invoked` → `policy.decision:requires_approval` → **`approval.denied:operator`** →
+`tool.result:error`. The approved write was six. **The two missing events are `credential.leased` and
+`remote.file.write`**: no lease, no egress, host never contacted, and `/tmp` left with no orphaned temp
+file (execution never began). The `:operator` suffix distinguishes a human denial from a TTL expiry.
+
+**AUD-42 held on every leg** — the chain carries `sha256:` digests, never file content, in either
+direction.
+
+**Two findings recorded (3.3a, 3.4a), neither blocking.** Both are affordance issues in the operator
+surface, not defects in the governance path.
+
+⚠ **A third, procedural: the Commander's own verification command was wrong.** The guide said
+`docker compose exec sshd ls -l /tmp/...` **without `MSYS_NO_PATHCONV=1`**, so git-bash rewrote `/tmp/`
+to a Windows path and `ls` reported "No such file" **about the host, never entering the container.**
+The right answer for the wrong reason. Re-run correctly it passed — but **a verification that checks the
+wrong thing and agrees with you is worse than one that fails.** The `tar --force-local` /
+`MSYS_NO_PATHCONV` rule already existed in `ops_conventions`; it was not applied.
+
 **3.5 — Record findings.** Whatever you observe — friction, unclear copy, a surprising failure mode —
 record it here or in a follow-up ticket rather than letting it go unrecorded. VER-19 exists specifically
 so this contact happens and is not suppressed.
