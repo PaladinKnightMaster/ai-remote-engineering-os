@@ -204,6 +204,11 @@ tasks:
     cmds:
       - python3 infra/scripts/doc_check.py
 
+  go-deps-check:
+    desc: "Assert the core Go dependency surface stays allowlisted (ADR-0073 §2). Fails on ANY new direct dependency across every go.work module - adding one already requires an ADR (CLAUDE.md §Project doctrine), so it should cost an entry here too. Parses BOTH `require (...)` blocks and single-line `require X v` forms: a survey that read only the block form miscounted the surface as nine when it is ten. Needs python3."
+    cmds:
+      - python3 infra/scripts/go_deps_check.py
+
   adr-ledger:
     desc: "REGENERATE docs/adr/README.md (the ADR status ledger) + docs/requirements/adr_index.csv from the ADR files themselves. One generator, two outputs, so they cannot disagree. The ledger's 'Named by' reverse index supplies the forward pointer that gate G2 forbids writing into a superseded ADR (e.g. ADR-0041's dead Go-version clause -> ADR-0072). Needs python3."
     cmds:
@@ -225,6 +230,7 @@ tasks:
       - task: doc-check
       - task: staleness-check
       - task: adr-ledger-check
+      - task: go-deps-check
       - task: validate
       - task: lint
       - task: sec13-gate

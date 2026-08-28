@@ -102,12 +102,19 @@ def resolves(ref: str, srcdir: pathlib.Path) -> bool:
 
 
 def check_csvs() -> list[str]:
-    """Every .csv under docs/requirements/ must parse and have a uniform
-    field count per row (VER-15 §fourth instance). Returns one message per
+    """Every .csv under docs/requirements/ AND references/ must parse and have a
+    uniform field count per row (VER-15 §fourth instance). Returns one message per
     malformed row, naming the file, the row number (1-based, header = row 1),
-    the expected field count (the header's), and the actual one."""
+    the expected field count (the header's), and the actual one.
+
+    references/ added 2026-08-28: references_v4.csv carries every external-tool
+    ADOPTION VERDICT and had no well-formedness gate at all, while the
+    requirements CSVs beside it did. Same gap VER-15's fourth instance closed for
+    docs/requirements/, where a malformed row reached backlog_v4.csv unnoticed by
+    every automated gate and was hand-caught in review."""
     issues: list[str] = []
-    for f in sorted((ROOT / "docs" / "requirements").glob("*.csv")):
+    targets = sorted((ROOT / "docs" / "requirements").glob("*.csv")) +         sorted((ROOT / "references").glob("*.csv"))
+    for f in targets:
         rel = f.relative_to(ROOT)
         try:
             with f.open(newline="", encoding="utf-8") as fh:
@@ -147,7 +154,8 @@ def main() -> int:
                 missing.append(f"{f.relative_to(ROOT)}  ->  {ref}")
 
     csv_issues = check_csvs()
-    csv_count = len(list((ROOT / "docs" / "requirements").glob("*.csv")))
+    csv_count = (len(list((ROOT / "docs" / "requirements").glob("*.csv")))
+                 + len(list((ROOT / "references").glob("*.csv"))))
 
     ok = True
     if missing:
@@ -165,7 +173,7 @@ def main() -> int:
 
     print(f"doc-check OK — {checked} in-repo path references resolve "
           f"(across {len(sources)} files); {csv_count} CSVs under "
-          f"docs/requirements/ well-formed")
+          f"docs/requirements/ + references/ well-formed")
     return 0
 
 
