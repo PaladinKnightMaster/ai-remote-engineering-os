@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """doc-check (release-criteria DOC-1, §11a-1; CSV leg VER-15/T-132).
 
-Assert every in-repo relative path referenced in CANONICAL_SOURCE_OF_TRUTH.md and
-every docs/adr/*.md resolves on disk, so the canonical index + the ADR ladder
-never drift from the tree.
+Assert every in-repo relative path referenced in CANONICAL_SOURCE_OF_TRUTH.md,
+every docs/adr/*.md, and every docs/executive/*.md resolves on disk, so the
+canonical index, the ADR ladder and the executive tier never drift from the tree.
+
+docs/executive/ was added 2026-08-27 (canon work order pass 3): those four files
+were rewritten to POINT at authoritative sources rather than duplicate them --
+duplication is why they drifted for fifteen months -- which makes every one of
+their links load-bearing. An ungated pointer is the previous defect wearing a
+different hat.
 
 Scope (pragmatic, low false-positive). Two reference kinds are checked:
   * markdown link targets `](target)` — meant to be resolvable; and
@@ -46,7 +52,12 @@ EXTS = (
 LINK = re.compile(r"\]\(([^)]+)\)")
 CODE = re.compile(r"`([^`]+)`")
 
-SKIP_PREFIX = ("http://", "https://", "#", "mailto:", "/", "../", "~")
+# NOTE: "../" is deliberately NOT here. It was, until 2026-08-27, and that
+# blanket-skipped every in-repo parent-relative link -- 18 of them in the
+# rewritten docs/executive/ alone, silently unchecked. The skip exists only
+# for SIBLING-REPO refs (../agency-kit/, ../artifacts/), which may be absent
+# in CI; resolves() now distinguishes those by whether the path escapes ROOT.
+SKIP_PREFIX = ("http://", "https://", "#", "mailto:", "/", "~")
 
 
 def has_ext(s: str) -> bool:
@@ -71,9 +82,21 @@ def candidates(text: str) -> set[str]:
     return out
 
 
+def escapes_repo(ref: str, srcdir: pathlib.Path) -> bool:
+    """True if a parent-relative ref points OUTSIDE the repo (a sibling-repo ref
+    such as ../agency-kit/ or ../artifacts/, which may legitimately be absent)."""
+    try:
+        return ROOT not in (srcdir / ref).resolve().parents and (srcdir / ref).resolve() != ROOT
+    except (OSError, ValueError):
+        return True
+
+
 def resolves(ref: str, srcdir: pathlib.Path) -> bool:
     ref = ref.split("#", 1)[0].rstrip("/").rstrip(".,;:")
     if not ref:
+        return True
+    # Sibling-repo refs are out of scope; in-repo parent-relative refs are NOT.
+    if ref.startswith("../") and escapes_repo(ref, srcdir):
         return True
     return (ROOT / ref).exists() or (srcdir / ref).exists()
 
@@ -107,6 +130,10 @@ def check_csvs() -> list[str]:
 def main() -> int:
     sources = [ROOT / "CANONICAL_SOURCE_OF_TRUTH.md"]
     sources += sorted((ROOT / "docs" / "adr").glob("*.md"))
+    # docs/executive/ added 2026-08-27: the four files there were rewritten to
+    # POINT at authoritative sources instead of duplicating them, so every link
+    # is load-bearing and an unresolved one is a silent regression.
+    sources += sorted((ROOT / "docs" / "executive").glob("*.md"))
 
     missing: list[str] = []
     checked = 0
