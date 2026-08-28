@@ -1275,7 +1275,15 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 		_ = s.store.Finish(ctx, inv.ID, "failed", "tool.result:error")
 		return inv.ID, mcp.ToolResult{}, fmt.Errorf("policy decision unavailable: %w", err)
 	}
-	if decision == PolicyAllow {
+	// Explicit switch on the decision string (ADR-0074 §D2, SEC-58): deny beats
+	// everything, and any decision this gateway does not recognize must fail closed
+	// the same way as an explicit deny — never fall through into the park branch.
+	// Before this switch, only PolicyAllow was checked by name; everything else
+	// (deny included, since nothing emits it yet — that is T-150) fell into the
+	// park-and-wait branch below and became human-approvable. That was the exact
+	// inverse of ADR-0074 §D2's ordering.
+	switch decision {
+	case PolicyAllow:
 		_ = s.store.SetStatus(ctx, inv.ID, "running", decision)
 		// All four dispatch arguments come from the PERSISTED row (inv.*), not req.*
 		// (SEC-52-1, T-145: zero-behavior-change hardening of the SEC-49/T-138 fix
@@ -1294,12 +1302,27 @@ func (s *Service) runGovernedStep(ctx context.Context, req stepRequest) (string,
 		// afterwards).
 		res, eerr := s.performAndFinish(ctx, inv.ID, inv.ResourceID, inv.Command, req.Subject, inv.Tool, req.Content)
 		return inv.ID, res, eerr
-	}
 
-	// requires_approval → park, then block until the operator resolves it (T-040).
-	_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
-	res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout, req.Content)
-	return inv.ID, res, werr
+	case policy.DecisionRequiresApproval:
+		// requires_approval → park, then block until the operator resolves it (T-040).
+		_ = s.store.SetStatus(ctx, inv.ID, "pending_approval", decision)
+		res, werr := s.waitForApproval(ctx, inv.ID, req.Subject, req.WaitTimeout, req.Content)
+		return inv.ID, res, werr
+
+	case PolicyDeny:
+		// deny → fail closed (SEC-58): finalize the invocation denied and return a
+		// typed tool error. No park, no approval path, no connector lease, no broker
+		// call — a deny must never become a prompt a human can click past.
+		_ = s.store.Finish(ctx, inv.ID, "denied", "tool.result:denied")
+		return inv.ID, toolError("policy denied this invocation"), nil
+
+	default:
+		// An unrecognized decision string fails closed exactly like an explicit deny
+		// (SEC-58) — not park. A distinct message lets an operator tell "policy
+		// denied this" apart from "policy returned something we don't understand".
+		_ = s.store.Finish(ctx, inv.ID, "denied", "tool.result:denied")
+		return inv.ID, toolError(fmt.Sprintf("policy returned an unrecognized decision %q; refusing", decision)), nil
+	}
 }
 
 // waitForApproval blocks the agent's tools/call on a parked invocation until the
@@ -1515,6 +1538,12 @@ func isTerminal(status string) bool {
 
 // PolicyAllow is the decision string for an unflagged (or pre-approved) action.
 const PolicyAllow = "allow"
+
+// PolicyDeny is the decision string for a policy-service refusal (ADR-0074 §D2,
+// SEC-58). Nothing emits it yet — T-150 wires the evaluator that will — but
+// runGovernedStep's switch must refuse it (and any decision it does not recognize)
+// before the producer can ever send it.
+const PolicyDeny = "deny"
 
 // toolError is an MCP tool-level error result (a 200 JSON-RPC result with isError)
 // for governance refusals the agent should handle.

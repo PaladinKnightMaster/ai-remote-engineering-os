@@ -1038,14 +1038,22 @@ func (a *apiHandlers) createWithApproval(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadGateway, "bad_gateway", "policy decision point unavailable")
 		return
 	}
-	if decision.Decision != policy.DecisionRequiresApproval {
+	switch decision.Decision {
+	case policy.DecisionRequiresApproval:
+		writeJSON(w, http.StatusCreated, sess) // parked pending_approval; operator resolves in T-031b-ii
+	case policy.DecisionDeny:
+		// ADR-0074 §D2 / SEC-58: an explicit deny fails closed with a clear 403,
+		// distinct from the "policy contract we don't understand" 502 below. Nothing
+		// emits DecisionDeny yet (T-150 wires the evaluator) — this branch is
+		// unreachable today and exists so the caller already refuses it once it is.
+		a.failClosed(r.Context(), operator, sess.ID)
+		writeError(w, http.StatusForbidden, "forbidden", "policy denied this session")
+	default:
 		// v0.2.0: a flagged resource always requires approval; any other decision is
 		// an unexpected policy contract state — fail closed rather than proceed.
 		a.failClosed(r.Context(), operator, sess.ID)
 		writeError(w, http.StatusBadGateway, "bad_gateway", "unexpected policy decision")
-		return
 	}
-	writeJSON(w, http.StatusCreated, sess) // parked pending_approval; operator resolves in T-031b-ii
 }
 
 // failClosed best-effort closes a parked session whose approval could not be

@@ -17,10 +17,14 @@ import (
 	"aireos.local/packages/go/auth"
 )
 
-// Decision values (ADR-0054 §1); deny is reserved for a later rule engine.
+// Decision values (ADR-0054 §1, ADR-0074 §D2). The rule engine that can emit
+// DecisionDeny landed at T-149a (internal/store/evaluate.go) but is not yet wired
+// into any request path — that is T-150. This gateway's callers already refuse it
+// (T-149b, SEC-58) so the switch-on at T-150 is a producer change only.
 const (
 	DecisionAllow            = "allow"
 	DecisionRequiresApproval = "requires_approval"
+	DecisionDeny             = "deny"
 )
 
 // ErrNotPending maps policy-service's 409 on resolve — the approval is no longer

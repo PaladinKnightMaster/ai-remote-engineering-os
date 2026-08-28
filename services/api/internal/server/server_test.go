@@ -1235,6 +1235,52 @@ func TestSessionCreateApprovalFailsClosedOnPolicyError(t *testing.T) {
 	assertOneClosedPolicyUnavailable(t, h)
 }
 
+// TestSessionCreateApprovalDenied — T-149b/SEC-58: an explicit policy deny at
+// session-create fails closed with 403 (distinct from the 502 "unexpected
+// decision" catch-all) and closes the parked session, so no WS attach is
+// possible (the broker's status guard only ever opens a WS onto a session that
+// is still open — 'closed' is a terminal status, same proof shape as the
+// existing policy-unavailable fail-closed assertion below). Nothing emits
+// "deny" yet (T-150 wires the evaluator); this proves the CALLER already
+// refuses it, ahead of the producer.
+func TestSessionCreateApprovalDenied(t *testing.T) {
+	pol := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"deny"}`))
+	}))
+	defer pol.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	h := New(newFake(), nil, signer, allowAll{}, "", pol.URL)
+
+	resID := seedFlaggedResource(t, h)
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("policy deny: want 403, got %d: %s", rec.Code, rec.Body)
+	}
+
+	// The session must be closed (failClosed ran), not left parked — a parked
+	// session is exactly the hole SEC-58 closes: it is a status a human could
+	// still approve past. Closed is terminal; no WS attach can open on it.
+	rec = req(t, h, http.MethodGet, "/v1/sessions", "", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list sessions: %d", rec.Code)
+	}
+	var page struct {
+		Items []session.Session `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("want 1 fail-closed session, got %d", len(page.Items))
+	}
+	if page.Items[0].Status != session.StatusClosed {
+		t.Fatalf("denied session status = %q, want closed (not parked, not open — no WS attach possible)", page.Items[0].Status)
+	}
+}
+
 // TestSessionCreateRequiresApprovalNoPolicyConfigured — a flagged resource with no
 // decision point configured fails closed (503) + closes the parked session.
 func TestSessionCreateRequiresApprovalNoPolicyConfigured(t *testing.T) {

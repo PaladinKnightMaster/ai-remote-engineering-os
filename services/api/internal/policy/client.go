@@ -20,11 +20,11 @@ import (
 	"aireos.local/packages/go/auth"
 )
 
-// Decision values returned by decide (ADR-0054 §1). deny is reserved (no deny
-// rules until the v0.3.0 rule engine).
+// Decision values returned by decide (ADR-0054 §1, ADR-0074 §D2).
 const (
 	DecisionAllow            = "allow"
 	DecisionRequiresApproval = "requires_approval"
+	DecisionDeny             = "deny"
 )
 
 // ErrNotPending maps policy-service's 409 on resolve — the session has no

@@ -585,6 +585,148 @@ func TestPerformAndFinishFailsClosedForUnknownTool(t *testing.T) {
 	}
 }
 
+// --- T-149b / SEC-58: policy deny (and any unrecognized decision) fails closed ---
+//
+// Before T-149b, runGovernedStep only ever named PolicyAllow explicitly; deny AND
+// every other decision string fell through into the requires_approval park branch
+// and became human-approvable (ADR-0074 §D2 is inverted by a deny that parks). These
+// tests drive the real, shared runGovernedStep — the same core the agent path and
+// the operator Run engine both use — with a stub PolicyDecider returning "deny" and
+// then an unrecognized "maybe", each paired with SPY brokers that t.Fatal the moment
+// either BrokerExecer or BrokerFiler is invoked, so "no lease, no egress" is proven
+// directly rather than inferred from a status field.
+
+// fakeSEC58Policy returns a fixed decision string, driving whichever branch of
+// runGovernedStep's switch the test under it targets.
+type fakeSEC58Policy struct{ decision string }
+
+func (f fakeSEC58Policy) Decide(context.Context, string, string, string, string, string, bool) (string, error) {
+	return f.decision, nil
+}
+
+// fakeSEC58Store records every status this invocation passes through — the test
+// asserts it NEVER contains "pending_approval", which is the heart of SEC-58: a
+// deny (or an unrecognized decision) that parks is the bug — plus the single
+// Finish call's status/outcome.
+type fakeSEC58Store struct {
+	statuses      []string
+	finishCalls   int
+	finishStatus  string
+	finishOutcome string
+}
+
+func (f *fakeSEC58Store) Create(_ context.Context, in store.CreateInput) (store.Invocation, bool, error) {
+	return store.Invocation{ID: "inv-sec58", ResourceID: in.ResourceID, Tool: in.Tool, Command: in.Command}, true, nil
+}
+func (f *fakeSEC58Store) CountInFlight(context.Context, string) (int, error) { return 0, nil }
+func (f *fakeSEC58Store) SetStatus(_ context.Context, _, status, _ string) error {
+	f.statuses = append(f.statuses, status)
+	return nil
+}
+func (f *fakeSEC58Store) Finish(_ context.Context, _, status, outcome string) error {
+	f.finishCalls++
+	f.finishStatus, f.finishOutcome = status, outcome
+	return nil
+}
+func (f *fakeSEC58Store) RequiresApproval(context.Context, string) (bool, error) { return false, nil }
+func (f *fakeSEC58Store) Get(context.Context, string) (store.Invocation, error) {
+	return store.Invocation{}, nil
+}
+func (f *fakeSEC58Store) ClaimForExec(context.Context, string) (store.Invocation, bool, error) {
+	return store.Invocation{}, false, nil
+}
+
+// fatalBroker is a SPY BrokerExecer that fails the test the instant Exec is called.
+// SEC-58's whole point is that a deny (or an unrecognized decision) must never
+// reach the broker; this proves it directly rather than by inference.
+type fatalBroker struct{ t *testing.T }
+
+func (b fatalBroker) Exec(context.Context, string, string, string, string) (string, int, bool, error) {
+	b.t.Fatal("BrokerExecer.Exec was called — a policy deny/unrecognized decision must never reach the broker (SEC-58)")
+	return "", 0, false, nil
+}
+
+// fatalBrokerFile is fatalBroker's BrokerFiler sibling — ADR-0071 kept the two
+// broker interfaces deliberately separate, so SEC-58 must hold for both.
+type fatalBrokerFile struct{ t *testing.T }
+
+func (b fatalBrokerFile) Read(context.Context, string, string, string, string) ([]byte, string, error) {
+	b.t.Fatal("BrokerFiler.Read was called — a policy deny/unrecognized decision must never reach the broker (SEC-58)")
+	return nil, "", nil
+}
+func (b fatalBrokerFile) Write(context.Context, string, string, string, []byte, uint32, string) (string, error) {
+	b.t.Fatal("BrokerFiler.Write was called — a policy deny/unrecognized decision must never reach the broker (SEC-58)")
+	return "", nil
+}
+func (b fatalBrokerFile) List(context.Context, string, string, string, string) ([]brokerfile.Entry, error) {
+	b.t.Fatal("BrokerFiler.List was called — a policy deny/unrecognized decision must never reach the broker (SEC-58)")
+	return nil, nil
+}
+
+// assertSEC58FailsClosed drives runGovernedStep with a PolicyDecider returning
+// decision and asserts the full fail-closed contract shared by both the deny
+// branch and the unrecognized-decision default branch: a tool-error result, the
+// invocation finished exactly once as denied/tool.result:denied, the invocation
+// NEVER visiting pending_approval, and (via fatalBroker/fatalBrokerFile) neither
+// broker interface ever called.
+func assertSEC58FailsClosed(t *testing.T, decision string) {
+	t.Helper()
+	st := &fakeSEC58Store{}
+	svc := New(Config{
+		Store: st, Policy: fakeSEC58Policy{decision: decision},
+		Broker: fatalBroker{t: t}, BrokerFile: fatalBrokerFile{t: t},
+		MaxInFlight: 4, WaitTimeout: 50 * time.Millisecond, PollInterval: time.Millisecond,
+	})
+
+	id, res, err := svc.runGovernedStep(context.Background(), stepRequest{
+		Subject: "agent:test", Tool: remoteExecTool, ResourceID: "r-1", Command: "echo hi",
+		Edge: "agent-remote-session", Action: "remote.exec", Target: "resource:r-1",
+		BracketEdge: "agent-tool", WaitTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("runGovernedStep(decision=%q): unexpected Go error %v, want a tool-error result", decision, err)
+	}
+	if id != "inv-sec58" {
+		t.Fatalf("invocation id = %q, want inv-sec58", id)
+	}
+	// Checked FIRST and named distinctly (VER-mutation, T-149b): this is the heart
+	// of SEC-58 — a deny (or unrecognized decision) that parks is exactly the bug
+	// this ticket closes, so it must be the assertion a regression trips.
+	for _, s := range st.statuses {
+		if s == "pending_approval" {
+			t.Fatalf("SEC58_NEVER_PARKS: decision=%q invocation entered pending_approval — this IS the SEC-58 bug (a deny that parks)", decision)
+		}
+	}
+	if !res.IsError {
+		t.Fatalf("decision=%q: result = %+v, want a tool error", decision, res)
+	}
+	if st.finishCalls != 1 {
+		t.Fatalf("decision=%q: Finish called %d times, want 1", decision, st.finishCalls)
+	}
+	if st.finishStatus != "denied" {
+		t.Fatalf("decision=%q: finish status = %q, want denied", decision, st.finishStatus)
+	}
+	if st.finishOutcome != "tool.result:denied" {
+		t.Fatalf("decision=%q: finish outcome = %q, want tool.result:denied", decision, st.finishOutcome)
+	}
+}
+
+// TestRunGovernedStepDenyFailsClosedSEC58 is the SEC-58 capstone: an explicit
+// policy "deny" must fail closed (finalize denied, tool-error result), never park,
+// and never reach the broker.
+func TestRunGovernedStepDenyFailsClosedSEC58(t *testing.T) {
+	assertSEC58FailsClosed(t, PolicyDeny)
+}
+
+// TestRunGovernedStepUnrecognizedDecisionFailsClosedSEC58 covers the branch that
+// matters MORE than the deny branch itself (ticket brief): any decision string this
+// gateway does not recognize must fail closed the same way as an explicit deny —
+// not fall through into the park-and-wait branch, which is what happened before
+// this ticket for every non-"allow" decision, "deny" included.
+func TestRunGovernedStepUnrecognizedDecisionFailsClosedSEC58(t *testing.T) {
+	assertSEC58FailsClosed(t, "maybe")
+}
+
 // fakeIdempotentStore models the ONE property the reattach vulnerability turns on:
 // store.Create's ON CONFLICT is keyed on (agent_subject, idempotency_key), NOT tool
 // (store.go:110/118) — so a second call sharing the first call's idempotency key gets
