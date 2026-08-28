@@ -69,6 +69,21 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 ## Definition of done
 Relevant specs/docs updated; tests/evals run or gaps stated; UI/accessibility reviewed when applicable; risks and next actions stated.
 - Changes to `packages/ui` or `apps/web` rendering output require browser-rendered evidence (a screenshot or a passing Playwright assertion against the rendered DOM) before "done" — jsdom unit tests do not satisfy this.
+- **No `[inherited:]` or `[assumed]` provenance marker may survive on a load-bearing claim** — see §Verification discipline below.
+
+## Verification discipline — the two rules that bind every claim
+
+> ⭐⭐ **The root cause, measured across this project's whole defect record.** **Every high-value catch came from OPENING A SOURCE THAT HAD NOT BEEN OPENED. Not one came from re-reading.** ADR-0073 was audited three times; the first two passes were the same mind re-reading the same text. What broke the loop each time was new information — reading the tool instead of its name, reading the ADR instead of a summary of it, running a repo-wide sweep, opening the archive. Historically identical: **SFTP survived five tickets and three reviews** because every unit test stubbed it, and was found by *running a real transfer*; a bundle version **stale for eight releases** was found by *running the quickstart on a fresh host*. **More care does not fix this. More sources does.**
+
+**Rule 11 — claim-source provenance.** Mark how every load-bearing claim was verified:
+`[read: path:line]` (you opened it) · `[ran: cmd]` (you executed it and saw the output) · `[inherited: doc]` (taken from another document) · `[assumed]` (not verified).
+**`[inherited:]` and `[assumed]` are the defect population.** Neither may survive on a load-bearing claim at sign-off — upgrade it or delete the claim. This turns *"verify carefully"* (unbounded, forgettable) into *"resolve N markers"* (countable, finishable).
+⚠ **Briefs, plans, criteria docs and prior summaries record what was true WHEN WRITTEN — treat them as `[inherited:]`, never as source.** A ticket brief once asserted a security property the product does not have, because it took a *goal* from a planning doc instead of reading the ADR that decided otherwise. Worked form: `docs/adr/TEMPLATE.md`.
+
+**Rule 12 — negative control on every instrument, not just gates.** A gate command must not be piped and must write its real exit into the log; **this extends that to any observation.** **A sweep, grep or check that asserts ABSENCE must ship with a self-test proving it detects a planted instance, in the same run.** Real failures, each producing a *wrong belief about a result*: a line-anchored grep reported CLEAN because the phrase **wrapped across a newline**; `grep -c` returning 0 **broke an `&&` chain** so the next check silently never ran; a reference count rising 197→207 was mistaken for coverage until the mutation proof **failed**; and a check written as `python -c "…\`…\`…"` was corrupted because **bash command-substitutes backticks inside double quotes** — use a `<<'EOF'` heredoc.
+Practical form: normalise whitespace (`re.sub(r"\s+"," ",text)`) before searching, assert the **corrected text is PRESENT** as well as the banned text absent, and print the self-test result beside the verdict.
+
+**Gates that enforce the mechanical half:** `task doc-check` (referenced paths resolve) · `task staleness-check` (the canon's self-descriptive claims are true) · `task adr-ledger-check` (the generated ADR ledger matches the corpus). All three run in `task release-check`.
 
 ## Kit modules — v4.6.0 (live in sibling agency-kit/)
 Use these modules when relevant:
