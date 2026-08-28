@@ -1,4 +1,4 @@
-# Activation Matrix — Project Overlay (AI Remote Engineering OS v3.0.1)
+# Activation Matrix — Project Overlay (AI Remote Engineering OS, spec-set SPEC-2026.1)
 
 > Overlay file. Read together with the base kit's `activation-matrix.md` at `../../../agency-kit/ai/war-room/activation-matrix.md`. This file adds priority/module-specific activations on top of the generic activation matrix.
 

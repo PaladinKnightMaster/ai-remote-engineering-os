@@ -33,7 +33,9 @@ Build P0 first. No P1/P2/P3 without an explicit ticket (`.github/ISSUE_TEMPLATE/
 
 ## Current phase
 
-P0 — bootstrap. Repo skeleton in place. T-001 (this skeleton) complete. T-002 through T-010 pending.
+**v0.14.0 "Governed Tool Surface" — released 2026-08-26**, tagged `6b72739`. Fifteen releases shipped: the P0 cockpit, the P1 governance spine (typed MCP gateway, Runs, grants, chartered + adaptive Workstreams), the P2 data plane (scoped memory, context index), evidence hardening (signed chain heads, offline verifier, signed bundles + SBOMs), and the first egress-tool widening since v0.3.0. Next: v0.15 scoping, against the ADR-0073 product boundary.
+
+> This line was stale from T-001 until 2026-08-27 — it still announced "T-002 through T-010 pending" after fourteen releases. `infra/scripts/staleness_check.py` now gates the machine-checkable half of this class.
 
 ## Release assets
 

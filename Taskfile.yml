@@ -204,10 +204,16 @@ tasks:
     cmds:
       - python3 infra/scripts/doc_check.py
 
+  staleness-check:
+    desc: "Assert the canon's SELF-DESCRIPTIVE claims still match the tree — latest-release version vs Taskfile BUNDLE_VERSION, ADR ladder head vs the highest ADR on disk, ADR count, stale 'is still Draft' claims, and spec-set stamps on live overlays. Companion to doc-check: that one proves paths RESOLVE, this one proves the claims are TRUE. Added 2026-08-27 after CLAUDE.md announced v0.13.0 for a full cycle past the v0.14.0 tag and ADR-0017 sat in Draft through its own implementation. Needs python3."
+    cmds:
+      - python3 infra/scripts/staleness_check.py
+
   release-check:
     desc: "Release gate aggregator (release-criteria VER-3/VER-5; §11a-1): run every must-pass gate in sequence, exiting 0 only if all pass. Needs the full toolchain (go + node/pnpm + python3 + Docker for the e2e leg); the integration leg needs a Postgres (set AUDIT/CONNECTOR/POLICY_TEST_DATABASE_URL, else those tests self-skip). Intended for the CI host / a full dev env; the offline-only dev box runs the per-leg Docker commands."
     cmds:
       - task: doc-check
+      - task: staleness-check
       - task: validate
       - task: lint
       - task: sec13-gate

@@ -1,4 +1,4 @@
-# TEAM — Project Overlay (AI Remote Engineering OS v3.0.1)
+# TEAM — Project Overlay (AI Remote Engineering OS, spec-set SPEC-2026.1)
 
 > Overlay file. Read together with the base kit's `TEAM.md` at `../../../agency-kit/ai/war-room/TEAM.md`. This file adds only the project-specific roster on top of the generic war-room team.
 

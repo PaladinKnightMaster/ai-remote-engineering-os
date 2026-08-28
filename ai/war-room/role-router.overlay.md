@@ -1,4 +1,4 @@
-# Role Router — Project Overlay (AI Remote Engineering OS v3.0.1)
+# Role Router — Project Overlay (AI Remote Engineering OS, spec-set SPEC-2026.1)
 
 > Overlay file. Read together with the base kit's `role-router.md` at `../../../agency-kit/ai/war-room/role-router.md`. This file adds project-specific routing on top of the generic groups.
 

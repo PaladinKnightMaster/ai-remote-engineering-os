@@ -2,7 +2,7 @@
 
 Spec baseline: **SPEC-2026.1** (legacy designation *v3.0.1*; APPROVED FOR DEVELOPMENT — see `docs/spec-sets/v3.0.1/development_readiness_audit_v3_0_1.md`). This is a **spec-set edition**, not a product release — see **§Version namespaces** below before using any version number in this repo.
 
-**Shipped state — last updated 2026-08-26.** Latest release **v0.14.0 "Governed Tool Surface"**, tagged `6b72739` — the first capability widening since v0.3.0: `remote.file.read` / `write` / `list` on the **existing** `agent-remote-session` edge, through an unchanged governance pipeline (**no new WD, no fragment change, no new daemon/datastore/network path/key**). Both artifacts signed with SBOMs; the §human pass (VER-19) proved `approval.granted` precedes `credential.leased`, and proved the denial **by absence** of the lease and the egress. ADR ladder head **ADR-0073**. **Next: an architecture-decision session (next ADR is 0073), THEN v0.15 scoping — deliberately not combined.** Path from here: **v1.0.0 Beta 1** (layer 2 lands *and* the OpenAPI surface freezes) → v1.1 → v1.2+. **Containment (B-040/WD-12) is DEFERRED, not cancelled** — see `docs/requirements/epic_story_catalog_v4.md` §Part 4 for the v0.14 re-scope and the cooperative-governance posture it implies for layer 2. That file is the live planning record. **Tags are local; this repo has no git remote — never push.**
+**Shipped state — last updated 2026-08-27.** Latest release **v0.14.0 "Governed Tool Surface"**, tagged `6b72739` — the first capability widening since v0.3.0: `remote.file.read` / `write` / `list` on the **existing** `agent-remote-session` edge, through an unchanged governance pipeline (**no new WD, no fragment change, no new daemon/datastore/network path/key**). Both artifacts signed with SBOMs; the §human pass (VER-19) proved `approval.granted` precedes `credential.leased`, and proved the denial **by absence** of the lease and the egress. ADR ladder head **ADR-0073**. **Next: an architecture-decision session (next ADR is 0073), THEN v0.15 scoping — deliberately not combined.** Path from here: **v1.0.0 Beta 1** (layer 2 lands *and* the OpenAPI surface freezes) → v1.1 → v1.2+. **Containment (B-040/WD-12) is DEFERRED, not cancelled** — see `docs/requirements/epic_story_catalog_v4.md` §Part 4 for the v0.14 re-scope and the cooperative-governance posture it implies for layer 2. That file is the live planning record. **Tags are local; this repo has no git remote — never push.**
 
 Earlier versions (v1, v2, v2.2, v3.0.0) are retained under `docs/deep-dive/` for historical traceability only. Do not start new work from them.
 
@@ -67,7 +67,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | UI / UX specs | `docs/ui-ux/` |
 | DevOps / offline install | `docs/devops/` |
 | Evaluation / domain packs | `docs/evaluation/` |
-| ADRs (40+ accepted) | `docs/adr/` |
+| ADRs (**73, all Accepted** — zero Draft since 2026-08-27) | `docs/adr/` |
 | Diagrams (mermaid) | `docs/diagrams/` |
 | Schemas (JSON) | `packages/shared-schemas/` |
 | Skeleton / compose / Makefile | `infra/docker-compose/` (MVP entry: `docker-compose.mvp.yml`; live e2e: `docker-compose.e2e.yml`) |
