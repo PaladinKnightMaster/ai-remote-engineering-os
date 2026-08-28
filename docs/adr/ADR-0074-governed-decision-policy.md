@@ -2,8 +2,9 @@
 
 ## Status
 
-**Proposed** — 2026-08-28 (the v0.15 scoping session; authored by the War Room Commander after a
-pre-authoring audit of the as-built decision plane). **Decider: CEO.**
+**Accepted** — 2026-08-28 (the v0.15 scoping session; authored by the War Room Commander after a
+pre-authoring audit of the as-built decision plane, and accepted by the CEO the same day).
+**Decider: CEO.**
 
 **Discharges ADR-0054 §1 and §3** — both Accepted 2026-06-01, both only half-built. ADR-0054 §1
 decided that the decision point returns `allow | deny | requires_approval` for an
@@ -14,6 +15,13 @@ decided, and adds the one thing ADR-0054 left open: where the rules come from.
 
 **Extends ADR-0057 §invocation-anchored governance** — the tuple this evaluates is the one the typed
 tool catalog already carries and already sends. No tool definition changes.
+
+> **Accept-time provenance check (ops rule 11).** Swept for surviving `[inherited:]` / `[assumed]`
+> markers, with a control proving the sweep fires on a planted **and newline-wrapped** instance. **One
+> `[inherited:]` was found** — an unverifiable third-party attribution in §Held in reserve — **and the
+> claim was deleted rather than upgraded**, since no clause depended on it. **Zero unresolved markers
+> remain.** *(This note sits outside the Status block on purpose: `adr_ledger.py` extracts that block
+> verbatim into the ledger's relations column, so prose placed there pollutes the reverse index.)*
 
 ---
 
@@ -159,12 +167,17 @@ and may return `deny` without a human present.**
 - **Argument-level predicates** (path prefixes, command patterns) — reopened by the migration in §D5.
 - **Default-deny posture.** Adding the *capability* to deny is this ADR; flipping the *default* is a
   deployment-semantics decision that should follow operator evidence, not precede it.
-- **A policy expression language** (CEL or similar, as `CopilotKit/OpenBot` uses)
-  [inherited: `references/intake-v7-2026-08-27.md` — README-level, not verified against that
-  codebase]. Rejected for now on the dependency surface alone: a CEL runtime is a new direct Go
-  dependency and would fail `task go-deps-check` by design. Tuple matching needs none. Reopens if a
-  rule shape appears that four-field matching genuinely cannot express — *an operator request, not
-  an aesthetic judgement*.
+- **A policy expression language** (CEL or similar). Rejected for now on the dependency surface
+  alone, which is a fact about this repo rather than a judgement about the option: any such runtime
+  is a **new direct Go dependency** and would fail `task go-deps-check` by design
+  [read: `infra/scripts/go_deps_check.py:42-53`]. Four-field tuple matching needs none. Reopens if a
+  rule shape appears that tuple matching genuinely cannot express — *an operator request, not an
+  aesthetic judgement*.
+  > A prior draft cited `CopilotKit/OpenBot` here as a worked example of an expression-based policy
+  > seam. **Removed at Accept time rather than carried**: it rested on a README-level intake note
+  > never verified against that codebase, and no clause above depends on it. Recorded because the
+  > deletion *is* the provenance rule working — an unverifiable aside does not earn a place in an
+  > Accepted ADR merely because it is interesting.
 
 ---
 

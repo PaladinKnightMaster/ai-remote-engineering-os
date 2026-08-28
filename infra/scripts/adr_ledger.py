@@ -71,7 +71,22 @@ def parse(p: pathlib.Path) -> dict:
         status_block = inline.group(1).strip() if inline else ""
 
     flat = re.sub(r"\s+", " ", status_block)
-    word = next((w for w in STATUS_WORDS if re.search(rf"\b{w}\b", flat, re.I)), "UNKNOWN")
+    # The declared status is the EARLIEST status word in the block, not the first
+    # entry of STATUS_WORDS that happens to appear anywhere in it.
+    #
+    # ⚠ The previous form -- next(w for w in STATUS_WORDS if <w in flat>) -- searched
+    # in TUPLE order, and "Accepted" is first in the tuple. So ANY status block that
+    # mentioned "Accepted" anywhere was reported Accepted regardless of its real
+    # status -- and the TEMPLATE actively encourages exactly that shape, because it
+    # asks every ADR to declare "Supersedes / Refines / Extends / Discharges
+    # ADR-NNNN", whose relation sentence routinely names the other ADR's status.
+    # Caught 2026-08-28: ADR-0074 read "**Proposed**" while this ledger recorded it
+    # "Accepted", and `adr-ledger-check` was GREEN over it -- the check regenerates
+    # with this same parser and compares the output to itself, so a parser error is
+    # invisible to it by construction. Zero other ADRs were affected at the time.
+    hits = [(m.start(), w) for w in STATUS_WORDS
+            if (m := re.search(rf"\b{w}\b", flat, re.I))]
+    word = min(hits)[1] if hits else "UNKNOWN"
     date = (re.search(r"(20\d\d-\d\d-\d\d)", flat) or [None, ""])[1] if re.search(r"20\d\d-\d\d-\d\d", flat) else ""
 
     # Relations declared in the Status block, kept verbatim, other ADRs only.
