@@ -37,7 +37,7 @@ P0 — bootstrap. Repo skeleton in place. T-001 (this skeleton) complete. T-002 
 
 ## Release assets
 
-Binary release artifacts live in the sibling `../artifacts/ai-remote-engineering-os/v3.0.1/`, not in this repo. See `docs/releases/v3.0.1/manifest_reference.md`.
+Spec-set edition binaries (SPEC-2026.1) live in the sibling `../artifacts/ai-remote-engineering-os/v3.0.1/`, not in this repo. See `docs/spec-sets/v3.0.1/manifest_reference.md`. The **product's** shipped artifacts are `dist/offline/` — see `CANONICAL_SOURCE_OF_TRUTH.md` §Version namespaces.
 
 ## License
 

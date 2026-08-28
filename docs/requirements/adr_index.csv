@@ -7,13 +7,13 @@ ADR-0005,Support both VPN-first and DMZ-first Topology C deployment,Accepted,Com
 ADR-0006,"Use QR for short-lived pairing, not credential transfer",Accepted,"QR payload contains pairing ID, gateway, nonce and public keys; credentials stay in OS/keychain/server."
 ADR-0007,Use model gateway abstraction for AI providers,Accepted,"Support BYOK frontier models, internal LiteLLM/vLLM/Ollama endpoints and local fallback without locking to one vendor."
 ADR-0008,Approval-first AI tool execution,Accepted,"File writes, shell commands, browser/app control and network/secrets actions are policy-gated and audited."
-ADR-0009,Knowledge base and code forge are future platform modules,Draft,Confluence/Jira/GitHub-inspired future is valid but should not enter MVP scope as full clones.
-ADR-0010,Integrate existing Git forges before building native forge,Draft,Gitea/Forgejo/GitLab/GitHub Enterprise integrations are safer than cloning GitHub/GitLab early.
+ADR-0009,Knowledge base and code forge are future platform modules,Accepted 2026-08-27,Confluence/Jira/GitHub-inspired future is valid but should not enter MVP scope as full clones.
+ADR-0010,Integrate existing Git forges before building native forge,Accepted 2026-08-27,Gitea/Forgejo/GitLab/GitHub Enterprise integrations are safer than cloning GitHub/GitLab early.
 ADR-0011,Use private reviewed skill registry,Accepted,No unreviewed community skills in production; skills declare permissions and approval needs.
 ADR-0012,Every important action is an event,Accepted,"Sessions, ticket transitions, approvals, tool calls, artifacts and admin actions emit audit events."
 ADR-0013,Offline release bundle is part of product quality gate,Accepted,No release is accepted until installed in an isolated test network.
 ADR-0014,Postpone full autonomous GUI computer-use,Accepted,Start with files/terminal/git/browser automation; full GUI computer-use arrives after safety scaffolding.
 ADR-0015,Use adapters for agent runtimes,Accepted,"opencode, goose, Cline, Kilo, OpenHands-like systems are behind adapters rather than hard dependencies."
 ADR-0016,"MVP board is agent-native, not full Jira clone",Accepted,"Build only tickets, states, acceptance criteria, agent runs, approvals and evidence first."
-ADR-0017,Docs/knowledge base must serve humans and agents,Draft,"Product docs, ADRs, runbooks and research notes become context packs for agent work."
+ADR-0017,Docs/knowledge base must serve humans and agents,Accepted 2026-08-27,"Product docs, ADRs, runbooks and research notes become context packs for agent work."
 ADR-0018,"Security is product surface, not backend-only concern",Accepted,"UX must show modes, policy, approval, audit, watermarking and kill-switch controls."

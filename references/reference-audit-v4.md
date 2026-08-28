@@ -98,6 +98,12 @@ REQs. Two specific validations worth recording: **governance is a named category
 posture is reinforced, since the largest v4 cluster is exactly the model-serving work we
 deliberately don't do.
 
+> **Annotation 2026-08-27 (not a rewrite — this is a dated analysis and stands as written).** The
+> `"runs no models"` posture referenced here was **re-cut by ADR-0073 §2**: the platform runs no
+> models *in-process* and governs a runtime running beside it as an operator-provided substrate.
+> The v4 conclusion above — that model-serving is not our work — survives; what changed is that
+> *pointing at* a runtime is now in scope, while *shipping* one requires an ADR-0073 §3 measurement.
+
 ### 3.2 NEW — a non-embedding path to Layer 3 (reopens a hard gate)
 v3's **REF-034 PageIndex** proposed *tree/reasoning retrieval* as an alternative to
 vector-only RAG. We have consistently written L3 as "hard-gated: any embedding/AI

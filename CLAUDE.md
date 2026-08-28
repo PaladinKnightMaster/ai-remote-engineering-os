@@ -1,6 +1,6 @@
 # CLAUDE.md — AI Remote Engineering OS
 
-These rules apply to this project unless explicitly overridden. This project follows **v3.0.1 of the AI Remote Engineering OS spec set** — the product's own canonical docs/ADR bundle (`docs/releases/v3.0.1/`, ADR-0001…ADR-0040). **Not to be confused with the war-room agency kit v4.6.0** in `../agency-kit/`; the two version numbers are unrelated and move independently.
+These rules apply to this project unless explicitly overridden. This project follows spec-set edition **SPEC-2026.1** (legacy designation *v3.0.1*) — the product's own canonical docs/ADR bundle (`docs/spec-sets/v3.0.1/`, ADR-0001…ADR-0040). ⚠ **A spec-set edition is not a product version.** The product line is `v0.x → v1.0.0` and is the only one that is tagged or shipped; see `CANONICAL_SOURCE_OF_TRUTH.md` §Version namespaces. **Also not to be confused with the war-room agency kit v4.6.0** in `../agency-kit/` — all three version lines are unrelated and move independently.
 
 ## Workspace layout
 This product repo lives at `AI-Agentic-OS/ai-remote-engineering-os/` and is one of three siblings:
@@ -54,7 +54,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 - **Release target: v0.14.0 "Governed Tool Surface."** Criteria **Accepted** 2026-08-19 at `docs/releases/v0.14.0/v0.14.0-release-criteria.md`; ladder **T-137…T-146**; adds **ADR-0071** + **ADR-0072**; **no new WD**. Tickets are JIT-authored per consult — do not assume a T-NNN file exists. Theme: **widen the egress tool surface**, which today is a single tool (`remote.exec`). Five further gateway tools exist but are control-plane only, so the product governs one outward capability. Work rides the existing spine — the ADR-0057 typed catalog, policy, approval, connector lease, audit, Runs and grants all unchanged — and reuses ADR-0049's `evidencePacketId = sha256:<bytes>` evidence model rather than inventing one.
 - **Containment (B-040 / WD-12) is DEFERRED, not cancelled** (CEO, 2026-08-19), so the path is **v0.14.0 → v1.0.0 Beta 1** (where layer 2 lands *and* the surface freezes). ⚠ **Consequence, recorded deliberately:** the 2026-08-10 record held that containment is a prerequisite for layer 2. It is not a build blocker — without it, harness governance is **cooperative rather than enforced**, which is the same posture the gateway already ships and already discloses. Layer 2 may therefore proceed **provided the limitation is stated, not drifted into**. See `docs/requirements/epic_story_catalog_v4.md` §Part 4.
 
-> ADR numbering: v3.0.1 ADRs (`docs/adr/ADR-0001.md` through `ADR-0040.md`) cover product decisions. New meta-decisions (language, tooling, frameworks) start at **ADR-0041**. **Current head: ADR-0072** — check `docs/adr/` before minting a number, and **never edit an Accepted ADR** (see §Forbidden work).
+> ADR numbering: v3.0.1 ADRs (`docs/adr/ADR-0001.md` through `ADR-0040.md`) cover product decisions. New meta-decisions (language, tooling, frameworks) start at **ADR-0041**. **Current head: ADR-0073** — check `docs/adr/` before minting a number, and **never edit an Accepted ADR** (see §Forbidden work).
 
 ## Project doctrine
 - Build P0 first. P1/P2/P3 features require an explicit ticket and an approved ADR.
@@ -62,7 +62,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 - No AI autonomy before audit + policy + approval primitives exist.
 - All major dependency choices need an ADR.
 - Diff budget: ≤12 files / ≤500 LoC per ticket unless explicitly approved.
-- Read v3.0.1 `docs/` before changing related code (start at `docs/executive/`, `docs/architecture/module-map.md`, `docs/security/agent-permission-model.md`).
+- Read the **SPEC-2026.1** baseline `docs/` before changing related code (start at `docs/executive/`, `docs/architecture/module-map.md`, `docs/security/agent-permission-model.md`). ⚠ `docs/executive/` is **stale** — 3.5 KB of May-2026 stubs that contradict Accepted **ADR-0002**; its rewrite is the next item on the canon work order.
 - Every spec / ADR / PR claim must resolve to a path in this repo or the sibling `../agency-kit/`.
 
 ## Definition of done

@@ -8,8 +8,10 @@ over `requirements_v4.csv` (the ladder) and `backlog_v4.csv` (the strategic list
 epics are *named and sized only* — writing stories for work a year out is waste, and the
 references that would inform them are Tier-2 (pulled when the trigger fires).
 
-**Doctrine constraints that bind every story below:** no SaaS runtime dependency · the
-platform runs no models · no new third-party dependency without an ADR · offline/air-gapped
+**Doctrine constraints that bind every story below:** no SaaS runtime dependency · **the platform
+runs no models *in-process*; it governs a runtime running beside it** (re-cut by **ADR-0073** §2,
+2026-08-27 — the previous absolute wording had no ADR behind it and contradicted Accepted
+ADR-0007/0021/0027/0040) · no new third-party dependency without an ADR · offline/air-gapped
 must keep working · diff budget ≤12 files / ≤500 LoC per ticket · every UI change needs
 browser-rendered evidence · consent-surface changes need a re-verified DoD.
 

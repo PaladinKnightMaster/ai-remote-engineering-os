@@ -1,10 +1,29 @@
 # CANONICAL SOURCE OF TRUTH — AI Remote Engineering OS
 
-Spec baseline: **v3.0.1** (APPROVED FOR DEVELOPMENT — see `docs/releases/v3.0.1/development_readiness_audit_v3_0_1.md`). This is the **spec-set** version and is unrelated to the agency kit's v4.6.0.
+Spec baseline: **SPEC-2026.1** (legacy designation *v3.0.1*; APPROVED FOR DEVELOPMENT — see `docs/spec-sets/v3.0.1/development_readiness_audit_v3_0_1.md`). This is a **spec-set edition**, not a product release — see **§Version namespaces** below before using any version number in this repo.
 
-**Shipped state — last updated 2026-08-26.** Latest release **v0.14.0 "Governed Tool Surface"**, tagged `6b72739` — the first capability widening since v0.3.0: `remote.file.read` / `write` / `list` on the **existing** `agent-remote-session` edge, through an unchanged governance pipeline (**no new WD, no fragment change, no new daemon/datastore/network path/key**). Both artifacts signed with SBOMs; the §human pass (VER-19) proved `approval.granted` precedes `credential.leased`, and proved the denial **by absence** of the lease and the egress. ADR ladder head **ADR-0072**. **Next: an architecture-decision session (next ADR is 0073), THEN v0.15 scoping — deliberately not combined.** Path from here: **v1.0.0 Beta 1** (layer 2 lands *and* the OpenAPI surface freezes) → v1.1 → v1.2+. **Containment (B-040/WD-12) is DEFERRED, not cancelled** — see `docs/requirements/epic_story_catalog_v4.md` §Part 4 for the v0.14 re-scope and the cooperative-governance posture it implies for layer 2. That file is the live planning record. **Tags are local; this repo has no git remote — never push.**
+**Shipped state — last updated 2026-08-26.** Latest release **v0.14.0 "Governed Tool Surface"**, tagged `6b72739` — the first capability widening since v0.3.0: `remote.file.read` / `write` / `list` on the **existing** `agent-remote-session` edge, through an unchanged governance pipeline (**no new WD, no fragment change, no new daemon/datastore/network path/key**). Both artifacts signed with SBOMs; the §human pass (VER-19) proved `approval.granted` precedes `credential.leased`, and proved the denial **by absence** of the lease and the egress. ADR ladder head **ADR-0073**. **Next: an architecture-decision session (next ADR is 0073), THEN v0.15 scoping — deliberately not combined.** Path from here: **v1.0.0 Beta 1** (layer 2 lands *and* the OpenAPI surface freezes) → v1.1 → v1.2+. **Containment (B-040/WD-12) is DEFERRED, not cancelled** — see `docs/requirements/epic_story_catalog_v4.md` §Part 4 for the v0.14 re-scope and the cooperative-governance posture it implies for layer 2. That file is the live planning record. **Tags are local; this repo has no git remote — never push.**
 
 Earlier versions (v1, v2, v2.2, v3.0.0) are retained under `docs/deep-dive/` for historical traceability only. Do not start new work from them.
+
+## Version namespaces — **RATIFIED 2026-08-27 (CEO)**
+
+**This repo carries two independent version lines. They count different things and neither is ahead of the other.** Before this ruling, both were written as bare dotted numbers, so `v3.0.1` sitting beside `v0.14.0` read as *nine minor versions ahead of the code*. It is not a version of the code at all.
+
+| Line | Identifier | What it versions | Where it lives | Tagged / signed? |
+|---|---|---|---|---|
+| **Product** | `v0.x` → `v1.0.0` → … | The shipped software | `docs/releases/vX.Y.Z/` (notes, manifest, criteria, runbook) + `dist/offline/` (signed bundle + companion + SBOMs). `BUNDLE_VERSION` in `Taskfile.yml` is its single source. | **Yes** — git tag, Ed25519 signature, SBOM |
+| **Spec set** | `SPEC-<year>.<n>` | The blueprint / executive + decision record the product is built *from* | `docs/spec-sets/<edition>/` + the sibling `../artifacts/ai-remote-engineering-os/<edition>/` | **No** — never tagged, never installed, never shipped |
+
+**Rules:**
+
+1. **A spec-set edition is never a product version and never gets a git tag.** Only the product line is tagged, and only at a commit whose release signature attests to it.
+2. **`docs/releases/` holds product releases only.** The v3.0.1 spec set moved to `docs/spec-sets/v3.0.1/` under this ruling — that directory previously mixed both kinds and sorted them together.
+3. **`../artifacts/` is the spec-set publication channel; `dist/offline/` is the product publication channel.** There is no third location, and none is to be created — the product release channel already exists twice by design (documentation vs binary), which is sufficient.
+4. **The current edition keeps `v3.0.1` in its directory and artifact filenames.** Its published ZIP's SHA-256 manifest attests to that name; renaming a released artifact falsifies the record it exists to provide (the same principle that pins tag `v0.14.0` to `6b72739` rather than the branch head, and that ADR-0072 §5 applies to archival tickets). **`SPEC-2026.1` is its canonical identifier; editions from `SPEC-2026.2` onward use the identifier for their directory names as well.**
+5. **Archival documents are not rewritten to match this ruling.** `docs/superpowers/plans/` and `docs/superpowers/specs/` record the May 2026 install operation as it actually ran, against the paths that existed then; they keep the old paths deliberately.
+
+⚠ **Known unreconciled surface, deliberately not changed here:** `docs/api-contracts/openapi.v3.fragment.yaml` — the product contract that **v1.0.0 freezes** — is stamped with the *spec-set* version in its filename. Renaming it moves three codegen targets (`oapi-codegen.api.yaml`, `oapi-codegen.audit.yaml`, the `openapi-typescript` output) and must re-prove VER-2 zero-drift, so it is **its own ticket, and it must land before the v1.0.0 freeze** — freezing a contract under a filename that names the wrong version line is the kind of thing a buyer's reviewer finds in one pass. The war-room overlay titles (`ai/war-room/*.overlay.md`) carry the same stale stamp and ride the canon work order; they are cosmetic and gate nothing.
 
 ## Workspace layout
 
@@ -53,7 +72,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | Schemas (JSON) | `packages/shared-schemas/` |
 | Skeleton / compose / Makefile | `infra/docker-compose/` (MVP entry: `docker-compose.mvp.yml`; live e2e: `docker-compose.e2e.yml`) |
 | Live e2e harness | `tests/e2e/` (`task e2e`; SSH cockpit cross-service proof, T-020b) |
-| Release pointer + audit + manifest | `docs/releases/v3.0.1/` |
+| Spec-set edition SPEC-2026.1 (pointer + audit + manifest) | `docs/spec-sets/v3.0.1/` |
 | v0.1.0 release artifacts (DOC-6) | `docs/releases/v0.1.0/` (release notes + manifest + archival criteria copy) |
 | v0.2.0 release artifacts (DOC-10) | `docs/releases/v0.2.0/` (release notes + manifest + archival criteria copy) |
 | v0.3.0 release artifacts (DOC-11) | `docs/releases/v0.3.0/` (release notes + manifest + archival criteria copy) |
@@ -88,7 +107,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 
 | Range | Topic | Status |
 |---|---|---|
-| ADR-0001..ADR-0040 | Product decisions (from v3.0.1 baseline) | Accepted/Proposed per individual files |
+| ADR-0001..ADR-0040 | Product decisions (from the SPEC-2026.1 baseline) | **All Accepted.** ADR-0009 / ADR-0010 / ADR-0017 sat in `Draft` for fifteen months and were **resolved 2026-08-27** against the membership test supplied by ADR-0073; **zero Draft ADRs remain**. ⚠ 40 of these are 442–717-byte stubs and **28 of the 72 ADRs carry boilerplate Consequences** — see the canon work order for the status-ledger fix |
 | ADR-0041 | Backend language: Go primary, TS frontend-only, Python sanctioned sidecar | Accepted 2026-05-16 |
 | ADR-0042 | Monorepo tooling: Go workspaces + pnpm workspaces + Taskfile | Accepted 2026-05-16 |
 | ADR-0043 | API framework: `go-chi/chi` v5 on `net/http`, `oapi-codegen` chi-server stubs | Accepted 2026-05-17 |
@@ -122,20 +141,22 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | ADR-0071 | **Governed file transfer — widening the egress tool surface without widening the trust boundary** (v0.14.0 "Governed Tool Surface"). Adds `remote.file.read` / `write` / `list` on the **existing** `agent-remote-session` edge, through an unchanged `runGovernedStep`; the only exec coupling — `execAndFinish` + the `Broker` interface — is generalized as a seam. **Informed approval is NARROWED for writes (D3): the operator approves path + size + sha256, not the bytes**, rendered into the existing `command` field, so approval/at-rest-encryption/audit are reused with zero schema change. **D7 closes a leak found during authoring**: SEC-16's empty-operations back-compat becomes `exec`-only, so file verbs must be named explicitly. Runs stay exec-only (D6) to hold zero-fragment-change. | Accepted 2026-08-19 |
 | ADR-0072 | **Go toolchain support-window policy — superseding ADR-0041's version clause** (v0.14.0, T-146). ADR-0041 fixed the Go version as *"the current stable release line at time of first service implementation"* — a **point-in-time snapshot with no refresh trigger**, and none of its four §Review-trigger conditions could reopen it on toolchain age. It fossilised `go 1.23` for a year, past its final security patch, **while the signed SBOM recorded it**. Replaces the clause with a **standing condition re-checked every release**: the builder must stay inside Go's supported window, asserted by the release checklist. **The `go` directive is explicitly a separate decision** (raising it opts into changed GODEBUG crypto/TLS defaults). Also codifies that **archival tickets and runbooks are never rewritten** by a toolchain move — they record what shipped. | Accepted 2026-08-24 |
 
+| ADR-0073 | **The product boundary — the ledger defines membership** (ecosystem-architecture session, post-v0.14.0). Supplies the membership test **ADR-0002** assumed but never stated: a component is in the ecosystem **iff** its consequential actions are recorded on the one signed ledger, verifiable **offline by an outsider holding no database access**. Everything else — **inference** runtime, **execution** sandbox, third-party **agent** harness/IDE — is a **substrate**: governed at its seam, operator-provided by default, never merged into the core. **Shipping a substrate requires a feasibility MEASUREMENT (the ADR-0052 §OI-c shape) plus its own ADR — preference is not a trigger.** Air-gap is a property of the **system**, not the product: any such claim must name every required artifact. Discharges **ADR-0007/0021/0027/0040** (Ollama/local-model support, Accepted since the baseline, undeclared-divergent for fourteen releases) by conformance; supersedes nothing; edits no Accepted ADR (G2-clean). | Accepted 2026-08-27 |
+
 ## Development rule
 
 Build P0 first. Do not implement P1/P2/P3 without an explicit ticket (`.github/ISSUE_TEMPLATE/ticket.md`) and an approved ADR.
 
-## Release artifacts
+## Spec-set edition artifacts
 
-Heavy binaries live in `../artifacts/ai-remote-engineering-os/v3.0.1/`, separate from this repo's git history:
+**These are SPEC-SET assets, not product release binaries** (§Version namespaces). The product's shipped artifacts are `dist/offline/`. Heavy spec-set binaries live in `../artifacts/ai-remote-engineering-os/v3.0.1/`, separate from this repo's git history:
 
 - `ai_remote_engineering_os_starter_pack_v3_0_1_dev_ready.zip` (canonical content source).
 - `AI_Remote_Engineering_OS_Executive_Spec_v3.pdf` (when delivered).
 - `requirements_roadmap_traceability_v3.xlsx` (when delivered).
 - `sha256_manifest.txt` (when delivered).
 
-See `docs/releases/v3.0.1/manifest_reference.md` for verification commands.
+See `docs/spec-sets/v3.0.1/manifest_reference.md` for verification commands.
 
 ## Notes
 

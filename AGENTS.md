@@ -11,7 +11,7 @@ This product repo lives at `AI-Agentic-OS/ai-remote-engineering-os/`. Two siblin
 
 Key sources of truth (this repo):
 - `CANONICAL_SOURCE_OF_TRUTH.md`
-- `docs/releases/v3.0.1/README.md`
+- `docs/spec-sets/v3.0.1/README.md`
 - `docs/architecture/module-map.md`
 - `docs/security/agent-permission-model.md`
 
