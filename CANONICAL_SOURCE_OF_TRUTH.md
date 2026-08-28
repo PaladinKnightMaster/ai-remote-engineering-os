@@ -67,7 +67,7 @@ Version-control strategy across all three siblings: `../VERSION_CONTROL.md` (ref
 | UI / UX specs | `docs/ui-ux/` |
 | DevOps / offline install | `docs/devops/` |
 | Evaluation / domain packs | `docs/evaluation/` |
-| ADRs (**73, all Accepted** — zero Draft since 2026-08-27) | `docs/adr/` |
+| ADRs (**73, all Accepted** — zero Draft since 2026-08-27) | `docs/adr/` — **start at the generated ledger `docs/adr/README.md`** (status + date + relations + a **reverse index** showing which later ADR names each one, which is how a superseded clause stays discoverable without editing an Accepted ADR); new ADRs copy `docs/adr/TEMPLATE.md` |
 | Diagrams (mermaid) | `docs/diagrams/` |
 | Schemas (JSON) | `packages/shared-schemas/` |
 | Skeleton / compose / Makefile | `infra/docker-compose/` (MVP entry: `docker-compose.mvp.yml`; live e2e: `docker-compose.e2e.yml`) |

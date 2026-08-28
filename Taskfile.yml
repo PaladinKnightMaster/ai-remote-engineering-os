@@ -204,6 +204,16 @@ tasks:
     cmds:
       - python3 infra/scripts/doc_check.py
 
+  adr-ledger:
+    desc: "REGENERATE docs/adr/README.md (the ADR status ledger) + docs/requirements/adr_index.csv from the ADR files themselves. One generator, two outputs, so they cannot disagree. The ledger's 'Named by' reverse index supplies the forward pointer that gate G2 forbids writing into a superseded ADR (e.g. ADR-0041's dead Go-version clause -> ADR-0072). Needs python3."
+    cmds:
+      - python3 infra/scripts/adr_ledger.py
+
+  adr-ledger-check:
+    desc: "Fail if the generated ADR ledger or index has drifted from docs/adr/*.md. Added 2026-08-27: the hand-written adr_index.csv stopped at ADR-0018 and reached 25% coverage of a 73-ADR corpus because nothing ever compared it to the tree. Needs python3."
+    cmds:
+      - python3 infra/scripts/adr_ledger.py --check
+
   staleness-check:
     desc: "Assert the canon's SELF-DESCRIPTIVE claims still match the tree — latest-release version vs Taskfile BUNDLE_VERSION, ADR ladder head vs the highest ADR on disk, ADR count, stale 'is still Draft' claims, and spec-set stamps on live overlays. Companion to doc-check: that one proves paths RESOLVE, this one proves the claims are TRUE. Added 2026-08-27 after CLAUDE.md announced v0.13.0 for a full cycle past the v0.14.0 tag and ADR-0017 sat in Draft through its own implementation. Needs python3."
     cmds:
@@ -214,6 +224,7 @@ tasks:
     cmds:
       - task: doc-check
       - task: staleness-check
+      - task: adr-ledger-check
       - task: validate
       - task: lint
       - task: sec13-gate
