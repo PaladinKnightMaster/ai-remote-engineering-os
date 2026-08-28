@@ -29,8 +29,9 @@ session was split off to prevent.
 
 ### What the as-built actually is — verified 2026-08-27, not inherited
 
-- **Zero model, inference, or embedding dependency.** Read from every `go.mod` direct-require block:
-  **nine** third-party modules across six services. Nothing else.
+- **Zero model, inference, or embedding dependency.** Read from every `go.mod` direct-require block
+  (both the `require (...)` and single-line `require X v` forms): **ten** third-party modules across
+  ten `go.work` modules — six services, three shared packages, and `tests/e2e`. Nothing else.
 - **No first-party agent client.** ONB-6 / S-16 was **CUT** at v0.12.0 (T-119).
 - **`requirements_v4.csv` REQ-006 asserts *"the platform runs no models by doctrine"* — and there is
   no ADR behind that sentence.** It contradicts **ADR-0007** (*"Support … internal LiteLLM/vLLM/
@@ -154,7 +155,8 @@ instance of it.** The table above is the swept result.
 - **The claim we defend gets narrower and truer**: not "we govern agents" — which OpenBot and maka
   also do — but "we govern them where nothing else works, and an outsider holding no database access
   can check the record."
-- **The core's nine-module dependency surface is protected by rule**, not by habit.
+- **The core's ten-module dependency surface is protected by rule**, not by habit — and since
+  2026-08-28 by `task go-deps-check`, which fails on any unallowlisted direct dependency.
 
 ### Negative — including the parts the CEO will not like
 - **It defers Ollama-in-the-box behind a measurement**, and the measurement has not been taken. The

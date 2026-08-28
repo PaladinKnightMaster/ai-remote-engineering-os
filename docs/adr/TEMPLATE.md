@@ -16,8 +16,22 @@
 > verbatim to build the reverse index. A relation stated only in body prose is invisible to the
 > ledger, and is reported as uncurated rather than guessed.
 >
-> **Never edit an Accepted ADR (G2).** Supersede it with a new one naming the clause it replaces.
-> The ledger's *Named by* column supplies the forward pointer additively.
+> **Never edit an Accepted ADR (G2)** — with one narrow, stated exception. Supersede it with a new
+> one naming the clause it replaces; the ledger's *Named by* column supplies the forward pointer
+> additively.
+>
+> **The exception — edit directly ONLY when BOTH hold:** the change corrects a **factual error that
+> no decision clause depends on**, *and* **no downstream work has relied on the wrong version**.
+> Anything touching a decision, its rationale, or its consequences is **superseded, never rewritten.**
+>
+> **And when you do edit, edit — do not append a correction note. Git is the audit trail; do not
+> duplicate it in-document.** These files are read by keyword search, including by this repo's own
+> gates, so a correction that restates the wrong claim leaves the error findable and puts it *first*.
+> Worked case (2026-08-28): ADR-0073 said "nine third-party modules" where the tree has ten — a
+> transcription error from a survey whose instrument could not see single-line `require` statements.
+> It was corrected in place the day after Accept, before anything relied on it, while a live gate
+> (`task go-deps-check`) asserted the true number. A fourth appended correction block would have made
+> the document worse at the one thing it is used for.
 
 ---
 
