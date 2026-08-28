@@ -31,8 +31,11 @@ intelligence, workflow compiler, backend sandbox, desktop/browser automation, ev
 P0 cockpit, the P1 governance spine, the P2 data plane, evidence hardening (signed chain heads,
 offline verifier, signed bundles + SBOMs), and the first egress-tool widening since v0.3.0.
 
-**Next: v0.15 scoping**, against the **ADR-0073** product boundary. Then **v1.0.0 Beta 1** — where
-the governed-harness integration (B-041) lands *and* the OpenAPI surface freezes.
+**Next: v0.15.0 "Governed Decision Policy"** — scoped 2026-08-28 against the **ADR-0073** product
+boundary. It closes the gap between what the decision point is named for and what it does: today
+`policy-service` holds no rules, cannot return `deny`, and gates by **resource rather than action**.
+Binding ADR **ADR-0074**; gate **WD-15**. Then **v1.0.0 Beta 1** — where the governed-harness
+integration (B-041) lands *and* the OpenAPI surface freezes.
 
 ⚠ **Two dependencies on the record, both easy to lose:**
 - **Containment (B-040) is DEFERRED, not cancelled.** Until it lands, harness governance is
@@ -40,7 +43,9 @@ the governed-harness integration (B-041) lands *and* the OpenAPI surface freezes
 - **v1.0.0's reference integrations need a model to run.** Under ADR-0073 a model runtime is an
   operator-provided **substrate**; shipping one requires a measured feasibility finding. **Until
   either happens, v1.0.0 cannot be demonstrated in the `lan-only` profile** — the segment the
-  positioning rests on.
+  positioning rests on. ⭐ **The measurement is now scheduled: v0.15.0 OI-36/37 (ticket T-153)** runs
+  the §OI-c probe against the OI-4 cap. It adopts nothing — it converts this blocker into a number
+  one release before it becomes urgent.
 
 ## The north star
 

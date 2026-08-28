@@ -189,6 +189,7 @@ material to audit responses, so freezing first would have frozen a surface we we
 | **v0.12** ✅ | **Access & Onboarding** | E-02 mobile/QR · E-03 deployment profiles · E-04 onboarding · E-05a Button (E-05b cut) | **WD-11** for pairing (new security semantics) · profiles ride `task wd1` · the rest ride smoke + §human |
 | **v0.13.0** ✅ | **Evidence Hardening** — *the E-06 hardening half* | S-21 capstone · S-23 single-operator · S-24 session-revocation · S-25 enforcement-of-enforcement · S-26 quickstart-as-gate · S-27 ASI01–10 mapping · S-28 audit-chain external verifiability · S-29 bundle signing + SBOM · S-30 containment boundary · B-033 (narrowed to `CreateResource`) · B-035 **removal** | The **security audit is the gate**; full WD-1..11 regression; **no new WD**; two negative proofs + a §human offline verification |
 | **v0.14.0** | **Governed Tool Surface** — *re-scoped 2026-08-19* | Widen the **egress** tool surface, which today is one tool (`remote.exec`). Five further gateway tools exist (`run.launch`, `workstream.poll`, `plan.submit`, `memory.read`, `context.search`) but are **control-plane only**, so the product governs exactly one outward capability. **File transfer is absent from the repo entirely** — no SFTP, no SCP — which is the conspicuous gap for an agent-driven remote engineering OS. Rides the ADR-0057 typed catalog with policy, approval, connector lease, audit, Runs and grants **unchanged**, and reuses ADR-0049's `evidencePacketId = sha256:<bytes>` rather than inventing an evidence model. One ADR for the tool family. | **TBD at the criteria consult** — likely no new WD under the §2 gate-sizing rule, since the governance semantics are unchanged |
+| **v0.15.0** | **Governed Decision Policy** — *inserted 2026-08-28; see the note below* | Give `policy-service` the rule store and evaluator it has never had. It owns two tables and neither holds a rule; `deny` is not among its decision constants; and approval granularity is the **resource**, not the action — so an unflagged host runs `remote.exec` ungoverned while a flagged one gates `remote.file.list` as hard as an arbitrary command. Discharges **ADR-0054 §1** (the third decision value) and **§3** (every decision chained — the `allow` path emits nothing today). Carries the **inference-substrate measurement** as one spike ticket. **No new dependency, daemon, edge or key.** One ADR: **ADR-0074**. | **WD-15** — a machine-evaluated `deny` is new governed capability. ⚠ WD-12/13/14 are reserved (below), so the ladder is now **allocation-ordered, not release-ordered** |
 | **v1.0.0** | **Beta 1 — Governed Remote Operations** — *layer 2 lands, and the surface freezes* | Reference integrations of **OpenHands SDK** (`POST /respond_to_confirmation`) and **openworker** (`GET /v1/inbox` + `POST /v1/inbox/{id}/resolve`) via their HTTP approval endpoints, inside the v0.14 boundary. **Zero fork.** **Plus the E-06 freeze half — S-20 surface freeze + compatibility policy, S-22 upgrade statement.** | **WD-13** |
 | **v1.1** | **Session & Evidence** | B-032 generalized revocation · B-034 provenance field · B-036 FK/deletion · B-037 design pass · B-031 re-ask backoff | **WD-14** |
 | **v1.2+** | **Post-Beta reach** | Mobile PWA + `cockpit@1` · Mattermost as a governed connector · B-008 (agent-device) · B-024 (pgGraph) · voice (KittenTTS) | per epic |
@@ -197,6 +198,39 @@ material to audit responses, so freezing first would have frozen a surface we we
 war-room **v1.0** → *split* into **v0.13.0** (hardening) + the freeze half folded into **v1.0.0** ·
 war-room **v1.1** Containment → **v0.14.0** · war-room **v1.2** Governed Harness → **v1.0.0** ·
 war-room **v1.3** → **v1.1** · war-room **v1.4+** → **v1.2+**.
+
+### ⭐ v0.15 INSERTED — **RATIFIED 2026-08-28 (CEO)**, at the v0.15 scoping session
+
+**Until this date the path ran v0.14.0 → v1.0.0 and there was no v0.15 row here**; "v0.15" existed
+only as a session pointer in `CLAUDE.md`, `CANONICAL`, `README`, the north-star roadmap and
+ADR-0073:6, and `backlog_v4.csv` had no row targeted at it. The scoping session's pre-authoring audit
+recommended inserting one, and the insertion rests on **one argument** — recorded here because
+"we always ship another 0.x" is how a 1.0 never ships:
+
+> **The boundary rule makes this work impossible to do later.** A freeze-track release *"may not add
+> a governed mutation"* (§The boundary rule, below). v1.0.0 is bound by it, so a decision-plane
+> change **cannot land in v1.0.0**. It lands before, or the surface freezes over a policy plane that
+> cannot deny. **This is the S-28 precedent applied a second time** — the same reasoning that split
+> hardening from the freeze in 2026-08-10.
+
+**The audit finding that forced the theme:** `policy-service` has never made a policy decision. It
+owns `pending_approvals` + `policy_outbox` and **no rules table**; `deny` is not among its decision
+constants (*"deny is reserved for a later rule engine"* — a v0.3.0 deferral, fourteen releases ago);
+and its `decide` handler validates `edge`/`target`/`action` non-empty, persists them for display, and
+**never consults them** — the whole decision is `if !requires_approval → allow`, on a boolean read
+from the **resource** row. Meanwhile every egress tool tells the model *"The call is policy-checked."*
+
+⚠ **Two consequences recorded rather than drifted into.** (1) **R1 is only half-closed by v0.15** —
+the decision plane gains per-action governance and a real deny, but what an *approved* command may do
+afterwards is still bounded only by containment (B-040, deferred). The release notes must say so.
+(2) **WD-12/13/14 are reserved to containment, v1.0.0 and v1.1**, so v0.15 takes **WD-15** and the WD
+ladder is henceforth **allocation-ordered, not release-ordered**. Renumbering would break criteria
+references across fourteen releases — the same class of mistake as the "layer 6" near-miss.
+
+**Also carried, as one ticket and not a theme:** the **inference-substrate measurement** (ADR-0073
+§3(a), in the ADR-0052 §OI-c *build-it-and-measure* shape). Zero inference code exists in the
+as-built, and v1.0.0's flagship needs a model to be demonstrated. Measuring one release early
+converts that blocker from an unknown into a number. It adopts nothing.
 
 ### ⭐ v0.14 RE-SCOPE — **RATIFIED 2026-08-19 (CEO)**, at the v0.14 checkpoint consult
 

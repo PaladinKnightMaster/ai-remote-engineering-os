@@ -7,7 +7,7 @@
 
 **The reverse index is the point.** Gate **G2** forbids editing an Accepted ADR, so an ADR whose clause is later superseded carries **no forward pointer** — a reader of ADR-0041 cannot learn that its Go-version clause is dead. *Named by* below supplies that pointer **additively, outside the ADR files**, satisfying both G2 and the MADR convention that a superseded decision must link forward.
 
-**73 ADRs.** **Accepted: 65** · **Proposed: 8**
+**74 ADRs.** **Accepted: 66** · **Proposed: 8**
 
 ## Known corpus defects (measured, not impressions)
 
@@ -73,10 +73,10 @@
 | [ADR-0051](ADR-0051-offline-install-architecture.md) | Offline-install architecture — Linux static-binary host, Caddy proxy, host-provided postgres with staged offline packages, dual operator provisioning, self-signed TLS | **Accepted** | 2026-05-31 | — | ADR-0052, ADR-0068, ADR-0070 |
 | [ADR-0052](ADR-0052-postgres-companion-artifacts.md) | Offline postgres ships as per-OS companion artifacts (not in the core bundle) | **Accepted** | 2026-05-31 | Refines ADR-0051 decision 3. ADR-0051 said the offline bundle "ships staged install packages (.deb/.rpm) + a guide" — i.e. | ADR-0070 |
 | [ADR-0053](ADR-0053-connector-service.md) | connector-service — credential custody + egress gateway (promotes the ADR-0048 §7 reserve and closes the SEC-12 pgcrypto debt) | **Accepted** | 2026-06-01 | — | ADR-0068, ADR-0071 |
-| [ADR-0054](ADR-0054-approval-policy-decision-point.md) | policy-service approval/policy decision point + `<ApprovalPrompt>` (the human-in-the-loop primitive) | **Accepted** | 2026-06-01 | — | — |
+| [ADR-0054](ADR-0054-approval-policy-decision-point.md) | policy-service approval/policy decision point + `<ApprovalPrompt>` (the human-in-the-loop primitive) | **Accepted** | 2026-06-01 | — | ADR-0074 |
 | [ADR-0055](ADR-0055-v0.2.0-durability-rider-rescope.md) | v0.2.0 criteria amendment — the durability riders re-scoped (WD-2.5 / FE-9) | **Accepted** | 2026-06-11 | — | — |
 | [ADR-0056](ADR-0056-mcp-gateway-protocol-surface.md) | Typed MCP Gateway protocol surface & trust boundary (`services/mcp-gateway`, the first agent surface) | **Accepted** | 2026-06-14 | — | ADR-0060, ADR-0065, ADR-0066 |
-| [ADR-0057](ADR-0057-tool-catalog-invocation-governance.md) | Typed tool-catalog schema, tool→capability-edge mapping & invocation-anchored governance | **Accepted** | 2026-06-14 | — | ADR-0059, ADR-0060, ADR-0061, ADR-0071 |
+| [ADR-0057](ADR-0057-tool-catalog-invocation-governance.md) | Typed tool-catalog schema, tool→capability-edge mapping & invocation-anchored governance | **Accepted** | 2026-06-14 | — | ADR-0059, ADR-0060, ADR-0061, ADR-0071, ADR-0074 |
 | [ADR-0058](ADR-0058-broker-noninteractive-exec.md) | Broker non-interactive exec egress + audit content model | **Accepted** | 2026-06-14 | No ADR divergence (G2-clean): it extends ADR-0048/0049 with a new egress modality; it edits no Accepted ADR. | ADR-0071 |
 | [ADR-0059](ADR-0059-informed-invocation-approval.md) | Informed invocation approval — command visibility & parked-invocation lifecycle | **Accepted** | 2026-06-15 | No ADR divergence (G2-clean): it extends ADR-0057's approval surface and edits no Accepted ADR. | ADR-0064, ADR-0071 |
 | [ADR-0060](ADR-0060-asymmetric-agent-plane-keys.md) | Asymmetric per-workload keys on the agent-facing planes — removing the cluster key from `services/mcp-gateway` | **Accepted** | 2026-06-21 | Builds on / conforms to: ADR-0046 (capability tokens + tiered TTLs; this ADR promotes its named P1 trigger — key separation when the blast radius justifies it), ADR-0057/0058/0059 (the invocation /… | ADR-0062, ADR-0063, ADR-0064, ADR-0065, ADR-0066 |
@@ -93,3 +93,4 @@
 | [ADR-0071](ADR-0071-governed-file-transfer.md) | Governed file transfer — widening the egress tool surface without widening the trust boundary | **Accepted** | 2026-08-19 | No divergence from any Accepted ADR — G2 is clean. This ADR extends ADR-0057's typed tool catalog with a second egress family, reuses ADR-0058's broker egress plane and ADR-0053's connector lease u… | — |
 | [ADR-0072](ADR-0072-go-toolchain-support-window.md) | Go toolchain support-window policy — superseding ADR-0041's version clause | **Accepted** | 2026-08-24 | Supersedes ONE clause of ADR-0041 — the Go version sentence only. ADR-0041 itself is not edited (G2: an Accepted ADR is conformed to or superseded by a new ADR, never rewritten in place). | — |
 | [ADR-0073](ADR-0073-product-boundary-ledger-membership.md) | The product boundary — the ledger defines membership | **Accepted** | 2026-08-27 | It supplies the membership test that ADR-0002 (Accepted, never superseded) assumed but never stated. | — |
+| [ADR-0074](ADR-0074-governed-decision-policy.md) | `policy-service` evaluates operator-authored rules, so the decision point can decide | **Accepted** | 2026-08-28 | Decider: CEO. Discharges ADR-0054 §1 and §3 — both Accepted 2026-06-01, both only half-built. This ADR supersedes nothing and edits nothing — it builds what ADR-0054 already decided, and adds the o… | — |

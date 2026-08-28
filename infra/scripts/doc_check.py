@@ -60,8 +60,24 @@ CODE = re.compile(r"`([^`]+)`")
 SKIP_PREFIX = ("http://", "https://", "#", "mailto:", "/", "~")
 
 
+# A provenance citation carries a line suffix: `path.md:42`, `path.go:12-30`,
+# `catalog.go:130,213,321,478`. docs/adr/TEMPLATE.md MANDATES this form for every
+# load-bearing claim, so it is the highest-value reference population in the corpus
+# -- and until 2026-08-28 every one of them was INVISIBLE here: has_ext() tested the
+# last path segment, which ends in the line number, not the extension, so the
+# candidate was dropped before it was ever resolved. Found by a negative control
+# (a planted broken citation in ADR-0074 did not fire the gate); 15 such citations
+# existed at the time, none broken -- an ungated population, not live rot.
+LINE_SUFFIX = re.compile(r":\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$")
+
+
+def strip_line_suffix(s: str) -> str:
+    """Drop a trailing :line / :start-end / :a,b,c provenance suffix."""
+    return LINE_SUFFIX.sub("", s)
+
+
 def has_ext(s: str) -> bool:
-    last = s.rsplit("/", 1)[-1]
+    last = strip_line_suffix(s).rsplit("/", 1)[-1]
     return any(last.endswith(e) for e in EXTS)
 
 
@@ -92,7 +108,7 @@ def escapes_repo(ref: str, srcdir: pathlib.Path) -> bool:
 
 
 def resolves(ref: str, srcdir: pathlib.Path) -> bool:
-    ref = ref.split("#", 1)[0].rstrip("/").rstrip(".,;:")
+    ref = strip_line_suffix(ref.split("#", 1)[0]).rstrip("/").rstrip(".,;:")
     if not ref:
         return True
     # Sibling-repo refs are out of scope; in-repo parent-relative refs are NOT.

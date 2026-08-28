@@ -33,7 +33,7 @@ Build P0 first. No P1/P2/P3 without an explicit ticket (`.github/ISSUE_TEMPLATE/
 
 ## Current phase
 
-**v0.14.0 "Governed Tool Surface" — released 2026-08-26**, tagged `6b72739`. Fifteen releases shipped: the P0 cockpit, the P1 governance spine (typed MCP gateway, Runs, grants, chartered + adaptive Workstreams), the P2 data plane (scoped memory, context index), evidence hardening (signed chain heads, offline verifier, signed bundles + SBOMs), and the first egress-tool widening since v0.3.0. Next: v0.15 scoping, against the ADR-0073 product boundary.
+**v0.14.0 "Governed Tool Surface" — released 2026-08-26**, tagged `6b72739`. Fifteen releases shipped: the P0 cockpit, the P1 governance spine (typed MCP gateway, Runs, grants, chartered + adaptive Workstreams), the P2 data plane (scoped memory, context index), evidence hardening (signed chain heads, offline verifier, signed bundles + SBOMs), and the first egress-tool widening since v0.3.0. Next: **v0.15.0 "Governed Decision Policy"** (scoped 2026-08-28, ADR-0074, WD-15) — giving `policy-service` the rule store and evaluator it has never had, so the decision point can return `deny` and govern per action rather than per host.
 
 > This line was stale from T-001 until 2026-08-27 — it still announced "T-002 through T-010 pending" after fourteen releases. `infra/scripts/staleness_check.py` now gates the machine-checkable half of this class.
 
