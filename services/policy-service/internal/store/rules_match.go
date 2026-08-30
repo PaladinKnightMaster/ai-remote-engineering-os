@@ -1,8 +1,7 @@
 package store
 
 // rules_match.go is the T-149a rule-match query: the DB half of the
-// evaluator in evaluate.go. Still called by nothing (unwired, same as
-// evaluate.go — see its header comment).
+// evaluator in evaluate.go, called via EvaluateTuple below.
 
 import (
 	"context"
@@ -43,8 +42,7 @@ func (s *Store) MatchingRules(ctx context.Context, t Tuple) ([]Rule, error) {
 
 // EvaluateTuple composes MatchingRules and Evaluate: the query bounds the
 // candidate set to what could possibly match, then the pure function decides
-// which one wins. Still called by nothing (T-150 is the ticket that wires
-// this into decideHandler).
+// which one wins. Called from decideHandler on every decide (T-150).
 func (s *Store) EvaluateTuple(ctx context.Context, t Tuple) (outcome string, winner Rule, ok bool, err error) {
 	rules, err := s.MatchingRules(ctx, t)
 	if err != nil {

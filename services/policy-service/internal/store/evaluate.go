@@ -1,12 +1,10 @@
 package store
 
 // evaluate.go is the T-149a policy evaluator (ADR-0074 §D1/§D2): a PURE
-// function over an in-memory rule set, with no DB and no context. It is
-// deliberately unwired — decideHandler (services/policy-service/internal/
-// server/server.go) does not call it, and nothing else in the product does
-// either. T-149b teaches the callers (mcp-gateway, api) to understand a deny
-// outcome; T-150 is the ticket that actually calls this from the decide path
-// and chains the resulting event. Until then this file changes no behavior.
+// function over an in-memory rule set, with no DB and no context.
+// decideHandler (services/policy-service/internal/server/server.go) has
+// called this via Store.EvaluateTuple since T-150 wired it into the decide
+// path and started chaining the resulting event.
 //
 // Kept in package store (not split into internal/policy/) because it operates
 // directly on the store's own Rule type and constants (Wildcard,

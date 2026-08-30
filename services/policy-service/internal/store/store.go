@@ -8,8 +8,10 @@
 //
 // Audit outcomes (ADR-0054 §3; outcome carries kind+reason, the broker
 // `closed:<reason>` precedent): policy.decision:requires_approval,
-// approval.granted, approval.denied:operator, approval.denied:timeout. Every
-// event carries target=resource:<id> and evidencePacketId=session:<id> — no raw
+// approval.granted, approval.denied:operator, approval.denied:timeout, and —
+// since T-150 wired the T-149a evaluator into the decide path (ADR-0074 §D4
+// clause 4) — policy.decision:allow and policy.decision:deny. Every event
+// carries target=resource:<id> and evidencePacketId=session:<id> — no raw
 // payloads in the immutable chain (ADR-0049).
 package store
 
@@ -30,12 +32,21 @@ import (
 // outbox / api_outbox / connector_outbox, so it must not collide; ADR-0048).
 const outboxTable = "policy_outbox"
 
-// Decision values (ADR-0054 §1). deny is not produced at v0.2.0 — there are no
-// deny rules until the v0.3.0 rule engine; the operator's resolve produces the
-// granted/denied outcome.
+// Decision values (ADR-0054 §1). DecisionDeny landed at T-150 (the evaluator
+// deciding without a human present, ADR-0074 §D2/§D4); the operator's resolve
+// still separately produces the granted/denied outcome on pending_approvals.
 const (
 	DecisionAllow            = "allow"
 	DecisionRequiresApproval = "requires_approval"
+	DecisionDeny             = "deny"
+)
+
+// Outbox outcomes for a matched (or backward-compatible-fallback) decide-path
+// decision — the allow/deny half of ADR-0054 §3 that CreatePending's own
+// "policy.decision:requires_approval" literal completes (AUD-35).
+const (
+	OutcomeDecisionAllow = "policy.decision:allow"
+	OutcomeDecisionDeny  = "policy.decision:deny"
 )
 
 // timeoutActor is the workload identity attributed to fail-closed auto-denials —
@@ -125,6 +136,32 @@ func (s *Store) CreatePending(ctx context.Context, in CreatePendingInput, ttl ti
 		return PendingApproval{}, fmt.Errorf("commit decision: %w", err)
 	}
 	return pa, nil
+}
+
+// RecordDecision chains a matched (or matched-nothing-but-fell-back-to-allow)
+// allow or deny decision on policy_outbox (ADR-0074 §D4 clause 4; AUD-35,
+// AUD-36). outcome must be OutcomeDecisionAllow or OutcomeDecisionDeny. Unlike
+// CreatePending there is no row to persist — allow and deny leave no state on
+// pending_approvals — so this transaction holds only the outbox insert; an
+// allow decision is therefore no longer free to serve (see PERF-9).
+func (s *Store) RecordDecision(ctx context.Context, sessionID, subject, edge, target, outcome string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	if _, err := s.writer.Enqueue(ctx, tx, outbox.Event{
+		Timestamp: time.Now(), Actor: subject, Edge: edge,
+		Target: target, Outcome: outcome,
+		EvidencePacketID: "session:" + sessionID,
+	}); err != nil {
+		return fmt.Errorf("enqueue decision: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit decision: %w", err)
+	}
+	return nil
 }
 
 // Resolve records the operator's approve/deny on a still-pending approval and

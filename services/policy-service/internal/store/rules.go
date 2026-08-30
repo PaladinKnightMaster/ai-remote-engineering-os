@@ -22,15 +22,14 @@ import (
 // why NULL-as-wildcard was rejected).
 const Wildcard = "*"
 
-// Rule outcomes. DecisionAllow / DecisionRequiresApproval are the existing
-// store.go decision constants — a rule may also state deny, though no
-// DecisionDeny constant exists yet and nothing consults it until the T-149
-// evaluator lands (the CHECK constraint accepts it now so the schema doesn't
-// need a second migration then).
+// Rule outcomes. All three alias the store.go decision constants — DecisionDeny
+// was added at T-150, when the evaluator this rule vocabulary feeds was
+// actually wired into the decide path (the CHECK constraint has accepted
+// "deny" since T-148, so no second migration was needed).
 const (
 	RuleOutcomeAllow            = DecisionAllow
 	RuleOutcomeRequiresApproval = DecisionRequiresApproval
-	RuleOutcomeDeny             = "deny"
+	RuleOutcomeDeny             = DecisionDeny
 )
 
 // ErrRuleNotFound is returned when a rule id has no matching row.
