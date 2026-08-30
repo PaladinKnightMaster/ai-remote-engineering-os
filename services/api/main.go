@@ -80,6 +80,18 @@ func run(args []string) error {
 }
 
 func serve(dsn string) error {
+	// POLICY_URL is mandatory (OI-38, ADR-0074 §D2): api consults the policy
+	// decision point on EVERY session-start now (CON-6), not only for
+	// requires_approval-labeled resources — server.New already tolerates an empty
+	// value (h.policy stays nil), but after CON-6 that nil means NO session can
+	// ever be created, which would surface as a mysterious runtime failure instead
+	// of a boot error. Checked first, before any other resource is acquired, so a
+	// misconfigured deployment fails loud at startup.
+	policyURL := os.Getenv("POLICY_URL")
+	if policyURL == "" {
+		return errors.New("POLICY_URL must be set: services/api consults the policy decision point on every session-start (ADR-0074, CON-6)")
+	}
+
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
@@ -262,7 +274,7 @@ func serve(dsn string) error {
 
 	srv := &http.Server{
 		Addr:              firstNonEmpty(os.Getenv("API_ADDR"), ":8080"),
-		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL"), os.Getenv("POLICY_URL"), opts...),
+		Handler:           server.New(store.New(pool), authn, signer, v, os.Getenv("AIREOS_AUDIT_URL"), policyURL, opts...),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("api listening on %s", srv.Addr)

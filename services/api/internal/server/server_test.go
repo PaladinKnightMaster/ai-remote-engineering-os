@@ -1028,11 +1028,28 @@ func seedResource(t *testing.T, h http.Handler) string {
 	return r.ID
 }
 
+// newAllowHandler stands up an api handler wired to an httptest policy that
+// always answers "allow" (CON-6, T-150b: every session-start now consults
+// policy, so a unit test exercising the ordinary create/list/end happy path needs
+// a policy configured — the empty-policyURL harness below is reserved for tests
+// that specifically exercise the no-policy-configured fail-closed path).
+func newAllowHandler(t *testing.T) http.Handler {
+	t.Helper()
+	pol := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"allow"}`))
+	}))
+	t.Cleanup(pol.Close)
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	return New(newFake(), nil, signer, allowAll{}, "", pol.URL)
+}
+
 // TestSessionCreateGetEnd — happy path across the four routes: create against a
 // real resource (201 pending), fetch it (200), end it (200 closed/operator),
 // re-end is idempotent (still 200, still closed).
 func TestSessionCreateGetEnd(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "", "")
+	h := newAllowHandler(t)
 	resID := seedResource(t, h)
 
 	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
@@ -1099,7 +1116,7 @@ func TestSessionCreateValidation(t *testing.T) {
 // TestSessionListReturnsItems — list is operator-scoped and returns the items
 // envelope, same shape as resources.
 func TestSessionListReturnsItems(t *testing.T) {
-	h := New(newFake(), nil, nil, allowAll{}, "", "")
+	h := newAllowHandler(t)
 	resID := seedResource(t, h)
 	for i := 0; i < 3; i++ {
 		if rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true); rec.Code != http.StatusCreated {
@@ -1278,6 +1295,96 @@ func TestSessionCreateApprovalDenied(t *testing.T) {
 	}
 	if page.Items[0].Status != session.StatusClosed {
 		t.Fatalf("denied session status = %q, want closed (not parked, not open — no WS attach possible)", page.Items[0].Status)
+	}
+	// AUD-38: a policy DENY is a refusal, not an outage — closed_reason must say
+	// policy_denied, never policy_unavailable (that would misrepresent a decision
+	// policy actually made as a policy outage) and never approval_denied (that is
+	// the OPERATOR's own resolve-deny on an already-parked session, a different
+	// actor). Mutation-proof: point failClosed's call site here at
+	// session.ReasonPolicyUnavailable instead of session.ReasonPolicyDenied and
+	// this assertion fails.
+	if page.Items[0].ClosedReason != session.ReasonPolicyDenied {
+		t.Fatalf("denied session closed_reason = %q, want %q", page.Items[0].ClosedReason, session.ReasonPolicyDenied)
+	}
+}
+
+// TestSessionCreateConsultsPolicyForUnflaggedResource — CON-6/ADR-0074 §D2: api
+// consults the policy decision point on EVERY session-start, not only for
+// resources labeled requires_approval=true. It also proves the ⚠⚠ "pass the real
+// label" requirement: an ordinary (unflagged) resource must send
+// requires_approval=false to policy, not a hardcoded true — getting that wrong
+// would invert CON-4's fallback and park every ordinary session.
+//
+// Mutation-proof: reverting CreateSession to the old short-circuit
+// (`if res.Labels["requires_approval"] != "true" { ...create directly...; return }`)
+// makes the create succeed WITHOUT ever hitting the policy stub below — the firing
+// assertion is `if !gotDecision`.
+func TestSessionCreateConsultsPolicyForUnflaggedResource(t *testing.T) {
+	var gotDecision bool
+	var gotRequiresApproval any
+	pol := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/decisions" {
+			gotDecision = true
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			gotRequiresApproval = body["requires_approval"]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"allow"}`))
+	}))
+	defer pol.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	h := New(newFake(), nil, signer, allowAll{}, "", pol.URL)
+
+	resID := seedResource(t, h) // ordinary resource — no requires_approval label
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+	if !gotDecision {
+		t.Fatal("policy was NOT consulted for an unflagged resource (CON-6)")
+	}
+	if gotRequiresApproval != false {
+		t.Fatalf("requires_approval sent to policy = %v, want false (the real label, not a hardcoded true)", gotRequiresApproval)
+	}
+	var created session.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create session: bad body %s", rec.Body)
+	}
+	// The allow decision flips the parked session straight to 'pending' — the same
+	// shape CreateSession itself used to hand back directly. No contract change.
+	if created.Status != session.StatusPending {
+		t.Fatalf("allow decision: status = %q, want pending", created.Status)
+	}
+}
+
+// TestSessionCreateAllowGrantsNoOperatorApproval — the machine "allow" path uses
+// ApproveSession, which is a pure status flip: it must set NO approved_by and emit
+// NO approval-granted audit event, so a policy allow can never be mistaken for an
+// operator's own approval (T-150b brief).
+func TestSessionCreateAllowGrantsNoOperatorApproval(t *testing.T) {
+	pol := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"allow"}`))
+	}))
+	defer pol.Close()
+
+	key, _ := auth.GenerateKey()
+	signer := auth.NewSigner(key, "")
+	f := newFake()
+	h := New(f, nil, signer, allowAll{}, "", pol.URL)
+
+	resID := seedResource(t, h)
+	rec := req(t, h, http.MethodPost, "/v1/sessions", `{"resourceId":"`+resID+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create session: want 201, got %d: %s", rec.Code, rec.Body)
+	}
+	for _, e := range f.events {
+		if strings.Contains(e.Outcome, "approv") {
+			t.Fatalf("machine allow must emit no approval event, got %+v", e)
+		}
 	}
 }
 

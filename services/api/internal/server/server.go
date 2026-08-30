@@ -953,11 +953,16 @@ func operatorSubject(r *http.Request) (string, bool) {
 }
 
 // CreateSession (POST /v1/sessions) records the operator's intent to start a
-// session against a resource. For a normal resource the row is created 'pending'
-// and the broker activates it on a successful PTY attach. For a resource labeled
-// requires_approval=true (ADR-0054) the session is instead parked
-// 'pending_approval' and the policy decision point is consulted; the operator
-// approves/denies via T-031b-ii. An unknown resourceId answers 404.
+// session against a resource. Every session-start consults the policy decision
+// point (ADR-0074 §D2, CON-6, T-150b) — not only for resources labeled
+// requires_approval=true. The session row is always parked 'pending_approval'
+// FIRST (a session id must exist before it can be the policy target, and parking
+// keeps the broker's status guard closed for the whole window), then policy
+// decides: allow flips it straight to 'pending' (the same row CreateSession
+// itself used to hand back, so existing clients see no difference);
+// requires_approval leaves it parked for the operator (T-031b-ii);
+// deny closes it (ReasonPolicyDenied, AUD-38) and answers 403. An unknown
+// resourceId answers 404.
 func (a *apiHandlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	operator, ok := operatorSubject(r)
 	if !ok {
@@ -977,9 +982,10 @@ func (a *apiHandlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the resource to decide whether this start needs approval (ADR-0054:
-	// trigger = a resource labeled requires_approval=true). This also resolves an
-	// unknown resourceId to 404 before any session insert.
+	// Read the resource to pass its real requires_approval label through to policy
+	// (CON-4's fallback lives in policy-service: no matching rule falls back to
+	// this label). This also resolves an unknown resourceId to 404 before any
+	// session insert.
 	res, err := a.store.Get(r.Context(), in.ResourceID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
@@ -990,30 +996,16 @@ func (a *apiHandlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if res.Labels["requires_approval"] != "true" {
-		sess, err := a.store.CreateSession(r.Context(), operator, in)
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "resource not found")
-			return
-		}
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", "create session failed")
-			return
-		}
-		writeJSON(w, http.StatusCreated, sess)
-		return
-	}
-
-	a.createWithApproval(w, r, operator, in)
+	a.createGoverned(w, r, operator, in, res.Labels["requires_approval"] == "true")
 }
 
-// createWithApproval parks a session-start to a requires_approval resource and
-// consults the policy decision point (ADR-0054). The session is created
-// 'pending_approval' FIRST (so the broker's status guard blocks any WS attach),
-// then policy is consulted; any failure to obtain a requires_approval decision
-// fail-closes the session ('closed'/policy_unavailable) — a flagged session never
-// proceeds without an explicit operator approval (driven in T-031b-ii).
-func (a *apiHandlers) createWithApproval(w http.ResponseWriter, r *http.Request, operator string, in session.CreateInput) {
+// createGoverned parks a session-start and consults the policy decision point for
+// EVERY resource (ADR-0074 §D2, CON-6) — the requires_approval label is passed
+// through as-is rather than hardcoded, so policy-service's own no-matching-rule
+// fallback to that label (CON-4) reproduces v0.2.0-era behavior exactly for an
+// empty rule table (CON-1). Any failure to obtain a definitive decision fail-closes
+// the parked session — a session never proceeds without an explicit policy answer.
+func (a *apiHandlers) createGoverned(w http.ResponseWriter, r *http.Request, operator string, in session.CreateInput, requiresApproval bool) {
 	sess, err := a.store.ParkForApproval(r.Context(), operator, in)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
@@ -1025,42 +1017,61 @@ func (a *apiHandlers) createWithApproval(w http.ResponseWriter, r *http.Request,
 	}
 
 	if a.policy == nil {
-		a.failClosed(r.Context(), operator, sess.ID)
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "approval required but the policy decision point is not configured")
+		a.failClosed(r.Context(), operator, sess.ID, session.ReasonPolicyUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "the policy decision point is not configured")
 		return
 	}
 	decision, derr := a.policy.Decide(r.Context(), policy.DecideInput{
 		SessionID: sess.ID, Subject: operator, Edge: "agent-remote-session",
-		Target: "resource:" + in.ResourceID, Action: "session.start", RequiresApproval: true,
+		Target: "resource:" + in.ResourceID, Action: "session.start", RequiresApproval: requiresApproval,
 	})
 	if derr != nil {
-		a.failClosed(r.Context(), operator, sess.ID)
+		a.failClosed(r.Context(), operator, sess.ID, session.ReasonPolicyUnavailable)
 		writeError(w, http.StatusBadGateway, "bad_gateway", "policy decision point unavailable")
 		return
 	}
 	switch decision.Decision {
+	case policy.DecisionAllow:
+		// A machine allow is a pure pending_approval -> pending flip (T-150b):
+		// ApproveSession emits NO audit event and sets NO approved_by, so this can
+		// never be mistaken for an operator's own approval. The response shape is
+		// identical to CreateSession's old direct-insert result — no contract change.
+		approved, aerr := a.store.ApproveSession(r.Context(), operator, sess.ID)
+		if aerr != nil {
+			log.Printf("policy allow ApproveSession(%s): %v", sess.ID, aerr)
+			writeError(w, http.StatusInternalServerError, "internal", "create session failed")
+			return
+		}
+		writeJSON(w, http.StatusCreated, approved)
 	case policy.DecisionRequiresApproval:
 		writeJSON(w, http.StatusCreated, sess) // parked pending_approval; operator resolves in T-031b-ii
 	case policy.DecisionDeny:
 		// ADR-0074 §D2 / SEC-58: an explicit deny fails closed with a clear 403,
-		// distinct from the "policy contract we don't understand" 502 below. Nothing
-		// emits DecisionDeny yet (T-150 wires the evaluator) — this branch is
-		// unreachable today and exists so the caller already refuses it once it is.
-		a.failClosed(r.Context(), operator, sess.ID)
+		// distinct from the "policy contract we don't understand" 502 below.
+		// ReasonPolicyDenied (AUD-38), NOT ReasonPolicyUnavailable — the policy was
+		// reachable and DID answer; recording this as an outage would misrepresent a
+		// refusal as a failure. Also not ReasonApprovalDenied — that is the
+		// OPERATOR's own resolve-deny on an already-parked session, a different actor
+		// entirely.
+		a.failClosed(r.Context(), operator, sess.ID, session.ReasonPolicyDenied)
 		writeError(w, http.StatusForbidden, "forbidden", "policy denied this session")
 	default:
-		// v0.2.0: a flagged resource always requires approval; any other decision is
-		// an unexpected policy contract state — fail closed rather than proceed.
-		a.failClosed(r.Context(), operator, sess.ID)
+		// Any other decision is an unexpected policy contract state — fail closed
+		// rather than proceed. The policy was consulted but did not give a decision
+		// we understand, which is the "unavailable" story, not "denied".
+		a.failClosed(r.Context(), operator, sess.ID, session.ReasonPolicyUnavailable)
 		writeError(w, http.StatusBadGateway, "bad_gateway", "unexpected policy decision")
 	}
 }
 
 // failClosed best-effort closes a parked session whose approval could not be
-// obtained, so a policy outage does not leave it orphaned in 'pending_approval'.
-func (a *apiHandlers) failClosed(ctx context.Context, operator, id string) {
-	if _, err := a.store.MarkClosed(ctx, operator, id, session.ReasonPolicyUnavailable); err != nil {
-		log.Printf("fail-closed MarkClosed(%s): %v", id, err)
+// obtained, so a policy outage (or an explicit deny) does not leave it orphaned in
+// 'pending_approval'. reason distinguishes an outage (ReasonPolicyUnavailable) from
+// an explicit refusal (ReasonPolicyDenied, AUD-38) — the two are different facts
+// and must not collapse to one closed_reason.
+func (a *apiHandlers) failClosed(ctx context.Context, operator, id, reason string) {
+	if _, err := a.store.MarkClosed(ctx, operator, id, reason); err != nil {
+		log.Printf("fail-closed MarkClosed(%s, %s): %v", id, reason, err)
 	}
 }
 

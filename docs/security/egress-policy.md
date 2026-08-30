@@ -24,11 +24,12 @@ Agents must not receive raw persistent secrets. They request operations through 
   decrypt in `services/connector-service/internal/store/store.go`), enforced by
   the `task sec13-gate` grep gate + the e2e runtime proof (api/broker boot with
   empty keys).
-- **Human approval for sensitive access** — a `requires_approval=true` resource
-  parks the session-start (`services/api/internal/server/server.go`
-  `createWithApproval`) until the operator resolves it through policy-service
-  (`services/policy-service/internal/server/server.go`); unresolved approvals
-  fail closed on the sweeper timeout (`approval.denied:timeout`).
+- **Human approval for sensitive access** — every session-start is parked and
+  consults policy-service before proceeding (`services/api/internal/server/server.go`
+  `createGoverned`, ADR-0074 §D2); a `requires_approval=true` resource (or a
+  matching policy rule) leaves it parked until the operator resolves it through
+  policy-service (`services/policy-service/internal/server/server.go`); unresolved
+  approvals fail closed on the sweeper timeout (`approval.denied:timeout`).
 - **Full audit trail** — every lease emits `credential.leased` and every
   decision/resolution emits `policy.decision:*` / `approval.*` through the
   per-service transactional outboxes into the chained-hash audit-service

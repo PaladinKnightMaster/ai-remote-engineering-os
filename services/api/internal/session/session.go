@@ -48,6 +48,15 @@ const (
 	// (T-031b-ii reconcile).
 	ReasonApprovalDenied  = "approval_denied"
 	ReasonApprovalTimeout = "approval_timeout"
+	// ReasonPolicyDenied closes a session at CREATE when the decision point itself
+	// returns an explicit "deny" (ADR-0074 §D2, AUD-38, T-150b). Deliberately
+	// distinct from ReasonPolicyUnavailable (the policy was reachable and DID
+	// answer — recording it as an outage would misrepresent a refusal as a
+	// failure) and from ReasonApprovalDenied (that is the OPERATOR's resolve-deny
+	// on an already-parked session; this is the machine's own decision at
+	// session-create — conflating the two would attribute a policy decision to a
+	// human who never made it).
+	ReasonPolicyDenied = "policy_denied"
 )
 
 // Session is the stored, server-completed cockpit session. endedAt/closedReason/
