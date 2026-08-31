@@ -1,10 +1,12 @@
 // Package server is policy-service's HTTP surface (ADR-0043: chi + the shared
 // capability-edge middleware).
 //
-// The decide + resolve endpoints are gated by RequireCapability over the
-// service-service edge and are deliberately INTERNAL — NOT in the shared OpenAPI
-// fragment — the same posture as connector-service's lease RPC: services/api
-// consults them (ADR-0054 §5), and the operator-facing approve/deny stays on
+// The decide + resolve endpoints, and (since T-151a) the /v1/rules CRUD
+// endpoints, are gated by RequireCapability over the service-service edge and
+// are deliberately INTERNAL — NOT in the shared OpenAPI fragment — the same
+// posture as connector-service's lease RPC: services/api consults them
+// (ADR-0054 §5; rules via T-151b), and the operator-facing surfaces
+// (approve/deny, the SEC-53 human-agent guard on rule writes) stay on
 // services/api. /healthz is public.
 package server
 
@@ -23,16 +25,26 @@ import (
 	"aireos.local/services/policy-service/internal/store"
 )
 
-// DecisionStore is the subset of *store.Store the decide/resolve handlers
-// need, narrow enough that a unit test can satisfy it with a DB-free fake
-// (same seam as session-broker's SessionStore) — decideHandler now touches
-// Postgres on every call (EvaluateTuple), so the pre-T-150 "nil pool is fine"
-// unit-test shape no longer holds.
+// DecisionStore is the subset of *store.Store the decide/resolve/rules
+// handlers need, narrow enough that a unit test can satisfy it with a DB-free
+// fake (same seam as session-broker's SessionStore) — decideHandler now
+// touches Postgres on every call (EvaluateTuple), so the pre-T-150 "nil pool
+// is fine" unit-test shape no longer holds. T-151a extends this interface
+// with the five rule-CRUD methods rather than introducing a second store
+// interface: Config.Store stays the one injection seam, and fakeStore in
+// server_test.go extends naturally instead of every test needing to satisfy
+// two fakes.
 type DecisionStore interface {
 	EvaluateTuple(ctx context.Context, t store.Tuple) (outcome string, winner store.Rule, ok bool, err error)
 	RecordDecision(ctx context.Context, sessionID, subject, edge, target, outcome string) error
 	CreatePending(ctx context.Context, in store.CreatePendingInput, ttl time.Duration) (store.PendingApproval, error)
 	Resolve(ctx context.Context, sessionID, decision, resolvedBy string) (store.PendingApproval, error)
+
+	CreateRule(ctx context.Context, in store.CreateRuleInput) (store.Rule, error)
+	ListRules(ctx context.Context) ([]store.Rule, error)
+	GetRule(ctx context.Context, id string) (store.Rule, error)
+	SetRuleEnabled(ctx context.Context, id string, enabled bool) (store.Rule, error)
+	DeleteRule(ctx context.Context, id string) error
 }
 
 // Config carries the policy handler's dependencies.
@@ -61,6 +73,15 @@ func New(cfg Config) http.Handler {
 		r.Use(mw.RequireCapability(cfg.Verifier, "service-service"))
 		r.Post("/v1/decisions", decideHandler(st, cfg.TTL))
 		r.Post("/v1/approvals/{sessionID}/resolve", resolveHandler(st))
+		// Rule CRUD (T-151a) — service-service by design, api is the only
+		// intended caller. Deliberately NOT in the OpenAPI fragment, same
+		// posture as decide/resolve above; the operator-facing surface and its
+		// SEC-53 human-agent guard are T-151b's, on services/api.
+		r.Post("/v1/rules", createRuleHandler(st))
+		r.Get("/v1/rules", listRulesHandler(st))
+		r.Get("/v1/rules/{id}", getRuleHandler(st))
+		r.Patch("/v1/rules/{id}", patchRuleHandler(st))
+		r.Delete("/v1/rules/{id}", deleteRuleHandler(st))
 	})
 	return r
 }

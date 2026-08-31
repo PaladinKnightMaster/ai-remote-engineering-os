@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -28,7 +29,9 @@ func (allowVerifier) Verify(context.Context, string) (mw.Capability, error) {
 // decideHandler consult the evaluator on every call, so a real *store.Store
 // with a nil pool is no longer usable in a unit test (it would panic on the
 // first query); this fake is the injection seam server.Config.Store exists
-// for, same shape as session-broker's SessionStore fakes.
+// for, same shape as session-broker's SessionStore fakes. T-151a extends it
+// with an in-memory rule table so the rules routes can be unit-tested the
+// same way, rather than adding a second fake for a second interface.
 type fakeStore struct {
 	evalOutcome string
 	evalOk      bool
@@ -38,6 +41,14 @@ type fakeStore struct {
 
 	recordedOutcomes []string // outcome values passed to RecordDecision, in order
 	createCalled     bool
+
+	rules             map[string]store.Rule
+	nextRuleID        int
+	createRuleErr     error
+	listRulesErr      error
+	getRuleErr        error
+	setRuleEnabledErr error
+	deleteRuleErr     error
 }
 
 func (f *fakeStore) EvaluateTuple(context.Context, store.Tuple) (string, store.Rule, bool, error) {
@@ -62,6 +73,77 @@ func (f *fakeStore) CreatePending(_ context.Context, in store.CreatePendingInput
 
 func (f *fakeStore) Resolve(context.Context, string, string, string) (store.PendingApproval, error) {
 	return store.PendingApproval{}, nil
+}
+
+func (f *fakeStore) CreateRule(_ context.Context, in store.CreateRuleInput) (store.Rule, error) {
+	if f.createRuleErr != nil {
+		return store.Rule{}, f.createRuleErr
+	}
+	for _, r := range f.rules {
+		if r.Subject == in.Subject && r.Edge == in.Edge && r.Action == in.Action && r.Target == in.Target {
+			return store.Rule{}, store.ErrDuplicateRule
+		}
+	}
+	if f.rules == nil {
+		f.rules = map[string]store.Rule{}
+	}
+	f.nextRuleID++
+	id := fmt.Sprintf("rule-%d", f.nextRuleID)
+	now := time.Now()
+	r := store.Rule{
+		ID: id, Label: in.Label, Subject: in.Subject, Edge: in.Edge,
+		Action: in.Action, Target: in.Target, Outcome: in.Outcome,
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}
+	f.rules[id] = r
+	return r, nil
+}
+
+func (f *fakeStore) ListRules(context.Context) ([]store.Rule, error) {
+	if f.listRulesErr != nil {
+		return nil, f.listRulesErr
+	}
+	out := make([]store.Rule, 0, len(f.rules))
+	for _, r := range f.rules {
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetRule(_ context.Context, id string) (store.Rule, error) {
+	if f.getRuleErr != nil {
+		return store.Rule{}, f.getRuleErr
+	}
+	r, ok := f.rules[id]
+	if !ok {
+		return store.Rule{}, store.ErrRuleNotFound
+	}
+	return r, nil
+}
+
+func (f *fakeStore) SetRuleEnabled(_ context.Context, id string, enabled bool) (store.Rule, error) {
+	if f.setRuleEnabledErr != nil {
+		return store.Rule{}, f.setRuleEnabledErr
+	}
+	r, ok := f.rules[id]
+	if !ok {
+		return store.Rule{}, store.ErrRuleNotFound
+	}
+	r.Enabled = enabled
+	r.UpdatedAt = time.Now()
+	f.rules[id] = r
+	return r, nil
+}
+
+func (f *fakeStore) DeleteRule(_ context.Context, id string) error {
+	if f.deleteRuleErr != nil {
+		return f.deleteRuleErr
+	}
+	if _, ok := f.rules[id]; !ok {
+		return store.ErrRuleNotFound
+	}
+	delete(f.rules, id)
+	return nil
 }
 
 func newHandler() http.Handler {
