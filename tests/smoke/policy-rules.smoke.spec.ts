@@ -25,7 +25,13 @@ test("operator sees the blast radius before saving a wildcard rule, then creates
   page,
 }, testInfo) => {
   await login(page);
-  await page.goto("/policy-rules");
+
+  // FE-27 (T-152b): reach the page via the Dashboard card, not a direct
+  // goto — this is the actual proof of discoverability VER-32's §human pass
+  // depends on (the CEO would otherwise have to be told the URL).
+  await page.goto("/");
+  await page.getByRole("link", { name: /policy rules/i }).click();
+  await expect(page).toHaveURL(/\/policy-rules$/);
 
   const label = `smoke-rule-${Date.now()}`;
   await page.getByLabel("label").fill(label);

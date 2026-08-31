@@ -89,6 +89,13 @@ export function Dashboard() {
               issue and revoke the scoped grants that let AI agents launch governed runs on their own.
             </p>
             <p className="mt-2 text-sm">
+              <Link to="/policy-rules" className="font-medium text-primary hover:underline">
+                Policy rules →
+              </Link>{" "}
+              author the rules that decide whether an agent action is allowed, held for
+              approval, or denied.
+            </p>
+            <p className="mt-2 text-sm">
               <Link to="/workstreams" className="font-medium text-primary hover:underline">
                 Workstreams →
               </Link>{" "}

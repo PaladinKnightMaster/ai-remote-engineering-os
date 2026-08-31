@@ -273,8 +273,21 @@ func TestRuleMutationsChainAUD40Events(t *testing.T) {
 		if ev.Actor != actor {
 			t.Fatalf("event %d: actor = %q, want %q", i, ev.Actor, actor)
 		}
-		if ev.Edge != "agent-remote-session" {
-			t.Fatalf("event %d: edge = %q, want the rule's own edge %q", i, ev.Edge, "agent-remote-session")
+		// AUD-41 (T-152b): Event.Edge is the edge the MUTATION traversed
+		// (authoring/enabling/disabling/deleting a rule is an operator action
+		// over human-agent — SEC-53), not the edge the rule governs. This
+		// used to assert "agent-remote-session" (the rule's own edge) — that
+		// was AUD-41's bug: it let a filter on edge=agent-remote-session
+		// (reviewing egress activity) also return rule-authorship events.
+		if ev.Edge != "human-agent" {
+			t.Fatalf("event %d: edge = %q, want the traversed edge %q", i, ev.Edge, "human-agent")
+		}
+		// The rule's own governed edge must still survive somewhere in the
+		// ledger — AUD-41 requires BOTH halves: Edge becomes the traversed
+		// edge AND the rule's governed edge moves into Target. Losing this
+		// half would delete the governed edge from the ledger entirely.
+		if !strings.Contains(ev.Target, "edge=agent-remote-session") {
+			t.Fatalf("event %d: target = %q, want it to contain the rule's governed edge %q", i, ev.Target, "edge=agent-remote-session")
 		}
 		if ev.EvidencePacketID != "rule:"+r.ID {
 			t.Fatalf("event %d: evidencePacketId = %q, want anchor %q", i, ev.EvidencePacketID, "rule:"+r.ID)

@@ -72,26 +72,37 @@ func ruleAnchor(id string) string { return "rule:" + id }
 
 // ruleTupleTarget packs the tuple components the outbox Event's fixed fields
 // don't otherwise carry into ONE string on Target: subject, action, target,
-// and the rule's own outcome (allow/requires_approval/deny — NOT this
-// event's own policy.rule:* Outcome). Event.Edge already carries the tuple's
-// edge component (Edge holds a capability-edge value everywhere else it's
-// used, and a rule's edge column IS one), so it is not repeated here. A
-// deleted rule's row is gone from policy_rules afterward, so for
-// OutcomeRuleDeleted this composite is the ONLY place the tuple survives for
-// offline verification (ADR-0073 §1) — which is why DeleteRule captures it
-// via DELETE ... RETURNING in the same statement as the delete, not a
-// preceding SELECT.
+// edge, and the rule's own outcome (allow/requires_approval/deny — NOT this
+// event's own policy.rule:* Outcome). AUD-41 (T-152b): Event.Edge means, on
+// every other outbox producer, the capability edge the ACTION traversed —
+// here that is "human-agent" (the operator authoring the rule), not the
+// edge the rule governs. Filtering the audit read surface by
+// edge=agent-remote-session to review egress activity must not also return
+// rule-authorship events, since Edge is a FILTERED field and Target is not
+// (audit-service/internal/store/store.go). So the rule's own governed edge
+// moves here, alongside the rest of the tuple, instead of riding on
+// Event.Edge. A deleted rule's row is gone from policy_rules afterward, so
+// for OutcomeRuleDeleted this composite (edge included) is the ONLY place
+// the tuple survives for offline verification (ADR-0073 §1) — which is why
+// DeleteRule captures it via DELETE ... RETURNING in the same statement as
+// the delete, not a preceding SELECT.
 func ruleTupleTarget(r Rule) string {
-	return fmt.Sprintf("subject=%s action=%s target=%s outcome=%s", r.Subject, r.Action, r.Target, r.Outcome)
+	return fmt.Sprintf("subject=%s action=%s target=%s edge=%s outcome=%s", r.Subject, r.Action, r.Target, r.Edge, r.Outcome)
 }
 
 // ruleEvent builds the outbox.Event for a rule mutation. actor is the
 // operator who performed the mutation (T-151c: one uniform "actor" concept
 // across create/enable/disable/delete, replacing the create-only, never-
-// consumed "authored_by" T-151b introduced).
+// consumed "authored_by" T-151b introduced). AUD-41 (T-152b): Edge is
+// "human-agent" — the edge the mutation itself traversed (authoring a rule
+// is an operator action over the human-agent edge, per SEC-53's guard in
+// services/api) — NOT r.Edge, the edge the rule governs. r.Edge still
+// survives, in ruleTupleTarget's Target composite above; dropping it from
+// Target while moving Event.Edge to "human-agent" would delete the rule's
+// governed edge from the ledger entirely.
 func ruleEvent(actor string, r Rule, outcome string) outbox.Event {
 	return outbox.Event{
-		Timestamp: time.Now(), Actor: actor, Edge: r.Edge,
+		Timestamp: time.Now(), Actor: actor, Edge: "human-agent",
 		Target: ruleTupleTarget(r), Outcome: outcome,
 		EvidencePacketID: ruleAnchor(r.ID),
 	}

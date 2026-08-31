@@ -97,7 +97,15 @@ test("a paired device redeems, approves a held invocation at 375px with no horiz
   await expect(page.getByText(/paired device session/i)).toBeVisible();
   await expect(page.getByRole("link", { name: /pending tool invocations/i })).toBeVisible();
   await expect(page.getByRole("link", { name: /audit timeline/i })).toBeVisible();
-  for (const name of [/^sessions/i, /^runs/i, /delegation grants/i, /workstreams/i, /^memory/i, /device pairing/i]) {
+  for (const name of [
+    /^sessions/i,
+    /^runs/i,
+    /delegation grants/i,
+    /policy rules/i,
+    /workstreams/i,
+    /^memory/i,
+    /device pairing/i,
+  ]) {
     await expect(page.getByRole("link", { name })).toHaveCount(0);
   }
   await page.getByRole("link", { name: /pending tool invocations/i }).click();

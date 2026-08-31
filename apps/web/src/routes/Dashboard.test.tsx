@@ -48,6 +48,7 @@ describe("Dashboard — desktop session (no scope)", () => {
       /pending tool invocations/i,
       /runs/i,
       /delegation grants/i,
+      /policy rules/i,
       /workstreams/i,
       /memory/i,
       /audit timeline/i,
@@ -56,6 +57,17 @@ describe("Dashboard — desktop session (no scope)", () => {
       expect(screen.getByRole("link", { name })).toBeTruthy();
     }
     expect(screen.queryByText(/paired device session/i)).toBeNull();
+  });
+
+  // FE-27 (T-152b): T-152 wired the /policy-rules route but no Dashboard
+  // card pointed at it, leaving VER-32's §human pass ("author a rule, watch
+  // it deny…") with no discoverable entry point. Assert the card exists AND
+  // that it actually points at /policy-rules — a name match alone wouldn't
+  // catch a copy-pasted href.
+  it("links the policy rules card at /policy-rules", () => {
+    renderDashboard({ subject: "operator:admin", edge: "human-agent" });
+    const link = screen.getByRole("link", { name: /policy rules/i });
+    expect(link.getAttribute("href")).toBe("/policy-rules");
   });
 
   // T-118a/ADR-0068 §D8: the desk session is the only one that sees the
@@ -73,7 +85,15 @@ describe("Dashboard — paired session (approvals@1, ADR-0068 §D5)", () => {
     expect(screen.getByRole("link", { name: /pending tool invocations/i })).toBeTruthy();
     expect(screen.getByRole("link", { name: /audit timeline/i })).toBeTruthy();
 
-    for (const name of [/^sessions/i, /^runs/i, /delegation grants/i, /workstreams/i, /^memory/i, /device pairing/i]) {
+    for (const name of [
+      /^sessions/i,
+      /^runs/i,
+      /delegation grants/i,
+      /policy rules/i,
+      /workstreams/i,
+      /^memory/i,
+      /device pairing/i,
+    ]) {
       expect(screen.queryByRole("link", { name })).toBeNull();
     }
     expect(screen.getByText(/paired device session/i)).toBeTruthy();
