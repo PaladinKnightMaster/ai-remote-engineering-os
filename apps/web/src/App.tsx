@@ -9,6 +9,7 @@ import { SessionView } from "./routes/SessionView";
 import { Invocations } from "./routes/Invocations";
 import { Runs } from "./routes/Runs";
 import { Grants } from "./routes/Grants";
+import { PolicyRules } from "./routes/PolicyRules";
 import { Workstreams } from "./routes/Workstreams";
 import { Memories } from "./routes/Memories";
 import { Audit } from "./routes/Audit";
@@ -92,6 +93,14 @@ export function App() {
             element={
               <RequireAuth>
                 <Workstreams />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/policy-rules"
+            element={
+              <RequireAuth>
+                <PolicyRules />
               </RequireAuth>
             }
           />
