@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"aireos.local/packages/go/auth"
@@ -181,4 +182,222 @@ func (c *Client) httpClient() *http.Client {
 		return c.HTTP
 	}
 	return &http.Client{Timeout: 10 * time.Second}
+}
+
+// --- rule CRUD forwarding (ADR-0074, T-151a/T-151b) --------------------------
+
+// Rule is policy-service's wire shape for a policy_rules row (rules_handler.go's
+// ruleResponse). services/api's operator-facing /v1/policy-rules surface (T-151b,
+// SEC-53) forwards to policy-service's internal, off-fragment /v1/rules plane
+// (T-151a) rather than re-implementing rule storage — the same forwarding
+// posture Decide/Resolve above already establish for decisions and approvals.
+type Rule struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Subject   string `json:"subject"`
+	Edge      string `json:"edge"`
+	Action    string `json:"action"`
+	Target    string `json:"target"`
+	Outcome   string `json:"outcome"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ErrRuleNotFound maps policy-service's 404 on the rule routes (unknown id, or
+// (CON-7) a malformed one — policy-service's store maps both to the same
+// underlying error, so this client does too).
+var ErrRuleNotFound = errors.New("policy: rule not found")
+
+// ErrDuplicateRule maps policy-service's 409 on rule create — a rule already
+// exists for the (subject, edge, action, target) tuple.
+var ErrDuplicateRule = errors.New("policy: a rule already exists for this (subject, edge, action, target) tuple")
+
+// ErrInvalidRule maps policy-service's 400 on rule create, carrying its
+// message verbatim (the store.ErrInvalidRule text) rather than a generic
+// "bad request" — both sides validate the same tuple vocabulary, so there is
+// no reason for api to re-derive or paraphrase policy-service's own reason.
+type ErrInvalidRule struct{ Message string }
+
+func (e ErrInvalidRule) Error() string { return e.Message }
+
+// CreateRuleInput is the create-rule request api sends to policy-service.
+type CreateRuleInput struct {
+	Label   string
+	Subject string
+	Edge    string
+	Action  string
+	Target  string
+	Outcome string
+	// AuthoredBy is the operator subject (operatorSubject(r)) that authored
+	// this rule — CEO-ratified 2026-08-28. NOT the rule's match Subject
+	// above (which agent the rule applies to); conflating the two was
+	// flagged as a defect waiting to happen. Carried on the internal
+	// contract now so it does not need a second breaking change later;
+	// policy-service decodes it but does not act on it until T-151c wires
+	// the policy.rule.created audit event (AUD-40) with this as the actor.
+	AuthoredBy string
+}
+
+type createRuleRequest struct {
+	Label      string `json:"label"`
+	Subject    string `json:"subject"`
+	Edge       string `json:"edge"`
+	Action     string `json:"action"`
+	Target     string `json:"target"`
+	Outcome    string `json:"outcome"`
+	AuthoredBy string `json:"authored_by"`
+}
+
+type patchRuleRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// ruleRequest issues a rule-CRUD request against policy-service's internal
+// /v1/rules plane, minting the same service-service bearer as Decide/Resolve.
+// body may be nil (GET/DELETE carry none).
+func (c *Client) ruleRequest(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	if c.BaseURL == "" {
+		return nil, fmt.Errorf("policy URL not configured")
+	}
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal request: %w", err)
+		}
+		reader = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.Token != nil {
+		tok, err := c.Token(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("mint policy token: %w", err)
+		}
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	return resp, nil
+}
+
+// ruleErrorFromStatus maps a non-2xx rule-route response to a typed error.
+// body is the response body, already read and closed by the caller (needed
+// for the 400 path only, since policy-service's writeRuleError writes the
+// message as a plain-text body via http.Error).
+func ruleErrorFromStatus(status int, body []byte) error {
+	switch status {
+	case http.StatusNotFound:
+		return ErrRuleNotFound
+	case http.StatusConflict:
+		return ErrDuplicateRule
+	case http.StatusBadRequest:
+		return ErrInvalidRule{Message: strings.TrimSpace(string(body))}
+	default:
+		return fmt.Errorf("policy rules: unexpected status %d", status)
+	}
+}
+
+// CreateRule forwards a rule-author request to policy-service's POST
+// /v1/rules.
+func (c *Client) CreateRule(ctx context.Context, in CreateRuleInput) (Rule, error) {
+	resp, err := c.ruleRequest(ctx, http.MethodPost, "/v1/rules", createRuleRequest(in))
+	if err != nil {
+		return Rule{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return Rule{}, ruleErrorFromStatus(resp.StatusCode, body)
+	}
+	var r Rule
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
+		return Rule{}, fmt.Errorf("decode rule: %w", err)
+	}
+	return r, nil
+}
+
+// ListRules forwards to policy-service's GET /v1/rules — every rule, enabled
+// and disabled alike, newest first (the no-filter contract T-151a's store
+// establishes).
+func (c *Client) ListRules(ctx context.Context) ([]Rule, error) {
+	resp, err := c.ruleRequest(ctx, http.MethodGet, "/v1/rules", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, ruleErrorFromStatus(resp.StatusCode, body)
+	}
+	var rules []Rule
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rules); err != nil {
+		return nil, fmt.Errorf("decode rules: %w", err)
+	}
+	return rules, nil
+}
+
+// GetRule forwards to policy-service's GET /v1/rules/{id}. ErrRuleNotFound on
+// an unknown or malformed id (CON-7 — policy-service maps both alike).
+func (c *Client) GetRule(ctx context.Context, id string) (Rule, error) {
+	resp, err := c.ruleRequest(ctx, http.MethodGet, "/v1/rules/"+id, nil)
+	if err != nil {
+		return Rule{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return Rule{}, ruleErrorFromStatus(resp.StatusCode, body)
+	}
+	var r Rule
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
+		return Rule{}, fmt.Errorf("decode rule: %w", err)
+	}
+	return r, nil
+}
+
+// SetRuleEnabled forwards to policy-service's PATCH /v1/rules/{id} — the only
+// field the internal contract lets api mutate post-create (SEC-54: a disabled
+// rule goes inert without deleting its row).
+func (c *Client) SetRuleEnabled(ctx context.Context, id string, enabled bool) (Rule, error) {
+	resp, err := c.ruleRequest(ctx, http.MethodPatch, "/v1/rules/"+id, patchRuleRequest{Enabled: enabled})
+	if err != nil {
+		return Rule{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return Rule{}, ruleErrorFromStatus(resp.StatusCode, body)
+	}
+	var r Rule
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
+		return Rule{}, fmt.Errorf("decode rule: %w", err)
+	}
+	return r, nil
+}
+
+// DeleteRule forwards to policy-service's DELETE /v1/rules/{id}. Deleting a
+// rule only removes the policy_rules row — decisions already produced under
+// it stay intact on the chain (SEC-54).
+func (c *Client) DeleteRule(ctx context.Context, id string) error {
+	resp, err := c.ruleRequest(ctx, http.MethodDelete, "/v1/rules/"+id, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return ruleErrorFromStatus(resp.StatusCode, body)
+	}
+	return nil
 }

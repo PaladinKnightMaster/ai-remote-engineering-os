@@ -177,3 +177,28 @@ func TestWildcardRulesRoundTripAsLiteralAsterisk(t *testing.T) {
 	}
 	_ = s.DeleteRule(ctx, r.ID)
 }
+
+// TestMalformedIDMapsToNotFoundNotError — CON-7 (T-151b): a malformed
+// (non-UUID) id raises Postgres SQLSTATE 22P02 ("invalid text
+// representation") against the uuid-typed id column — this is the ONLY
+// existing test in this repo that can actually produce a real 22P02 (a fake
+// pool never would), which is why it lives in the integration file rather
+// than rules_test.go. Before the fix this fell through GetRule/SetRuleEnabled
+// /DeleteRule's error mapping as an opaque wrapped error (a 500 through the
+// whole chain, per the criteria doc); a malformed id definitionally matches
+// no row, so it now maps to the same ErrRuleNotFound as a well-formed-but-
+// absent id.
+func TestMalformedIDMapsToNotFoundNotError(t *testing.T) {
+	s, _ := testStore(t)
+	ctx := context.Background()
+
+	if _, err := s.GetRule(ctx, "not-a-uuid"); !errors.Is(err, ErrRuleNotFound) {
+		t.Fatalf("get malformed id: want ErrRuleNotFound, got %v", err)
+	}
+	if _, err := s.SetRuleEnabled(ctx, "not-a-uuid", false); !errors.Is(err, ErrRuleNotFound) {
+		t.Fatalf("set-enabled malformed id: want ErrRuleNotFound, got %v", err)
+	}
+	if err := s.DeleteRule(ctx, "not-a-uuid"); !errors.Is(err, ErrRuleNotFound) {
+		t.Fatalf("delete malformed id: want ErrRuleNotFound, got %v", err)
+	}
+}

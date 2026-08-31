@@ -25,3 +25,4 @@ output-options:
     - memories
     - context-sources
     - pairing
+    - policy-rules

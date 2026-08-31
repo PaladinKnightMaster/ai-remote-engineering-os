@@ -60,6 +60,15 @@ type createRuleRequest struct {
 	Action  string `json:"action"`
 	Target  string `json:"target"`
 	Outcome string `json:"outcome"`
+	// AuthoredBy is the operator subject that authored this rule (T-151b,
+	// CEO-ratified 2026-08-28). Deliberately NOT named Subject — Subject
+	// above is the rule's MATCH subject (which agent the rule applies to),
+	// a completely different concept from who wrote the rule; conflating
+	// the two was named as a defect waiting to happen. Decoded and carried
+	// here so the internal contract does not need a second breaking change
+	// later, but NOTHING consumes it yet — T-151c wires the
+	// policy.rule.created audit event (AUD-40) with this as the actor.
+	AuthoredBy string `json:"authored_by"`
 }
 
 // createRuleHandler inserts a new rule. Field validation (non-empty tuple

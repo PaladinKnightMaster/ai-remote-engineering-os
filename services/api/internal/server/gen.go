@@ -65,6 +65,20 @@ const (
 	MemoryViewScopeTypeWorkstream MemoryViewScopeType = "workstream"
 )
 
+// Defines values for PolicyRuleOutcome.
+const (
+	PolicyRuleOutcomeAllow            PolicyRuleOutcome = "allow"
+	PolicyRuleOutcomeDeny             PolicyRuleOutcome = "deny"
+	PolicyRuleOutcomeRequiresApproval PolicyRuleOutcome = "requires_approval"
+)
+
+// Defines values for PolicyRuleInputOutcome.
+const (
+	PolicyRuleInputOutcomeAllow            PolicyRuleInputOutcome = "allow"
+	PolicyRuleInputOutcomeDeny             PolicyRuleInputOutcome = "deny"
+	PolicyRuleInputOutcomeRequiresApproval PolicyRuleInputOutcome = "requires_approval"
+)
+
 // Defines values for ResourceType.
 const (
 	ResourceTypeAgenticDesktop ResourceType = "agentic_desktop"
@@ -483,6 +497,43 @@ type PendingInvocation struct {
 	Tool      string `json:"tool"`
 }
 
+// PolicyRule defines model for PolicyRule.
+type PolicyRule struct {
+	Action    string            `json:"action"`
+	CreatedAt time.Time         `json:"createdAt"`
+	Edge      string            `json:"edge"`
+	Enabled   bool              `json:"enabled"`
+	Id        string            `json:"id"`
+	Label     string            `json:"label"`
+	Outcome   PolicyRuleOutcome `json:"outcome"`
+
+	// Subject The rule's MATCH subject — which agent the rule applies to. Not the rule's author (SEC-53/AUD-40 track authorship separately).
+	Subject   string    `json:"subject"`
+	Target    string    `json:"target"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// PolicyRuleOutcome defines model for PolicyRule.Outcome.
+type PolicyRuleOutcome string
+
+// PolicyRuleInput defines model for PolicyRuleInput.
+type PolicyRuleInput struct {
+	Action  string                 `json:"action"`
+	Edge    string                 `json:"edge"`
+	Label   string                 `json:"label"`
+	Outcome PolicyRuleInputOutcome `json:"outcome"`
+	Subject string                 `json:"subject"`
+	Target  string                 `json:"target"`
+}
+
+// PolicyRuleInputOutcome defines model for PolicyRuleInput.Outcome.
+type PolicyRuleInputOutcome string
+
+// PolicyRulePatch defines model for PolicyRulePatch.
+type PolicyRulePatch struct {
+	Enabled bool `json:"enabled"`
+}
+
 // RegisterContextSourceRequest defines model for RegisterContextSourceRequest.
 type RegisterContextSourceRequest struct {
 	// RootPath The local/mounted directory the indexer may read (SEC-33 confines the reader to this root). Registration is data-only — never stat'd/validated here (ADR-0066 §1; an unreadable root is marked errored on the next sweep, CTX-5).
@@ -818,6 +869,12 @@ type CreatePairingRequestJSONRequestBody = PairingRequestCreate
 // RedeemPairingRequestJSONRequestBody defines body for RedeemPairingRequest for application/json ContentType.
 type RedeemPairingRequestJSONRequestBody = PairingRedeemRequest
 
+// CreatePolicyRuleJSONRequestBody defines body for CreatePolicyRule for application/json ContentType.
+type CreatePolicyRuleJSONRequestBody = PolicyRuleInput
+
+// PatchPolicyRuleJSONRequestBody defines body for PatchPolicyRule for application/json ContentType.
+type PatchPolicyRuleJSONRequestBody = PolicyRulePatch
+
 // CreateResourceJSONRequestBody defines body for CreateResource for application/json ContentType.
 type CreateResourceJSONRequestBody = ResourceInput
 
@@ -910,6 +967,21 @@ type ServerInterface interface {
 	// Redeem a one-time pairing secret from the device being paired (ADR-0068 §D6)
 	// (POST /v1/pairing-requests/{id}/redeem)
 	RedeemPairingRequest(w http.ResponseWriter, r *http.Request, id string)
+	// List every policy rule, enabled and disabled alike
+	// (GET /v1/policy-rules)
+	ListPolicyRules(w http.ResponseWriter, r *http.Request)
+	// Author a policy rule
+	// (POST /v1/policy-rules)
+	CreatePolicyRule(w http.ResponseWriter, r *http.Request)
+	// Delete a policy rule (the decisions it previously produced stay intact on the chain — SEC-54)
+	// (DELETE /v1/policy-rules/{id})
+	DeletePolicyRule(w http.ResponseWriter, r *http.Request, id string)
+	// Fetch a policy rule
+	// (GET /v1/policy-rules/{id})
+	GetPolicyRule(w http.ResponseWriter, r *http.Request, id string)
+	// Enable or disable a policy rule (SEC-54 — a disabled rule goes inert without deleting its row)
+	// (PATCH /v1/policy-rules/{id})
+	PatchPolicyRule(w http.ResponseWriter, r *http.Request, id string)
 	// List resources
 	// (GET /v1/resources)
 	ListResources(w http.ResponseWriter, r *http.Request, params ListResourcesParams)
@@ -1126,6 +1198,36 @@ func (_ Unimplemented) CreatePairingRequest(w http.ResponseWriter, r *http.Reque
 // Redeem a one-time pairing secret from the device being paired (ADR-0068 §D6)
 // (POST /v1/pairing-requests/{id}/redeem)
 func (_ Unimplemented) RedeemPairingRequest(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List every policy rule, enabled and disabled alike
+// (GET /v1/policy-rules)
+func (_ Unimplemented) ListPolicyRules(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Author a policy rule
+// (POST /v1/policy-rules)
+func (_ Unimplemented) CreatePolicyRule(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete a policy rule (the decisions it previously produced stay intact on the chain — SEC-54)
+// (DELETE /v1/policy-rules/{id})
+func (_ Unimplemented) DeletePolicyRule(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Fetch a policy rule
+// (GET /v1/policy-rules/{id})
+func (_ Unimplemented) GetPolicyRule(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Enable or disable a policy rule (SEC-54 — a disabled rule goes inert without deleting its row)
+// (PATCH /v1/policy-rules/{id})
+func (_ Unimplemented) PatchPolicyRule(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2026,6 +2128,139 @@ func (siw *ServerInterfaceWrapper) RedeemPairingRequest(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// ListPolicyRules operation middleware
+func (siw *ServerInterfaceWrapper) ListPolicyRules(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPolicyRules(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreatePolicyRule operation middleware
+func (siw *ServerInterfaceWrapper) CreatePolicyRule(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreatePolicyRule(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeletePolicyRule operation middleware
+func (siw *ServerInterfaceWrapper) DeletePolicyRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeletePolicyRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPolicyRule operation middleware
+func (siw *ServerInterfaceWrapper) GetPolicyRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPolicyRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PatchPolicyRule operation middleware
+func (siw *ServerInterfaceWrapper) PatchPolicyRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchPolicyRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListResources operation middleware
 func (siw *ServerInterfaceWrapper) ListResources(w http.ResponseWriter, r *http.Request) {
 
@@ -2860,6 +3095,21 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/pairing-requests/{id}/redeem", wrapper.RedeemPairingRequest)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/policy-rules", wrapper.ListPolicyRules)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/policy-rules", wrapper.CreatePolicyRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/policy-rules/{id}", wrapper.DeletePolicyRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/policy-rules/{id}", wrapper.GetPolicyRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/policy-rules/{id}", wrapper.PatchPolicyRule)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources", wrapper.ListResources)

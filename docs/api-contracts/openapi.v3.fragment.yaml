@@ -44,6 +44,16 @@ tags:
     description: Layer 1 Live/Context Index operator surface on services/api (T-100, ADR-0066; charter-bound, operator-registered local context sources the agent-plane context.search tool reads at plan time — registration/list/remove only; the agent read path is a separate internal RPC, not in this fragment).
   - name: pairing
     description: QR device pairing + revocable paired operator sessions on services/api (T-114, ADR-0068 §D4-§D6; the product's first server-side session revocation primitive, narrowed to the approvals@1 scope — a scope within human-agent, not a new capability edge). Ships disabled by default (AIREOS_PAIRING_ENABLED=0); every route answers 404 while off (SEC-41).
+  - name: policy-rules
+    description: >-
+      Operator-authored policy rule CRUD on services/api (T-151b, ADR-0074; the
+      operator-facing surface over policy-service's internal /v1/rules plane,
+      T-151a — api forwards, it does not re-implement rule storage). SEC-53
+      (block): rules are operator-authored only — every route additionally
+      enforces a handler-level human-agent capability guard, stricter than the
+      blanket human-agent-or-service-service gate every other operator route
+      relies on, because mcp-gateway holds a service-service token and must
+      never be able to author, enable, disable, or delete a rule.
 # Paths below the workstream/workflow/mcp/eval stubs are P1 module
 # placeholders predating the P0 ladder; left untouched. P0 service
 # paths are contributed by T-004 / T-005 / T-006 using the shared
@@ -1476,6 +1486,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  # --- policy rules (T-151b, ADR-0074; forwards to policy-service's internal
+  # /v1/rules plane, T-151a) -----------------------------------------------
+  # SEC-53 (block): every operation here is additionally guarded, at the
+  # handler level, to the human-agent capability edge ONLY — stricter than
+  # the security: [bearerAuth] declaration below, which (like every other
+  # operation in this fragment) only gets the caller as far as
+  # gateByDeclaredSecurity's blanket human-agent-or-service-service check.
+  # The contract cannot express "human-agent only, not service-service" as a
+  # security requirement (RequireCapability enforces the same allowed-edge
+  # set across every declared-security route), so the narrower rule is
+  # enforced in the handler and proven by a negative test per initiator
+  # class rather than by inspecting a contract-level capability tag (there
+  # is no per-route tag to inspect).
+  /v1/policy-rules:
+    post:
+      tags: [policy-rules]
+      operationId: createPolicyRule
+      summary: Author a policy rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyRuleInput'
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyRule'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: A rule already exists for this (subject, edge, action, target) tuple.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      tags: [policy-rules]
+      operationId: listPolicyRules
+      summary: List every policy rule, enabled and disabled alike
+      responses:
+        '200':
+          description: Every policy rule, newest first. No pagination (CON-2) — the same no-filter contract as policy-service's store.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PolicyRule'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/policy-rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [policy-rules]
+      operationId: getPolicyRule
+      summary: Fetch a policy rule
+      responses:
+        '200':
+          description: The policy rule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyRule'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [policy-rules]
+      operationId: patchPolicyRule
+      summary: Enable or disable a policy rule (SEC-54 — a disabled rule goes inert without deleting its row)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyRulePatch'
+      responses:
+        '200':
+          description: The updated policy rule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyRule'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [policy-rules]
+      operationId: deletePolicyRule
+      summary: Delete a policy rule (the decisions it previously produced stay intact on the chain — SEC-54)
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     # PASETO v4 local capability token (ADR-0046). The bearer value is
@@ -2423,3 +2539,70 @@ components:
           type: string
         total:
           type: integer
+    # --- policy rules (T-151b, ADR-0074; CON-2's rule vocabulary) --------------
+    # Mirrors policy-service's policy_rules row (T-148/T-151a). subject/edge/
+    # action/target are deliberately plain strings, not enums: a rule tuple
+    # field is either an exact value or the literal wildcard "*" (CON-2), and
+    # the store itself (services/policy-service/internal/store/rules.go)
+    # enforces only non-emptiness in Go, not a closed vocabulary — an enum
+    # here would silently diverge from what the store actually accepts.
+    PolicyRule:
+      type: object
+      required: [id, label, subject, edge, action, target, outcome, enabled, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        subject:
+          type: string
+          description: The rule's MATCH subject — which agent the rule applies to. Not the rule's author (SEC-53/AUD-40 track authorship separately).
+        edge:
+          type: string
+        action:
+          type: string
+        target:
+          type: string
+        outcome:
+          type: string
+          enum: [allow, requires_approval, deny]
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    # Create body for POST /v1/policy-rules. additionalProperties:false rejects
+    # a client-supplied id/enabled/createdAt/updatedAt with 400 — id is
+    # server-assigned and a new rule is always created enabled (T-151a's
+    # CreateRuleInput contract; callers wanting a disabled rule PATCH it after
+    # create).
+    PolicyRuleInput:
+      type: object
+      additionalProperties: false
+      required: [label, subject, edge, action, target, outcome]
+      properties:
+        label:
+          type: string
+        subject:
+          type: string
+        edge:
+          type: string
+        action:
+          type: string
+        target:
+          type: string
+        outcome:
+          type: string
+          enum: [allow, requires_approval, deny]
+    # PATCH body for /v1/policy-rules/{id} — enabled is the only field this
+    # route mutates (SEC-54).
+    PolicyRulePatch:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean

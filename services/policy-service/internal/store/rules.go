@@ -140,7 +140,7 @@ func (s *Store) ListRules(ctx context.Context) ([]Rule, error) {
 func (s *Store) GetRule(ctx context.Context, id string) (Rule, error) {
 	var r Rule
 	err := scanRule(s.pool.QueryRow(ctx, `SELECT `+ruleCols+` FROM policy_rules WHERE id = $1`, id), &r)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || isInvalidTextRepresentation(err) {
 		return Rule{}, ErrRuleNotFound
 	}
 	if err != nil {
@@ -157,7 +157,7 @@ func (s *Store) SetRuleEnabled(ctx context.Context, id string, enabled bool) (Ru
 		UPDATE policy_rules SET enabled = $2, updated_at = now()
 		 WHERE id = $1
 		RETURNING `+ruleCols, id, enabled), &r)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || isInvalidTextRepresentation(err) {
 		return Rule{}, ErrRuleNotFound
 	}
 	if err != nil {
@@ -166,9 +166,13 @@ func (s *Store) SetRuleEnabled(ctx context.Context, id string, enabled bool) (Ru
 	return r, nil
 }
 
-// DeleteRule removes a rule by id. ErrRuleNotFound if the id doesn't exist.
+// DeleteRule removes a rule by id. ErrRuleNotFound if the id doesn't exist —
+// including a malformed (non-UUID) id, which definitionally matches no row.
 func (s *Store) DeleteRule(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM policy_rules WHERE id = $1`, id)
+	if isInvalidTextRepresentation(err) {
+		return ErrRuleNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("delete rule: %w", err)
 	}
@@ -176,6 +180,18 @@ func (s *Store) DeleteRule(ctx context.Context, id string) error {
 		return ErrRuleNotFound
 	}
 	return nil
+}
+
+// isInvalidTextRepresentation reports whether err is Postgres SQLSTATE 22P02
+// ("invalid text representation") — what a non-UUID string against a uuid
+// column raises. CON-7: a malformed rule id must not surface as a 500, and a
+// value Postgres cannot even parse as a uuid definitionally matches no row,
+// so it maps to the same ErrRuleNotFound as a well-formed-but-absent id
+// (the CreateRule/23505->ErrDuplicateRule precedent above for mapping a
+// specific pg error code to a typed store error).
+func isInvalidTextRepresentation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22P02"
 }
 
 func scanRule(row scanner, r *Rule) error {

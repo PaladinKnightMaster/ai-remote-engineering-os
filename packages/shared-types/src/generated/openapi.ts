@@ -839,6 +839,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/policy-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List every policy rule, enabled and disabled alike */
+        get: operations["listPolicyRules"];
+        put?: never;
+        /** Author a policy rule */
+        post: operations["createPolicyRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/policy-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Fetch a policy rule */
+        get: operations["getPolicyRule"];
+        put?: never;
+        post?: never;
+        /** Delete a policy rule (the decisions it previously produced stay intact on the chain — SEC-54) */
+        delete: operations["deletePolicyRule"];
+        options?: never;
+        head?: never;
+        /** Enable or disable a policy rule (SEC-54 — a disabled rule goes inert without deleting its row) */
+        patch: operations["patchPolicyRule"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1253,6 +1292,34 @@ export interface components {
         PairingSessionsPage: {
             nextCursor?: string;
             total?: number;
+        };
+        PolicyRule: {
+            id: string;
+            label: string;
+            /** @description The rule's MATCH subject — which agent the rule applies to. Not the rule's author (SEC-53/AUD-40 track authorship separately). */
+            subject: string;
+            edge: string;
+            action: string;
+            target: string;
+            /** @enum {string} */
+            outcome: "allow" | "requires_approval" | "deny";
+            enabled: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        PolicyRuleInput: {
+            label: string;
+            subject: string;
+            edge: string;
+            action: string;
+            target: string;
+            /** @enum {string} */
+            outcome: "allow" | "requires_approval" | "deny";
+        };
+        PolicyRulePatch: {
+            enabled: boolean;
         };
     };
     responses: {
@@ -2893,6 +2960,142 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    listPolicyRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every policy rule, newest first. No pagination (CON-2) — the same no-filter contract as policy-service's store. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRule"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createPolicyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyRuleInput"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description A rule already exists for this (subject, edge, action, target) tuple. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getPolicyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The policy rule. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRule"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deletePolicyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    patchPolicyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyRulePatch"];
+            };
+        };
+        responses: {
+            /** @description The updated policy rule. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
 }

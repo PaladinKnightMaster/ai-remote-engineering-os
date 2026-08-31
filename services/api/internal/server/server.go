@@ -102,13 +102,22 @@ type Store interface {
 	RecordEvent(ctx context.Context, e outbox.Event) error
 }
 
-// policyDecider is the slice of *policy.Client the session handlers need: api
-// consults policy-service at session-create (Decide) and on the operator's
-// approve/deny (Resolve) (ADR-0054 §5). A nil decider means no decision point is
-// configured — a requires_approval resource then fails closed.
+// policyDecider is the slice of *policy.Client the session + rule handlers need:
+// api consults policy-service at session-create (Decide), on the operator's
+// approve/deny (Resolve) (ADR-0054 §5), and — since T-151b — forwards the
+// operator-facing /v1/policy-rules CRUD surface to policy-service's internal
+// rule plane (ADR-0074, T-151a). A nil decider means no decision point is
+// configured: a requires_approval resource then fails closed, and the
+// /v1/policy-rules routes answer 503.
 type policyDecider interface {
 	Decide(ctx context.Context, in policy.DecideInput) (policy.Decision, error)
 	Resolve(ctx context.Context, sessionID, decision, resolvedBy string) (policy.ResolveResult, error)
+
+	CreateRule(ctx context.Context, in policy.CreateRuleInput) (policy.Rule, error)
+	ListRules(ctx context.Context) ([]policy.Rule, error)
+	GetRule(ctx context.Context, id string) (policy.Rule, error)
+	SetRuleEnabled(ctx context.Context, id string, enabled bool) (policy.Rule, error)
+	DeleteRule(ctx context.Context, id string) error
 }
 
 // gatewayProxy is the slice of *gateway.Client the invocation-approval handlers
