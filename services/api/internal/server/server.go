@@ -86,7 +86,15 @@ type Store interface {
 	// Cockpit sessions (T-016b). All session reads/writes are operator-scoped:
 	// the caller's capability subject is the operator_id, so one operator can
 	// never see or end another's sessions (ADR-0048 §5).
-	CreateSession(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error)
+	//
+	// CreateSession was REMOVED at T-151c (SEC-59): it inserted a session
+	// directly in 'pending', broker-attachable with NO policy consultation —
+	// the only remaining path around the decision point after T-150b routed
+	// every real session-start through createGoverned/ParkForApproval. A
+	// method that bypasses governance has no business sitting on this
+	// interface looking like the obvious thing to call. A test that needs a
+	// session already in 'pending' status uses ParkForApproval + ApproveSession,
+	// the same two calls production takes.
 	GetSession(ctx context.Context, operatorID, id string) (session.Session, error)
 	ListSessions(ctx context.Context, operatorID, after string, limit int) ([]session.Session, string, error)
 	EndSession(ctx context.Context, operatorID, id string) (session.Session, error)
@@ -116,8 +124,8 @@ type policyDecider interface {
 	CreateRule(ctx context.Context, in policy.CreateRuleInput) (policy.Rule, error)
 	ListRules(ctx context.Context) ([]policy.Rule, error)
 	GetRule(ctx context.Context, id string) (policy.Rule, error)
-	SetRuleEnabled(ctx context.Context, id string, enabled bool) (policy.Rule, error)
-	DeleteRule(ctx context.Context, id string) error
+	SetRuleEnabled(ctx context.Context, id string, enabled bool, actor string) (policy.Rule, error)
+	DeleteRule(ctx context.Context, id, actor string) error
 }
 
 // gatewayProxy is the slice of *gateway.Client the invocation-approval handlers

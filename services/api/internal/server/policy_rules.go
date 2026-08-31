@@ -123,7 +123,7 @@ type createPolicyRuleBody struct {
 	Outcome string `json:"outcome"`
 }
 
-// CreatePolicyRule (POST /v1/policy-rules) authors a new rule. authoredBy is
+// CreatePolicyRule (POST /v1/policy-rules) authors a new rule. actor is
 // ALWAYS the verified caller (operatorSubject(r)) — never a body field — the
 // same server-side-only-actor posture as CreateResource/CreateContextSource.
 // Field validation of the (subject, edge, action, target, outcome) tuple
@@ -151,7 +151,7 @@ func (a *apiHandlers) CreatePolicyRule(w http.ResponseWriter, r *http.Request) {
 	}
 	rule, err := a.policy.CreateRule(r.Context(), policy.CreateRuleInput{
 		Label: body.Label, Subject: body.Subject, Edge: body.Edge, Action: body.Action,
-		Target: body.Target, Outcome: body.Outcome, AuthoredBy: operator,
+		Target: body.Target, Outcome: body.Outcome, Actor: operator,
 	})
 	if err != nil {
 		writePolicyRuleError(w, err)
@@ -214,9 +214,16 @@ type patchPolicyRuleBody struct {
 }
 
 // PatchPolicyRule (PATCH /v1/policy-rules/{id}) flips a rule's enabled flag —
-// the only field this route mutates (SEC-54).
+// the only field this route mutates (SEC-54). actor is ALWAYS the verified
+// caller (operatorSubject(r)), same posture as CreatePolicyRule (AUD-40,
+// T-151c — enable/disable is chained just like create is).
 func (a *apiHandlers) PatchPolicyRule(w http.ResponseWriter, r *http.Request, id string) {
 	if !requireHumanAgentRule(w, r) {
+		return
+	}
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
 		return
 	}
 	if a.policy == nil {
@@ -237,7 +244,7 @@ func (a *apiHandlers) PatchPolicyRule(w http.ResponseWriter, r *http.Request, id
 		writeError(w, http.StatusBadRequest, "bad_request", "enabled is required")
 		return
 	}
-	rule, err := a.policy.SetRuleEnabled(r.Context(), id, *body.Enabled)
+	rule, err := a.policy.SetRuleEnabled(r.Context(), id, *body.Enabled, operator)
 	if err != nil {
 		writePolicyRuleError(w, err)
 		return
@@ -247,9 +254,16 @@ func (a *apiHandlers) PatchPolicyRule(w http.ResponseWriter, r *http.Request, id
 
 // DeletePolicyRule (DELETE /v1/policy-rules/{id}) removes a rule. The
 // decisions it previously produced stay intact on the chain — deleting a rule
-// only removes the policy_rules row (SEC-54).
+// only removes the policy_rules row (SEC-54). actor is ALWAYS the verified
+// caller (operatorSubject(r)), same posture as CreatePolicyRule (AUD-40,
+// T-151c).
 func (a *apiHandlers) DeletePolicyRule(w http.ResponseWriter, r *http.Request, id string) {
 	if !requireHumanAgentRule(w, r) {
+		return
+	}
+	operator, ok := operatorSubject(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no capability")
 		return
 	}
 	if a.policy == nil {
@@ -259,7 +273,7 @@ func (a *apiHandlers) DeletePolicyRule(w http.ResponseWriter, r *http.Request, i
 	if policyRuleIDNotFound(w, id) {
 		return
 	}
-	if err := a.policy.DeleteRule(r.Context(), id); err != nil {
+	if err := a.policy.DeleteRule(r.Context(), id, operator); err != nil {
 		writePolicyRuleError(w, err)
 		return
 	}

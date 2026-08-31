@@ -22,24 +22,24 @@ const sessionColList = `id, resource_id, operator_id, mode, status, started_at, 
 
 const sessionSelect = `SELECT ` + sessionColList + ` FROM sessions`
 
-// CreateSession inserts a session in 'pending' status with a server-assigned
-// UUID v7 id (time-ordered, so it doubles as the list cursor) owned by
-// operatorID. A foreign-key violation means the resourceId is unknown — surfaced
-// as ErrNotFound so the handler answers 404 rather than 500.
-func (s *Store) CreateSession(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error) {
-	return s.insertSession(ctx, operatorID, in, session.StatusPending)
-}
-
 // ParkForApproval inserts a session in 'pending_approval' (ADR-0054, T-031b): a
 // session-start to a requires_approval resource, awaiting the operator's decision.
 // The broker's status guard rejects it until it is flipped to 'pending' on
-// approval (T-031b-ii). Same FK-violation → ErrNotFound mapping as CreateSession.
+// approval (T-031b-ii), or straight through by ApproveSession when policy
+// itself allows (T-150b). A foreign-key violation means the resourceId is
+// unknown — surfaced as ErrNotFound so the handler answers 404 rather than 500.
+//
+// CreateSession (a direct-to-'pending' insert, no policy consultation) was
+// REMOVED at T-151c (SEC-59) — ParkForApproval + ApproveSession is now the
+// ONLY session-creation path, matching what createGoverned (server.go) does
+// in production for every session-start, allowed or not.
 func (s *Store) ParkForApproval(ctx context.Context, operatorID string, in session.CreateInput) (session.Session, error) {
 	return s.insertSession(ctx, operatorID, in, session.StatusPendingApproval)
 }
 
-// insertSession is the shared insert path for CreateSession / ParkForApproval; the
-// only difference is the initial status (decided by the caller).
+// insertSession is ParkForApproval's insert path (also, formerly, the removed
+// CreateSession's — kept as its own function since a future terminal status
+// may need it again, and it costs nothing to leave the seam in place).
 func (s *Store) insertSession(ctx context.Context, operatorID string, in session.CreateInput, status string) (session.Session, error) {
 	id, err := uuid.NewV7()
 	if err != nil {

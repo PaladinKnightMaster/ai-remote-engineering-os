@@ -39,12 +39,13 @@ func TestDisabledRuleIsInertEndToEnd(t *testing.T) {
 	target := "resource:" + newSessionID(t)
 
 	rule, err := s.CreateRule(ctx, store.CreateRuleInput{
-		Label: "inert check", Subject: subject, Edge: edge, Action: action, Target: target, Outcome: store.RuleOutcomeDeny,
+		Label: "inert check", Subject: subject, Edge: edge, Action: action, Target: target,
+		Outcome: store.RuleOutcomeDeny, Actor: "operator:test-cleanup",
 	})
 	if err != nil {
 		t.Fatalf("create rule: %v", err)
 	}
-	t.Cleanup(func() { _ = s.DeleteRule(ctx, rule.ID) })
+	t.Cleanup(func() { _ = s.DeleteRule(ctx, rule.ID, "operator:test-cleanup") })
 
 	sid1 := newSessionID(t)
 	rec1 := httptest.NewRecorder()
@@ -59,7 +60,7 @@ func TestDisabledRuleIsInertEndToEnd(t *testing.T) {
 		t.Fatalf("enabled rule: want deny, got %q", resp1.Decision)
 	}
 
-	patchBody, _ := json.Marshal(map[string]bool{"enabled": false})
+	patchBody, _ := json.Marshal(map[string]any{"enabled": false, "actor": "operator:test-disable"})
 	patchRec := httptest.NewRecorder()
 	patchReq := httptest.NewRequest(http.MethodPatch, "/v1/rules/"+rule.ID, bytes.NewReader(patchBody))
 	patchReq.Header.Set("Authorization", "Bearer t")
@@ -102,7 +103,8 @@ func TestDeleteRuleLeavesChainedDecisionsIntactEndToEnd(t *testing.T) {
 	target := "resource:" + newSessionID(t)
 
 	rule, err := s.CreateRule(ctx, store.CreateRuleInput{
-		Label: "chain then delete", Subject: subject, Edge: edge, Action: action, Target: target, Outcome: store.RuleOutcomeDeny,
+		Label: "chain then delete", Subject: subject, Edge: edge, Action: action, Target: target,
+		Outcome: store.RuleOutcomeDeny, Actor: "operator:test-chain-then-delete",
 	})
 	if err != nil {
 		t.Fatalf("create rule: %v", err)
@@ -125,8 +127,9 @@ func TestDeleteRuleLeavesChainedDecisionsIntactEndToEnd(t *testing.T) {
 		t.Fatalf("setup: want exactly one chained policy.decision:deny, got %+v", before)
 	}
 
+	deleteBody, _ := json.Marshal(map[string]string{"actor": "operator:test-delete"})
 	deleteRec := httptest.NewRecorder()
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/rules/"+rule.ID, nil)
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/rules/"+rule.ID, bytes.NewReader(deleteBody))
 	deleteReq.Header.Set("Authorization", "Bearer t")
 	h.ServeHTTP(deleteRec, deleteReq)
 	if deleteRec.Code != http.StatusNoContent {

@@ -49,6 +49,11 @@ type fakeStore struct {
 	getRuleErr        error
 	setRuleEnabledErr error
 	deleteRuleErr     error
+	// lastRuleActor is the actor arg the last CreateRule/SetRuleEnabled/
+	// DeleteRule call received (AUD-40, T-151c) — lets a handler test assert
+	// the decoded request actor actually reached the store, not just that
+	// the mutation happened.
+	lastRuleActor string
 }
 
 func (f *fakeStore) EvaluateTuple(context.Context, store.Tuple) (string, store.Rule, bool, error) {
@@ -96,6 +101,7 @@ func (f *fakeStore) CreateRule(_ context.Context, in store.CreateRuleInput) (sto
 		Enabled: true, CreatedAt: now, UpdatedAt: now,
 	}
 	f.rules[id] = r
+	f.lastRuleActor = in.Actor
 	return r, nil
 }
 
@@ -121,7 +127,7 @@ func (f *fakeStore) GetRule(_ context.Context, id string) (store.Rule, error) {
 	return r, nil
 }
 
-func (f *fakeStore) SetRuleEnabled(_ context.Context, id string, enabled bool) (store.Rule, error) {
+func (f *fakeStore) SetRuleEnabled(_ context.Context, id string, enabled bool, actor string) (store.Rule, error) {
 	if f.setRuleEnabledErr != nil {
 		return store.Rule{}, f.setRuleEnabledErr
 	}
@@ -132,10 +138,11 @@ func (f *fakeStore) SetRuleEnabled(_ context.Context, id string, enabled bool) (
 	r.Enabled = enabled
 	r.UpdatedAt = time.Now()
 	f.rules[id] = r
+	f.lastRuleActor = actor
 	return r, nil
 }
 
-func (f *fakeStore) DeleteRule(_ context.Context, id string) error {
+func (f *fakeStore) DeleteRule(_ context.Context, id, actor string) error {
 	if f.deleteRuleErr != nil {
 		return f.deleteRuleErr
 	}
@@ -143,6 +150,7 @@ func (f *fakeStore) DeleteRule(_ context.Context, id string) error {
 		return store.ErrRuleNotFound
 	}
 	delete(f.rules, id)
+	f.lastRuleActor = actor
 	return nil
 }
 

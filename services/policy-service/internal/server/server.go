@@ -43,8 +43,8 @@ type DecisionStore interface {
 	CreateRule(ctx context.Context, in store.CreateRuleInput) (store.Rule, error)
 	ListRules(ctx context.Context) ([]store.Rule, error)
 	GetRule(ctx context.Context, id string) (store.Rule, error)
-	SetRuleEnabled(ctx context.Context, id string, enabled bool) (store.Rule, error)
-	DeleteRule(ctx context.Context, id string) error
+	SetRuleEnabled(ctx context.Context, id string, enabled bool, actor string) (store.Rule, error)
+	DeleteRule(ctx context.Context, id, actor string) error
 }
 
 // Config carries the policy handler's dependencies.

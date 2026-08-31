@@ -113,21 +113,10 @@ func (f *fakeStore) Delete(ctx context.Context, actor, id string) error {
 }
 
 // --- session fake (mirrors the operator-scoped store semantics) -------------
-
-func (f *fakeStore) CreateSession(_ context.Context, operatorID string, in session.CreateInput) (session.Session, error) {
-	if _, ok := f.byID[in.ResourceID]; !ok { // unknown resource → FK 404
-		return session.Session{}, store.ErrNotFound
-	}
-	f.sn++
-	id := fmt.Sprintf("sess-%05d", f.sn)
-	s := session.Session{
-		ID: id, ResourceID: in.ResourceID, OperatorID: operatorID,
-		Mode: in.Mode, Status: session.StatusPending, StartedAt: time.Now().UTC(),
-	}
-	f.sessByID[id] = s
-	f.sessIDs = append(f.sessIDs, id)
-	return s, nil
-}
+//
+// CreateSession was REMOVED at T-151c (SEC-59) — ParkForApproval +
+// ApproveSession (below) is the only session-creation path left, matching
+// the real Store interface.
 
 func (f *fakeStore) GetSession(_ context.Context, operatorID, id string) (session.Session, error) {
 	if s, ok := f.sessByID[id]; ok && s.OperatorID == operatorID {

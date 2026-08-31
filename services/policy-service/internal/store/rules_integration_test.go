@@ -13,6 +13,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -41,6 +42,7 @@ func TestRuleLifecycleCreateGetListDisableDelete(t *testing.T) {
 	created, err := s.CreateRule(ctx, CreateRuleInput{
 		Label: "deny composer exec", Subject: subject, Edge: "agent-remote-session",
 		Action: "remote.exec", Target: "resource:r-1", Outcome: RuleOutcomeDeny,
+		Actor: "operator:test-lifecycle",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -71,7 +73,7 @@ func TestRuleLifecycleCreateGetListDisableDelete(t *testing.T) {
 		t.Fatalf("created rule %s not present in list of %d rules", created.ID, len(all))
 	}
 
-	disabled, err := s.SetRuleEnabled(ctx, created.ID, false)
+	disabled, err := s.SetRuleEnabled(ctx, created.ID, false, "operator:test-lifecycle")
 	if err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -84,13 +86,13 @@ func TestRuleLifecycleCreateGetListDisableDelete(t *testing.T) {
 		t.Fatalf("updated_at regressed: %v -> %v", created.UpdatedAt, disabled.UpdatedAt)
 	}
 
-	if err := s.DeleteRule(ctx, created.ID); err != nil {
+	if err := s.DeleteRule(ctx, created.ID, "operator:test-lifecycle"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := s.GetRule(ctx, created.ID); !errors.Is(err, ErrRuleNotFound) {
 		t.Fatalf("get after delete: want ErrRuleNotFound, got %v", err)
 	}
-	if err := s.DeleteRule(ctx, created.ID); !errors.Is(err, ErrRuleNotFound) {
+	if err := s.DeleteRule(ctx, created.ID, "operator:test-lifecycle"); !errors.Is(err, ErrRuleNotFound) {
 		t.Fatalf("double delete: want ErrRuleNotFound, got %v", err)
 	}
 }
@@ -175,7 +177,7 @@ func TestWildcardRulesRoundTripAsLiteralAsterisk(t *testing.T) {
 	if got.Subject != "*" || got.Edge != "*" || got.Action != "*" || got.Target != "*" {
 		t.Fatalf("wildcard did not survive a re-read: %+v", got)
 	}
-	_ = s.DeleteRule(ctx, r.ID)
+	_ = s.DeleteRule(ctx, r.ID, "operator:test-wildcard")
 }
 
 // TestMalformedIDMapsToNotFoundNotError — CON-7 (T-151b): a malformed
@@ -195,10 +197,119 @@ func TestMalformedIDMapsToNotFoundNotError(t *testing.T) {
 	if _, err := s.GetRule(ctx, "not-a-uuid"); !errors.Is(err, ErrRuleNotFound) {
 		t.Fatalf("get malformed id: want ErrRuleNotFound, got %v", err)
 	}
-	if _, err := s.SetRuleEnabled(ctx, "not-a-uuid", false); !errors.Is(err, ErrRuleNotFound) {
+	if _, err := s.SetRuleEnabled(ctx, "not-a-uuid", false, "operator:test-malformed"); !errors.Is(err, ErrRuleNotFound) {
 		t.Fatalf("set-enabled malformed id: want ErrRuleNotFound, got %v", err)
 	}
-	if err := s.DeleteRule(ctx, "not-a-uuid"); !errors.Is(err, ErrRuleNotFound) {
+	if err := s.DeleteRule(ctx, "not-a-uuid", "operator:test-malformed"); !errors.Is(err, ErrRuleNotFound) {
 		t.Fatalf("delete malformed id: want ErrRuleNotFound, got %v", err)
+	}
+}
+
+// ruleOutboxEvent mirrors server package's outboxEvent — this file has no
+// access to that unexported test type, and a rule mutation's evidencePacketId
+// is a rule:<id> anchor (not session:<id>), so it needs its own query anyway.
+type ruleOutboxEvent struct{ Outcome, Actor, Edge, Target, EvidencePacketID string }
+
+func ruleOutboxEventsFor(t *testing.T, s *Store, ruleID string) []ruleOutboxEvent {
+	t.Helper()
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT payload->>'outcome', payload->>'actor', payload->>'edge',
+		       payload->>'target', payload->>'evidencePacketId'
+		  FROM policy_outbox
+		 WHERE payload->>'evidencePacketId' = $1 ORDER BY id`, ruleAnchor(ruleID))
+	if err != nil {
+		t.Fatalf("query rule outbox: %v", err)
+	}
+	defer rows.Close()
+	var out []ruleOutboxEvent
+	for rows.Next() {
+		var e ruleOutboxEvent
+		if err := rows.Scan(&e.Outcome, &e.Actor, &e.Edge, &e.Target, &e.EvidencePacketID); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// TestRuleMutationsChainAUD40Events — AUD-40: create/enable/disable/delete
+// each chain exactly one policy.rule:* event, in order, with the right actor,
+// the rule's own edge on Event.Edge, and rule:<id> as the anchor. The delete
+// case is the sharpest: policy_rules no longer has the row afterward, so this
+// is the ONLY place left to see what the deleted rule actually allowed.
+func TestRuleMutationsChainAUD40Events(t *testing.T) {
+	s, _ := testStore(t)
+	ctx := context.Background()
+	subject := distinctSubject(t)
+	const actor = "operator:test-aud40"
+
+	r, err := s.CreateRule(ctx, CreateRuleInput{
+		Label: "aud-40 proof", Subject: subject, Edge: "agent-remote-session",
+		Action: "remote.exec", Target: "resource:aud40", Outcome: RuleOutcomeDeny, Actor: actor,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.SetRuleEnabled(ctx, r.ID, false, actor); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := s.SetRuleEnabled(ctx, r.ID, true, actor); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if err := s.DeleteRule(ctx, r.ID, actor); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	events := ruleOutboxEventsFor(t, s, r.ID)
+	wantOutcomes := []string{OutcomeRuleCreated, OutcomeRuleDisabled, OutcomeRuleEnabled, OutcomeRuleDeleted}
+	if len(events) != len(wantOutcomes) {
+		t.Fatalf("want %d chained rule events, got %d: %+v", len(wantOutcomes), len(events), events)
+	}
+	for i, want := range wantOutcomes {
+		ev := events[i]
+		if ev.Outcome != want {
+			t.Fatalf("event %d: outcome = %q, want %q", i, ev.Outcome, want)
+		}
+		if ev.Actor != actor {
+			t.Fatalf("event %d: actor = %q, want %q", i, ev.Actor, actor)
+		}
+		if ev.Edge != "agent-remote-session" {
+			t.Fatalf("event %d: edge = %q, want the rule's own edge %q", i, ev.Edge, "agent-remote-session")
+		}
+		if ev.EvidencePacketID != "rule:"+r.ID {
+			t.Fatalf("event %d: evidencePacketId = %q, want anchor %q", i, ev.EvidencePacketID, "rule:"+r.ID)
+		}
+	}
+	// AUD-40's sharpest requirement: the DELETE event alone (the row is gone
+	// from policy_rules by now) still says what the rule allowed/denied.
+	if !strings.Contains(events[3].Target, "outcome="+RuleOutcomeDeny) {
+		t.Fatalf("deleted rule's own outcome did not survive on the delete event: %+v", events[3])
+	}
+	if !strings.Contains(events[3].Target, "subject="+subject) || !strings.Contains(events[3].Target, "action=remote.exec") {
+		t.Fatalf("deleted rule's tuple did not survive on the delete event: %+v", events[3])
+	}
+
+	// Same-transaction proof: a rejected mutation (unknown id) enqueues
+	// NOTHING — create a second, throwaway rule and delete it TWICE; the
+	// second (already-gone) delete must add no new row to the anchor's event
+	// list — reusing an existing id means "no such row" is exercised via the
+	// real store path, not a synthetic uuid.
+	r2, err := s.CreateRule(ctx, CreateRuleInput{
+		Label: "aud-40 no-op-mutation proof", Subject: distinctSubject(t), Edge: "agent-remote-session",
+		Action: "remote.exec", Target: "resource:aud40b", Outcome: RuleOutcomeAllow, Actor: actor,
+	})
+	if err != nil {
+		t.Fatalf("create r2: %v", err)
+	}
+	if err := s.DeleteRule(ctx, r2.ID, actor); err != nil {
+		t.Fatalf("delete r2: %v", err)
+	}
+	before := ruleOutboxEventsFor(t, s, r2.ID)
+	if err := s.DeleteRule(ctx, r2.ID, actor); !errors.Is(err, ErrRuleNotFound) {
+		t.Fatalf("re-delete r2: want ErrRuleNotFound, got %v", err)
+	}
+	after := ruleOutboxEventsFor(t, s, r2.ID)
+	if len(after) != len(before) {
+		t.Fatalf("a failed mutation (already deleted) must enqueue NOTHING: before=%d after=%d", len(before), len(after))
 	}
 }

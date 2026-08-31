@@ -82,7 +82,7 @@ tasks:
       - pnpm -r --if-present run test
 
   test-integration:
-    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_/CONNECTOR_/POLICY_/MCP_/API_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody; ADR-0057 gateway invocations. Tests self-skip when their env var is unset."
+    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_/CONNECTOR_/POLICY_/MCP_/API_/OUTBOX_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody; ADR-0057 gateway invocations. Tests self-skip when their env var is unset."
     cmds:
       # api's own -tags integration suites (grant/memory/run/workstream/ctxindex/store/
       # pairing) were never listed here before T-113 — this line is what actually runs
@@ -98,6 +98,18 @@ tasks:
       # mcp-gateway invocations store (ADR-0057; needs MCP_TEST_DATABASE_URL against a
       # DB with the gateway migration applied).
       - go test -tags integration ./services/mcp-gateway/internal/store/...
+      # T-151c / VER-38 (v0.15-dependent slice only — the other two pre-existing
+      # uncovered suites, mcp-gateway/internal/server and session-broker/internal/store,
+      # are deliberately NOT added here; that's a separate ticket to DERIVE the list
+      # rather than keep hand-extending it). The transactional outbox relay — the
+      # mechanism that carries EVERY audit event this release adds, including AUD-40's —
+      # was never gated; needs OUTBOX_TEST_DATABASE_URL (its own disposable DB: the
+      # suite drops + recreates the canonical `outbox` table).
+      - go test -tags integration ./packages/go/outbox/...
+      # policy-service's handler-level integration proofs (T-150/T-151a/T-151c: CON-3/
+      # AUD-35/AUD-36/AUD-40 end-to-end through the real HTTP handler, not just the
+      # store) — same POLICY_TEST_DATABASE_URL as the store suite above.
+      - go test -tags integration ./services/policy-service/internal/server/...
 
   validate:
     desc: "Validate the OpenAPI fragment + JSON Schema fixtures (T-010). Needs python3 + jsonschema + pyyaml."

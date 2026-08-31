@@ -7,8 +7,10 @@ package server
 // deliberately OFF the shared OpenAPI fragment, the same posture as
 // ADR-0054's decide/resolve. api is the only intended caller; the
 // operator-facing /v1/policy-rules surface and its SEC-53 human-agent guard
-// are T-151b's, on services/api — nothing here enforces who authored a rule
-// beyond "holds a service-service token".
+// are T-151b's, on services/api. Since T-151c, every mutating route requires
+// a caller-supplied actor (chained on the AUD-40 event) — this file trusts
+// api to have already verified it against a real operator capability
+// (SEC-53); nothing here re-verifies it, only that it is non-empty.
 
 import (
 	"encoding/json"
@@ -60,20 +62,21 @@ type createRuleRequest struct {
 	Action  string `json:"action"`
 	Target  string `json:"target"`
 	Outcome string `json:"outcome"`
-	// AuthoredBy is the operator subject that authored this rule (T-151b,
-	// CEO-ratified 2026-08-28). Deliberately NOT named Subject — Subject
-	// above is the rule's MATCH subject (which agent the rule applies to),
-	// a completely different concept from who wrote the rule; conflating
-	// the two was named as a defect waiting to happen. Decoded and carried
-	// here so the internal contract does not need a second breaking change
-	// later, but NOTHING consumes it yet — T-151c wires the
-	// policy.rule.created audit event (AUD-40) with this as the actor.
-	AuthoredBy string `json:"authored_by"`
+	// Actor is the operator subject that authored this rule (T-151c,
+	// AUD-40; renames T-151b's "authored_by" — Commander ruling
+	// 2026-08-31: one concept, one name, used uniformly across all four
+	// mutating rule routes below, not just create). Deliberately NOT named
+	// Subject — Subject above is the rule's MATCH subject (which agent the
+	// rule applies to), a completely different concept from who wrote the
+	// rule; conflating the two was named as a defect waiting to happen.
+	Actor string `json:"actor"`
 }
 
 // createRuleHandler inserts a new rule. Field validation (non-empty tuple
 // fields, outcome in {allow, requires_approval, deny}) happens store-side
 // (store.CreateRule → ErrInvalidRule) so the rule vocabulary is defined once.
+// actor IS validated here (not store-side): an empty actor would chain a
+// policy.rule:created event nobody can attribute (AUD-40's whole point).
 func createRuleHandler(st DecisionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createRuleRequest
@@ -81,9 +84,13 @@ func createRuleHandler(st DecisionStore) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+		if req.Actor == "" {
+			http.Error(w, "actor is required", http.StatusBadRequest)
+			return
+		}
 		rule, err := st.CreateRule(r.Context(), store.CreateRuleInput{
 			Label: req.Label, Subject: req.Subject, Edge: req.Edge,
-			Action: req.Action, Target: req.Target, Outcome: req.Outcome,
+			Action: req.Action, Target: req.Target, Outcome: req.Outcome, Actor: req.Actor,
 		})
 		if err != nil {
 			writeRuleError(w, "create rule", err)
@@ -127,10 +134,14 @@ type patchRuleRequest struct {
 	// Enabled is a pointer so a missing field (vs. an explicit false) is
 	// distinguishable — PATCH's only settable field must be present.
 	Enabled *bool `json:"enabled"`
+	// Actor is the operator flipping the rule (AUD-40, T-151c) — same field
+	// name and same requirement as createRuleRequest.Actor above.
+	Actor string `json:"actor"`
 }
 
-// patchRuleHandler flips a rule's enabled flag — the only field this route
-// mutates (SEC-54: a disabled rule must go inert without deleting its row).
+// patchRuleHandler flips a rule's enabled flag — the only settable field this
+// route mutates (SEC-54: a disabled rule must go inert without deleting its
+// row) — and requires actor for the same AUD-40 reason createRuleHandler does.
 func patchRuleHandler(st DecisionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
@@ -143,7 +154,11 @@ func patchRuleHandler(st DecisionStore) http.HandlerFunc {
 			http.Error(w, "enabled is required", http.StatusBadRequest)
 			return
 		}
-		rule, err := st.SetRuleEnabled(r.Context(), id, *req.Enabled)
+		if req.Actor == "" {
+			http.Error(w, "actor is required", http.StatusBadRequest)
+			return
+		}
+		rule, err := st.SetRuleEnabled(r.Context(), id, *req.Enabled, req.Actor)
 		if err != nil {
 			writeRuleError(w, "set rule enabled", err)
 			return
@@ -152,14 +167,31 @@ func patchRuleHandler(st DecisionStore) http.HandlerFunc {
 	}
 }
 
+// deleteRuleRequest carries the DELETE route's only field — actor (AUD-40,
+// T-151c). DELETE with a JSON body is unusual but not exotic; PATCH's actor
+// requirement above establishes the same shape one route earlier.
+type deleteRuleRequest struct {
+	Actor string `json:"actor"`
+}
+
 // deleteRuleHandler removes a rule. Deleting a rule only removes the
 // policy_rules row — the policy_outbox / audit-chain events any past decision
 // under this rule already produced are a separate store and are untouched
-// (SEC-54).
+// (SEC-54). Requires actor for the same AUD-40 reason the other two mutating
+// routes do.
 func deleteRuleHandler(st DecisionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
-		if err := st.DeleteRule(r.Context(), id); err != nil {
+		var req deleteRuleRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, ruleBodyLimit)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Actor == "" {
+			http.Error(w, "actor is required", http.StatusBadRequest)
+			return
+		}
+		if err := st.DeleteRule(r.Context(), id, req.Actor); err != nil {
 			writeRuleError(w, "delete rule", err)
 			return
 		}

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,15 +16,6 @@ import (
 	"aireos.local/services/policy-service/internal/server"
 	"aireos.local/services/policy-service/internal/store"
 )
-
-func ruleReqBody(t *testing.T, v any) []byte {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	return b
-}
 
 func doRules(t *testing.T, h http.Handler, method, path string, body []byte, withBearer bool) *httptest.ResponseRecorder {
 	t.Helper()
@@ -62,13 +54,26 @@ func newRulesHandler() (http.Handler, *fakeStore) {
 	return server.New(server.Config{Verifier: allowVerifier{}, Store: fs}), fs
 }
 
+// testActor is the actor value every rule-mutating test body below carries
+// (AUD-40, T-151c) unless a test is specifically exercising its absence.
+const testActor = "operator:test-actor"
+
 func createRuleBody(outcome string) []byte {
-	return []byte(`{"label":"l","subject":"s","edge":"e","action":"a","target":"t","outcome":"` + outcome + `"}`)
+	return []byte(`{"label":"l","subject":"s","edge":"e","action":"a","target":"t","outcome":"` + outcome + `","actor":"` + testActor + `"}`)
 }
 
-// TestCreateRuleOK — 201 with the created rule, enabled by default.
+func patchRuleBody(enabled bool, actor string) []byte {
+	return []byte(fmt.Sprintf(`{"enabled":%t,"actor":%q}`, enabled, actor))
+}
+
+func deleteRuleBody(actor string) []byte {
+	return []byte(fmt.Sprintf(`{"actor":%q}`, actor))
+}
+
+// TestCreateRuleOK — 201 with the created rule, enabled by default. AUD-40/
+// T-151c: the request's actor reaches the store.
 func TestCreateRuleOK(t *testing.T) {
-	h, _ := newRulesHandler()
+	h, fs := newRulesHandler()
 	rec := doRules(t, h, http.MethodPost, "/v1/rules", createRuleBody(store.RuleOutcomeDeny), true)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create rule: want 201, got %d (%s)", rec.Code, rec.Body.String())
@@ -83,6 +88,24 @@ func TestCreateRuleOK(t *testing.T) {
 	}
 	if got.ID == "" || got.Outcome != store.RuleOutcomeDeny || !got.Enabled {
 		t.Fatalf("unexpected create response: %+v", got)
+	}
+	if fs.lastRuleActor != testActor {
+		t.Fatalf("create actor did not reach the store: got %q, want %q", fs.lastRuleActor, testActor)
+	}
+}
+
+// TestCreateRuleMissingActor — AUD-40/T-151c: an empty/absent actor is 400
+// before the store is ever called (a chained event nobody can attribute
+// defeats AUD-40's whole point).
+func TestCreateRuleMissingActor(t *testing.T) {
+	h, fs := newRulesHandler()
+	rec := doRules(t, h, http.MethodPost, "/v1/rules",
+		[]byte(`{"label":"l","subject":"s","edge":"e","action":"a","target":"t","outcome":"allow"}`), true)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create with no actor field: want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(fs.rules) != 0 {
+		t.Fatalf("a rejected create (missing actor) must never reach the store")
 	}
 }
 
@@ -157,16 +180,17 @@ func TestListAndGetRule(t *testing.T) {
 }
 
 // TestPatchRuleEnabled — PATCH flips enabled and returns the updated rule;
-// a missing "enabled" field is 400; an unknown id is 404.
+// a missing "enabled" field is 400; an unknown id is 404. AUD-40/T-151c: also
+// a missing "actor" is 400, and the actor that DOES flip it reaches the store.
 func TestPatchRuleEnabled(t *testing.T) {
-	h, _ := newRulesHandler()
+	h, fs := newRulesHandler()
 	createRec := doRules(t, h, http.MethodPost, "/v1/rules", createRuleBody(store.RuleOutcomeAllow), true)
 	var created struct {
 		ID string `json:"id"`
 	}
 	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
 
-	rec := doRules(t, h, http.MethodPatch, "/v1/rules/"+created.ID, ruleReqBody(t, map[string]bool{"enabled": false}), true)
+	rec := doRules(t, h, http.MethodPatch, "/v1/rules/"+created.ID, patchRuleBody(false, testActor), true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("patch: want 200, got %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -177,20 +201,29 @@ func TestPatchRuleEnabled(t *testing.T) {
 	if got.Enabled {
 		t.Fatalf("patch enabled=false: want disabled, got enabled=true")
 	}
+	if fs.lastRuleActor != testActor {
+		t.Fatalf("patch actor did not reach the store: got %q, want %q", fs.lastRuleActor, testActor)
+	}
 
-	missingFieldRec := doRules(t, h, http.MethodPatch, "/v1/rules/"+created.ID, []byte(`{}`), true)
+	missingFieldRec := doRules(t, h, http.MethodPatch, "/v1/rules/"+created.ID, []byte(`{"actor":"`+testActor+`"}`), true)
 	if missingFieldRec.Code != http.StatusBadRequest {
 		t.Fatalf("patch with no enabled field: want 400, got %d", missingFieldRec.Code)
 	}
 
-	notFoundRec := doRules(t, h, http.MethodPatch, "/v1/rules/does-not-exist", ruleReqBody(t, map[string]bool{"enabled": true}), true)
+	missingActorRec := doRules(t, h, http.MethodPatch, "/v1/rules/"+created.ID, []byte(`{"enabled":true}`), true)
+	if missingActorRec.Code != http.StatusBadRequest {
+		t.Fatalf("AUD-40: patch with no actor field: want 400, got %d", missingActorRec.Code)
+	}
+
+	notFoundRec := doRules(t, h, http.MethodPatch, "/v1/rules/does-not-exist", patchRuleBody(true, testActor), true)
 	if notFoundRec.Code != http.StatusNotFound {
 		t.Fatalf("patch missing rule: want 404, got %d", notFoundRec.Code)
 	}
 }
 
 // TestDeleteRule — 204 on success, 404 on an unknown id, and the rule is
-// actually gone from the store afterward.
+// actually gone from the store afterward. AUD-40/T-151c: also a missing
+// "actor" is 400, and the actor that DOES delete it reaches the store.
 func TestDeleteRule(t *testing.T) {
 	h, fs := newRulesHandler()
 	createRec := doRules(t, h, http.MethodPost, "/v1/rules", createRuleBody(store.RuleOutcomeAllow), true)
@@ -199,15 +232,26 @@ func TestDeleteRule(t *testing.T) {
 	}
 	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
 
-	rec := doRules(t, h, http.MethodDelete, "/v1/rules/"+created.ID, nil, true)
+	missingActorRec := doRules(t, h, http.MethodDelete, "/v1/rules/"+created.ID, []byte(`{}`), true)
+	if missingActorRec.Code != http.StatusBadRequest {
+		t.Fatalf("AUD-40: delete with no actor field: want 400, got %d", missingActorRec.Code)
+	}
+	if _, ok := fs.rules[created.ID]; !ok {
+		t.Fatalf("a rejected delete (missing actor) must not have removed the rule")
+	}
+
+	rec := doRules(t, h, http.MethodDelete, "/v1/rules/"+created.ID, deleteRuleBody(testActor), true)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("delete: want 204, got %d (%s)", rec.Code, rec.Body.String())
 	}
 	if _, ok := fs.rules[created.ID]; ok {
 		t.Fatalf("deleted rule still present in store")
 	}
+	if fs.lastRuleActor != testActor {
+		t.Fatalf("delete actor did not reach the store: got %q, want %q", fs.lastRuleActor, testActor)
+	}
 
-	notFoundRec := doRules(t, h, http.MethodDelete, "/v1/rules/"+created.ID, nil, true)
+	notFoundRec := doRules(t, h, http.MethodDelete, "/v1/rules/"+created.ID, deleteRuleBody(testActor), true)
 	if notFoundRec.Code != http.StatusNotFound {
 		t.Fatalf("delete already-deleted rule: want 404, got %d", notFoundRec.Code)
 	}

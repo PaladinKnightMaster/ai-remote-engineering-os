@@ -130,8 +130,8 @@ func TestDecideWildcardDenyBeatsSpecificAllowEndToEnd(t *testing.T) {
 		t.Fatalf("create wildcard deny: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = s.DeleteRule(ctx, specificAllow.ID)
-		_ = s.DeleteRule(ctx, wildcardDeny.ID)
+		_ = s.DeleteRule(ctx, specificAllow.ID, "operator:test-cleanup")
+		_ = s.DeleteRule(ctx, wildcardDeny.ID, "operator:test-cleanup")
 	})
 
 	h := server.New(server.Config{Verifier: allowVerifier{}, Pool: pool, TTL: 5 * time.Minute})
@@ -188,7 +188,7 @@ func TestDecideAllowRuleChainsEventEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create rule: %v", err)
 	}
-	t.Cleanup(func() { _ = s.DeleteRule(ctx, rule.ID) })
+	t.Cleanup(func() { _ = s.DeleteRule(ctx, rule.ID, "operator:test-cleanup") })
 
 	h := server.New(server.Config{Verifier: allowVerifier{}, Pool: pool, TTL: 5 * time.Minute})
 	sid := newSessionID(t)
@@ -267,7 +267,7 @@ func BenchmarkDecideSmallRuleSet(b *testing.B) {
 	}
 	b.Cleanup(func() {
 		for _, r := range created {
-			_ = s.DeleteRule(ctx, r.ID)
+			_ = s.DeleteRule(ctx, r.ID, "operator:test-cleanup")
 		}
 	})
 

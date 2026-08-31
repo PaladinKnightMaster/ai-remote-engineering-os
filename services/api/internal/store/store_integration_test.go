@@ -35,6 +35,26 @@ func testStore(t *testing.T) *Store {
 	return New(pool)
 }
 
+// newPendingSession lands a session in 'pending' status exactly the way
+// production now does (createGoverned, server.go) for an allow decision:
+// ParkForApproval then ApproveSession. SEC-59 (T-151c) removed the store's
+// old direct-to-'pending' CreateSession — it was an ungoverned second path
+// to the same status these two calls reach properly — so every fixture in
+// this file that needs a 'pending' (not 'pending_approval') row goes through
+// here now.
+func newPendingSession(t *testing.T, s *Store, ctx context.Context, operatorID string, in session.CreateInput) session.Session {
+	t.Helper()
+	parked, err := s.ParkForApproval(ctx, operatorID, in)
+	if err != nil {
+		t.Fatalf("park for approval: %v", err)
+	}
+	approved, err := s.ApproveSession(ctx, operatorID, parked.ID)
+	if err != nil {
+		t.Fatalf("approve session: %v", err)
+	}
+	return approved
+}
+
 func TestResourceCRUDRoundTrip(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -91,17 +111,16 @@ func TestSessionCRUDRoundTrip(t *testing.T) {
 
 	const opA, opB = "operator:a", "operator:b"
 
-	// Unknown resourceId → ErrNotFound (FK violation mapped).
-	if _, err := s.CreateSession(ctx, opA, session.CreateInput{
+	// Unknown resourceId → ErrNotFound (FK violation mapped). ParkForApproval
+	// shares insertSession with the removed CreateSession, so the same
+	// FK-violation mapping applies regardless of which status it inserts.
+	if _, err := s.ParkForApproval(ctx, opA, session.CreateInput{
 		ResourceID: "00000000-0000-0000-0000-000000000000", Mode: "terminal",
 	}); err != ErrNotFound {
 		t.Fatalf("create on unknown resource: want ErrNotFound, got %v", err)
 	}
 
-	created, err := s.CreateSession(ctx, opA, session.CreateInput{ResourceID: res.ID, Mode: "terminal"})
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
+	created := newPendingSession(t, s, ctx, opA, session.CreateInput{ResourceID: res.ID, Mode: "terminal"})
 	if created.ID == "" || created.Status != session.StatusPending || created.OperatorID != opA {
 		t.Fatalf("unexpected created session: %+v", created)
 	}
@@ -178,10 +197,7 @@ func TestResourceDeleteReferentialGuard(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed resource: %v", err)
 		}
-		sess, err := s.CreateSession(ctx, actor, session.CreateInput{ResourceID: res.ID, Mode: "terminal"})
-		if err != nil {
-			t.Fatalf("seed session: %v", err)
-		}
+		sess := newPendingSession(t, s, ctx, actor, session.CreateInput{ResourceID: res.ID, Mode: "terminal"})
 
 		if err := s.Delete(ctx, actor, res.ID); err != ErrInUse {
 			t.Fatalf("delete referenced by a pending session: want ErrInUse, got %v", err)
@@ -373,10 +389,7 @@ func TestReapStale(t *testing.T) {
 		}
 	}
 
-	stalePending, err := s.CreateSession(ctx, op, in)
-	if err != nil {
-		t.Fatalf("seed pending: %v", err)
-	}
+	stalePending := newPendingSession(t, s, ctx, op, in)
 	backdate(stalePending.ID, time.Hour)
 
 	staleApproval, err := s.ParkForApproval(ctx, op, in)
@@ -385,15 +398,9 @@ func TestReapStale(t *testing.T) {
 	}
 	backdate(staleApproval.ID, 10*time.Minute)
 
-	freshPending, err := s.CreateSession(ctx, op, in)
-	if err != nil {
-		t.Fatalf("seed fresh: %v", err)
-	}
+	freshPending := newPendingSession(t, s, ctx, op, in)
 
-	activeSess, err := s.CreateSession(ctx, op, in)
-	if err != nil {
-		t.Fatalf("seed active: %v", err)
-	}
+	activeSess := newPendingSession(t, s, ctx, op, in)
 	if _, err := s.pool.Exec(ctx, `UPDATE sessions SET status='active', started_at=$2 WHERE id=$1`, activeSess.ID, time.Now().Add(-2*time.Hour)); err != nil {
 		t.Fatalf("activate: %v", err)
 	}

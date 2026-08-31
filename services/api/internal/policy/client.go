@@ -229,28 +229,34 @@ type CreateRuleInput struct {
 	Action  string
 	Target  string
 	Outcome string
-	// AuthoredBy is the operator subject (operatorSubject(r)) that authored
-	// this rule — CEO-ratified 2026-08-28. NOT the rule's match Subject
-	// above (which agent the rule applies to); conflating the two was
-	// flagged as a defect waiting to happen. Carried on the internal
-	// contract now so it does not need a second breaking change later;
-	// policy-service decodes it but does not act on it until T-151c wires
-	// the policy.rule.created audit event (AUD-40) with this as the actor.
-	AuthoredBy string
+	// Actor is the operator subject (operatorSubject(r)) that authored this
+	// rule (T-151c, AUD-40; renames T-151b's "authored_by" — Commander
+	// ruling 2026-08-31: one concept, one name, used uniformly on all four
+	// mutating rule methods below, not just CreateRule). NOT the rule's
+	// match Subject above (which agent the rule applies to); conflating the
+	// two was flagged as a defect waiting to happen.
+	Actor string
 }
 
 type createRuleRequest struct {
-	Label      string `json:"label"`
-	Subject    string `json:"subject"`
-	Edge       string `json:"edge"`
-	Action     string `json:"action"`
-	Target     string `json:"target"`
-	Outcome    string `json:"outcome"`
-	AuthoredBy string `json:"authored_by"`
+	Label   string `json:"label"`
+	Subject string `json:"subject"`
+	Edge    string `json:"edge"`
+	Action  string `json:"action"`
+	Target  string `json:"target"`
+	Outcome string `json:"outcome"`
+	Actor   string `json:"actor"`
 }
 
 type patchRuleRequest struct {
-	Enabled bool `json:"enabled"`
+	Enabled bool   `json:"enabled"`
+	Actor   string `json:"actor"`
+}
+
+// deleteRuleRequest carries the DELETE request's only field — actor
+// (AUD-40, T-151c).
+type deleteRuleRequest struct {
+	Actor string `json:"actor"`
 }
 
 // ruleRequest issues a rule-CRUD request against policy-service's internal
@@ -368,9 +374,10 @@ func (c *Client) GetRule(ctx context.Context, id string) (Rule, error) {
 
 // SetRuleEnabled forwards to policy-service's PATCH /v1/rules/{id} — the only
 // field the internal contract lets api mutate post-create (SEC-54: a disabled
-// rule goes inert without deleting its row).
-func (c *Client) SetRuleEnabled(ctx context.Context, id string, enabled bool) (Rule, error) {
-	resp, err := c.ruleRequest(ctx, http.MethodPatch, "/v1/rules/"+id, patchRuleRequest{Enabled: enabled})
+// rule goes inert without deleting its row). actor is the operator flipping
+// it (AUD-40, T-151c) — last parameter, matching Resolve's resolvedBy above.
+func (c *Client) SetRuleEnabled(ctx context.Context, id string, enabled bool, actor string) (Rule, error) {
+	resp, err := c.ruleRequest(ctx, http.MethodPatch, "/v1/rules/"+id, patchRuleRequest{Enabled: enabled, Actor: actor})
 	if err != nil {
 		return Rule{}, err
 	}
@@ -388,9 +395,11 @@ func (c *Client) SetRuleEnabled(ctx context.Context, id string, enabled bool) (R
 
 // DeleteRule forwards to policy-service's DELETE /v1/rules/{id}. Deleting a
 // rule only removes the policy_rules row — decisions already produced under
-// it stay intact on the chain (SEC-54).
-func (c *Client) DeleteRule(ctx context.Context, id string) error {
-	resp, err := c.ruleRequest(ctx, http.MethodDelete, "/v1/rules/"+id, nil)
+// it stay intact on the chain (SEC-54). actor is the operator deleting it
+// (AUD-40, T-151c) — carried as a JSON body on the DELETE request, the same
+// shape PATCH already uses.
+func (c *Client) DeleteRule(ctx context.Context, id, actor string) error {
+	resp, err := c.ruleRequest(ctx, http.MethodDelete, "/v1/rules/"+id, deleteRuleRequest{Actor: actor})
 	if err != nil {
 		return err
 	}

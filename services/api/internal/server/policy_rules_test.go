@@ -43,7 +43,7 @@ func rulesPolicyServer(t *testing.T) (*httptest.Server, *int32) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/rules", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Label, Subject, Edge, Action, Target, Outcome, AuthoredBy string
+			Label, Subject, Edge, Action, Target, Outcome, Actor string
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)

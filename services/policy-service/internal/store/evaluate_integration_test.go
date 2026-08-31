@@ -62,7 +62,7 @@ func TestMatchingRulesAgreesWithEvaluateOnFixtureSet(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, r := range created {
-			_ = s.DeleteRule(ctx, r.ID)
+			_ = s.DeleteRule(ctx, r.ID, "operator:test-cleanup")
 		}
 	})
 
@@ -130,7 +130,7 @@ func TestEvaluateTupleComposesMatchAndEvaluate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { _ = s.DeleteRule(ctx, r.ID) })
+	t.Cleanup(func() { _ = s.DeleteRule(ctx, r.ID, "operator:test-cleanup") })
 
 	outcome, winner, ok, err := s.EvaluateTuple(ctx, Tuple{Subject: subject, Edge: edge, Action: action, Target: target})
 	if err != nil {
