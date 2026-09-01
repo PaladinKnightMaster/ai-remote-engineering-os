@@ -236,6 +236,11 @@ tasks:
     cmds:
       - python3 infra/scripts/staleness_check.py
 
+  history-secret-scan:
+    desc: "PUB-1/SEC-60 (T-157): content-level secret scan over the FULL git history (every blob reachable from every ref via `git rev-list --objects --all`, not the working tree, not filenames). The one IRREVERSIBLE pre-push gate for v0.16.0 -- run it, resolve every non-allowlisted FINDING, only then push. Ships an ALLOWLIST by exact path (never a glob) for known-intentional fixtures, each justified in the script. NOT wired into `task release-check` -- like sec45-check, it is a deliberately-invoked release-evidence step run once before cutting/publishing, not a dev-loop check. Needs python3."
+    cmds:
+      - python3 infra/scripts/history_secret_scan.py
+
   release-check:
     desc: "Release gate aggregator (release-criteria VER-3/VER-5; §11a-1): run every must-pass gate in sequence, exiting 0 only if all pass. Needs the full toolchain (go + node/pnpm + python3 + Docker for the e2e leg); the integration leg needs a Postgres (set AUDIT/CONNECTOR/POLICY_TEST_DATABASE_URL, else those tests self-skip). Intended for the CI host / a full dev env; the offline-only dev box runs the per-leg Docker commands."
     cmds:
