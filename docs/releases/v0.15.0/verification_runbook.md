@@ -134,31 +134,60 @@ failing on a mutation, with the firing assertion named — not accepted on reaso
 of `task e2e` (build tag `e2e`). Authors a wildcard-target `allow` rule
 (`agent:<agentID>` x `agent-remote-session` x `remote.exec` x `*` -> `allow`, subject scoped to the run's
 random agent so it cannot interfere with any other e2e test, WD-15's convention) and drives two legs
-against it:
+against it.
 
-1. **CONTROL** — a token scoped to `resourceID` (matches what it calls): the wildcard allow rule actually
-   permits execution. Without this, a skeptic could read the PROOF leg's refusal as "maybe the rule
-   secretly denies too" instead of what it actually is.
-2. **PROOF** — the SAME rule, a token scoped to `flaggedResourceID` (a *different* resource) calling
-   `resourceID`. Asserts on the EXACT SEC-16 refusal string emitted at
+⚠ **Commander review (2026-09-01) of the first cut of this test found the CONTROL leg did not control for
+anything.** It ran against `resourceID`, which carries no `requires_approval` label
+(`tests/e2e/harness_test.go:83-84`). Under CON-4's fallback (`decideHandler`,
+`services/policy-service/internal/server/server.go`), a matched-scope call against an unflagged resource
+executes even with **no rule at all** — v0.14.0 behaviour. So that control passed identically whether or
+not the wildcard rule ever fired: it could not distinguish "the rule fired and was correctly overridden"
+from "the rule never fired, and SEC-16 alone was doing all the work." The instrument as first written
+proved "SEC-16 refuses a scope-mismatched call" (true, and worth having) but not SEC-57's actual claim —
+that an **active allow decision** cannot override SEC-16. CEO-approved fix, same day: move the control to
+`flaggedResourceID` (`requires_approval=true`) instead. `decideHandler` only falls back to the resource's
+own label when the evaluator returns `ok=false`; a **matched** rule's outcome is used unconditionally, so
+only a live `allow` decision can make a flagged resource execute instead of park. The chosen discriminating
+instrument is the audit-chain `policy.decision:allow` event itself (the Commander's suggested alternative
+— the same shape WD-15 already uses for its own positive half), not a timing race against the block-and-
+wait window: cleaner, faster, and unambiguous — if the rule never fires, `CreatePending` chains
+`policy.decision:requires_approval` instead, and the poll for `policy.decision:allow` times out and fails
+loudly. A behavioral corroboration (`isError:false`, expected stdout) is kept alongside it, but is not
+itself the proof.
+
+1. **CONTROL** — a token scoped to `flaggedResourceID`, calling `flaggedResourceID` (matches). Recovers the
+   invocation id from `tool.invoked` (filtered by `Target=resource:flaggedResourceID` so it cannot collide
+   with the PROOF leg's own invocation, run moments later under the same agent subject against a different
+   resource), then asserts `policy.decision:allow` is chained for it with the right actor/edge/target —
+   the discriminating check — followed by the behavioral corroboration that the call actually executed.
+2. **PROOF** — unchanged by the fix. The SAME rule, a token scoped to `flaggedResourceID` (a *different*
+   resource from what it calls) calling `resourceID`. Asserts on the EXACT SEC-16 refusal string emitted at
    `services/mcp-gateway/internal/catalog/catalog.go:884` — `"resource is outside the agent token's
    scope"` — not merely that some error came back.
 
-**Result, observed live 2026-09-01** (`task e2e`, full run, 63 PASS / 0 FAIL, chain
-`INTACT+ATTESTED through seq 714`):
+**Result, observed live 2026-09-01** (`task e2e`, full run after the fix, module cache pre-warmed per
+VER-39, **63 PASS / 0 FAIL**, chain `INTACT+ATTESTED through seq 715`, `EXIT_CODE=0` captured
+un-piped):
 
 ```
 === RUN   TestSEC57RuleAllowCannotWidenTokenScope
-    sec57_test.go:92:  PASS control — matched scope + wildcard allow rule: call executed (the rule is a live allow, not a no-op)
-    sec57_test.go:118: PASS SEC-57 — wildcard allow rule + scope-mismatched token: refused by the SEC-16 gate (catalog.go:884) with the exact message "resource is outside the agent token's scope", before the policy evaluator is ever reached
---- PASS: TestSEC57RuleAllowCannotWidenTokenScope (0.14s)
+    sec57_test.go:88:  authored rule ...: agent:sec57-51ce75f3 x agent-remote-session x remote.exec x * -> allow
+    sec57_test.go:132: PASS control — an ACTIVE policy.decision:allow was recorded for the flagged-resource call (actor=agent:sec57-51ce75f3 target=resource:01900000-0000-7000-8000-0000000000a2): the wildcard rule fired and bypassed the approval park, not a no-rule fallback
+    sec57_test.go:147: PASS control corroboration — the call executed (isError:false, expected stdout), not a park
+    sec57_test.go:173: PASS SEC-57 — wildcard allow rule + scope-mismatched token: refused by the SEC-16 gate (catalog.go:884) with the exact message "resource is outside the agent token's scope", before the policy evaluator is ever reached
+--- PASS: TestSEC57RuleAllowCannotWidenTokenScope (2.06s)
 ```
 
-**SEC-57 holds.** The refusal is named precisely: the SEC-16 scope gate in `Service.Invoke`, which runs
-before `runGovernedStep` — exactly the code path `v0.15.0-security-review.md` §f reasoned about, now
-proven rather than argued. This was not assumed going in: if the PROOF leg had succeeded, or been refused
-by any other message, that would have been reported as a live authority-widening defect, per the T-155
-brief's explicit stop-and-report instruction.
+(`resource:...a2` is `flaggedResourceID` — `tests/e2e/harness_test.go:84`.)
+
+**SEC-57 still holds, and the conclusion is unchanged — but the instrument that proves it is now genuinely
+discriminating, which the first cut was not.** The refusal is named precisely: the SEC-16 scope gate in
+`Service.Invoke`, which runs before `runGovernedStep` — exactly the code path `v0.15.0-security-review.md`
+§f reasoned about — and the control now positively confirms the rule was live (an active `allow` decision
+on the chain) rather than merely inferring liveness from a call that would have succeeded with no rule at
+all. This was not assumed going in: if the PROOF leg had succeeded, or been refused by any other message,
+or if the CONTROL leg's `policy.decision:allow` had never appeared, any of those would have been reported
+as a defect rather than patched around, per the T-155 brief's explicit stop-and-report instruction.
 
 ### (b) A mutation control on `TestWD15RuleDeniedInvocation`'s negative half
 
@@ -186,7 +215,14 @@ credential.leased: %+v", e)`.
 **Mutation B — the `remote.exec` absence check (anchored on `e.Target == invAnchor`).** Changed the
 compared field+outcome from `e.Target == invAnchor && e.Outcome == "remote.exec"` (never true on this
 invocation) to `e.EvidencePacketID == invAnchor && e.Outcome == "tool.result:denied"` — again an event
-already proven present at that anchor by the positive half, moments earlier in the same test.
+already proven present at that anchor by the positive half, moments earlier in the same test. ⚠ Note this
+mutation changed **both** the compared field (`Target` → `EvidencePacketID`) and the outcome, because no
+other real event in this flow shares `Target == invAnchor` with `remote.exec` (that combination is unique
+to a real broker execution — the thing being checked absent). It therefore proves the loop-and-`t.Fatalf`
+mechanism fires correctly when its condition is met, **not** that `Target` is the field a real `remote.exec`
+event would use — that is a source claim, verified separately by reading
+`services/session-broker/internal/store/store.go:219-231` (Commander review, criteria §17), not by this
+mutation.
 
 ```
     wd15_test.go:183: SEC-55: a rule-denied invocation has a remote.exec (broker egress ran): {Actor:agent:wd15-92f302bd Edge:agent-tool Target:resource:01900000-0000-7000-8000-0000000000e2 Outcome:tool.result:denied EvidencePacketID:invocation:01a05d93-b6c4-79d8-b75c-7617a4b98c82}

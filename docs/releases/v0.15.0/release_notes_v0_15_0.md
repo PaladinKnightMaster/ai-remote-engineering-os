@@ -112,10 +112,15 @@ cumulative security review (`v0.15.0-security-review.md` §f) first found SEC-57
 dedicated tests, holding only by architectural reasoning; the Commander ruled that reasoning was not the
 proof VER-35 requires and filed T-155. `tests/e2e/sec57_test.go`
 (`TestSEC57RuleAllowCannotWidenTokenScope`) now proves it live: a wildcard-target `allow` rule for
-`agent-remote-session`/`remote.exec` genuinely permits when a token's own scope matches (the control leg,
-proving the rule is a live allow, not a no-op), and is still refused — by name, the exact SEC-16 message
-at `catalog.go:884` — when the token is scoped to a different resource. See
-`verification_runbook.md` Step 1c for the run.
+`agent-remote-session`/`remote.exec` is still refused — by name, the exact SEC-16 message at
+`catalog.go:884` — when the calling token is scoped to a different resource than the call targets. The
+control leg proves the rule was actually live rather than a silent no-op by targeting a
+`requires_approval`-flagged resource and asserting the discriminating fact directly on the chain: a
+`policy.decision:allow` was recorded for that call (only possible when the rule's matched outcome fires —
+an unmatched rule falls back to parking the flagged resource for approval, per CON-4). This corrects the
+control leg's first cut, which ran against an unflagged resource and so could not distinguish the rule
+firing from it never firing at all (Commander review, 2026-09-01, same day) — the conclusion is unchanged,
+the instrument is now sound. See `verification_runbook.md` Step 1c for the run.
 
 **The two remaining pre-existing findings this release did not touch:** `doc-check` still does not scan
 `docs/releases/`/`docs/requirements/*.md` (VER-36), and 26 `.down.sql` files across the product still
