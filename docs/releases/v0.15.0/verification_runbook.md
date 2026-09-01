@@ -305,7 +305,12 @@ operator would experience it, not just as a test asserts it.
 **3.4 — Record findings.** Whatever you observe — friction, unclear copy, a surprising failure mode —
 record it here rather than letting it go unrecorded.
 
-### VER-32 RESULT — *pending the CEO's pass*
+### VER-32 RESULT — ✅ **PASSED 2026-09-01, reported by the CEO.**
+
+All four legs of Step 3 exercised against the running stack: a rule authored and observed denying; a
+more-specific `allow` observed **failing to rescue** a wildcard `deny` (ADR-0074 §D2 — severity beats
+specificity, no tiebreak); the rule deleted and v0.14.0 behaviour observed returning (CON-1 as an
+operator experiences it, not only as a test asserts it). **This was the last outstanding gate in §2.**
 
 ---
 
