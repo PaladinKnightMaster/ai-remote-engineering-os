@@ -236,6 +236,11 @@ tasks:
     cmds:
       - python3 infra/scripts/staleness_check.py
 
+  block-criterion-check:
+    desc: "VER-41/SEC-61/T-158: for every `block` criterion whose ID carries the SEC- prefix in the latest docs/releases/vX/vX-release-criteria.md, assert an explicit `[test: Name]` marker naming a test that actually exists in the tree (or a justified `[test: none -- reason]` exemption) -- the mechanical version of the human who found SEC-57 shipped with zero tests. Mutation-proven (SEC-61): renaming the real backing test made the gate fail naming the exact missing marker, then the rename was reverted (git diff empty). Pass explicit file path(s) as args to check a different/archival doc (e.g. `python infra/scripts/block_criterion_check.py docs/releases/v0.15.0/v0.15.0-release-criteria.md`). Needs python3."
+    cmds:
+      - python3 infra/scripts/block_criterion_check.py
+
   history-secret-scan:
     desc: "PUB-1/SEC-60 (T-157): content-level secret scan over the FULL git history (every blob reachable from every ref via `git rev-list --objects --all`, not the working tree, not filenames). The one IRREVERSIBLE pre-push gate for v0.16.0 -- run it, resolve every non-allowlisted FINDING, only then push. Ships an ALLOWLIST by exact path (never a glob) for known-intentional fixtures, each justified in the script. NOT wired into `task release-check` -- like sec45-check, it is a deliberately-invoked release-evidence step run once before cutting/publishing, not a dev-loop check. Needs python3."
     cmds:
@@ -247,6 +252,7 @@ tasks:
       - task: doc-check
       - task: staleness-check
       - task: adr-ledger-check
+      - task: block-criterion-check
       - task: go-deps-check
       - task: validate
       - task: lint
