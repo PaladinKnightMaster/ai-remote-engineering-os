@@ -107,12 +107,15 @@ attempted in v0.15.0.
 
 ## What this release explicitly does **not** claim
 
-**A rule cannot widen authority — reasoned, not yet independently tested (SEC-57).** The agent-token
-scope check and the delegation-grant launch-time check both run structurally before and independent of
-the policy evaluator, so a rule's `allow` cannot manufacture a verb or resource either axis withholds.
-This session's cumulative security review (`v0.15.0-security-review.md` §f) verifies the code paths that
-make this true, but no dedicated mutation-proven test exists for it, despite the criterion being `block`.
-Stated here rather than left implicit.
+**A rule cannot widen authority (SEC-57) — CLOSED at T-155, mutation-proven live.** This session's
+cumulative security review (`v0.15.0-security-review.md` §f) first found SEC-57 `block` with zero
+dedicated tests, holding only by architectural reasoning; the Commander ruled that reasoning was not the
+proof VER-35 requires and filed T-155. `tests/e2e/sec57_test.go`
+(`TestSEC57RuleAllowCannotWidenTokenScope`) now proves it live: a wildcard-target `allow` rule for
+`agent-remote-session`/`remote.exec` genuinely permits when a token's own scope matches (the control leg,
+proving the rule is a live allow, not a no-op), and is still refused — by name, the exact SEC-16 message
+at `catalog.go:884` — when the token is scoped to a different resource. See
+`verification_runbook.md` Step 1c for the run.
 
 **The two remaining pre-existing findings this release did not touch:** `doc-check` still does not scan
 `docs/releases/`/`docs/requirements/*.md` (VER-36), and 26 `.down.sql` files across the product still

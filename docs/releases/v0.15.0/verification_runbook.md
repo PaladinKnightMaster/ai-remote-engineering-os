@@ -123,6 +123,92 @@ two positively-chained events with their actor/edge/target, and the two absences
 
 ---
 
+## Step 1c — T-155: the two missing negative proofs (Commander ruling, CEO-approved 2026-09-01)
+
+Test-only. No production code changed. Both proofs recorded here live, per VER-35's letter: observed
+failing on a mutation, with the firing assertion named — not accepted on reasoning.
+
+### (a) SEC-57 — "a rule cannot widen authority"
+
+**Where it lives.** `tests/e2e/sec57_test.go`, `TestSEC57RuleAllowCannotWidenTokenScope` — runs as part
+of `task e2e` (build tag `e2e`). Authors a wildcard-target `allow` rule
+(`agent:<agentID>` x `agent-remote-session` x `remote.exec` x `*` -> `allow`, subject scoped to the run's
+random agent so it cannot interfere with any other e2e test, WD-15's convention) and drives two legs
+against it:
+
+1. **CONTROL** — a token scoped to `resourceID` (matches what it calls): the wildcard allow rule actually
+   permits execution. Without this, a skeptic could read the PROOF leg's refusal as "maybe the rule
+   secretly denies too" instead of what it actually is.
+2. **PROOF** — the SAME rule, a token scoped to `flaggedResourceID` (a *different* resource) calling
+   `resourceID`. Asserts on the EXACT SEC-16 refusal string emitted at
+   `services/mcp-gateway/internal/catalog/catalog.go:884` — `"resource is outside the agent token's
+   scope"` — not merely that some error came back.
+
+**Result, observed live 2026-09-01** (`task e2e`, full run, 63 PASS / 0 FAIL, chain
+`INTACT+ATTESTED through seq 714`):
+
+```
+=== RUN   TestSEC57RuleAllowCannotWidenTokenScope
+    sec57_test.go:92:  PASS control — matched scope + wildcard allow rule: call executed (the rule is a live allow, not a no-op)
+    sec57_test.go:118: PASS SEC-57 — wildcard allow rule + scope-mismatched token: refused by the SEC-16 gate (catalog.go:884) with the exact message "resource is outside the agent token's scope", before the policy evaluator is ever reached
+--- PASS: TestSEC57RuleAllowCannotWidenTokenScope (0.14s)
+```
+
+**SEC-57 holds.** The refusal is named precisely: the SEC-16 scope gate in `Service.Invoke`, which runs
+before `runGovernedStep` — exactly the code path `v0.15.0-security-review.md` §f reasoned about, now
+proven rather than argued. This was not assumed going in: if the PROOF leg had succeeded, or been refused
+by any other message, that would have been reported as a live authority-widening defect, per the T-155
+brief's explicit stop-and-report instruction.
+
+### (b) A mutation control on `TestWD15RuleDeniedInvocation`'s negative half
+
+The guard gating VER-30 (the release's headline claim) had never been observed failing — re-running a
+passing test is a regression check, not a mutation proof (Commander review finding, criteria §17).
+Each of its two SEC-55 absence checks was deliberately broken in turn, in isolation
+(`cd infra/docker-compose && docker compose -f docker-compose.e2e.yml up -d postgres seed api broker
+connector policy audit mcp-gateway sshd`, then `run --rm tester go test -tags e2e -v -run
+TestWD15RuleDeniedInvocation ./tests/e2e/...`), observed failing, and restored — confirmed byte-identical
+to the committed source via `git diff` (empty) before the final green re-run.
+
+**Mutation A — the `credential.leased` absence check (anchored on `sessAnchor`).** Changed the compared
+outcome from `"credential.leased"` (never emitted on this invocation) to `"policy.decision:deny"` — an
+event already proven present at the SAME anchor a few lines earlier in the same test (the positive half).
+A real event at the checked anchor, so a true mutation, not a vacuous one.
+
+```
+    wd15_test.go:180: SEC-55: a rule-denied invocation has a credential.leased: {Actor:agent:wd15-2f599dd1 Edge:agent-remote-session Target:resource:01900000-0000-7000-8000-0000000000e2 Outcome:policy.decision:deny EvidencePacketID:session:01a05d93-4e1f-700d-b124-f660fcb6436c}
+--- FAIL: TestWD15RuleDeniedInvocation (2.11s)
+```
+
+**Firing assertion:** `tests/e2e/wd15_test.go:180`, `t.Fatalf("SEC-55: a rule-denied invocation has a
+credential.leased: %+v", e)`.
+
+**Mutation B — the `remote.exec` absence check (anchored on `e.Target == invAnchor`).** Changed the
+compared field+outcome from `e.Target == invAnchor && e.Outcome == "remote.exec"` (never true on this
+invocation) to `e.EvidencePacketID == invAnchor && e.Outcome == "tool.result:denied"` — again an event
+already proven present at that anchor by the positive half, moments earlier in the same test.
+
+```
+    wd15_test.go:183: SEC-55: a rule-denied invocation has a remote.exec (broker egress ran): {Actor:agent:wd15-92f302bd Edge:agent-tool Target:resource:01900000-0000-7000-8000-0000000000e2 Outcome:tool.result:denied EvidencePacketID:invocation:01a05d93-b6c4-79d8-b75c-7617a4b98c82}
+--- FAIL: TestWD15RuleDeniedInvocation (0.08s)
+```
+
+**Firing assertion:** `tests/e2e/wd15_test.go:183`, `t.Fatalf("SEC-55: a rule-denied invocation has a
+remote.exec (broker egress ran): %+v", e)`.
+
+**Restored, reconfirmed green** (`git diff tests/e2e/wd15_test.go` empty before this run):
+
+```
+    wd15_test.go:186: PASS negative half — no credential.leased, no remote.exec for this invocation
+    wd15_test.go:187: PASS T-154 WD-15 — an operator-authored rule denies an otherwise-ungoverned action: no lease, no egress, and the denial is chained positively (policy.decision:deny + tool.result:denied)
+--- PASS: TestWD15RuleDeniedInvocation (2.07s)
+```
+
+**The guard is now a guard** — both halves of its negative proof have been observed catching a planted
+violation, not merely observed passing.
+
+---
+
 ## Step 2 — provenance, with the SAME key as v0.14.0
 
 **No new release keypair is minted this release.** The existing production key (custody per
@@ -190,8 +276,10 @@ record it here rather than letting it go unrecorded.
 ## Step 4 — sign-off and tag
 
 Sign off only if Steps 1–3 are green **and** the release notes' non-claims still read as true — in
-particular that R1's post-approval half is stated as open, not implied closed, and that SEC-57 is stated
-as reasoned-but-untested rather than proven.
+particular that R1's post-approval half is stated as open, not implied closed. SEC-57 is now
+**mutation-proven live** (Step 1c, T-155) — `TestSEC57RuleAllowCannotWidenTokenScope` — so release notes
+or criteria text still calling it "reasoned but untested" would themselves be stale; update them to match
+before signing.
 
 ```bash
 git tag -a v0.15.0 -m "v0.15.0 — Governed Decision Policy"
