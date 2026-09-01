@@ -151,6 +151,9 @@ here as outstanding rather than quietly dropped.
   magnitude, and the companion-artifact pattern does not cleanly absorb it.
 - ❌ **Air-gap run: NOT MEASURED**, blocked by three consecutive Docker Desktop failures on the
   measuring host. Outstanding, scoped, and explicitly not a result in either direction.
-- ⚠ **Host cleanup owed:** an `ollama/ollama` image (~3.2 GB compressed on the wire) and a
-  `ollama-probe` container may remain. Docker became unresponsive before they could be confirmed
-  removed — **verify and remove them when it recovers.**
+- ⚠ **Host cleanup: probably already clean, but UNCONFIRMED.** A sweep found **no `ollama` image and
+  no `ollama-probe` container** — but that sweep ran while the daemon was already degrading
+  (`docker info` returned `124`), so it is **not trustworthy evidence**. Re-check once Docker is
+  healthy: `docker images | grep ollama` and `docker ps -a | grep ollama-probe`. Recorded this way
+  deliberately — "a check that ran against a sick daemon said nothing was there" is not the same
+  claim as "nothing is there", and collapsing the two is how a 3 GB artifact gets left on a host.
