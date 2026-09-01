@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** — 2026-09-01 (v0.16.0 scoping, T-156). Commander seat. **Decider: CEO.**
+**Accepted** — 2026-09-01 (v0.16.0 scoping, T-156). Commander seat. **Decider: CEO.** Accepted by the CEO 2026-09-01.
 
 **Supersedes nothing.** Discharges **v0.16.0 PUB-2**.
 

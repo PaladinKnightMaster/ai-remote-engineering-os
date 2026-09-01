@@ -7,7 +7,7 @@
 
 **The reverse index is the point.** Gate **G2** forbids editing an Accepted ADR, so an ADR whose clause is later superseded carries **no forward pointer** — a reader of ADR-0041 cannot learn that its Go-version clause is dead. *Named by* below supplies that pointer **additively, outside the ADR files**, satisfying both G2 and the MADR convention that a superseded decision must link forward.
 
-**75 ADRs.** **Accepted: 66** · **Proposed: 9**
+**75 ADRs.** **Accepted: 67** · **Proposed: 8**
 
 ## Known corpus defects (measured, not impressions)
 
@@ -94,4 +94,4 @@
 | [ADR-0072](ADR-0072-go-toolchain-support-window.md) | Go toolchain support-window policy — superseding ADR-0041's version clause | **Accepted** | 2026-08-24 | Supersedes ONE clause of ADR-0041 — the Go version sentence only. ADR-0041 itself is not edited (G2: an Accepted ADR is conformed to or superseded by a new ADR, never rewritten in place). | — |
 | [ADR-0073](ADR-0073-product-boundary-ledger-membership.md) | The product boundary — the ledger defines membership | **Accepted** | 2026-08-27 | It supplies the membership test that ADR-0002 (Accepted, never superseded) assumed but never stated. | — |
 | [ADR-0074](ADR-0074-governed-decision-policy.md) | `policy-service` evaluates operator-authored rules, so the decision point can decide | **Accepted** | 2026-08-28 | Decider: CEO. Discharges ADR-0054 §1 and §3 — both Accepted 2026-06-01, both only half-built. This ADR supersedes nothing and edits nothing — it builds what ADR-0054 already decided, and adds the o… | — |
-| [ADR-0075](ADR-0075-open-source-licence.md) | ADR-0075 — Open-source licence for the product | **Proposed** | 2026-09-01 | — | — |
+| [ADR-0075](ADR-0075-open-source-licence.md) | ADR-0075 — Open-source licence for the product | **Accepted** | 2026-09-01 | — | — |
