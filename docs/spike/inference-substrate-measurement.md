@@ -110,29 +110,56 @@ architecturally correct answer, and this measurement supports it rather than und
 `apt-get --download-only` + `dpkg -i` turned out **not** to be a self-sufficient closure. The
 analogue here is whether the runtime reaches the network on first run.)*
 
-❌ **NOT MEASURED. This is an absence of data, not a negative result — do not cite it as either.**
+✅ **MEASURED 2026-09-01. The runtime is a self-sufficient closure: it serves inference with the
+network severed.** *(Three earlier attempts failed environmentally — a Docker named-volume
+`input/output error`, a harness timeout whose wrapper still exited 0, and a hung daemon. All three
+root-caused to host disk exhaustion, not to the runtime. Recorded because the record briefly blamed
+the volume driver, which was a symptom read as a cause.)*
 
-Three attempts were made on 2026-08-31 and all three failed environmentally, not substantively:
+**Method** — deliberately the *bare-binary* path, not the container image: the 8.45 GB
+`ollama/ollama` image bundles CUDA/ROCm, and nobody ships that to an air-gapped host. Installed
+`ollama-linux-amd64.tar.zst` v0.33.2 into a plain `ubuntu:24.04` container — **the download measured
+1.4 GB on the wire, corroborating the 1,356.4 MB registry figure above, which was obtained by manifest
+inspection without downloading anything.** Pulled `gemma3:270m` (291 MB on disk vs the 278.0 MB
+compressed figure) with network available, then **removed the container from the Docker network**.
 
-1. **Model download into a Docker named volume** died with
-   `rename …-partial → …: input/output error` — Docker Desktop's volume driver on WSL2, the same
-   family as the port-forwarding and `::1` loopback faults already recorded in the operating
-   conventions. Not a property of the runtime being measured.
-2. **Retry with container-local storage** (bypassing the volume driver) hit the harness timeout;
-   both the container start and the model pull returned `124`, `timeout`'s kill code. ⚠ The wrapping
-   command still exited **0** — a reminder that *a green exit on a wrapper says nothing about the
-   work inside it.*
-3. **`docker info` then hung past 90 s**, the third Docker Desktop degradation of the session.
+⭐ **The severance was proven before inference was attempted, with a discriminating control** — without
+this the result is unfalsifiable, since a container still quietly attached to the bridge produces an
+identical answer:
 
-**What would settle it:** start the runtime with network available, pull one small model, stop it,
-then restart with `--network none` and serve one inference. That is a ~1.6 GB download and perhaps
-fifteen minutes on a healthy host.
+| Same probe → `registry.ollama.ai` | Result |
+|---|---|
+| **while connected** | **HTTP 404** — a real server response; TCP + TLS + HTTP all completed |
+| **after `docker network disconnect`** | **HTTP 000** — no connection established at all |
 
-⚠ **Why this does not block the ticket's purpose.** ADR-0073 §3(a) asks whether the *platform can
-ship* an inference substrate. **The size measurement answers that decisively and on its own.** The
-air-gap question asks something different — whether an *operator* can run one disconnected — which
-matters for v1.0.0's demo planning but **cannot change the bundling verdict above**. It is recorded
-here as outstanding rather than quietly dropped.
+**Then, with the network severed** [ran: `POST /api/generate`, `gemma3:270m`, `stream:false`]:
+
+```
+"response":"The name AIRGAP-OK is a popular and well-known name ...","done":true,"done_reason":"stop"
+```
+
+Real generated tokens — a **positive** marker, not an exit code. (The CLI path was tried first and
+returned exit 0 with nothing but TTY spinner frames; that exit was `head`'s, not the model's, and was
+**not** accepted as evidence. The HTTP API was used precisely to get an assertable payload.)
+
+⚠ One near-miss worth recording: a `grep` of the server log for `dial|refused|no route|lookup|timeout`
+returned **1 match**, which reads as a network attempt. It was a **false positive** — the string
+`timeout` inside `OLLAMA_LOAD_TIMEOUT:5m0s` in a startup config dump. Reporting the count without
+reading the line would have manufactured a finding.
+
+⭐ **The result, and why it matters: the second-order concern does NOT materialise.** ADR-0052 §OI-c
+found that postgres's `apt-get --download-only` + `dpkg -i` was **not** a self-sufficient closure. The
+analogous worry here — that the runtime phones home on first inference — is **false**. Runtime plus
+weights is a closed unit for inference.
+
+**So the barrier is purely SIZE AND DISTRIBUTION, not runtime behaviour.** That strengthens rather
+than weakens ADR-0073 §2: an operator genuinely *can* provision this out-of-band (1.4 GB runtime +
+291 MB model) and then run it disconnected. **A `lan-only` v1.0.0 demo is therefore possible** — as
+operator-provisioned substrate, never as bundled payload.
+
+⚠ **Scope of this leg:** CPU path only (no GPU passthrough), one small model, one runtime, a single
+inference. It establishes that no network is *reached*; it measures nothing about latency, throughput,
+or quality — see below.
 
 ## What this measurement does NOT establish
 
@@ -149,8 +176,10 @@ here as outstanding rather than quietly dropped.
 - ✅ **Size measurement: complete and decisive.** ADR-0073 §3(a) is discharged for the bundling
   question: an inference substrate **cannot ship in the core offline bundle**, by roughly an order of
   magnitude, and the companion-artifact pattern does not cleanly absorb it.
-- ❌ **Air-gap run: NOT MEASURED**, blocked by three consecutive Docker Desktop failures on the
-  measuring host. Outstanding, scoped, and explicitly not a result in either direction.
+- ✅ **Air-gap run: MEASURED 2026-09-01 — the runtime serves inference with the network severed**,
+  severance proven first with a discriminating before/after control. The ADR-0052 second-order worry
+  does not materialise: runtime + weights is a closed unit. **The barrier is size and distribution
+  alone**, which makes an operator-provisioned `lan-only` v1.0.0 demo viable.
 - ⚠ **Host cleanup: probably already clean, but UNCONFIRMED.** A sweep found **no `ollama` image and
   no `ollama-probe` container** — but that sweep ran while the daemon was already degrading
   (`docker info` returned `124`), so it is **not trustworthy evidence**. Re-check once Docker is
