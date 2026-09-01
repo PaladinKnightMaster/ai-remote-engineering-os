@@ -7,13 +7,13 @@
 
 **The reverse index is the point.** Gate **G2** forbids editing an Accepted ADR, so an ADR whose clause is later superseded carries **no forward pointer** — a reader of ADR-0041 cannot learn that its Go-version clause is dead. *Named by* below supplies that pointer **additively, outside the ADR files**, satisfying both G2 and the MADR convention that a superseded decision must link forward.
 
-**74 ADRs.** **Accepted: 66** · **Proposed: 8**
+**75 ADRs.** **Accepted: 66** · **Proposed: 9**
 
 ## Known corpus defects (measured, not impressions)
 
 - **Bimodal by size.** 37 ADRs are under 800 bytes (title + one-line decision); 16 are over 15 KB (design documents). Neither shape is an ADR in the Nygard/MADR sense.
 - **Two incompatible Status templates** — `## Status` vs inline `Status:`, split at ADR-0019. A grep for `## Status` alone misses 22 ADRs. Both are parsed here.
-- **54 ADRs declare no relation in their Status block.** For the stub band that is expected; where a relation exists only in body prose it is **not guessed** — the gap is left visible rather than invented.
+- **55 ADRs declare no relation in their Status block.** For the stub band that is expected; where a relation exists only in body prose it is **not guessed** — the gap is left visible rather than invented.
 - **Decision bundling.** Recent ADRs carry many decisions each (ADR-0067 and ADR-0068 have 21 internal decision points; 0069/0070/0071 have 9). **ADR-0072 exists only because ADR-0041 bundled five decisions**, so retiring one required a whole new ADR. New ADRs should carry **one** decision — see `TEMPLATE.md`.
 
 ## Ledger
@@ -94,3 +94,4 @@
 | [ADR-0072](ADR-0072-go-toolchain-support-window.md) | Go toolchain support-window policy — superseding ADR-0041's version clause | **Accepted** | 2026-08-24 | Supersedes ONE clause of ADR-0041 — the Go version sentence only. ADR-0041 itself is not edited (G2: an Accepted ADR is conformed to or superseded by a new ADR, never rewritten in place). | — |
 | [ADR-0073](ADR-0073-product-boundary-ledger-membership.md) | The product boundary — the ledger defines membership | **Accepted** | 2026-08-27 | It supplies the membership test that ADR-0002 (Accepted, never superseded) assumed but never stated. | — |
 | [ADR-0074](ADR-0074-governed-decision-policy.md) | `policy-service` evaluates operator-authored rules, so the decision point can decide | **Accepted** | 2026-08-28 | Decider: CEO. Discharges ADR-0054 §1 and §3 — both Accepted 2026-06-01, both only half-built. This ADR supersedes nothing and edits nothing — it builds what ADR-0054 already decided, and adds the o… | — |
+| [ADR-0075](ADR-0075-open-source-licence.md) | ADR-0075 — Open-source licence for the product | **Proposed** | 2026-09-01 | — | — |

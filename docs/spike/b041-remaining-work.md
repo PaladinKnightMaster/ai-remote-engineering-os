@@ -129,7 +129,27 @@ fragment change before the v1.0.0 freeze."* A freeze is a promise about a contra
 same release as a first third-party integration means **freezing a surface whose newest consumer has
 existed for weeks**.
 
-⭐ **Commander recommendation, offered for the CEO's judgement, not as a decision:** consider
+⭐⭐ **RATIFIED BY THE CEO 2026-09-01: the surface freeze is SPLIT OUT of the integration release.**
+
+**v1.0.0 Beta 1 = B-041 integration, surface explicitly NOT frozen. The freeze lands at v1.0.0 final,
+after the integration has actually been used.** The reasoning it was accepted on: freezing a contract
+whose newest consumer has existed for weeks binds a promise to something nobody has run in anger.
+
+⚠ **Three consequences that follow, and must not be lost:**
+
+1. **The v1.0.0 Beta 1 criteria must state that the surface is NOT frozen** — as plainly as they state
+   that governance is cooperative. An unstated non-freeze will be read as a freeze by anyone building
+   against it, which is the same drift-by-silence this project has recorded before.
+2. ⚠ **The "last fragment change before the freeze" framing changes.** v0.15.0 spent T-151b partly on
+   that basis [read: `docs/releases/v0.15.0/v0.15.0-release-criteria.md`], and it was one of the
+   original arguments for sequencing that release at all. **That argument was sound when made and is
+   now superseded** — fragment changes remain possible through Beta 1. Recorded so a future reader
+   does not find the two statements in conflict and assume one is an error.
+3. **The counter-argument is accepted with the decision, not dismissed:** a Beta that freezes nothing
+   may fail to force the hardening a freeze forces. **Mitigation — v1.0.0 final must carry its own
+   freeze criteria**, not inherit an assumption that the surface settled by itself during Beta.
+
+*(Original recommendation, retained for the record:)* consider
 **splitting the freeze out of the integration release**. Ship B-041 as v1.0.0 Beta 1 with the surface
 explicitly *not* frozen; freeze at 1.0.0 final once the integration has been used. That keeps the
 version number meaningful — *"layer 2 is real"* — without binding a contract to a consumer nobody has
