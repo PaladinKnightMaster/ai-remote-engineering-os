@@ -81,6 +81,43 @@ The promotion trigger is an operator rule that four-field matching genuinely can
 
 ---
 
+## Release provenance — verify before you install
+
+**Tag `53782dd`.** The tag is pinned to the commit the release signature attests to and **must not be
+moved**; the binaries in the bundle embed that same `vcs.revision`.
+
+**Release public key SHA-256 fingerprint:**
+
+```
+968a29b3623fa79a6d12e37dfe4c9e156b6c66c716b0e57a076026a9d1bc0bbf
+```
+
+| Artifact | SHA-256 |
+|---|---|
+| `aireos-offline-0.15.0.tar.gz` (45 MB gz / 125 MB unpacked) | `fcb55699d773f7851b4e8b078e2485d365c1a2214e228960935ddb943f2b5fdd` |
+| `aireos-postgres-ubuntu2404.tar.gz` | `985475668488d108aeb2777d998b2878d46029e58bdc5f0cce092108be5c010d` |
+
+Both artifacts carry a detached Ed25519 `.sig` and a CycloneDX 1.6 SBOM. SBOM coverage was checked
+against actual contents, not mere presence: 9/9 shipped executables for the core bundle, 98/98
+packages for the companion. **SEC-45 PROVED** against both — 14 passed / 0 failed, each artifact given
+a control pass on an unmutated copy *before* one-byte mutation was shown to break verification.
+
+⚠ **Why the fingerprint above matters, and what it cannot do.** ADR-0070's residual 3 is *first-contact
+trust*: an operator who receives the artifact and the public key **through the same channel** has
+verified internal consistency, not provenance. Publishing this fingerprint exists so a **second
+channel is possible** — compare it against a copy obtained some other way before trusting a key. The
+project cannot force a second channel; it can only make one available.
+
+⭐ **This is the first release to actually publish it.** ADR-0070 §D4 has required the fingerprint in
+the release notes since v0.13.0, and the release tooling has printed it at every signing — but it was
+never landed anywhere a recipient could read, through v0.13.0 and v0.14.0 both. So the only stated
+mitigation for residual 3 did not exist in practice while two signed releases shipped. Found during
+the v0.15.0 cut. **The same recurring shape this release kept surfacing: the control was correct and
+its caller was never wired up.** Retro-publishing the earlier releases' fingerprints (the same key
+signed all three) belongs to its own ticket, not this one.
+
+---
+
 ## R1's status — the decision plane closes, the post-approval plane stays open
 
 v0.15.0 closes the **decision-plane** half of this product's oldest recorded residual (R1, carried since

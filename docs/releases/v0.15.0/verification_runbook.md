@@ -250,9 +250,51 @@ violation, not merely observed passing.
 **No new release keypair is minted this release.** The existing production key (custody per
 `docs/devops/offline-install-v3.md` §Release key custody) signs these artifacts too.
 
+⚠⚠ **`task offline-bundle` DOES NOT RUN ON THE WINDOWS COMMANDER HOST — corrected at the v0.15.0 cut,
+2026-09-01, after all three of this step's commands failed as written.** Three separate defects, none
+of them in the release, all of them this runbook describing a machine other than the one the cut
+happens on:
+
+1. **`pnpm install` aborts without a TTY** — `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. Needs
+   `CI=true`.
+2. **There is no `go` on the host PATH** (`go: command not found`, `build-bundle.sh:88`), and the
+   script has **no Docker path of its own** — it must be run *inside* a Go container.
+3. **`golang:1.26` alone is not enough**: the SBOM step needs Node too (`npx (node) is required for
+   the node SBOM fragment`), and it fails *after* the Go build, Caddy fetch and staging have already
+   succeeded — so a partial stage on disk is not evidence of a good build.
+
+**What actually works** — `aireos-repro-builder:golang1.26-node` is the one local image carrying
+**both** toolchains (it exists for `measure-reproducibility`; do not prune it). Build the SPA on the
+host, then the bundle in the container:
+
 ```bash
-task offline-bundle
+CI=true pnpm install --frozen-lockfile && CI=true pnpm --filter @aireos/web build
 ```
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/work" -v gomodcache:/go/pkg/mod -w /work -e BUNDLE_VERSION=0.15.0 aireos-repro-builder:golang1.26-node bash -c 'command -v wget >/dev/null || (apt-get update -qq && apt-get install -y -qq wget >/dev/null 2>&1); bash infra/offline/build-bundle.sh'
+```
+
+Mount the `gomodcache` volume as shown — it is the cache the repo names, and it keeps the container
+off a cold module fetch (the VER-39 concern).
+
+⚠ **Never read the build's success from a wrapper's exit code.** At this cut `task` reported
+`exit status 1`, the shell wrapper reported `0`, and the real code was `201`. Capture it explicitly
+(`> log 2>&1; echo "EXIT=$?"`) and read the log.
+
+⚠⚠ **BEFORE SIGNING, CHECK WHAT IS IN THE GLOB.** `sign-release` defaults to signing **every**
+`dist/offline/*.tar.gz`, and `check-provenance.sh` globs the same set and fails on any unsigned member.
+At this cut a **stale `aireos-offline-0.14.0.tar.gz`** left by T-154's VER-29 run was still sitting
+there — it would have been signed into this release. That is the same family as the recorded v0.13.0
+error where a `;`-chain signed a stale bundle. `ls -la dist/offline/*.tar.gz` and move anything that is
+not part of this release out of the directory (move, do not delete):
+
+```bash
+ls -la dist/offline/*.tar.gz
+```
+
+**The postgres companion is version- and commit-independent** (no `VERSION` file, no `BUNDLE_VERSION`
+dependence — its content is OS packages), so a companion built earlier in the same cut is valid and
+does not need rebuilding.
 ```bash
 MSYS_NO_PATHCONV=1 bash infra/offline/postgres/build-postgres-companions.sh
 ```
