@@ -31,6 +31,21 @@ stdlib, so this stays TOOLING and never enters the Go/JS dependency surface
 ALLOWLIST is by exact repo-relative path only (never a glob/prefix) -- each
 entry is a claim that one specific file's content is safe, and a glob would
 let a genuine secret shelter next to an allowlisted path undetected.
+
+Discriminating on a clean repo (Commander review, T-157): the first cut of
+conn_string_credential fired on 145 test/CI/install-script DSNs that all
+turned out to be placeholders, and a scan that is always red on a clean
+repo is exactly as useless as one that is always green -- neither
+discriminates a genuine new secret from noise. The fix is NOT ~20 more
+ALLOWLIST path entries: that would blind each entire file -- exactly the
+test/CI/install files that churn most -- to any future real secret in it.
+Instead the rule filters at the credential VALUE (see TEMPLATE_MARKER /
+VALUE_ALLOWLIST below): a `$`/`<`/`>` in the user or password segment is a
+shell-variable reference or an angle-bracket placeholder, not a value, and
+a short list of exact "user:password" pairs -- measured via `git grep`,
+never a pattern -- are known non-secrets (a deployment actually using
+`postgres:postgres` has no secret to leak). Every other DSN in every one
+of those files, present or future, is still scanned in full.
 """
 import math
 import re
@@ -86,7 +101,9 @@ ALLOWLIST = {
 RULES = [
     ("private_key_block", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
     ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("conn_string_credential", re.compile(r"\b\w{2,10}://[^\s:'\"@/]+:[^\s@'\"]{3,}@[^\s'\"/]+")),
+    # Captures (user, password) so conn_string_allowed() can filter at the
+    # VALUE level -- see the two-part fix below.
+    ("conn_string_credential", re.compile(r"\b\w{2,10}://([^\s:'\"@/]+):([^\s@'\"]{3,})@[^\s'\"/]+")),
     ("bearer_token", re.compile(r"(?i)\bbearer\s+[a-z0-9\-_.=]{20,}")),
     ("jwt_literal", re.compile(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b")),
     ("paseto_literal", re.compile(r"\bv[24]\.(?:local|public)\.[a-zA-Z0-9_-]{20,}\b")),
@@ -97,6 +114,39 @@ RULES = [
 ]
 ENTROPY_CONTEXT = re.compile(r"(?i)(secret|token|password|api[_-]?key|access[_-]?key)")
 ENTROPY_VALUE = re.compile(r"['\"]([A-Za-z0-9+/=_\-]{20,})['\"]")
+
+# --- conn_string_credential: value-level filtering (Commander review, T-157) ---
+# A path-based allowlist for the ~20 files these placeholders live in would
+# blind each ENTIRE file -- test/CI/install files, exactly the ones that
+# churn most -- to any future real secret. Filtering at the credential VALUE
+# instead keeps every file fully covered.
+#
+# Part 1: a template marker ($, <, >) in the user or password segment means
+# the "credential" is a shell-variable reference or an angle-bracket
+# placeholder, not a value at all -- this is a RULE-shape decision, not an
+# allowlist entry, so it lives in code, not in a justified-entries dict.
+TEMPLATE_MARKER = re.compile(r"[<>$]")
+
+# Part 2: the remaining literal pairs, measured (git grep) rather than
+# guessed, each allowlisted by EXACT "user:password" pair -- never a
+# pattern like "anything after postgres://", which would let a genuine
+# credential shelter behind the scheme. A deployment actually using one of
+# these pairs has no secret to leak in the first place.
+VALUE_ALLOWLIST = {
+    "cockpit:change-me": "This project's own placeholder DSN password (34 occurrences, git grep), used verbatim in every local/CI Postgres test DSN since T-004b; the literal words say 'change this'.",
+    "postgres:postgres": "Postgres's own default local superuser/db-name pair (3 occurrences), used only for locally-provisioned throwaway CI/dev-compose containers.",
+    "user:pass": "Generic placeholder pair used in usage-example prose, never a live DSN.",
+    "unused:unused": "Literal word 'unused' on both sides -- self-declaring placeholder.",
+    "cockpit:secret": "The literal word 'secret' used as an example password in one doc; not a value any running instance sets.",
+}
+
+
+def conn_string_allowed(match):
+    """True if a conn_string_credential match is a known non-secret VALUE."""
+    user, password = match.group(1), match.group(2)
+    if TEMPLATE_MARKER.search(user) or TEMPLATE_MARKER.search(password):
+        return True
+    return f"{user}:{password}" in VALUE_ALLOWLIST
 
 
 def shannon_entropy(s):
@@ -180,10 +230,14 @@ def main():
         if all(p in ALLOWLIST for p in blob_paths):
             continue
         for rule_name, pattern in RULES:
-            m = pattern.search(text)
-            if m and (rule_name, sha) not in seen:
+            if (rule_name, sha) in seen:
+                continue
+            for m in pattern.finditer(text):
+                if rule_name == "conn_string_credential" and conn_string_allowed(m):
+                    continue  # template ref or an exact known-placeholder value -- not a secret
                 seen.add((rule_name, sha))
                 findings.append((rule_name, sha, blob_paths, m.group(0)))
+                break
         for m in ENTROPY_VALUE.finditer(text):
             line_start = text.rfind("\n", 0, m.start()) + 1
             line_end = text.find("\n", m.end())
@@ -195,7 +249,8 @@ def main():
 
     print(f"history-secret-scan: {len(shas)} objects enumerated (git rev-list --objects --all), "
           f"{len(blobs)} blobs <= {MAX_BLOB_BYTES}B fetched and scanned as text, "
-          f"{len(ALLOWLIST)} allowlist path(s) applied, {len(RULES)} pattern rules + entropy rule.")
+          f"{len(ALLOWLIST)} allowlist path(s) + {len(VALUE_ALLOWLIST)} allowlisted credential "
+          f"value(s) applied, {len(RULES)} pattern rules + entropy rule.")
     if not findings:
         print("history-secret-scan: NO FINDINGS.")
         return 0
