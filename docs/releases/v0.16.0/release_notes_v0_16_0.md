@@ -95,17 +95,13 @@ minted out-of-band by the CEO; the tag is pinned to the commit the signature att
 succeeded would invert this release's own thesis. See `verification_runbook.md` for the CEO's remaining
 steps, in order.
 
-**Artifacts built from this release's commit, unsigned** (the CEO signs before tag/push):
-
-| Artifact | SHA-256 |
-|---|---|
-| `aireos-offline-0.16.0.tar.gz` (45 MB gz / 125 MB unpacked) | `17d93c4aa1b6460fb43b5430b9fa68fae4ab6e87453c7e125aea77f6e1340e0f` |
-| `aireos-postgres-ubuntu2404.tar.gz` (90 MB) | `d0cfe6c28d4eb7dc6188bc5c6dd2a2f4365b75f99ad10e11aa1ca03390a24a58` |
-
-`VERSION=0.16.0`; the shipped binaries embed `vcs.revision` matching the commit this bundle was built
-from and `vcs.modified=false` [ran: `go version -m bin/api` inside the unpacked stage]. These hashes will
-change if any commit lands after this point and before the CEO builds+signs — rebuild before signing if
-anything does (the same rule this release's own runbook states for every prior cut).
+**Artifact hashes are deliberately NOT recorded in this commit.** Putting a SHA-256 here and then tagging
+this same commit would be circular: the artifacts must be rebuilt from the exact commit the CEO tags
+(see `verification_runbook.md` Step 1a), and a rebuild changes both hashes — which would make this
+section wrong the moment it was written, exactly the failure mode this release exists to close. Per the
+v0.15.0 precedent (tagged commit `53782dd` carried no hashes; they landed in closure commit `8126d34`,
+*after* the tag), the fingerprint and both artifact SHA-256s land in the **closure commit**, after
+signing, alongside the tag sha itself.
 
 **Two publication blockers remain open, deliberately not invented.** `SECURITY.md`'s disclosure-contact
 line and `NOTICE`'s copyright-holder name are both explicit placeholders (`<SECURITY-CONTACT — CEO to
