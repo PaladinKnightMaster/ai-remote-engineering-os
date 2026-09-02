@@ -29,13 +29,16 @@ reflow (zero words changed) rather than left broken, because nothing about
 the underlying claim was stale -- only its typesetting. None of the other
 three break classes VER-36 anticipated (transient `tests/smoke/test-results/`
 build artifacts, the renamed `services/workstream-engine`, `known-issues.mdx`)
-turned out to exist in the .md population this leg actually scans: the
-test-results and workstream-engine mentions all live in `.json` release
-manifests (out of scope -- this leg is `.md`-only, matching VER-43's own
-wording) or are bare extension-less directory names doc-check's own
-candidates() already excludes by design; `known-issues.mdx` fails has_ext()
-(`.mdx` != `.md`) the same way. No archival-vs-live judgment call was needed
-because no instance of that class survived into the scanned population.
+produced a NEW break here -- Commander review, 2026-09-02: correcting an
+initial (wrong) claim that they were absent from the .md corpus -- they are
+PRESENT (10/9/3 files respectively). They produce no break because has_ext()
+returns False for all three: they carry no extension EXTS recognises (a bare
+directory reference, and `.mdx` != `.md`), so candidates() never treats them
+as checkable path references at all, before or after this ticket. That is a
+real ungated population, not an absent one -- see VER-48, deliberately left
+open rather than fixed here (broadening has_ext() to extension-less
+directory/module references is a semantics change with false-positive risk,
+out of this ticket's scope).
 
 Scope (pragmatic, low false-positive). Two reference kinds are checked:
   * markdown link targets `](target)` — meant to be resolvable; and
