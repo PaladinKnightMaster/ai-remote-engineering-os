@@ -1,15 +1,41 @@
 #!/usr/bin/env python3
-"""doc-check (release-criteria DOC-1, §11a-1; CSV leg VER-15/T-132).
+"""doc-check (release-criteria DOC-1, §11a-1; CSV leg VER-15/T-132; roots leg
+VER-36/VER-43/T-160).
 
 Assert every in-repo relative path referenced in CANONICAL_SOURCE_OF_TRUTH.md,
-every docs/adr/*.md, and every docs/executive/*.md resolves on disk, so the
-canonical index, the ADR ladder and the executive tier never drift from the tree.
+every docs/adr/*.md, every docs/executive/*.md, every docs/releases/**/*.md
+(nested per-version subdirectories -- rglob, NOT glob), and every
+docs/requirements/*.md resolves on disk, so the canonical index, the ADR
+ladder, the executive tier and the release/requirements corpus never drift
+from the tree.
 
 docs/executive/ was added 2026-08-27 (canon work order pass 3): those four files
 were rewritten to POINT at authoritative sources rather than duplicate them --
 duplication is why they drifted for fifteen months -- which makes every one of
 their links load-bearing. An ungated pointer is the previous defect wearing a
 different hat.
+
+docs/releases/**/*.md and docs/requirements/*.md were added at T-160 (VER-36
+closed, VER-43). VER-36's scoping estimate (44 files / 217 references, 10
+broken) was measured weeks earlier by hand and went stale: T-153 shipped in
+the interim, and v0.16.0 added new documents. Re-measured at T-160 against
+the actual candidates()/resolves() logic below: 48 files, 153 references, ONE
+broken -- `docs/releases/v0.15.0/v0.15.0-security-review.md`'s citation
+`services/policy-service/internal/server/server.go:182-191` had an accidental
+markdown line-wrap splitting the backtick span itself across two lines, so the
+CODE regex (which does not match across newlines) never saw it as one token.
+The path was, and remains, entirely valid; the wrap was fixed as a pure
+reflow (zero words changed) rather than left broken, because nothing about
+the underlying claim was stale -- only its typesetting. None of the other
+three break classes VER-36 anticipated (transient `tests/smoke/test-results/`
+build artifacts, the renamed `services/workstream-engine`, `known-issues.mdx`)
+turned out to exist in the .md population this leg actually scans: the
+test-results and workstream-engine mentions all live in `.json` release
+manifests (out of scope -- this leg is `.md`-only, matching VER-43's own
+wording) or are bare extension-less directory names doc-check's own
+candidates() already excludes by design; `known-issues.mdx` fails has_ext()
+(`.mdx` != `.md`) the same way. No archival-vs-live judgment call was needed
+because no instance of that class survived into the scanned population.
 
 Scope (pragmatic, low false-positive). Two reference kinds are checked:
   * markdown link targets `](target)` — meant to be resolvable; and
@@ -157,6 +183,15 @@ def main() -> int:
     # POINT at authoritative sources instead of duplicating them, so every link
     # is load-bearing and an unresolved one is a silent regression.
     sources += sorted((ROOT / "docs" / "executive").glob("*.md"))
+    # docs/releases/ added at T-160 (VER-36/VER-43): NESTED per-version
+    # subdirectories -- rglob(), not glob(), or this would silently match zero
+    # files and ship a "passing" extension that scans nothing new.
+    sources += sorted((ROOT / "docs" / "releases").rglob("*.md"))
+    # docs/requirements/*.md added at T-160 alongside the releases leg: the
+    # existing CSV leg (check_csvs) already covers docs/requirements/*.csv;
+    # this covers the markdown in the same directory (currently just
+    # epic_story_catalog_v4.md, the live planning record DOC-17 corrects).
+    sources += sorted((ROOT / "docs" / "requirements").glob("*.md"))
 
     missing: list[str] = []
     checked = 0
