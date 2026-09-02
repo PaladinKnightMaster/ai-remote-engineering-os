@@ -1,0 +1,133 @@
+# v0.16.0 — Public Readiness
+
+**The release that asks one question of everything already shipped: can somebody who is not us rely on
+what we claim?**
+
+---
+
+## What this release does NOT do — stated plainly, first
+
+**No new governed capability.** No new edge, verb, or decision point was added anywhere in the
+governance plane. `mcp-gateway`, `policy-service`, `session-broker`, `connector-service`, `api`, and
+`audit-service` behave, at runtime, exactly as they did at the end of v0.15.0.
+
+**No runtime change.** Nothing an operator or an agent does against a running installation produces a
+different outcome than it did before this release. The install-wiring diff is zero: no new daemon,
+edge, key, network path, or datastore.
+
+**No new WD.** By the project's own gate-sizing rule — a new WD only for new governed capability — a
+release that adds no governed capability has nothing for a new WD to measure. Minting one anyway would
+have produced a gate measuring nothing new, which is precisely the defect class this release exists to
+remove (§2 of the release criteria records this ratified explicitly, because the reflex on a new release
+is to mint one).
+
+If a change here reads as touching *what the product does* rather than *what can be verified about it or
+read about it*, that is a defect in this document, not an intended feature — flag it.
+
+---
+
+## What this release DID do
+
+Two forces converged on the same question this cycle: a measured finding from v0.15.0 (five separate
+instances of a control whose caller was never wired up — see that release's notes) and the decision to
+publish this project as an open-source repository. Both are answered by the same work: make the
+product's own verification instruments trustworthy, then make the product itself legible to a stranger.
+
+**Five instrument gates, each mutation-proven.**
+
+| Gate | What it closes | Proof it can fail |
+|---|---|---|
+| `task history-secret-scan` (PUB-1, T-157) | A content-level scan of every blob reachable from every ref — not a filename sweep — before the first push | SEC-60: 3 planted secret shapes (doc, code/test, a realistic DSN beside an already-placeholder-carrying file), all 3 detected and correctly attributed, scratch commits discarded |
+| `task block-criterion-check` (VER-41, T-158) | Every `block`-type `SEC-` criterion must name a real test, or an explicit `[test: none -- reason]` | SEC-61: renaming the real backing test made the gate FAIL naming that exact marker; reverted, re-confirmed green |
+| Extended `doc-check` (VER-43, T-160) | `docs/releases/**` and `docs/requirements/*.md` now scanned — the release criteria are no longer ungated themselves | SEC-62: a planted broken path under `docs/releases/v0.16.0/` made the gate FAIL naming it exactly; deleted, re-confirmed green |
+| `integration_suite_check.py` (VER-42, T-159) | Every `//go:build integration` suite is discovered from the tree, not hand-enumerated, and asserted to have actually RUN (not silently self-skipped) | Discovery mutation (a planted tagged file moved the count and was reverted) + an env-unset run that FAILED loudly naming every self-skipped suite |
+| `sign-release.sh`'s mixed-bundle-version guard (VER-45, T-162) | Refuses to sign a `dist/offline/` directory carrying more than one core-bundle version | Proven both ways: a mixed `0.14.0`+`0.15.0` pair dies; one version + the OS-independent postgres companion proceeds |
+
+**A provably clean history.** `infra/scripts/history_secret_scan.py` scanned every blob reachable from
+every ref (5392 objects / 2225 blobs at the commit checked) and found zero genuine secrets — a
+template-marker + 5-entry exact-pair allowlist discriminates real credentials from the ~34 `change-me`
+placeholders and test fixtures already in the tree, rather than blinding whole files to future secrets by
+allowlisting paths. This is the release's one irreversible step (PUB-1): once history is public it cannot
+be unpublished, and it now carries its own negative control (SEC-60) rather than a first-time-only pass.
+
+**Rot found and fixed, exactly where VER-42 predicted it would be.** Deriving the integration-suite list
+from the tree (rather than a hand-maintained enumeration) surfaced two suites that had never run —
+`mcp-gateway/internal/server` and `session-broker/internal/store` — and one real defect inside them: a
+test's ad-hoc `CREATE TABLE IF NOT EXISTS` silently no-op'd once `api`'s real migration already owned the
+`resources` table, corrupting an insert. Fixed at the test-fixture layer, not in product code.
+
+**The first public documents.** `README.md` rewritten for a reader with zero context (what this is, what
+it governs, what it does not do, an honest pre-1.0 maturity signal); `SECURITY.md` states the product's
+three real limitations in plain language — harness governance is cooperative, not enforced, while B-040
+is deferred; R1's post-approval half is open; the audit chain records *that* a policy decision happened,
+not *which rule* fired; `CONTRIBUTING.md` carries the DCO 1.1 text and states plainly that PRs are not yet
+being accepted; `LICENSE` (Apache-2.0, ADR-0075) + `NOTICE`. The license choice is a binding ADR, not a
+default — the product's no-SaaS-runtime doctrine and the desire not to deter contributors both weighed on
+it (see ADR-0075 for the rejected alternatives). Contribution provenance is DCO, not a CLA (ADR-0076) —
+recorded explicitly that DCO does **not** preserve relicensing optionality; not merging PRs does, and that
+option is being spent deliberately, not by accident, for as long as commercialization stays possible.
+
+**Two release-key fingerprints retro-published (PUB-7, T-162).** ADR-0070 §D4 has required the
+release public key's fingerprint in the release notes since v0.13.0; it was never landed anywhere a
+recipient could read, through v0.13.0 and v0.14.0 both. Both notes now carry a plainly dated
+"Retro-published 2026-09-02" section — not a silent backdate.
+
+---
+
+## Verification (VER-46)
+
+WD-1..15 regression, both stacks, plus `task smoke` — see `verification_runbook.md` for the full
+transcript. Summary:
+
+| Leg | Result |
+|---|---|
+| Compose (`task e2e`) | **46 PASS / 0 FAIL** — `ok aireos.local/tests/e2e 420.039s`; audit chain `INTACT+ATTESTED through seq 716` (includes the SEC-43 forged-chain negative proof, both legs) |
+| Browser smoke (`task smoke`) | **23 passed / 2 skipped (quickstart-a/b, unaffected by this release) / 0 failed** (3.2m) |
+| Installed stack (`task wd1`) | Offline bundle + postgres companion **rebuilt from HEAD** first (T-033 lesson). **8 PASS / 0 FAIL** — `ok aireos.local/tests/e2e 651.917s`; 8 systemd units active, Caddy serves HTTPS; chain `INTACT+ATTESTED through seq 239` before the deliberate final SEC-43 forged-chain leg, which both `audit-service verify` and the offline `aireos-verify` correctly reported `BROKEN` |
+
+---
+
+## Release provenance
+
+**Not yet signed, tagged, or pushed.** Signing uses the production key held outside this repository and
+minted out-of-band by the CEO; the tag is pinned to the commit the signature attests to; the push is the
+**last** act, after the CEO's fresh-host §human pass (PUB-6) succeeds — publishing before a stranger has
+succeeded would invert this release's own thesis. See `verification_runbook.md` for the CEO's remaining
+steps, in order.
+
+**Artifacts built from this release's commit, unsigned** (the CEO signs before tag/push):
+
+| Artifact | SHA-256 |
+|---|---|
+| `aireos-offline-0.16.0.tar.gz` (45 MB gz / 125 MB unpacked) | `17d93c4aa1b6460fb43b5430b9fa68fae4ab6e87453c7e125aea77f6e1340e0f` |
+| `aireos-postgres-ubuntu2404.tar.gz` (90 MB) | `d0cfe6c28d4eb7dc6188bc5c6dd2a2f4365b75f99ad10e11aa1ca03390a24a58` |
+
+`VERSION=0.16.0`; the shipped binaries embed `vcs.revision` matching the commit this bundle was built
+from and `vcs.modified=false` [ran: `go version -m bin/api` inside the unpacked stage]. These hashes will
+change if any commit lands after this point and before the CEO builds+signs — rebuild before signing if
+anything does (the same rule this release's own runbook states for every prior cut).
+
+**Two publication blockers remain open, deliberately not invented.** `SECURITY.md`'s disclosure-contact
+line and `NOTICE`'s copyright-holder name are both explicit placeholders (`<SECURITY-CONTACT — CEO to
+supply before publication>` / `<COPYRIGHT HOLDER -- CEO to supply before publication>`) — inventing either
+would itself be an unverifiable claim. They gate the push, not this ticket.
+
+---
+
+## Install-wiring diff: zero
+
+No new daemon, edge, key, network path, or datastore. Every gate added this release is a verification
+instrument, not a product code path.
+
+---
+
+## What remains — the CEO's, not this ticket's
+
+1. **PUB-6** — a fresh-host install from the built artifacts, following only the public `README.md`.
+2. **Sign** both artifacts with the production key (custody outside this repo).
+3. **Tag** the commit the artifacts were built from; the sha lands in a closure commit afterward (the
+   v0.15.0 "tag + 1" pattern).
+4. **Push** — last, only after PUB-6 passes. This repo has no git remote today and must not get one
+   before that pass succeeds.
+
+See `verification_runbook.md` for the full handover.
