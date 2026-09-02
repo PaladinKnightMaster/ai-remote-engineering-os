@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aireos.local/packages/go/auth"
@@ -42,14 +43,42 @@ func TestInvocationBlockAndWaitResolve(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	// RequiresApproval reads resources.labels (the broker pattern). The gateway
-	// migration doesn't own that table; seed a minimal one + a flagged resource. The
-	// full real-schema cross-service proof is the T-041 compose e2e.
-	resourceID := "r-" + uuid.Must(uuid.NewV7()).String()
-	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, labels JSONB)`); err != nil {
-		t.Fatalf("ensure resources table: %v", err)
+	// migration doesn't own that table; in an isolated gateway-only DB (only
+	// `mcp-gateway migrate up`, per this test's own header) it has never existed
+	// and this test creates a minimal placeholder. T-159's derived
+	// integration-suite-check runs every discovered suite against ONE shared,
+	// fully-migrated DB (matching the existing connector-service/api convention),
+	// where api's REAL `resources` table (UUID PK, NOT NULL type/name) already
+	// exists -- the placeholder's TEXT "r-"-prefixed id then collides with it
+	// (SQLSTATE 22P02, found live by that gate; T-159). Detect which schema is
+	// actually present and seed accordingly, so both the isolated and the
+	// shared-DB posture stay green; the full real-schema cross-service proof
+	// remains the T-041 compose e2e.
+	var idType string
+	err = pool.QueryRow(ctx, `SELECT data_type FROM information_schema.columns
+		WHERE table_name = 'resources' AND column_name = 'id'`).Scan(&idType)
+	if err != nil && err != pgx.ErrNoRows {
+		t.Fatalf("probe resources schema: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO resources (id, labels) VALUES ($1, '{"requires_approval":"true"}')`, resourceID); err != nil {
-		t.Fatalf("seed resource: %v", err)
+
+	var resourceID string
+	if idType == "uuid" {
+		// The real api-owned migration already ran -- conform to its schema.
+		resourceID = uuid.Must(uuid.NewV7()).String()
+		if _, err := pool.Exec(ctx, `INSERT INTO resources (id, type, name, labels)
+			VALUES ($1, 'ssh', 'mcp-gateway-server-test', '{"requires_approval":"true"}')`,
+			resourceID); err != nil {
+			t.Fatalf("seed resource (real api schema): %v", err)
+		}
+	} else {
+		// No real resources table yet -- own a minimal placeholder, as before.
+		resourceID = "r-" + uuid.Must(uuid.NewV7()).String()
+		if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, labels JSONB)`); err != nil {
+			t.Fatalf("ensure resources table: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO resources (id, labels) VALUES ($1, '{"requires_approval":"true"}')`, resourceID); err != nil {
+			t.Fatalf("seed resource (placeholder schema): %v", err)
+		}
 	}
 
 	gw := store.New(pool, nil) // plaintext command store — this test exercises the server, not F3

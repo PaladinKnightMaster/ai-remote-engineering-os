@@ -82,34 +82,14 @@ tasks:
       - pnpm -r --if-present run test
 
   test-integration:
-    desc: "Run DB-backed integration tests (needs Postgres; set AUDIT_/CONNECTOR_/POLICY_/MCP_/API_/OUTBOX_TEST_DATABASE_URL). ADR-0045 chain-integrity + dedup; ADR-0053 connector credential custody; ADR-0057 gateway invocations. Tests self-skip when their env var is unset."
+    desc: "Run every //go:build integration suite the tree contains, DERIVED not hand-listed (VER-38/VER-42, T-159), and assert each one actually EXECUTED its assertions rather than silently self-skipping. Needs Postgres with every service's migrations applied (AUDIT_/CONNECTOR_/POLICY_/MCP_/API_/OUTBOX_/BROKER_TEST_DATABASE_URL); start from a FRESH DB (VER-40) and pre-warm the Go module cache first (VER-39). A run with any env var unset now FAILS LOUDLY (see infra/scripts/integration_suite_check.py) rather than quietly passing over the ungated suite — a hand-enumerated hidden-two-suites gap and a silent-self-skip green were both real defects this closes (VER-42)."
     cmds:
-      # api's own -tags integration suites (grant/memory/run/workstream/ctxindex/store/
-      # pairing) were never listed here before T-113 — this line is what actually runs
-      # them; needs API_TEST_DATABASE_URL against a DB with api's migrations applied.
-      - go test -tags integration ./services/api/internal/...
-      - go test -tags integration ./services/audit-service/internal/store/...
-      # connector-service credential custody (ADR-0053; needs CONNECTOR_TEST_DATABASE_URL
-      # against a DB with both api + connector migrations applied).
-      - go test -tags integration ./services/connector-service/internal/store/...
-      # policy-service pending-approvals store (ADR-0054; needs POLICY_TEST_DATABASE_URL
-      # against a DB with the policy migration applied).
-      - go test -tags integration ./services/policy-service/internal/store/...
-      # mcp-gateway invocations store (ADR-0057; needs MCP_TEST_DATABASE_URL against a
-      # DB with the gateway migration applied).
-      - go test -tags integration ./services/mcp-gateway/internal/store/...
-      # T-151c / VER-38 (v0.15-dependent slice only — the other two pre-existing
-      # uncovered suites, mcp-gateway/internal/server and session-broker/internal/store,
-      # are deliberately NOT added here; that's a separate ticket to DERIVE the list
-      # rather than keep hand-extending it). The transactional outbox relay — the
-      # mechanism that carries EVERY audit event this release adds, including AUD-40's —
-      # was never gated; needs OUTBOX_TEST_DATABASE_URL (its own disposable DB: the
-      # suite drops + recreates the canonical `outbox` table).
-      - go test -tags integration ./packages/go/outbox/...
-      # policy-service's handler-level integration proofs (T-150/T-151a/T-151c: CON-3/
-      # AUD-35/AUD-36/AUD-40 end-to-end through the real HTTP handler, not just the
-      # store) — same POLICY_TEST_DATABASE_URL as the store suite above.
-      - go test -tags integration ./services/policy-service/internal/server/...
+      # T-159: replaces 7 hand-written `go test -tags integration <glob>/...`
+      # lines (18 of the tree's 20 real suites; the other two —
+      # mcp-gateway/internal/server, session-broker/internal/store — had never
+      # been gated at all) with one derivation that walks the tree for the
+      # build tag, so a new integration file can never again ship uncounted.
+      - python3 infra/scripts/integration_suite_check.py
 
   validate:
     desc: "Validate the OpenAPI fragment + JSON Schema fixtures (T-010). Needs python3 + jsonschema + pyyaml."
@@ -247,7 +227,7 @@ tasks:
       - python3 infra/scripts/history_secret_scan.py
 
   release-check:
-    desc: "Release gate aggregator (release-criteria VER-3/VER-5; §11a-1): run every must-pass gate in sequence, exiting 0 only if all pass. Needs the full toolchain (go + node/pnpm + python3 + Docker for the e2e leg); the integration leg needs a Postgres (set AUDIT/CONNECTOR/POLICY_TEST_DATABASE_URL, else those tests self-skip). Intended for the CI host / a full dev env; the offline-only dev box runs the per-leg Docker commands."
+    desc: "Release gate aggregator (release-criteria VER-3/VER-5; §11a-1): run every must-pass gate in sequence, exiting 0 only if all pass. Needs the full toolchain (go + node/pnpm + python3 + Docker for the e2e leg); the integration leg needs a Postgres with every service's migrations applied (set AUDIT_/CONNECTOR_/POLICY_/MCP_/API_/OUTBOX_/BROKER_TEST_DATABASE_URL) and now FAILS (T-159), not self-skips, if any discovered suite's env var is left unset. Intended for the CI host / a full dev env; the offline-only dev box runs the per-leg Docker commands."
     cmds:
       - task: doc-check
       - task: staleness-check
