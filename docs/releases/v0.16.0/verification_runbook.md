@@ -56,7 +56,7 @@ legs below; it matters if you re-run `task test-integration` separately.
 |---|---|---|
 | **VER-46 compose** | WD-1..15 on `task e2e` | `ok aireos.local/tests/e2e`, **46 PASS / 0 FAIL**, chain `INTACT+ATTESTED through seq 716` (includes the SEC-43 forged-chain negative proof, both legs) |
 | **VER-46 smoke** | `task smoke` | **23 passed / 2 skipped (quickstart-a/b, unaffected by this release) / 0 failed** (3.2m) |
-| **VER-46 installed** | WD-1..15 on `task wd1`, offline bundle + postgres companion **rebuilt from HEAD** (`af85787`) first | 8 systemd units `active`, Caddy serves HTTPS; **8 PASS / 0 FAIL**, chain `INTACT+ATTESTED through seq 239` before the deliberate final SEC-43 leg, which both `audit-service verify` and the offline `aireos-verify` correctly reported `BROKEN` |
+| **VER-46 installed** | WD-1..15 on `task wd1`, offline bundle + postgres companion **rebuilt from HEAD** (`af85787`) first — see Step 1a's provenance correction: the SIGNING candidate was rebuilt again from `fe4c5bd`, no product code differs between the two | 8 systemd units `active`, Caddy serves HTTPS; **8 PASS / 0 FAIL**, chain `INTACT+ATTESTED through seq 239` before the deliberate final SEC-43 leg, which both `audit-service verify` and the offline `aireos-verify` correctly reported `BROKEN` |
 | **staleness-check** | The three version-claim sites agree | `staleness-check OK — 13 self-descriptive claims match the tree (release 0.16.0, ADR head 0076, 76 ADRs, 0 Draft)` |
 | **doc-check** | Referenced paths resolve, including this runbook's own self-reference from `CANONICAL_SOURCE_OF_TRUTH.md` | Re-run after this file was written — see closing line below |
 | **block-criterion-check** | Every `block`+`SEC-` row in this release's own criteria doc names a real test | This release adds no new `SEC-` rows (PUB-1/VER-41/VER-43 are process/tooling gates covered by SEC-60/61/62, already `[test: none -- reason]`-marked at T-157/158/160) |
@@ -81,7 +81,26 @@ Assert the **positive** markers, never the absence of failures: `ok aireos.local
 **The core bundle AND the postgres companion were both rebuilt from HEAD before this leg** — a stale
 companion or bundle silently describes a tree that no longer exists (the standing T-033 lesson, and this
 release's own VER-45 finding names the companion as version-independent content, which is exactly why it
-is easy to skip rebuilding it and easy to be wrong about whether that is safe).
+is easy to skip rebuilding it and easy to be wrong about whether that is safe). **`task wd1`'s WD-1..15
+PASS/FAIL evidence in Step 1's table was captured against this build** (commit `af85787`) and remains
+valid regardless of the provenance correction below — no product/service/app/package file differs
+between `af85787` and the final signing candidate `fe4c5bd`, only docs and this release's own capstone
+commits, so the same binaries under test would have resulted either way.
+
+⚠⚠ **PROVENANCE CORRECTION (Commander review, 2026-09-02): the FIRST artifact build was DISCARDED.**
+The capstone doc commit (version bump + release notes + this runbook) was made **after** the bundle
+above was built, which advanced `HEAD` past the commit the artifacts actually attested to — the exact
+"a commit landing after the build changes every binary's `vcs.revision`" hazard this runbook already
+warned about below, hit by this ticket's own first pass. Worse, the tree at `af85787` still declared
+`BUNDLE_VERSION: "0.15.0"` in `Taskfile.yml` — the artifact's `VERSION=0.16.0` came only from the
+container's `-e BUNDLE_VERSION=0.16.0` override, not from the tree a signature would attest to. That is
+an internally inconsistent provenance chain in the release whose entire theme is trustworthy evidence.
+**Fix applied**: the release notes' artifact-hash table was removed (hashes now land in the closure
+commit, after signing — the v0.15.0 pattern, `53782dd`/`8126d34`) and committed as `fe4c5bd`, with
+**nothing committed after it**. Both artifacts were then rebuilt a second time from `fe4c5bd` — the
+commands below are that second, final build; their output is what the CEO signs. The first build's
+files were overwritten in place (`build-bundle.sh`/`build-postgres-companions.sh` both clean their own
+target paths before writing).
 
 ```bash
 CI=true pnpm install --frozen-lockfile && CI=true pnpm --filter @aireos/web build
@@ -115,14 +134,24 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd)/dist/offline/aireos-offline-0.16.0
   bash -c 'go version -m /b/bin/api | grep -E "vcs.revision|vcs.modified"'
 ```
 
-Observed at this cut: `VERSION=0.16.0`, `vcs.revision=af85787c193a1cb2b6f5158dec48e27560265f83`,
-`vcs.modified=false` — matching `git rev-parse HEAD` at the time of the build.
+**Observed on the FINAL (post-correction) build**: `VERSION=0.16.0`,
+`vcs.revision=fe4c5bd5f0d33720fd3d587a99dfe44f8e97e901`, `vcs.modified=false` — matching
+`git rev-parse HEAD` (`fe4c5bd`) at the time of this build, and matching `git show
+fe4c5bd:Taskfile.yml`'s own `BUNDLE_VERSION: "0.16.0"` [ran: both commands, both positively confirmed].
+**This is the commit the CEO tags.**
 
-Unsigned artifact hashes (the CEO signs before tag/push — see `release_notes_v0_16_0.md` for the table):
+Unsigned artifact hashes are recorded nowhere in this repo (deliberately — see the release notes'
+"Release provenance" section for why) and land in the closure commit, alongside the tag sha, once the
+CEO has signed:
 
 ```bash
 sha256sum dist/offline/aireos-offline-0.16.0.tar.gz dist/offline/aireos-postgres-ubuntu2404.tar.gz
 ```
+
+⚠⚠ **Nothing may be committed between this rebuild and the tag.** Any further commit — even a
+documentation fix — repeats exactly the defect this correction just fixed. If something must change,
+change it, rebuild both artifacts again, and re-verify `vcs.revision` against the new `HEAD` before
+tagging.
 
 ⚠ **Never read the build's success from a wrapper's exit code.** Capture it explicitly
 (`> log 2>&1; echo "EXIT=$?"`) and read the log — `task` has previously reported `exit status 1` while a
@@ -204,10 +233,15 @@ RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub task sec45-check
 Confirm `provenance-check`'s summary says **VERIFIED**, not **SELF-SKIPPED**, and that no stale `.sig`
 survived a rebuild (`ls -la dist/offline/*.tar.gz.sig`, mtime not older than its artifact).
 
-Tag the commit the artifacts were **built from** — if any commit landed after the build, rebuild and
-re-sign first; the tag must not be moved once set (ADR-0070 D1):
+**Tag `fe4c5bd`** — the commit the final artifacts in Step 1a were built from, confirmed by its own
+`vcs.revision` stamp. ⚠⚠ **If ANY commit has landed since `fe4c5bd` (including from this runbook's own
+edits) — STOP. Rebuild both artifacts from the new `HEAD`, re-verify `vcs.revision` positively, and tag
+that instead.** The tag must not be moved once set (ADR-0070 D1) — this is exactly the mistake this
+release's own capstone made once already (see Step 1a's provenance correction) and it must not repeat
+at the tag step itself.
 
 ```bash
+git rev-parse HEAD   # must print fe4c5bd5f0d33720fd3d587a99dfe44f8e97e901 -- if not, STOP per above
 git tag -a v0.16.0 -m "v0.16.0 — Public Readiness"
 ```
 

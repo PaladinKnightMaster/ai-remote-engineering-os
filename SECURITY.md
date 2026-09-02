@@ -7,22 +7,78 @@ easy to find as its features.
 
 ## Reporting a vulnerability
 
-**`<SECURITY-CONTACT — CEO to supply before publication>`**
+**Use GitHub's private vulnerability reporting** — on this repository, open the
+**Security** tab and choose **Report a vulnerability**. That opens a private
+advisory visible only to the maintainer; it is not a public issue.
 
-Please report suspected vulnerabilities privately to the address above rather than
-opening a public issue. Include:
+⚠ **Please do not open a public issue for a suspected vulnerability.**
 
-- what you found and why you believe it's a vulnerability;
-- steps to reproduce, including the deployment profile (`lan-only` is the only
-  profile proven end to end today — see
-  [`docs/devops/quickstart-first-governed-action.md`](docs/devops/quickstart-first-governed-action.md));
-  and
-- the affected release tag or commit, if known.
+Include what you found and why you believe it is a vulnerability, steps to
+reproduce (including the deployment profile — `lan-only` is the only profile
+proven end to end today), and the affected release tag or commit if known.
 
-We will acknowledge receipt and follow up with a timeline once triaged. There is
-no bug-bounty program.
+**Scope.** This project is **self-hosted**; there is no service of ours to test
+against, and no production system exists to attack. In scope: the services,
+gateway, connector, audit chain, offline bundle and install scripts in this
+repository. Out of scope: vulnerabilities in third-party dependencies, which
+should go to those projects directly (tell us anyway if the way *we* use one makes
+it materially worse).
+
+**What to expect.** This is a **single-maintainer project with no bug-bounty
+program and no service-level commitment.** Reports are handled on a best-effort
+basis. That is stated plainly rather than dressed up as a response-time promise
+that would not be kept — an SLA nobody meets is worse than none.
+
+**Coordinated disclosure.** Please give us a reasonable window to investigate and
+ship a fix before publishing. We will not ask for an indefinite embargo, and we
+will not object to you publishing after a reasonable period whether or not a fix
+has landed.
+
+**Good-faith research.** We will not pursue or support action against anyone
+reporting in good faith through the channel above, where the research stays within
+the scope described and does not involve third parties' systems or data.
 
 ---
+
+## Verifying a release before you install it
+
+⭐ **This matters more here than for most projects: verifiable provenance is one of
+this product's own claims, so it should be the first thing you exercise.**
+
+Every shipped artifact carries a detached Ed25519 signature and a CycloneDX SBOM.
+Verification needs **only `openssl`** — already present on the target host — and
+the public key. There is no bespoke verifier binary to trust
+[see [`docs/devops/offline-install-v3.md`](docs/devops/offline-install-v3.md)].
+
+**1. Check the public key is the right one.** Compare its SHA-256 fingerprint
+against the one published in that release's notes, **obtained through a different
+channel than the artifact itself**:
+
+```
+openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
+```
+
+**2. Verify each artifact** — the core bundle and the postgres companion. The
+companion matters most: it is the one whose `install-postgres.sh` runs **as root**.
+
+```
+openssl pkeyutl -verify -pubin -inkey aireos-release.pub   -rawin -in aireos-offline-<version>.tar.gz -sigfile aireos-offline-<version>.tar.gz.sig
+```
+
+Both must print `Signature Verified Successfully`. **A missing `.sig`, or any other
+output, means stop** — do not extract or run anything from that artifact.
+
+**3. The audit chain verifies independently**, offline, with no database and no
+network, using the `aireos-verify` binary shipped inside the bundle.
+
+⚠ **The honest limit of all this.** If you received the artifact and the public key
+through the **same channel**, you have verified internal consistency — **not
+provenance.** A party who controlled that channel could have supplied both. The
+published fingerprint exists so a second channel is *possible*; we cannot force you
+to use one, and you should.
+
+---
+
 
 ## Known limitations — stated plainly
 
