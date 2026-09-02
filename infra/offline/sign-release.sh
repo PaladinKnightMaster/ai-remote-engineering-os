@@ -88,7 +88,7 @@ if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
   if [ "${#core_versions[@]}" -gt 1 ]; then
     n_uniq="$(printf '%s\n' "${core_versions[@]}" | sort -u | wc -l)"
     if [ "$n_uniq" -gt 1 ]; then
-      die "refusing to sign a mixed set of core-bundle versions found in $OUT_DIR ($(printf '%s ' "${core_versions[@]}")) — move the stale one out (e.g. to $OUT_DIR/_superseded/) or pass explicit artifact paths instead of relying on the default glob"
+      die "refusing to sign a mixed set of core-bundle versions found in $OUT_DIR ($(printf '%s ' "${core_versions[@]}")) — move the stale one out, e.g. to $OUT_DIR/_superseded/. NOTE: passing explicit artifact paths does NOT bypass this check; ARTIFACTS is guarded however it was populated."
     fi
   fi
 fi
