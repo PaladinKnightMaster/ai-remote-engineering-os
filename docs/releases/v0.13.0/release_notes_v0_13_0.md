@@ -115,3 +115,32 @@ third-party walkthrough, and `docs/devops/offline-install-v3.md` for key custody
 The published SHA-256 fingerprint of the release public key accompanies these notes; artifact hashes
 are published in a sidecar rather than embedded here, because any commit to this file would change the
 artifacts it describes.
+
+---
+
+### ⚠ Retro-published 2026-09-02 (T-162, v0.16.0/PUB-7) — this section did NOT exist at ship time
+
+The paragraph directly above asserts that the key's fingerprint "accompanies these notes." **That was
+false as originally written on 2026-08-18: no fingerprint was ever included, in this file or anywhere
+else in the repository** — a repo-wide grep at the v0.15.0 cut returned nothing. ADR-0070 §D4 has
+required this fingerprint since this release, and ADR-0070:194 names it the *only* mitigation making a
+second verification channel possible: without it, an operator who receives the artifact and the key
+through the same channel has verified internal consistency, not provenance. That mitigation did not
+exist for two full signed releases (v0.13.0 and v0.14.0).
+
+This section closes that gap **after the fact**. It is dated **2026-09-02**, added under **T-162**, and
+must not be read as having been present when v0.13.0 shipped (2026-08-18, tag `c04554f`) or reviewed as
+part of that release's own sign-off.
+
+**SHA-256 fingerprint of the release public key** (the same Ed25519 key signed v0.13.0, v0.14.0, and
+v0.15.0):
+
+```
+968a29b3623fa79a6d12e37dfe4c9e156b6c66c716b0e57a076026a9d1bc0bbf
+```
+
+Verify independently against the key you were given, without trusting this document:
+
+```
+openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
+```

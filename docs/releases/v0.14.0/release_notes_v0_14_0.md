@@ -150,3 +150,30 @@ and the release provenance key all carry forward unchanged.
 See `verification_runbook.md` for the full walkthrough, including the CEO's `§human` dogfooding pass
 (VER-19: mint a scoped token, read a file, write a file under approval, watch a denial) — this
 release's first real contact with the new surface outside a test harness.
+
+---
+
+### ⚠ Retro-published 2026-09-02 (T-162, v0.16.0/PUB-7) — this section did NOT exist at ship time
+
+This release's notes never carried the release public key's SHA-256 fingerprint. ADR-0070 §D4 has
+required it since v0.13.0 (the ADR that introduced release signing), and ADR-0070:194 names it the
+*only* mitigation making a second verification channel possible — an operator receiving the artifact
+and the key through the same channel has verified internal consistency, not provenance. That
+mitigation did not exist for this release either.
+
+This section closes that gap **after the fact**. It is dated **2026-09-02**, added under **T-162**,
+and must not be read as having been present when v0.14.0 shipped (tagged `6b72739`, dogfooded
+2026-08-25) or reviewed as part of that release's own sign-off.
+
+**SHA-256 fingerprint of the release public key** (the same Ed25519 key signed v0.13.0, v0.14.0, and
+v0.15.0):
+
+```
+968a29b3623fa79a6d12e37dfe4c9e156b6c66c716b0e57a076026a9d1bc0bbf
+```
+
+Verify independently against the key you were given, without trusting this document:
+
+```
+openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
+```

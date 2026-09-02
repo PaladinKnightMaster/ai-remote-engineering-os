@@ -69,6 +69,30 @@ if [ "${#ARTIFACTS[@]}" -eq 0 ]; then
 fi
 [ "${#ARTIFACTS[@]}" -gt 0 ] || die "no *.tar.gz artifacts found in $OUT_DIR — build first (task offline-bundle / infra/offline/postgres/build-postgres-companions.sh)"
 
+# VER-45 (T-162): the default glob above signs every dist/offline/*.tar.gz it finds,
+# with no check that they all belong to the SAME release — this is the exact shape
+# of the near-miss recorded at the v0.15.0 cut, where a stale v0.14.0 core bundle
+# sat unmoved beside the fresh v0.15.0 one and was nearly signed into the wrong
+# release (the operating fix at the time was manually moving it to
+# dist/offline/_superseded/). Guard it mechanically for the one part that's cheap
+# to derive — the versioned core-bundle filename — without touching the postgres
+# companion, which is deliberately version-independent (no VERSION file).
+if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
+  core_versions=()
+  for f in "${ARTIFACTS[@]}"; do
+    b="$(basename "$f")"
+    if [[ "$b" =~ ^aireos-offline-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$ ]]; then
+      core_versions+=("${BASH_REMATCH[1]}")
+    fi
+  done
+  if [ "${#core_versions[@]}" -gt 1 ]; then
+    n_uniq="$(printf '%s\n' "${core_versions[@]}" | sort -u | wc -l)"
+    if [ "$n_uniq" -gt 1 ]; then
+      die "refusing to sign a mixed set of core-bundle versions found in $OUT_DIR ($(printf '%s ' "${core_versions[@]}")) — move the stale one out (e.g. to $OUT_DIR/_superseded/) or pass explicit artifact paths instead of relying on the default glob"
+    fi
+  fi
+fi
+
 # Derive the public key ONCE for an immediate self-check per artifact (a bad
 # signature must be caught here, not at an operator's first verify attempt).
 PUB_TMP="$(mktemp)"

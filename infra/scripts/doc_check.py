@@ -192,6 +192,15 @@ def check_csvs() -> list[str]:
 
 
 def main() -> int:
+    # VER-45 (T-162): this `sources` list is HAND-MAINTAINED and WILL DRIFT — it is
+    # named here explicitly rather than derived, because deriving it (e.g. globbing
+    # every *.md in the tree) was already assessed and rejected as VER-48: `has_ext()`
+    # would silently treat extension-less references as unresolved, and directories
+    # like `docs/security/`, `docs/devops/`, `docs/spike/`, or `docs/api-contracts/`
+    # would need their own opt-in evaluation for false positives before being added,
+    # not a blanket sweep. When a new documentation corpus is created and its claims
+    # should be checked, add ONE line below and state why, following the pattern of
+    # every entry already here.
     sources = [ROOT / "CANONICAL_SOURCE_OF_TRUTH.md"]
     sources += sorted((ROOT / "docs" / "adr").glob("*.md"))
     # docs/executive/ added 2026-08-27: the four files there were rewritten to

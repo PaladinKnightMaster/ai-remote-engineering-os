@@ -295,9 +295,20 @@ way round.**
 it would place the trust root on an unmeasured dependency inside the very release whose purpose
 is proving stability. **v0.13 STATES the boundary (S-30); v0.14 BUILDS it.**
 
-**Containment is the PREREQUISITE for layer 2, not a parallel track.** You cannot safely govern a
-third-party harness that is not contained — the harness would have to *choose* to call us. That
-dependency forces v0.14 before v1.0; it is not a preference.
+> ⚠ **SUPERSEDED (2026-09-02, T-162/DOC-17) — kept verbatim below, not deleted, so a reader who
+> remembers this wording sees a deliberate correction rather than two contradictory paragraphs and a
+> guess at which one is wrong.** This is **pre-split text**: it argues the dependency "forces v0.14
+> before v1.0," but v0.14.0 shipped as *Governed Tool Surface* (ADR-0071/0072), not containment —
+> the ordering it predicts never happened. **The ratified position is the one stated twelve lines
+> above, at line 278: layer 2 may proceed WITHOUT containment, on the one condition that the
+> limitation is stated, not drifted into** (CEO, 2026-08-19; recorded in `CLAUDE.md`'s "Containment
+> (B-040 / WD-12) is DEFERRED, not cancelled" bullet). Containment remains v1.0-adjacent — its own
+> ADR + WD-12 whenever scheduled — but it is **not a build blocker** for layer 2. Anyone scoping
+> B-041 must read line 278, not this paragraph.
+>
+> **Containment is the PREREQUISITE for layer 2, not a parallel track.** You cannot safely govern a
+> third-party harness that is not contained — the harness would have to *choose* to call us. That
+> dependency forces v0.14 before v1.0; it is not a preference.
 
 ### The two ratified structural rules
 
