@@ -4,12 +4,13 @@ A self-hosted, air-gap-capable **governance plane** for human and AI work on rem
 machines: humans and AI agents operate internal hosts, run recurring workstreams,
 share governed memory, and call approved tools — and every consequential action
 lands on one signed, chained-hash evidence ledger that an outsider can verify
-offline. [read: `docs/executive/vision.md`]
+offline.
 
 **The wedge, stated plainly:** this is not another cloud coding agent, another
 remote-desktop tool, or another multi-agent chat UI. It is the place where
 governance happens — policy, approval, credential custody, audit — not the place
-where a model runs. [read: `docs/executive/vision.md`]
+where a model runs. ([the project's own statement of that
+wedge](docs/executive/vision.md).)
 
 ---
 
@@ -26,7 +27,8 @@ event.** Concretely, as of the latest shipped release (v0.15.0):
   small, explicit tool set (`remote.exec`, `remote.file.read/write/list`,
   `run.launch`, `workstream.poll`, `plan.submit`, `memory.read`, `context.search`)
   gated by a fixed set of capability edges — no agent reaches a tool this catalog
-  doesn't name. [read: `docs/security/agent-permission-model.md`]
+  doesn't name — see [the capability-edge
+  model](docs/security/agent-permission-model.md).
 - **Policy decisions** — an operator-authored rule store can return `allow`,
   `deny`, or `require-approval` for an action, before any human is asked
   (ADR-0074). An empty rule table changes nothing; rules govern the
@@ -60,11 +62,13 @@ reading source is worse than one that says them up front.
   gateway. This is an architectural decision, not a temporary gap: the smallest
   measured model (`gemma3:270m`, 278 MB compressed) is already **1.85×** the
   product's entire offline-bundle size cap on its own, before any runtime is added.
-  [read: `docs/spike/inference-substrate-measurement.md`]
+  That figure comes from [a measurement, not an
+  estimate](docs/spike/inference-substrate-measurement.md).
 - **It does not yet integrate a governed software-engineering harness** (an
   OpenHands/openworker-style coding agent driving `remote.exec` end to end). That
   integration is **B-041**, the flagship of the *next* major release line
-  (v1.0.0), and has **not been started**. [read: `docs/spike/b041-remaining-work.md`]
+  (v1.0.0), and has **not been started** — see [what remains for
+  it](docs/spike/b041-remaining-work.md).
 - **It does not constrain what an *approved* command does once it is running.** A
   policy rule can refuse to let a command *start*; nothing in the product today
   bounds what a started, approved command can do while it runs. That containment
