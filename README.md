@@ -12,6 +12,25 @@ governance happens — policy, approval, credential custody, audit — not the p
 where a model runs. ([the project's own statement of that
 wedge](docs/executive/vision.md).)
 
+**What this repository is, precisely.** The name is the *ecosystem's* name; this
+repository is its **Core** — the governance plane and the ledger. The ecosystem is
+defined by a single falsifiable membership test: a component belongs **iff its
+consequential actions land on the one signed evidence ledger, verifiable offline
+by an outsider holding no database access**. Three tiers follow from it:
+
+| Tier | What it is | Status |
+|---|---|---|
+| **Core** | Cockpit, typed MCP gateway, policy, approval, credential broker, the ledger | **This repo — shipped** |
+| **Companion products** | Surfaces that write provable evidence to the ledger — agentic desktop, work board, knowledge base, mobile approver, model-runtime appliance | **Not built** |
+| **Substrates** | Things the system needs that *cannot* meet the test — inference runtime, execution sandbox, third-party agent harnesses | **Operator-provided, governed at the seam** |
+
+⚠ **So "OS" names the ecosystem, not the contents of this clone.** `ADR-0002`
+splits the product into Remote Cockpit, Agentic Desktop and Agentic Work Board;
+**only the first exists.** Shipping a substrate ourselves requires a *measured*
+feasibility finding plus its own ADR — preference is not a trigger. See
+[the vision](docs/executive/vision.md) and
+[ADR-0073](docs/adr/ADR-0073-product-boundary-ledger-membership.md).
+
 ---
 
 ## What this governs

@@ -66,7 +66,7 @@ Always start at `CANONICAL_SOURCE_OF_TRUTH.md` and `docs/architecture/module-map
 - No AI autonomy before audit + policy + approval primitives exist.
 - All major dependency choices need an ADR.
 - Diff budget: ≤12 files / ≤500 LoC per ticket unless explicitly approved.
-- Read the **SPEC-2026.1** baseline `docs/` before changing related code (start at `docs/executive/`, `docs/architecture/module-map.md`, `docs/security/agent-permission-model.md`). ⚠ `docs/executive/` is **stale** — 3.5 KB of May-2026 stubs that contradict Accepted **ADR-0002**; its rewrite is the next item on the canon work order.
+- Read the **SPEC-2026.1** baseline `docs/` before changing related code (start at `docs/executive/`, `docs/architecture/module-map.md`, `docs/security/agent-permission-model.md`). ⭐ `docs/executive/` was **REWRITTEN 2026-08-27** (canon work order, pass 3) and is now current — all four files (`vision.md`, `strategy.md`, `competitor-map.md`, `north-star-roadmap.md`) **narrate and link rather than duplicate**, which is what let the previous version drift for fifteen months. ⚠ **This bullet warned they were stale long after they were fixed** — corrected 2026-09-02 at the v0.16.0 cut. A stale warning pointing at corrected canon is the same defect class as stale canon itself: a reader trusts it and skips the authoritative source. `doc_check.py` has scanned these files since the rewrite precisely because every link in them is now load-bearing.
 - Every spec / ADR / PR claim must resolve to a path in this repo or the sibling `../agency-kit/`.
 
 ## Definition of done

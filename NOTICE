@@ -1,5 +1,11 @@
-AI Remote Engineering OS
+AI Remote Engineering OS — Core
 Copyright 2026 The AI Remote Engineering OS Project (github.com/paladinknightmaster)
+
+This repository is the CORE of the AI Remote Engineering OS ecosystem — the
+governance plane and the evidence ledger. The ecosystem's companion products
+(agentic desktop, work board, knowledge base, mobile approver) are not built, and
+its substrates (inference runtime, execution sandbox, agent harnesses) are
+operator-provided and governed rather than owned. See docs/executive/vision.md.
 
 This product is licensed under the Apache License, Version 2.0. See LICENSE
 for the full license text and docs/adr/ADR-0075-open-source-licence.md for the
