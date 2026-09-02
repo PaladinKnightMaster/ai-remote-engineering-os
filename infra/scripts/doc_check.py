@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 """doc-check (release-criteria DOC-1, §11a-1; CSV leg VER-15/T-132; roots leg
-VER-36/VER-43/T-160).
+VER-36/VER-43/T-160; public-docs leg T-161).
 
 Assert every in-repo relative path referenced in CANONICAL_SOURCE_OF_TRUTH.md,
 every docs/adr/*.md, every docs/executive/*.md, every docs/releases/**/*.md
-(nested per-version subdirectories -- rglob, NOT glob), and every
-docs/requirements/*.md resolves on disk, so the canonical index, the ADR
-ladder, the executive tier and the release/requirements corpus never drift
-from the tree.
+(nested per-version subdirectories -- rglob, NOT glob), every
+docs/requirements/*.md, and the root-level public documents (README.md,
+SECURITY.md, CONTRIBUTING.md) resolves on disk, so the canonical index, the ADR
+ladder, the executive tier, the release/requirements corpus, and the documents
+a public stranger reads first never drift from the tree.
+
+README.md/SECURITY.md/CONTRIBUTING.md were added at T-161 (v0.16.0, PUB-4/
+PUB-3/PUB-8): before this, the three documents a stranger depends on most to
+install and trust the product were the LEAST gated files in the repo -- this
+release's own thesis (can somebody who is not us rely on what we claim)
+pointed at itself. Checked unmodified against the as-written files: all
+references resolve; no break surfaced. LICENSE and NOTICE are deliberately
+NOT added -- LICENSE is verbatim upstream Apache-2.0 boilerplate with no
+in-repo references, and NOTICE's one doc pointer is plain prose, not a
+backtick span or markdown link, so candidates() would not see it as a
+checkable reference anyway.
 
 docs/executive/ was added 2026-08-27 (canon work order pass 3): those four files
 were rewritten to POINT at authoritative sources rather than duplicate them --
@@ -195,6 +207,9 @@ def main() -> int:
     # this covers the markdown in the same directory (currently just
     # epic_story_catalog_v4.md, the live planning record DOC-17 corrects).
     sources += sorted((ROOT / "docs" / "requirements").glob("*.md"))
+    # Root-level public documents added at T-161 (PUB-3/PUB-4/PUB-8): the docs
+    # a stranger reads first, previously scanned by nothing at all.
+    sources += [ROOT / "README.md", ROOT / "SECURITY.md", ROOT / "CONTRIBUTING.md"]
 
     missing: list[str] = []
     checked = 0

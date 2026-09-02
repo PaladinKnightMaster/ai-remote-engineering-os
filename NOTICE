@@ -1,0 +1,19 @@
+AI Remote Engineering OS
+Copyright 2026 <COPYRIGHT HOLDER -- CEO to supply before publication>
+
+This product is licensed under the Apache License, Version 2.0. See LICENSE
+for the full license text and docs/adr/ADR-0075-open-source-licence.md for the
+decision record, including the alternatives it considered and rejected.
+
+Third-party Go modules and npm packages used by this project retain their own
+upstream licenses and are consumed as ordinary dependencies (go.mod /
+package.json), not modified or redistributed as vendored source in this
+repository. Their license identifiers are checked against an allowlist by
+`task licenses` (wired into `task release-check`) rather than reproduced
+individually here.
+
+This NOTICE does not yet reflect a separate, exhaustive third-party
+attribution audit (for example, of any component whose shape was modeled on
+a third-party design system without copying its source verbatim). If such an
+audit later finds a file that itself carries a third-party copyright or
+license header, that attribution belongs in this file at that time.
