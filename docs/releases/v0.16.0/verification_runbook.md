@@ -4,9 +4,10 @@
 gates, each mutation-proven + a CEO §human pass on the published-repo experience (§2 of the release
 criteria) — NOT "does the feature work" but "does a stranger succeed" (PUB-6).**
 
-Steps 0–2 are automated and were recorded at **T-163** (capstone). Step 3 (PUB-6) is **the CEO's** — no
-automated run may perform it, that is the entire point of it. Step 4 (sign, tag, push) is the CEO's too,
-once Steps 1–3 read green, in that exact order.
+Steps 0–2 are automated and were recorded at **T-163** (capstone). **The rest is the CEO's, in this order:
+Step 3 sign → Step 4 PUB-6 → Step 5 tag + push.** ⚠ Corrected 2026-10-05: an earlier version put PUB-6
+before signing, but the install path says a missing `.sig` means stop, so PUB-6 cannot run on unsigned
+artifacts. Signing creates no commit, so it does not disturb the artifacts' attestation.
 
 ---
 
@@ -159,17 +160,11 @@ shell wrapper reported `0` and the real code was `201` (v0.15.0 cut).
 
 ---
 
-## Step 1b — the two publication blockers (not this ticket's to resolve)
+## Step 1b — the two publication blockers — ✅ RESOLVED 2026-09-02 (`8faec48`)
 
-⚠⚠ **`SECURITY.md` still carries `<SECURITY-CONTACT — CEO to supply before publication>`.** Verified
-present [ran: `grep -n "SECURITY-CONTACT" SECURITY.md`] — not invented, not guessed.
-
-⚠⚠ **`NOTICE` still carries `<COPYRIGHT HOLDER -- CEO to supply before publication>`.** Verified present
-[ran: `grep -n "COPYRIGHT HOLDER" NOTICE`] — not invented, not guessed.
-
-**Both gate the push, not this ticket.** Neither is a defect in this release's own work — inventing a
-disclosure contact or a legal copyright-holder name would itself be an unverifiable claim, exactly the
-thing this release exists to stop the product from making.
+`SECURITY.md` routes reports through **GitHub private vulnerability reporting** (enabled at publication —
+PUB-9), and `NOTICE` names **The AI Remote Engineering OS Project (github.com/paladinknightmaster)**.
+Neither placeholder remains [ran: `grep -c "CEO to supply" SECURITY.md NOTICE` → 0 and 0].
 
 ---
 
@@ -182,37 +177,11 @@ acceptable surprise for PUB-6 to discover.
 
 ---
 
-## Step 3 — GATE, the CEO's `§human` pass (PUB-6)
+## Step 3 — sign, then both provenance gates
 
-**This differs in kind from every prior release's `§human` pass.** VER-32 (v0.15.0) asked *"does the
-feature work"* on a stack the CEO already knew how to run. PUB-6 asks a different question: **does a
-stranger succeed**, using *only* the public `README.md` — no tribal knowledge, no reference to this
-repo's internal docs, no memory of how previous releases were installed.
-
-**3.1 — Start from a genuinely fresh host** (a clean VM or container the CEO has not already provisioned
-for this product). Do not reuse a host that still has `dist/offline/`, prior keys, or a prior install's
-`/etc/aireos/` state on it — that would let tribal knowledge substitute for the README without anyone
-noticing.
-
-**3.2 — Follow only `README.md`.** Every step needed to get from "I have the artifacts" to "the product
-is installed and I can log in" must be findable there. **Any step requiring knowledge absent from the
-README is a defect, not a note** — record it plainly rather than silently filling the gap from memory.
-
-**3.3 — Verify the artifacts using only what the README and `SECURITY.md`/the published fingerprint say**
-— not by reaching for `docs/devops/offline-install-v3.md` or this runbook.
-
-**3.4 — Record findings.** Friction, unclear copy, a missing prerequisite, a surprising failure mode —
-record it here rather than letting it go unrecorded, exactly as VER-32's Step 3.4 did.
-
-### PUB-6 RESULT — **PENDING.** Not run by this ticket; the CEO records the outcome here.
-
----
-
-## Step 4 — sign, tag, push — in that order, push LAST
-
-Sign off only if Step 1's gates are green **and** PUB-6 (Step 3) has passed. Do not proceed to sign, tag,
-or push while either publication blocker (Step 1b) is still an open placeholder — both must be resolved
-by the CEO before the push, though signing and tagging do not themselves require it.
+Sign once Step 1's gates are green. Signing writes `.sig` files beside the artifacts and creates **no
+commit**, so the attestation in Step 1a is undisturbed. ⓘ T-162's mixed-version guard runs here live for
+the first time; `dist/offline/` must hold exactly the two v0.16.0 artifacts.
 
 **No new release keypair is minted this release.** The existing production key (custody per
 `docs/devops/offline-install-v3.md` §Release key custody) signs these artifacts too.
@@ -233,17 +202,70 @@ RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub task sec45-check
 Confirm `provenance-check`'s summary says **VERIFIED**, not **SELF-SKIPPED**, and that no stale `.sig`
 survived a rebuild (`ls -la dist/offline/*.tar.gz.sig`, mtime not older than its artifact).
 
-**Tag `fe4c5bd`** — the commit the final artifacts in Step 1a were built from, confirmed by its own
-`vcs.revision` stamp. ⚠⚠ **If ANY commit has landed since `fe4c5bd` (including from this runbook's own
-edits) — STOP. Rebuild both artifacts from the new `HEAD`, re-verify `vcs.revision` positively, and tag
-that instead.** The tag must not be moved once set (ADR-0070 D1) — this is exactly the mistake this
-release's own capstone made once already (see Step 1a's provenance correction) and it must not repeat
-at the tag step itself.
+---
+
+## Step 4 — GATE, the CEO's `§human` pass (PUB-6) — on the SIGNED artifacts
+
+**This differs in kind from every prior release's `§human` pass.** VER-32 (v0.15.0) asked *"does the
+feature work"* on a stack the CEO already knew how to run. PUB-6 asks a different question: **does a
+stranger succeed**, using *only* the public `README.md` — no tribal knowledge, no reference to this
+repo's internal docs, no memory of how previous releases were installed.
+
+**4.1 — Start from a genuinely fresh host** (a clean VM or container the CEO has not already provisioned
+for this product). Do not reuse a host that still has `dist/offline/`, prior keys, or a prior install's
+`/etc/aireos/` state on it — that would let tribal knowledge substitute for the README without anyone
+noticing.
+
+**4.2 — Follow only `README.md`.** Every step needed to get from "I have the artifacts" to "the product
+is installed and I can log in" must be findable there. **Any step requiring knowledge absent from the
+README is a defect, not a note** — record it plainly rather than silently filling the gap from memory.
+
+**4.3 — Verify the artifacts using only what the README and `SECURITY.md`/the published fingerprint say**
+— not by reaching for `docs/devops/offline-install-v3.md` or this runbook.
+
+**4.4 — Record findings.** Friction, unclear copy, a missing prerequisite, a surprising failure mode —
+record it here rather than letting it go unrecorded, exactly as VER-32's Step 3.4 did.
+
+### Rehearsal — 2026-10-05, by the Commander (does NOT discharge PUB-6)
+
+Full record: [`pub6-rehearsal.md`](pub6-rehearsal.md). A fresh `ubuntu:24.04` + systemd host with **no
+network at all** walked the README path on fixture-signed copies of the artifacts. **It found that the
+postgres companion fails on any host patched after the companion was built** — OS package version skew,
+proven causally, present since v0.1.0 (ADR-0052), and **structurally invisible to WD-1**, which builds its
+host and the companion from one snapshot. That limitation is now stated in the README and both install
+guides with a bring-your-own-PostgreSQL workaround; the real fix needs its own ADR. Nine documentation
+defects were fixed in the same pass. Everything after postgres — signature verification with a tamper
+control, a fully offline `install.sh`, seven active services, a working login — verified clean.
+
+**What this means for your pass:** on a patched host you **will** hit the companion failure. That is now
+expected; follow the README's documented workaround and judge whether *that* path is followable from the
+README alone. Quickstart steps 3, 5 and 6 (the browser UI) were not exercised in the rehearsal — Docker
+Desktop's HTTPS port-forwarding on the Windows host breaks native browsers — so nobody but you has tested
+them.
+
+### PUB-6 RESULT — **PENDING.** Not run by this ticket; the CEO records the outcome here.
+
+---
+
+## Step 5 — tag, then push — push LAST
+
+**Tag the commit the artifacts attest to — derived, never typed.** Any sha written into this runbook goes
+stale the moment the runbook is committed (this section once named `fe4c5bd`; `8faec48` and `a15dc4b`
+superseded it in turn), so it reads the sha out of the artifact instead and refuses on any mismatch:
 
 ```bash
-git rev-parse HEAD   # must print fe4c5bd5f0d33720fd3d587a99dfe44f8e97e901 -- if not, STOP per above
-git tag -a v0.16.0 -m "v0.16.0 — Public Readiness"
+REV=$(grep -a -o 'vcs.revision=[0-9a-f]*' dist/offline/aireos-offline-0.16.0/bin/api | head -1 | cut -d= -f2)
+[ "$REV" = "$(git rev-parse HEAD)" ] && [ -z "$(git status --porcelain)" ] || { echo "STOP: artifacts do not attest a clean HEAD - rebuild and re-sign"; exit 1; }
+git tag -a v0.16.0 "$REV" -m "v0.16.0 Public Readiness"
 ```
+
+⚠⚠ **If it prints STOP, a commit landed after the build:** rebuild both artifacts from the new `HEAD`,
+re-sign, and run it again. The tag must not be moved once set (ADR-0070 D1).
+
+**At publication, two more steps, both `block`:** **PUB-9** — enable GitHub private vulnerability reporting
+and confirm it from a signed-out view; **PUB-10** — create a GitHub Release carrying both artifacts, both
+`.sig` files and `aireos-release.pub`, with the fingerprint in its notes. README step 1 sends strangers to
+that Releases page.
 
 **The tag is local. This repo has no remote — never push a tag, or anything else, until PUB-6 has
 already passed.**

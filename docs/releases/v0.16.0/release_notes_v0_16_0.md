@@ -26,6 +26,23 @@ read about it*, that is a defect in this document, not an intended feature — f
 
 ---
 
+## ⚠ Known limitation — the postgres companion on patched hosts
+
+**The prebuilt postgres companion fails to install on any host that has applied OS security updates
+since it was built.** Its packages are pinned to the build-time patch level; a patched host carries newer
+core packages (found: `perl-base …ubuntu0.6` against the companion's `…0.4`), and apt will not downgrade
+them. **This is not new** — it has existed since v0.1.0 (ADR-0052's package-closure design) — and it was
+**invisible to every prior release's testing**, because the installed-stack test builds its host and the
+companion from one snapshot, so they can never drift. A fresh-host rehearsal of this release's own PUB-6
+gate found it.
+
+**Workaround:** bring your own PostgreSQL 16 + `pgcrypto` from your organisation's package mirror —
+`docs/devops/offline-postgres-install.md` §"Bring your own PostgreSQL 16". Everything after postgres
+installs and runs fully offline. **The proper fix needs its own ADR** and is deferred to a later release
+rather than smuggled into a release that ships no runtime change.
+
+---
+
 ## What this release DID do
 
 Two forces converged on the same question this cycle: a measured finding from v0.15.0 (five separate
@@ -103,10 +120,9 @@ v0.15.0 precedent (tagged commit `53782dd` carried no hashes; they landed in clo
 *after* the tag), the fingerprint and both artifact SHA-256s land in the **closure commit**, after
 signing, alongside the tag sha itself.
 
-**Two publication blockers remain open, deliberately not invented.** `SECURITY.md`'s disclosure-contact
-line and `NOTICE`'s copyright-holder name are both explicit placeholders (`<SECURITY-CONTACT — CEO to
-supply before publication>` / `<COPYRIGHT HOLDER -- CEO to supply before publication>`) — inventing either
-would itself be an unverifiable claim. They gate the push, not this ticket.
+**Both publication blockers are resolved** (2026-09-02): vulnerability reports go through GitHub
+private vulnerability reporting, and `NOTICE` names *The AI Remote Engineering OS Project
+(github.com/paladinknightmaster)*.
 
 ---
 
@@ -119,8 +135,9 @@ instrument, not a product code path.
 
 ## What remains — the CEO's, not this ticket's
 
-1. **PUB-6** — a fresh-host install from the built artifacts, following only the public `README.md`.
-2. **Sign** both artifacts with the production key (custody outside this repo).
+1. **Sign** both artifacts with the production key (custody outside this repo).
+2. **PUB-6** — a fresh-host install from the signed artifacts, following only the public `README.md`. It
+   must follow signing: the install path says a missing `.sig` means stop.
 3. **Tag** the commit the artifacts were built from; the sha lands in a closure commit afterward (the
    v0.15.0 "tag + 1" pattern).
 4. **Push** — last, only after PUB-6 passes. This repo has no git remote today and must not get one

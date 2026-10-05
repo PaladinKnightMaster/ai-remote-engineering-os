@@ -117,18 +117,40 @@ planned to land, along with an API surface freeze. Neither has happened yet.
 ## Install
 
 The product ships as a signed, offline-installable bundle — no container registry,
-no internet access required on the target host after the bundle is transferred.
+and no internet access on the target host once the artifacts are transferred.
 
-1. **Build and sign the release artifacts** (on a connected host) —
+1. **Get the release artifacts.** From this repository's **Releases** page, download
+   the core bundle (`aireos-offline-<version>.tar.gz`), the postgres companion for
+   your OS (`aireos-postgres-<ostag>.tar.gz`), a `.sig` file for each, and the
+   release public key `aireos-release.pub`. *(You can also build from source — see
+   the install guide — but a bundle you built yourself has no published signature to
+   check against.)*
+2. **Verify them before you extract anything.** Check the public key's fingerprint
+   against the one in that release's notes, obtained through a different channel
+   than the download, then verify each signature. The exact commands are in
+   [`SECURITY.md` → Verifying a release](SECURITY.md#verifying-a-release-before-you-install-it).
+   A missing `.sig`, or any result other than `Signature Verified Successfully`,
+   means stop.
+3. **Install on the target host** — follow
    [`docs/devops/offline-install-v3.md`](docs/devops/offline-install-v3.md).
-2. **Install on the target host** — the same document covers the offline install
-   procedure. Supported today: **Ubuntu 24.04** and **Rocky/RHEL-family 9**,
-   `amd64`. Windows is a browser client only; there is no Windows server build.
-3. **Walk through your first governed action** —
+   Supported today: **Ubuntu 24.04** and **Rocky/RHEL-family 9**, `amd64`. Windows
+   is a browser client only; there is no Windows server build.
+4. **Walk through your first governed action** —
    [`docs/devops/quickstart-first-governed-action.md`](docs/devops/quickstart-first-governed-action.md)
    takes you from a running install to a completed, audited action. Only the
-   `lan-only` deployment profile is proven end to end today; the quickstart's own
-   "Honest limits" section says so.
+   `lan-only` deployment profile is proven end to end today.
+
+> ⚠ **Known install limitation (v0.16.0) — read before step 3.** The prebuilt
+> postgres companion carries operating-system packages pinned to the versions that
+> were current on the day it was built. On a host that has applied OS security
+> updates since then — which is every well-maintained server — its install stops
+> with an unmet dependency such as
+> `perl : Depends: perl-base (= …) but … is to be installed`.
+> **Workaround:** install **PostgreSQL 16 with `pgcrypto`** from your organisation's
+> own package mirror and point the installer at it — see
+> [bring your own PostgreSQL](docs/devops/offline-postgres-install.md#bring-your-own-postgresql-16).
+> Everything after postgres installs and runs fully offline. A proper fix is planned
+> for a later release.
 
 ---
 

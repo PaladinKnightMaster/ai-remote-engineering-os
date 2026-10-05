@@ -1,28 +1,12 @@
 # Quickstart — from an installed stack to a completed governed action
 
-**Closes ONB-5** (`docs/releases/v0.12.0/v0.12.0-release-criteria.md` §8): *"Quickstart
-reaches a governed action without reading source."* This is that quickstart — every
-command and every cockpit click below is verified against the as-built code and
-scripts, not written from the release brief. Where the as-built differed from the
-brief, the as-built is what is documented here.
+This picks up where [`offline-install-v3.md`](offline-install-v3.md) ends — a running,
+installed stack — and takes you to a completed, audited governed action, by hand. Every
+command and every cockpit click below is checked against the shipped code.
 
-**Placed under `docs/devops/`** (not `docs/tickets/` or a new top-level file) because
-`CANONICAL_SOURCE_OF_TRUTH.md` already names this directory "DevOps / offline install",
-this quickstart is a direct continuation of `docs/devops/offline-install-v3.md` (it
-starts exactly where that document ends — a running installed stack), and it is meant
-to be found by an operator working through installer docs, not by someone browsing the
-ticket ladder.
-
-**Audience and use.** Written to be followed **verbatim, by hand, on a fresh
-`task wd1` install**. The v0.12.0 verification runbook (DOC-27, `docs/releases/
-v0.12.0/verification_runbook.md`, landing at T-122) is expected to reference this
-document for its GATE-4 §human first-run walkthrough rather than duplicating it —
-that runbook does not exist yet as of this ticket. `task smoke` runs seeded and jsdom
-cannot see a real install, so **nothing in the automated suite exercises this
-document** — a human walking it by hand is the only verification it gets. If any step
-below does not match what you see, that is a defect in this document or in the
-product, not in your environment — stop and report it rather than improvising past
-it.
+**If any step does not match what you see, that is a defect in this document or in the
+product, not in your environment** — stop and report it rather than improvising past it.
+No automated test walks this document, so a person following it is the only check it gets.
 
 ---
 
@@ -30,7 +14,7 @@ it.
 
 A stack installed per [`docs/devops/offline-install-v3.md`](offline-install-v3.md),
 including a chosen `AIREOS_DEPLOYMENT_PROFILE`. This quickstart uses `lan-only`
-throughout — it is the only profile proven end-to-end by `task wd1` (see
+throughout — it is the only profile proven end-to-end by the project's installed-stack test (see
 [Honest limits](#honest-limits-read-this-before-you-file-a-bug) below). You should be
 able to reach `https://<AIREOS_SITE_ADDRESS>` in a browser and have the bootstrap
 operator username/password from that install.
@@ -59,14 +43,12 @@ governed action"**.
 
 ## 2. Generate the loopback demo target (on the host)
 
-The demo target is the installed host SSHing to itself (`ONB-3`) — an air-gapped
+The demo target is the installed host SSHing to itself — an air-gapped
 single-host install cannot conjure a second machine, so the "remote" resource in this
 quickstart is the same box the stack runs on.
 
-**A note on where this script comes from.** `infra/offline/setup-loopback-demo.sh`
-ships in the bundle's top level alongside `install.sh` (`infra/offline/build-bundle.sh`
-stages it, T-124 — an earlier bundle omitted it, which stalled a genuinely air-gapped
-install at this exact step; that gap is closed). If you unpacked the bundle at, say,
+**Where the script is.** `setup-loopback-demo.sh` ships at the top level of the bundle,
+beside `install.sh`. If you unpacked the bundle at, say,
 `/opt/aireos-offline-<version>/` on the host, the script is already there:
 
 ```sh
@@ -84,9 +66,7 @@ standard OS step, not something the product's own scripts assert):
 useradd -m -s /bin/bash aireos-demo
 ```
 
-**Then, as root, on the host**, run the setup script's `generate` mode (this flag and
-mode are read directly from `infra/offline/setup-loopback-demo.sh`, lines 207–211 and
-the `generate)` case starting at line 240):
+**Then, as root, on the host**, run the setup script's `generate` mode:
 
 ```sh
 sudo /root/setup-loopback-demo.sh generate --account aireos-demo
@@ -114,12 +94,8 @@ Copy the `username` and the full `ssh host key` line (including the `ssh-ed25519
 prefix) — you will paste both into the cockpit in the next step. The private key never
 leaves the host.
 
-Earlier revisions of this script warned when sshd offered more than one host key
-type, because of a `session-broker` `dialClient` limitation. That limitation was
-fixed at T-123 (already on `dev`) and the stale warning was removed from the script
-at T-124 — the script prints nothing about this today, and the governed connection in
-step 5 succeeds regardless of how many host-key types your sshd offers. See
-[Honest limits](#honest-limits-read-this-before-you-file-a-bug) below for the history.
+Your sshd may offer several host-key types (the OpenSSH default); that is fine — no
+restriction is needed.
 
 ---
 
@@ -139,7 +115,7 @@ Click **Create**.
 **"✓ Register a resource"** within a moment (the panel re-reads live state — it never
 caches). This created the resource through the ordinary `POST /v1/resources` path
 (`type: ssh, name: loopback-demo`) — nothing about this step is a special demo-only
-code path (`ONB-4`).
+code path.
 
 ---
 
@@ -175,8 +151,7 @@ run":
 
 This resource was created **without** `requires_approval`, so the step runs
 unattended through the real chain — policy → connector → broker — with no approval to
-park on (`ONB-3`'s "reaches a **completed** governed action" requires this; a flagged
-demo target would stall the quickstart on a second operator action).
+park on (a flagged demo target would stall the quickstart on a second operator action).
 
 **What you should see:** the new Run appears in the list below, its status moving
 from `pending`/`running` to **`completed`** within a few seconds. Click the Run's id
@@ -234,8 +209,8 @@ never silently reverts to disabled once you have turned it on.
 
 ## Honest limits — read this before you file a bug
 
-**Only `lan-only` is proven end-to-end here.** This quickstart, and the `task wd1`
-gate behind it, run on the `lan-only` deployment profile. `vpn-first` and `dmz-first`
+**Only `lan-only` is proven end-to-end here.** This quickstart, and the installed-stack
+test behind it, run on the `lan-only` deployment profile. `vpn-first` and `dmz-first`
 are enforced at install time (the installer refuses either one without a routable,
 non-loopback `AIREOS_SITE_ADDRESS`) and are documented in
 [`docs/deep-dive/03-network-topologies.md`](../deep-dive/03-network-topologies.md#verification-depth-stated-honestly-oi-25),
@@ -251,13 +226,3 @@ walkthrough above stays clean specifically because it drives the demo resource t
 a **Run**, never a session — if you additionally open a terminal (`/sessions`) against
 `loopback-demo` to poke around, step 7's removal will start failing with 409, and the
 fix is not obvious from the error alone. One sentence here beats a support ticket.
-
-**A multi-host-key-type sshd used to require a workaround here; it no longer does.**
-`services/session-broker/internal/sshpty/sshpty.go`'s `dialClient` used to let
-`golang.org/x/crypto/ssh` negotiate its own preferred host-key algorithm instead of
-the one this script's `generate` step pinned, so a stock sshd offering more than one
-host key type (ed25519 + ecdsa + rsa, the OpenSSH default) could make step 5's
-governed connection fail even with a correctly pinned key. T-123 (already on `dev`)
-fixed `dialClient` to constrain `HostKeyAlgorithms` to the pinned key's own type, and
-T-124 removed the now-stale warning the script used to print about it. Nothing in
-this quickstart depends on restricting sshd to a single host-key type.

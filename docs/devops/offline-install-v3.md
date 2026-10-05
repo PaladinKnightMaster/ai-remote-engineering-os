@@ -1,9 +1,13 @@
-# Offline install (v0.1.0)
+# Offline install
 
-The real, shipped offline-install procedure for the AI ReOS v0.1.0 cut. Supersedes
-the v3.0.1-baseline sketch (Docker images / internal registry), which predated
-ADR-0041's single-static-binary deploy. Binding spec: **ADR-0051** (architecture) +
-**ADR-0052** (postgres companions). Closes release-criteria **DOC-5**.
+How to install the product on a host with no internet access. The core bundle and a
+per-OS postgres companion are built on a connected machine and installed on a target
+host with no public-internet egress. Design records: **ADR-0051** (architecture) and
+**ADR-0052** (postgres companions).
+
+> ⚠ **Known limitation — read §Install step 1 before you start.** The prebuilt postgres
+> companion fails on hosts that have applied OS security updates since it was built.
+> A bring-your-own-PostgreSQL workaround is documented there.
 
 Offline-first (ADR-0001) governs the **target** host: the bundle + companions are
 built on a connected machine and installed on a host with no public-internet egress.
@@ -12,11 +16,11 @@ built on a connected machine and installed on a host with no public-internet egr
 
 | Artifact | Contents | Built by |
 |---|---|---|
-| `aireos-offline-<v>.tar.gz` (~28 MB gz) | static `linux/amd64` binaries (api, audit-service, session-broker, **connector-service, policy-service, mcp-gateway** [P1, v0.3.0/v0.4.0 — this table was frozen at v0.1.0 and undercounted them until v0.12.0's DOC-24 pass], **authctl**) + **Caddy** + the SPA + `Caddyfile` + systemd units + `install.sh` + **`setup-loopback-demo.sh`** (the ONB-3 loopback demo target, when present in the source tree — v0.12.0) + `SHA256_MANIFEST.txt` | `task offline-bundle` (T-021a/b) |
-| `aireos-postgres-<ostag>.tar.gz` (~80 MB) | a self-contained postgres-16 + pgcrypto local repo (full closure) + `install-postgres.sh` + **`SHA256_MANIFEST.txt`** (v0.13.0, ADR-0070 D1) | `build-postgres-companions.sh` (T-021c) |
+| `aireos-offline-<v>.tar.gz` (~45 MB gz) | static `linux/amd64` binaries (api, audit-service, session-broker, **connector-service, policy-service, mcp-gateway** [P1, v0.3.0/v0.4.0 — this table was frozen at v0.1.0 and undercounted them until v0.12.0's DOC-24 pass], **authctl**) + **Caddy** + the SPA + `Caddyfile` + systemd units + `install.sh` + **`setup-loopback-demo.sh`** (the ONB-3 loopback demo target, when present in the source tree — v0.12.0) + `SHA256_MANIFEST.txt` | `task offline-bundle` (T-021a/b) |
+| `aireos-postgres-<ostag>.tar.gz` (~90 MB) | a self-contained postgres-16 + pgcrypto local repo (full closure) + `install-postgres.sh` + **`SHA256_MANIFEST.txt`** (v0.13.0, ADR-0070 D1) | `build-postgres-companions.sh` (T-021c) |
 
 Postgres is a separate per-OS companion (ADR-0052), not in the core bundle.
-v0.1.0 OS scope: Ubuntu 24.04 + Rocky/RHEL-family 9, amd64. Windows = browser
+OS scope: Ubuntu 24.04 + Rocky/RHEL-family 9, amd64. Windows = browser
 client only (no server build).
 
 ## Build (connected host)
@@ -27,9 +31,13 @@ bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404 rocky9
 # artifacts land in dist/offline/ ; verify with sha256sum -c on the unpacked core bundle.
 ```
 
+⚠ **`task offline-bundle` runs directly on the host — it needs Go 1.26, Node 22 and pnpm
+installed there.** It does **not** containerise itself. On a host without them, run the
+build inside a container that has both toolchains; the procedure the project itself uses
+is recorded in `docs/releases/v0.15.0/verification_runbook.md` (Step 2).
+
 **Sign both artifacts — a separate, host-side step, never part of the build above**
-(ADR-0070 D1/D3, T-129a). `task offline-bundle` builds inside a container on hosts
-without a local Go toolchain; a release key must never enter that container. Signing
+(ADR-0070 D1/D3). The release private key must never enter a build environment. Signing
 runs afterward, on the machine holding the release private key:
 
 ```sh
@@ -39,7 +47,7 @@ task sign-release -- --key /path/to/aireos-release.key      # signs BOTH artifac
 ```
 
 **Both artifacts are signed, not just the core bundle.** The postgres companion is
-~87 MB, ships a full package repository, and runs `install-postgres.sh` **as root**
+~90 MB, ships a full package repository, and runs `install-postgres.sh` **as root**
 on the target host — leaving it unsigned while signing the artifact that already had
 a manifest would be indefensible (ADR-0070 Context, gap 1).
 
@@ -105,6 +113,8 @@ nothing extra to distribute; only the public key needs to travel out-of-band):
 # core bundle — run this in the directory holding the .tar.gz, its .sig, and
 # aireos-release.pub (obtained out-of-band; compare its fingerprint against the
 # one published in the release notes before trusting it):
+openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
+# ^ must print exactly the fingerprint published in the release notes. Only then:
 openssl pkeyutl -verify -pubin -inkey aireos-release.pub \
   -rawin -in aireos-offline-<version>.tar.gz -sigfile aireos-offline-<version>.tar.gz.sig
 
@@ -129,10 +139,24 @@ ship solely inside the artifact it validates).
    This is the one documented prerequisite step (ADR-0051 refines OI-3: a guided
    host-postgres install, then everything is automated).
 
+   ⚠ **Known limitation (v0.16.0).** The companion's packages are pinned to the OS
+   patch level current when it was built. **On a host that has applied OS security
+   updates since then, this step fails** with an unmet dependency (for example
+   `perl : Depends: perl-base (= …) but … is to be installed`). apt will not downgrade
+   a core package, so there is no safe in-place fix. **Instead, bring your own
+   PostgreSQL 16 + `pgcrypto`** from your organisation's package mirror — see
+   `docs/devops/offline-postgres-install.md` §"Bring your own PostgreSQL 16" — and
+   continue at step 2 with its connection string.
+
+   ⓘ On a genuinely air-gapped host, `install-postgres.sh` also prints
+   `Failed to fetch http://security.ubuntu.com/…` warnings: it adds the companion as an
+   *extra* package source while the host's normal online sources stay configured. The
+   warnings are harmless; the companion repo is what installs.
+
 2. **Application** — unpack the core bundle and run the installer:
    ```sh
    tar xzf aireos-offline-<v>.tar.gz && cd aireos-offline-<v>
-   AIREOS_SITE_ADDRESS=cockpit.example.com ./install.sh
+   AIREOS_SITE_ADDRESS=cockpit.example.com AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh
    ```
    `install.sh` (interactive prompts by default; env-var overrides for unattended):
    - **resolves + asserts the deployment profile first (v0.12.0, ADR-0068 §D1) — a
@@ -144,7 +168,8 @@ ship solely inside the artifact it validates).
    - prompts for the postgres connection string from step 1, writes the 0600
      `/etc/aireos/aireos.env` (including the deployment profile), validates the DB +
      runs all migrations;
-   - enables + starts the systemd units (api, audit, broker, Caddy).
+   - enables + starts the seven systemd units: api, audit, broker, connector, policy,
+     mcp-gateway and Caddy.
 
    **Deployment profile (required, v0.12.0).** Set `AIREOS_DEPLOYMENT_PROFILE` to one
    of `lan-only`, `vpn-first`, or `dmz-first` (see
@@ -204,8 +229,10 @@ extraction, and its build-time self-check already worked before this ticket:
 sha256sum -c SHA256_MANIFEST.txt
 # on the unpacked postgres companion (parity with the core bundle, ADR-0070 D1):
 sha256sum -c SHA256_MANIFEST.txt
-# then the wedge demo (WD-1) against the running stack — see T-021d.
-systemctl status aireos-api aireos-audit aireos-broker aireos-caddy
+# all seven units should be active:
+systemctl status aireos-api aireos-audit aireos-broker aireos-connector \
+  aireos-policy aireos-mcp-gateway aireos-caddy
+# then walk the quickstart (docs/devops/quickstart-first-governed-action.md)
 ```
 
 ## Unattended install (CI / WD-1)

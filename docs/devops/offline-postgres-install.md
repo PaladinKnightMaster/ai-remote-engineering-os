@@ -1,6 +1,6 @@
 # Offline postgres install (per-OS companion)
 
-Postgres is **required on the host** (ADR-0051 OQ-6); the AI ReOS bundle does not
+Postgres is **required on the host** (ADR-0051 OQ-6); the core bundle does not
 embed it. For an air-gapped host, install it from the **per-OS companion artifact**
 (`aireos-postgres-<ostag>.tar.gz`, ADR-0052) — a self-contained local package repo
 with the complete dependency closure, so **no internet and no host package mirror
@@ -44,6 +44,37 @@ It is idempotent: re-running reuses the existing role/database.
 > the contrib package, `initdb`, then
 > `CREATE ROLE cockpit LOGIN PASSWORD '…'; CREATE DATABASE cockpit OWNER cockpit;`
 > and `CREATE EXTENSION pgcrypto;` in the `cockpit` database.
+
+## Bring your own PostgreSQL 16
+
+⚠ **Use this if `install-postgres.sh` fails with an unmet dependency** such as
+`perl : Depends: perl-base (= …) but … is to be installed`. That happens on any host that
+has applied OS security updates since the companion was built: the companion's packages
+are pinned to its build-time patch level, and apt will not downgrade a core package. This
+is a known v0.16.0 limitation; a proper fix is planned for a later release.
+
+The application only needs a reachable PostgreSQL 16 with `pgcrypto`, plus a `cockpit`
+role and database. Install it from your organisation's package mirror instead:
+
+1. Install `postgresql-16` and `postgresql-contrib` (Rocky/RHEL 9: `postgresql16-server`
+   and `postgresql16-contrib`) from your mirror, then initialise and start the cluster
+   as your distribution documents.
+2. Make sure password authentication works over loopback TCP. PostgreSQL 16 on Ubuntu
+   defaults to `scram-sha-256` for `127.0.0.1`; check `pg_hba.conf` if unsure.
+3. As the `postgres` superuser:
+   ```sql
+   CREATE ROLE cockpit LOGIN PASSWORD 'choose-a-strong-password';
+   CREATE DATABASE cockpit OWNER cockpit;
+   \c cockpit
+   CREATE EXTENSION pgcrypto;
+   ```
+4. Continue with §3 below using
+   `postgres://cockpit:<password>@localhost:5432/cockpit?sslmode=disable`.
+
+**Verified to the extent stated:** the application installer was run against a supplied
+database URL on a fresh, fully offline host and completed — all seven services active,
+login working. Installing PostgreSQL from *your* mirror depends on your mirror and was
+not exercised.
 
 ## 3. point the app installer at it
 
