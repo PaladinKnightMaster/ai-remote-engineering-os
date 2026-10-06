@@ -7,7 +7,7 @@
 
 **The reverse index is the point.** Gate **G2** forbids editing an Accepted ADR, so an ADR whose clause is later superseded carries **no forward pointer** — a reader of ADR-0041 cannot learn that its Go-version clause is dead. *Named by* below supplies that pointer **additively, outside the ADR files**, satisfying both G2 and the MADR convention that a superseded decision must link forward.
 
-**76 ADRs.** **Accepted: 68** · **Proposed: 8**
+**77 ADRs.** **Accepted: 68** · **Proposed: 9**
 
 ## Known corpus defects (measured, not impressions)
 
@@ -71,7 +71,7 @@
 | [ADR-0049](ADR-0049.md) | Cockpit session audit content model (hash-in-chain + cast-anchored), broker-authoritative close, and v0.1.0 reconnect deferral | **Accepted** | 2026-05-31 | Refines ADR-0048 §6 (audit granularity) and §8 (TTL / reconnect). Does not modify ADR-0048; this is the new-ADR record of decisions the SSH-slice implementation (T-016…T-020) made that ADR-0048's t… | ADR-0060, ADR-0064, ADR-0067 |
 | [ADR-0050](ADR-0050-cockpit-ws-data-plane-contract.md) | Cockpit WebSocket data-plane contract — channel path and operator-audience cookie auth | **Accepted** | 2026-05-31 | Refines ADR-0048 §1 (terminal transport / WS path) and §4 (WebSocket-upgrade authentication), and ADR-0046 (token audience model) as it applies to the cockpit WebSocket. Does not modify those ADRs;… | ADR-0060 |
 | [ADR-0051](ADR-0051-offline-install-architecture.md) | Offline-install architecture — Linux static-binary host, Caddy proxy, host-provided postgres with staged offline packages, dual operator provisioning, self-signed TLS | **Accepted** | 2026-05-31 | — | ADR-0052, ADR-0068, ADR-0070 |
-| [ADR-0052](ADR-0052-postgres-companion-artifacts.md) | Offline postgres ships as per-OS companion artifacts (not in the core bundle) | **Accepted** | 2026-05-31 | Refines ADR-0051 decision 3. ADR-0051 said the offline bundle "ships staged install packages (.deb/.rpm) + a guide" — i.e. | ADR-0070 |
+| [ADR-0052](ADR-0052-postgres-companion-artifacts.md) | Offline postgres ships as per-OS companion artifacts (not in the core bundle) | **Accepted** | 2026-05-31 | Refines ADR-0051 decision 3. ADR-0051 said the offline bundle "ships staged install packages (.deb/.rpm) + a guide" — i.e. | ADR-0070, ADR-0077 |
 | [ADR-0053](ADR-0053-connector-service.md) | connector-service — credential custody + egress gateway (promotes the ADR-0048 §7 reserve and closes the SEC-12 pgcrypto debt) | **Accepted** | 2026-06-01 | — | ADR-0068, ADR-0071 |
 | [ADR-0054](ADR-0054-approval-policy-decision-point.md) | policy-service approval/policy decision point + `<ApprovalPrompt>` (the human-in-the-loop primitive) | **Accepted** | 2026-06-01 | — | ADR-0074 |
 | [ADR-0055](ADR-0055-v0.2.0-durability-rider-rescope.md) | v0.2.0 criteria amendment — the durability riders re-scoped (WD-2.5 / FE-9) | **Accepted** | 2026-06-11 | — | — |
@@ -96,3 +96,4 @@
 | [ADR-0074](ADR-0074-governed-decision-policy.md) | `policy-service` evaluates operator-authored rules, so the decision point can decide | **Accepted** | 2026-08-28 | Decider: CEO. Discharges ADR-0054 §1 and §3 — both Accepted 2026-06-01, both only half-built. This ADR supersedes nothing and edits nothing — it builds what ADR-0054 already decided, and adds the o… | — |
 | [ADR-0075](ADR-0075-open-source-licence.md) | ADR-0075 — Open-source licence for the product | **Accepted** | 2026-09-01 | — | ADR-0076 |
 | [ADR-0076](ADR-0076-contribution-provenance-dco.md) | ADR-0076 — Contribution provenance: DCO, not a CLA | **Accepted** | 2026-09-01 | Discharges ADR-0075's deferred item ("CLA vs DCO", which that ADR left open with an explicit trigger). Refines ADR-0075. ⚠ ADR-0075 is Accepted and immutable under gate G2, which is why this is a s… | — |
+| [ADR-0077](ADR-0077-self-contained-postgres-companion.md) | ADR-0077 — Self-contained PostgreSQL companion | **Proposed** | 2026-10-06 | Decider: CEO. Refines ADR-0052 decision 2 — how the postgres companion is packaged. | — |

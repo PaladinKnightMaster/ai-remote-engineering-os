@@ -134,7 +134,9 @@ and no internet access on the target host once the artifacts are transferred.
 3. **Install on the target host** — follow
    [`docs/devops/offline-install-v3.md`](docs/devops/offline-install-v3.md).
    Supported today: **Ubuntu 24.04** and **Rocky/RHEL-family 9**, `amd64`. Windows
-   is a browser client only; there is no Windows server build.
+   is a browser client only; there is no Windows server build. ⚠ This release's
+   prebuilt postgres companion is **Ubuntu-only** — on Rocky/RHEL 9, build the companion
+   yourself (the postgres guide's first section) or bring your own PostgreSQL 16.
 4. **Walk through your first governed action** —
    [`docs/devops/quickstart-first-governed-action.md`](docs/devops/quickstart-first-governed-action.md)
    takes you from a running install to a completed, audited action. Only the
