@@ -302,7 +302,7 @@ host; only the public key needs distributing).
 ## Release key custody
 
 **The production release key is never generated, stored, printed, or committed by any script
-in this repo.** It is minted out-of-band by the CEO, on a machine that never runs untrusted
+in this repo.** It is minted out-of-band by the maintainer, on a machine that never runs untrusted
 build code:
 
 ```sh

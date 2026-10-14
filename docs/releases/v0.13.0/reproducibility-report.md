@@ -220,7 +220,7 @@ locale host, which is out of scope for this ticket.
 
 ## The postgres companion — deliberately NOT measured, stated analytically
 
-`aireos-postgres-<ostag>.tar.gz` is built by `infra/offline/build-postgres-companions.sh` against
+`aireos-postgres-<ostag>.tar.gz` is built by `infra/offline/postgres/build-postgres-companions.sh` against
 the **floating** `ubuntu:24.04` image tag, pulling its package set from a **live apt mirror** at
 build time. It is therefore time-dependent by construction: two builds run back-to-back could
 already diverge if the mirror's package index changed in between, and a build run a day (or an

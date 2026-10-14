@@ -92,6 +92,13 @@ EXTS = (
 
 LINK = re.compile(r"\]\(([^)]+)\)")
 CODE = re.compile(r"`([^`]+)`")
+# Fenced code blocks are removed before CODE matching (2026-10-14, v0.16.0 PUB-6 fix
+# pass). CODE pairs single backticks across the whole text, so a ``` fence (three
+# backticks) shifts the pairing by one: after an odd fence, every inline `path` span
+# was paired with the wrong backtick, swallowed whitespace and was skipped -- silently.
+# Found by a planted broken reference in the quickstart that did NOT fail the gate.
+# Measured: 27 references across the corpus were invisible, one of them broken.
+FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.M | re.S)
 
 # NOTE: "../" is deliberately NOT here. It was, until 2026-08-27, and that
 # blanket-skipped every in-repo parent-relative link -- 18 of them in the
@@ -130,7 +137,7 @@ def candidates(text: str) -> set[str]:
         ref = m.group(1).strip()
         if ref and not ref.startswith(SKIP_PREFIX) and not any(c in ref for c in "<>*{}$ \t"):
             out.add(ref)
-    for m in CODE.finditer(text):
+    for m in CODE.finditer(FENCE.sub("", text)):
         ref = m.group(1).strip()
         if any(c in ref for c in "<>*{}$ \t") or ref.startswith(SKIP_PREFIX):
             continue
@@ -219,6 +226,12 @@ def main() -> int:
     # Root-level public documents added at T-161 (PUB-3/PUB-4/PUB-8): the docs
     # a stranger reads first, previously scanned by nothing at all.
     sources += [ROOT / "README.md", ROOT / "SECURITY.md", ROOT / "CONTRIBUTING.md"]
+    # The three user-path guides README links (v0.16.0 PUB-6 fix pass, 2026-10-14):
+    # the install guide, postgres guide and quickstart a stranger actually follows.
+    # Named individually, not docs/devops/*.md, per the VER-45/VER-48 note above.
+    sources += [ROOT / "docs" / "devops" / n for n in (
+        "offline-install-v3.md", "offline-postgres-install.md",
+        "quickstart-first-governed-action.md")]
 
     missing: list[str] = []
     checked = 0
