@@ -63,6 +63,8 @@ test("quickstart steps 1+3: log in and create the loopback demo target through t
   // Step 3: the create button only renders while no resource exists yet
   // (Commander finding A) — this stack was brought up with
   // --no-seed-resource for exactly this reason.
+  // PUB-6 P10: the cockpit names the host script whose output this form asks for.
+  await expect(panel).toContainText("sudo ./setup-loopback-demo.sh generate --account aireos-demo");
   await panel.getByRole("button", { name: "Create loopback demo target" }).click();
   await page.getByLabel("username").fill(DEMO_ACCOUNT);
   await page.getByLabel("ssh host key").fill(DEMO_HOST_KEY!);
@@ -79,6 +81,11 @@ test("quickstart steps 1+3: log in and create the loopback demo target through t
   // the POST returned 2xx.
   const registerItem = panel.locator("li", { hasText: "Register a resource" });
   await expect(registerItem.locator('span[aria-hidden="true"]')).toHaveText("✓", { timeout: 15_000 });
+
+  // PUB-6 P12: the new resource's id and its bind command are rendered, so step 4 needs no psql.
+  const bind = panel.getByRole("group", { name: "bind the demo credential" });
+  await expect(bind).toContainText(resource.id, { timeout: 15_000 });
+  await expect(bind).toContainText(`sudo ./setup-loopback-demo.sh bind --resource-id ${resource.id}`);
 
   fs.writeFileSync(STATE_FILE, resource.id, "utf8");
 

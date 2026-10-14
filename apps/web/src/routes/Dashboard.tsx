@@ -113,8 +113,7 @@ export function Dashboard() {
             <Link to="/audit" className="font-medium text-primary hover:underline">
               Audit timeline →
             </Link>{" "}
-            review the chained, append-only evidence log. The resource picker
-            lands with its feature ticket.
+            review the chained, append-only evidence log.
           </p>
           <CapabilityGate edge="human-agent" deniedScopes={PAIRED_DENIED_SCOPES}>
             <p className="mt-2 text-sm">

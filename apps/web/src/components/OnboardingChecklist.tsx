@@ -157,6 +157,13 @@ const LOOPBACK_PORT = "22";
 // side for this constant to stay in sync with.
 const DEMO_RESOURCE_NAME = "loopback-demo";
 
+// The two host-side commands the operator runs from the directory the offline
+// bundle was unpacked into (PUB-6 P10/P12: the cockpit never mentioned the
+// script, and no screen rendered the resource id its bind step needs). Creating
+// the unix account first is a quickstart step, not repeated here.
+const GENERATE_COMMAND = "sudo ./setup-loopback-demo.sh generate --account aireos-demo";
+const bindCommand = (resourceId: string) => `sudo ./setup-loopback-demo.sh bind --resource-id ${resourceId}`;
+
 // CreateLoopbackDemoTarget — the first UI call site for POST /v1/resources
 // (T-118b; ADR-0068 §D8/§D11, ONB-3/ONB-4). Deliberately a narrow demo-target
 // creator, not a general resource-management form: it collects exactly the
@@ -233,10 +240,7 @@ function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
 
   return (
     <form aria-label="create loopback demo target" className="mt-2 space-y-2 rounded-md border border-border p-3" onSubmit={(e) => void onSubmit(e)}>
-      <p className="text-xs text-muted-foreground">
-        Run <code className="font-mono">infra/offline/setup-loopback-demo.sh generate --account &lt;name&gt;</code>{" "}
-        on this host first, then paste what it prints below.
-      </p>
+      <p className="text-xs text-muted-foreground">Paste the username and ssh host key that the command above printed.</p>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span>
           host <span className="font-mono text-foreground">{LOOPBACK_HOST}</span>
@@ -358,8 +362,26 @@ export function OnboardingChecklist() {
         <ChecklistItem done={resourceExists}>Register a resource</ChecklistItem>
         <ChecklistItem done={actionCompleted}>Complete a governed action</ChecklistItem>
       </ul>
+      {!loading && !resourceExists && (
+        <p className="mb-2 mt-2 text-xs text-muted-foreground">
+          Creating the target asks for a username and an SSH host key that only the server can print. On the server, from the
+          directory the bundle was unpacked into, run{" "}
+          <code className="select-all font-mono text-foreground">{GENERATE_COMMAND}</code> — it prints both.
+        </p>
+      )}
       {!loading && !resourceExists && <CreateLoopbackDemoTarget onCreated={refresh} />}
       {!loading && demoResourceId && <RemoveLoopbackDemoTarget resourceId={demoResourceId} onRemoved={refresh} />}
+      {!loading && demoResourceId && !actionCompleted && (
+        <div role="group" aria-label="bind the demo credential" className="mt-2 space-y-1 text-xs text-muted-foreground">
+          <p>
+            Demo target resource id: <code className="select-all font-mono text-foreground">{demoResourceId}</code>
+          </p>
+          <p>Then, on the server, bind its credential:</p>
+          <pre className="select-all overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground">
+            {bindCommand(demoResourceId)}
+          </pre>
+        </div>
+      )}
       {!loading && resourceExists && !actionCompleted && (
         <p className="mt-2 text-xs text-muted-foreground">
           Next: launch a one-step command against it from{" "}

@@ -203,4 +203,31 @@ describe("Runs route", () => {
     expect(screen.queryByRole("region", { name: "plan preview" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
   });
+
+  it("names the resource (not just its id) in an expanded step, and says output is not stored with an Audit link (PUB-6 P15a)", async () => {
+    mockGET({
+      runs: { items: [{ id: "run-n", status: "completed" }], page: {} },
+      resources: [{ id: "res-9", name: "loopback-demo", type: "ssh" }],
+      detail: {
+        id: "run-n",
+        status: "completed",
+        steps: [
+          { stepIndex: 0, resourceId: "res-9", status: "completed", outcome: "tool.result" },
+          { stepIndex: 1, resourceId: "res-gone", status: "pending" },
+        ],
+      },
+    });
+
+    renderRuns();
+    await waitFor(() => expect(screen.getByText("run-n")).toBeTruthy());
+    fireEvent.click(screen.getByText("run-n"));
+
+    // Re-query inside waitFor: a terminal Run triggers loadRuns(), which remounts the list.
+    const stepsText = () => screen.getByRole("list", { name: "run steps" }).textContent ?? "";
+    await waitFor(() => expect(stepsText()).toContain("1. loopback-demo"));
+    // A resource the list does not know falls back to its id rather than rendering nothing.
+    expect(stepsText()).toContain("2. res-gone");
+    expect(screen.getByText(/command output is not stored/i)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Audit timeline" }).getAttribute("href")).toBe("/audit");
+  });
 });

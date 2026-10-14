@@ -182,6 +182,38 @@ describe("OnboardingChecklist — T-118b loopback demo target create action", ()
     expect(screen.queryByRole("button", { name: "Create loopback demo target" })).toBeNull();
   });
 
+  it("tells the operator which host script prints the username and host key, before the demo resource exists (PUB-6 P10)", async () => {
+    mockClient({ resourceExists: false, actionCompleted: false });
+    renderChecklist();
+
+    const cmd = await screen.findByText("sudo ./setup-loopback-demo.sh generate --account aireos-demo");
+    expect(cmd.tagName).toBe("CODE");
+    expect(cmd.parentElement?.textContent).toMatch(/directory the bundle was unpacked into/);
+    expect(cmd.parentElement?.textContent).toMatch(/prints both/);
+  });
+
+  it("renders the demo resource id and the exact bind command once it exists and no action has completed (PUB-6 P12)", async () => {
+    mockClient({ resourceExists: true, actionCompleted: false });
+    renderChecklist();
+
+    const group = await screen.findByRole("group", { name: "bind the demo credential" });
+    expect(group.textContent).toContain("r1");
+    expect(screen.getByText("sudo ./setup-loopback-demo.sh bind --resource-id r1").tagName).toBe("PRE");
+    // The id is its own selectable element, not just a substring of the command.
+    expect(screen.getByText("r1").tagName).toBe("CODE");
+    // And the existing next-step hint still follows it.
+    expect(screen.getByRole("link", { name: "Runs" })).toBeTruthy();
+  });
+
+  it("shows neither the generate instruction nor the bind block when they do not apply", async () => {
+    mockClient({ resourceExists: true, actionCompleted: true });
+    renderChecklist();
+
+    await waitFor(() => expect(screen.getByText(/all set/i)).toBeTruthy());
+    expect(screen.queryByText(/setup-loopback-demo.sh/)).toBeNull();
+    expect(screen.queryByRole("group", { name: "bind the demo credential" })).toBeNull();
+  });
+
   it("points at Runs once a resource exists but no action has completed yet", async () => {
     mockClient({ resourceExists: true, actionCompleted: false });
     renderChecklist();

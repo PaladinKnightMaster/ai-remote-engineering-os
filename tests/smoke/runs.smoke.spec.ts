@@ -56,6 +56,13 @@ test("operator launches a governed run and watches it reach completed", async ({
   const steps = page.getByRole("list", { name: "run steps" });
   await expect(steps).toContainText("completed", { timeout: 180_000 });
 
+  // PUB-6 P15a: the expanded step names the resource (not just its UUID) and says where the
+  // evidence is, because command output is never stored (ADR-0058).
+  await expect(steps).toContainText("e2e-target");
+  await expect(steps).not.toContainText("01900000-0000-7000-8000-0000000000e2");
+  await expect(page.getByText(/command output is not stored/i)).toBeVisible();
+  await expect(page.getByRole("link", { name: "Audit timeline" })).toHaveAttribute("href", "/audit");
+
   await testInfo.attach("run-completed", { body: await page.screenshot(), contentType: "image/png" });
 });
 

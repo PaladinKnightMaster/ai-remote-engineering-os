@@ -62,6 +62,10 @@ export function Runs() {
     })();
   }, []);
 
+  // id -> name for the expanded step list; a step whose resource is gone (or not yet
+  // loaded) falls back to the raw id rather than rendering nothing.
+  const resourceNameById = new Map(resources.map((r) => [r.id, r.name]));
+
   // Poll the selected Run's per-step status until it reaches a terminal state.
   useEffect(() => {
     if (!selected) {
@@ -395,22 +399,34 @@ export function Runs() {
                   </section>
                 ) : (
                   selected === r.id && (
-                    <ol aria-label="run steps" className="divide-y divide-border rounded-md border border-border">
-                      {(detail?.steps ?? []).map((s) => (
-                        <li key={s.stepIndex} className="flex items-center justify-between gap-3 p-2 text-xs">
-                          <span className="font-mono text-muted-foreground">
-                            {s.stepIndex + 1}. {s.resourceId}
-                          </span>
-                          <span>
-                            {s.status}
-                            {s.outcome ? ` · ${s.outcome}` : ""}
-                          </span>
-                        </li>
-                      ))}
-                      {(detail?.steps ?? []).length === 0 && (
-                        <li className="p-2 text-xs text-muted-foreground">Loading steps…</li>
-                      )}
-                    </ol>
+                    <>
+                      <ol aria-label="run steps" className="divide-y divide-border rounded-md border border-border">
+                        {(detail?.steps ?? []).map((s) => (
+                          <li key={s.stepIndex} className="flex items-center justify-between gap-3 p-2 text-xs">
+                            {/* RunStepView.command is returned only while a Run awaits review, so a launched
+                                Run's step shows the resource name, not the command (ADR-0059). */}
+                            <span className="text-muted-foreground">
+                              {s.stepIndex + 1}. {resourceNameById.get(s.resourceId) ?? s.resourceId}
+                            </span>
+                            <span>
+                              {s.status}
+                              {s.outcome ? ` · ${s.outcome}` : ""}
+                            </span>
+                          </li>
+                        ))}
+                        {(detail?.steps ?? []).length === 0 && (
+                          <li className="p-2 text-xs text-muted-foreground">Loading steps…</li>
+                        )}
+                      </ol>
+                      {/* stdout is never stored (ADR-0058): a step records that it ran, not what it printed. */}
+                      <p className="text-xs text-muted-foreground">
+                        Command output is not stored — the evidence of what ran is in the{" "}
+                        <Link to="/audit" className="underline">
+                          Audit timeline
+                        </Link>
+                        .
+                      </p>
+                    </>
                   )
                 )}
               </li>

@@ -76,6 +76,12 @@ describe("Dashboard — desktop session (no scope)", () => {
     renderDashboard({ subject: "operator:admin", edge: "human-agent" });
     await waitFor(() => expect(screen.getByRole("region", { name: "first-run checklist" })).toBeTruthy());
   });
+
+  // PUB-6 P13: internal ticket language must not reach the operator.
+  it("renders no internal ticket language", () => {
+    renderDashboard({ subject: "operator:admin", edge: "human-agent" });
+    expect(document.body.textContent).not.toMatch(/feature ticket|resource picker|lands with/i);
+  });
 });
 
 describe("Dashboard — paired session (approvals@1, ADR-0068 §D5)", () => {

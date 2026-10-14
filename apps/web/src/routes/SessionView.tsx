@@ -157,7 +157,7 @@ export function SessionView() {
       </header>
       {status === "closed" && (
         <div role="alert" className="border-b border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-          Session ended (the connection closed). At v0.1.0 a dropped connection ends
+          Session ended (the connection closed). A dropped connection ends
           the session —{" "}
           {/* variant="ghost" + className: text-primary font-medium — decision 3
               (ADR-0068 §D3 migration ratification): this is the one pre-existing

@@ -77,3 +77,55 @@ test("the checklist reflects a completed governed action and dismissal survives 
     contentType: "image/png",
   });
 });
+
+// PUB-6 P10/P12 — the two checklist states the SEEDED stack can never reach on its own (a
+// resource always exists from the seed, and an earlier spec has usually completed an action).
+// The built bundle runs in a real Chromium; only the two READ responses the checklist derives
+// its state from are replaced, so the rendered DOM under test is the shipped one. The REAL
+// un-seeded walkthrough (a genuine create -> real id) is quickstart-a.smoke.spec.ts.
+const FAKE_DEMO_ID = "0190c0de-0000-7000-8000-00000000d3e0";
+
+async function stubChecklistReads(page: Page, resources: unknown[]) {
+  await page.route(
+    (url) => url.pathname === "/v1/resources",
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ json: { items: resources, page: {} } })
+        : route.fallback(),
+  );
+  await page.route(
+    (url) => url.pathname === "/v1/audit/events" && url.searchParams.get("outcome") === "tool.result",
+    (route) => route.fulfill({ json: { items: [], page: {} } }),
+  );
+}
+
+test("before the demo resource exists, the checklist says which host script prints the values the form asks for (P10)", async ({ page }, testInfo) => {
+  await login(page);
+  await stubChecklistReads(page, []);
+  await page.goto("/");
+
+  const panel = page.getByRole("region", { name: "first-run checklist" });
+  await expect(panel.getByRole("button", { name: "Create loopback demo target" })).toBeVisible({ timeout: 15_000 });
+  await expect(panel).toContainText("sudo ./setup-loopback-demo.sh generate --account aireos-demo");
+  await expect(panel).toContainText("directory the bundle was unpacked into");
+  await expect(panel).not.toContainText("infra/offline");
+
+  await testInfo.attach("onboarding-p10-generate-instruction", { body: await page.screenshot(), contentType: "image/png" });
+});
+
+test("once the demo resource exists, the checklist shows its id and the exact bind command (P12)", async ({ page }, testInfo) => {
+  await login(page);
+  await stubChecklistReads(page, [{ id: FAKE_DEMO_ID, name: "loopback-demo", type: "ssh" }]);
+  await page.goto("/");
+
+  const bind = page.getByRole("group", { name: "bind the demo credential" });
+  await expect(bind).toBeVisible({ timeout: 15_000 });
+  await expect(bind).toContainText(FAKE_DEMO_ID);
+  await expect(bind).toContainText(`sudo ./setup-loopback-demo.sh bind --resource-id ${FAKE_DEMO_ID}`);
+  // It sits above the existing next-step hint.
+  const panelText = (await page.getByRole("region", { name: "first-run checklist" }).innerText()).replace(/\s+/g, " ");
+  expect(panelText.indexOf("--resource-id")).toBeGreaterThan(-1);
+  expect(panelText.indexOf("--resource-id")).toBeLessThan(panelText.indexOf("Next: launch a one-step command"));
+
+  await testInfo.attach("onboarding-p12-resource-id-and-bind", { body: await page.screenshot(), contentType: "image/png" });
+});
