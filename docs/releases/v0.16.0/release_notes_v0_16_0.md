@@ -11,9 +11,13 @@ what we claim?**
 governance plane. `mcp-gateway`, `policy-service`, `session-broker`, `connector-service`, `api`, and
 `audit-service` behave, at runtime, exactly as they did at the end of v0.15.0.
 
-**No runtime change.** Nothing an operator or an agent does against a running installation produces a
-different outcome than it did before this release. The install-wiring diff is zero: no new daemon,
-edge, key, network path, or datastore.
+**No change to the governance plane at runtime.** The PUB-6 fixes changed no file under `services/` or
+`packages/`, and no API. ⚠ **Two operator-facing changes
+did land, both found by PUB-6** (see "Found by PUB-6 and fixed before release"): `install.sh` now
+restarts its services on a re-run and checks the database URL, and the cockpit's Get-started panel and
+Run detail now show the information the quickstart needs. They change what an operator sees and how a
+re-install behaves — not what is governed. The install wiring is unchanged: no new daemon, edge, key,
+network path, or datastore.
 
 **No new WD.** By the project's own gate-sizing rule — a new WD only for new governed capability — a
 release that adds no governed capability has nothing for a new WD to measure. Minting one anyway would

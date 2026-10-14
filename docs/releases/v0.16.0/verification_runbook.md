@@ -171,7 +171,8 @@ Neither placeholder remains [ran: `grep -c "CEO to supply" SECURITY.md NOTICE` �
 ## Step 2 — DOC-16: what this release does and does not do
 
 See `release_notes_v0_16_0.md`, opening section. Restated here because it gates sign-off: **no new
-governed capability, no runtime change, no new WD.** If anything in Steps 1–1a above reads as a behavior
+governed capability, no governance-plane runtime change, no new WD** — the PUB-6 fixes change the
+installer's re-run behaviour and the cockpit's onboarding display only (release notes). If anything in Steps 1–1a above reads as a behavior
 change to a stranger installing the product, that is a defect in this runbook or the release, not an
 acceptable surprise for PUB-6 to discover.
 
