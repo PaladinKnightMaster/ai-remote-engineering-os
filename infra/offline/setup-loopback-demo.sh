@@ -137,7 +137,20 @@ aireos_loopback_parse_bind_args() {
     esac
   done
   [ -n "$rid" ] || { echo "bind requires --resource-id <uuid>" >&2; return 1; }
+  if ! aireos_loopback_is_uuid "$rid"; then
+    # PUB-6 P14: a pasted placeholder ("PASTE-THE-ID") used to be forwarded to
+    # connector-service and surface as a raw SQLSTATE 22P02. Say what an id
+    # looks like and where it comes from instead.
+    echo "bind: '$rid' is not a resource id. A resource id is 36 characters: 8-4-4-4-12 hex digits separated by dashes, for example 0190abcd-0000-7000-8000-000000000001. Use the id shown in the cockpit for the loopback demo resource you created, not placeholder text from a guide." >&2
+    return 1
+  fi
   printf '%s\n' "$rid"
+}
+
+# aireos_loopback_is_uuid <value> — true iff <value> is exactly the canonical
+# 8-4-4-4-12 hexadecimal UUID shape (any case, any version digit).
+aireos_loopback_is_uuid() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
 }
 
 # aireos_loopback_authkey_line <raw-pubkey-line> <marker> — prints the fully

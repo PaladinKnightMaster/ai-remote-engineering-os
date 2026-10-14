@@ -194,6 +194,73 @@ expect_pairing_resolve "env wins over a differing persisted value" "1" "0" "1"
 expect_pairing_resolve "persisted survives when env is unset (the re-run fix)" "" "1" "1"
 expect_pairing_resolve "neither set -- safe default \"0\" (SEC-41, fresh install)" "" "" "0"
 
+# --- T-165 / PUB-6 P7: database URL shape ------------------------------------
+expect_url() {   # expect_url <name> <ok|bad> <url>
+  local name="$1" want="$2" url="$3" got=bad
+  if aireos_valid_db_url "$url"; then got=ok; fi
+  if [ "$got" = "$want" ]; then
+    echo "PASS db-url $name -- $got"; pass=$((pass + 1))
+  else
+    echo "FAIL db-url $name -- expected $want, got $got"; fail=$((fail + 1))
+  fi
+}
+
+echo "== aireos_valid_db_url (PUB-6 P7) =="
+expect_url "postgres:// canonical"                        ok  'postgres://cockpit:pw@localhost:5432/cockpit?sslmode=disable'
+expect_url "postgresql:// scheme"                         ok  'postgresql://cockpit:pw@db.corp.example:5432/cockpit'
+expect_url "raw @ in the password stays valid (CEO's real one)" ok 'postgres://cockpit:p@ss@w0rd@10.0.0.5:5432/cockpit?sslmode=disable'
+expect_url "no port"                                      ok  'postgres://cockpit:pw@db/cockpit'
+expect_url "no userinfo"                                  ok  'postgres://db.example:5432/cockpit'
+expect_url "bracketed IPv6 host"                          ok  'postgres://cockpit:pw@[::1]:5432/cockpit'
+expect_url "empty"                                        bad ''
+expect_url "bare word 'cockpit' (the P7 input)"           bad 'cockpit'
+expect_url "http:// scheme"                               bad 'http://cockpit:pw@localhost:5432/cockpit'
+expect_url "mysql:// scheme"                              bad 'mysql://cockpit:pw@localhost:3306/cockpit'
+expect_url "scheme only"                                  bad 'postgres://'
+expect_url "empty host (postgres:///db)"                  bad 'postgres:///cockpit'
+expect_url "userinfo but empty host"                      bad 'postgres://cockpit:pw@/cockpit'
+expect_url "non-numeric port"                             bad 'postgres://cockpit:pw@localhost:abc/cockpit'
+expect_url "whitespace inside"                            bad 'postgres://cockpit:pw@local host:5432/cockpit'
+expect_url "the old placeholder pasted verbatim, missing scheme" bad 'user:pass@host:5432/cockpit?sslmode=disable'
+
+# the hint must show the expected shape and must NEVER echo a candidate value
+HINT="$(aireos_db_url_hint)"
+case "$HINT" in
+  *"postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable"*) echo "PASS db-url hint shows the expected shape"; pass=$((pass + 1)) ;;
+  *) echo "FAIL db-url hint does not show the expected shape: $HINT"; fail=$((fail + 1)) ;;
+esac
+
+# --- T-165 / PUB-6 P9: a re-run RESTARTS the units ---------------------------
+# A stub systemctl on PATH records its argv. `enable --now` on an already-active
+# unit is a no-op, so only an explicit `restart` of every unit makes the env a
+# re-run just wrote take effect.
+echo "== aireos_enable_and_restart_units (PUB-6 P9) =="
+SCBIN="$TMPD/scbin"; mkdir -p "$SCBIN"
+cat > "$SCBIN/systemctl" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$SYSTEMCTL_LOG"
+[ -n "${SYSTEMCTL_FAIL_ON:-}" ] && [ "$1" = "$SYSTEMCTL_FAIL_ON" ] && exit 1
+exit 0
+STUB
+chmod +x "$SCBIN/systemctl"
+SEVEN="aireos-api.service aireos-audit.service aireos-broker.service aireos-connector.service aireos-policy.service aireos-mcp-gateway.service aireos-caddy.service"
+
+export SYSTEMCTL_LOG="$TMPD/systemctl.log"; : > "$SYSTEMCTL_LOG"
+if PATH="$SCBIN:$PATH" aireos_enable_and_restart_units; then rc=0; else rc=$?; fi
+if [ "$rc" -eq 0 ]; then echo "PASS restart: happy path returns 0"; pass=$((pass + 1)); else echo "FAIL restart: happy path rc=$rc"; fail=$((fail + 1)); fi
+missing=""
+for u in $SEVEN; do
+  grep -qE "^restart (.* )?$u( |\$)" "$SYSTEMCTL_LOG" || missing="$missing $u"
+done
+if [ -z "$missing" ]; then echo "PASS restart: all seven units named in a 'systemctl restart'"; pass=$((pass + 1)); else echo "FAIL restart: not restarted:$missing -- log: $(tr '\n' ';' < "$SYSTEMCTL_LOG")"; fail=$((fail + 1)); fi
+if grep -q -- '--now' "$SYSTEMCTL_LOG"; then echo "FAIL restart: still uses enable --now (a no-op on an active unit)"; fail=$((fail + 1)); else echo "PASS restart: no enable --now"; pass=$((pass + 1)); fi
+
+for failing in daemon-reload enable restart; do
+  : > "$SYSTEMCTL_LOG"
+  if SYSTEMCTL_FAIL_ON="$failing" PATH="$SCBIN:$PATH" aireos_enable_and_restart_units; then rc=0; else rc=$?; fi
+  if [ "$rc" -ne 0 ]; then echo "PASS restart: failing '$failing' makes the function fail (rc=$rc)"; pass=$((pass + 1)); else echo "FAIL restart: failing '$failing' was swallowed"; fail=$((fail + 1)); fi
+done
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

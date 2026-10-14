@@ -12,7 +12,9 @@
 # Provisioning (ADR-0051 OQ-4): interactive prompts by default; set the env vars
 # below for an unattended install (the automated WD-1 demo uses that path).
 # Idempotent (OI-2): re-running preserves existing cluster keys and re-applies
-# migrations as no-ops; the operator is env-defined (no duplicate rows).
+# migrations as no-ops; the operator is env-defined (no duplicate rows). A re-run
+# RESTARTS the seven units so the env it just wrote (site address, profile,
+# pairing) is what is actually serving — `enable --now` alone would not.
 #
 # Env overrides (any unset value is prompted unless noted):
 #   AIREOS_DB_URL                       postgres connection string (required)
@@ -169,6 +171,61 @@ aireos_assert_profile() {
   return 0
 }
 
+# --- database URL shape + systemd (re)start helpers (T-165; PUB-6 P7/P9) -----
+
+# aireos_valid_db_url <url> — true (0) iff <url> is a postgres:// or
+# postgresql:// URL with a non-empty host. PURE shape check — it never connects
+# and never echoes the value (it may carry a password). The authority ends at the
+# first '/', '?' or '#' and the userinfo ends at the LAST '@', exactly as Go's
+# net/url splits it, so a password containing a raw '@' stays valid (the CEO's
+# real password had one and worked end to end). A bare word like "cockpit" (P7)
+# or a non-postgres scheme is refused; so is an empty host ("postgres:///db").
+aireos_valid_db_url() {
+  local url="$1" rest authority hostport host port
+  case "$url" in
+    postgres://*) rest="${url#postgres://}" ;;
+    postgresql://*) rest="${url#postgresql://}" ;;
+    *) return 1 ;;
+  esac
+  [[ "$url" =~ [[:space:]] ]] && return 1
+  authority="${rest%%[/?#]*}"
+  hostport="${authority##*@}"
+  if [[ "$hostport" == \[* ]]; then
+    host="${hostport#\[}"; host="${host%%]*}"
+    port="${hostport#*]}"; port="${port#:}"
+  else
+    host="${hostport%%:*}"
+    port=""; [[ "$hostport" == *:* ]] && port="${hostport#*:}"
+  fi
+  [ -n "$host" ] || return 1
+  [[ "$port" =~ ^[0-9]*$ ]] || return 1
+  return 0
+}
+
+# aireos_db_url_hint — the plain-English refusal for a value that is not a
+# usable database URL. Deliberately does NOT take or print the value.
+aireos_db_url_hint() {
+  printf '%s' "That is not a PostgreSQL connection URL. It must start with postgres:// (or postgresql://) and name a host, in this shape: postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable"
+}
+
+# The seven units install.sh owns, in start order.
+AIREOS_UNITS=(aireos-api.service aireos-audit.service aireos-broker.service
+  aireos-connector.service aireos-policy.service aireos-mcp-gateway.service
+  aireos-caddy.service)
+
+# aireos_enable_and_restart_units — daemon-reload, enable, then RESTART all
+# seven units. `enable --now` alone is a no-op on an already-active unit, and
+# every unit reads aireos.env (Caddy: AIREOS_SITE_ADDRESS, Caddyfile:17) only at
+# process start — so on a re-run that changed the address / profile / pairing
+# flag the old values kept serving while the DONE line announced the new ones
+# (PUB-6 P9). restart also starts a stopped unit. Returns non-zero on the first
+# failing systemctl call; the caller must die, never print DONE.
+aireos_enable_and_restart_units() {
+  systemctl daemon-reload || return 1
+  systemctl enable "${AIREOS_UNITS[@]}" || return 1
+  systemctl restart "${AIREOS_UNITS[@]}" || return 1
+}
+
 # Sourceable guard (install_profile_test.sh sources this file to reach the
 # helpers above without running the installer body). NOTE: `set -euo pipefail`
 # above already applies to the sourcing shell by the time this guard runs —
@@ -189,14 +246,21 @@ PERSISTED_PROFILE="$(aireos_persisted_value "AIREOS_DEPLOYMENT_PROFILE" "$ENV_FI
 ANSWER=""
 if [ -z "${AIREOS_DEPLOYMENT_PROFILE:-}" ]; then
   if [ -n "$PERSISTED_PROFILE" ]; then
-    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first] (default: $PERSISTED_PROFILE): " ANSWER || true
+    read -e -r -p "Deployment profile [lan-only|vpn-first|dmz-first] (default: $PERSISTED_PROFILE): " ANSWER || true
   else
-    read -r -p "Deployment profile [lan-only|vpn-first|dmz-first]: " ANSWER || true
+    read -e -r -p "Deployment profile [lan-only|vpn-first|dmz-first]: " ANSWER || true
   fi
 fi
 DEPLOYMENT_PROFILE="$(aireos_resolve_profile "${AIREOS_DEPLOYMENT_PROFILE:-}" "$PERSISTED_PROFILE" "$ANSWER")"
 aireos_assert_profile "$DEPLOYMENT_PROFILE" "${AIREOS_SITE_ADDRESS:-}"
 log "deployment profile: $DEPLOYMENT_PROFILE"
+
+# --- 1a'. unattended database URL shape (PUB-6 P7) ---------------------------
+# An env-supplied AIREOS_DB_URL cannot be re-asked, so refuse it now — before any
+# user, directory, key or env file exists. (The interactive prompt is step 5.)
+if [ -n "${AIREOS_DB_URL:-}" ] && ! aireos_valid_db_url "$AIREOS_DB_URL"; then
+  die "AIREOS_DB_URL is set but $(aireos_db_url_hint)"
+fi
 
 # --- 1b. pairing enablement (ADR-0068 §D10; T-114a Commander-review addendum)
 # Env beats persisted beats "0" — no prompt (see aireos_resolve_pairing_enabled's
@@ -334,7 +398,7 @@ fi
 OP_USER="${AIREOS_BOOTSTRAP_OPERATOR_USER:-}"
 OP_HASH="${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH:-}"
 if [ -z "$OP_HASH" ]; then
-  [ -n "$OP_USER" ] || read -r -p "Operator username: " OP_USER
+  [ -n "$OP_USER" ] || read -e -r -p "Operator username: " OP_USER
   OP_PW="${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD:-}"
   if [ -z "$OP_PW" ]; then read -r -s -p "Operator password: " OP_PW; echo; fi
   [ -n "$OP_USER" ] && [ -n "$OP_PW" ] || die "operator username + password are required"
@@ -342,9 +406,17 @@ if [ -z "$OP_HASH" ]; then
 fi
 
 # --- 5. DB connection string ------------------------------------------------
-DB_URL="${AIREOS_DB_URL:-}"
-[ -n "$DB_URL" ] || read -r -p "Postgres URL (postgres://user:pass@host:5432/cockpit?sslmode=disable): " DB_URL
-[ -n "$DB_URL" ] || die "postgres connection URL required — install postgres 16 + pgcrypto first (see the offline postgres guide)"
+DB_URL="${AIREOS_DB_URL:-}"   # shape already verified in step 1a' when env-supplied
+while [ -z "$DB_URL" ]; do
+  read -e -r -p "Postgres URL (postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable): " DB_URL \
+    || die "postgres connection URL required — set AIREOS_DB_URL, or run interactively. Install postgres 16 + pgcrypto first (see the offline postgres guide)"
+  if ! aireos_valid_db_url "$DB_URL"; then
+    # No terminal to re-ask on (piped stdin): fail now, before any env file is written.
+    [ -t 0 ] || die "$(aireos_db_url_hint)"
+    printf '\033[1;31m[install]\033[0m %s\n' "$(aireos_db_url_hint)" >&2
+    DB_URL=""
+  fi
+done
 
 # --- 6. write the env files (0600, owned by the service user) ---------------
 # aireos.env = shared config for every unit. The resource key is NOT here: it
@@ -442,10 +514,9 @@ done
 if [ "${AIREOS_SKIP_SYSTEMCTL:-0}" = "1" ] || ! command -v systemctl >/dev/null 2>&1; then
   log "skipping systemctl (AIREOS_SKIP_SYSTEMCTL set or no systemd) — deploy + provision complete"
 else
-  log "enable + start systemd units"
-  systemctl daemon-reload
-  systemctl enable --now aireos-api.service aireos-audit.service aireos-broker.service \
-    aireos-connector.service aireos-policy.service aireos-mcp-gateway.service aireos-caddy.service
+  log "enable + (re)start systemd units — a re-run must pick up the env it just wrote"
+  aireos_enable_and_restart_units \
+    || die "systemd could not enable and restart the AI ReOS units — nothing above is live yet. See: systemctl status 'aireos-*' and journalctl -u aireos-api -u aireos-caddy"
 fi
 log "DONE — cockpit installed (deployment profile: $DEPLOYMENT_PROFILE). Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."
 # ADR-0069 D5/SEC-44: this public key is the trust root for offline

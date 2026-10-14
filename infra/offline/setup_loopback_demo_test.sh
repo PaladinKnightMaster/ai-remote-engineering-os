@@ -99,6 +99,27 @@ expect_bind_refuse "missing value"        --resource-id
 expect_bind_refuse "empty value"          --resource-id ""
 expect_bind_refuse "unknown flag"         --bogus x
 
+# T-165 / PUB-6 P14: a non-UUID must be refused HERE, in plain English, not
+# forwarded to connector-service (where it surfaced as a raw SQLSTATE 22P02).
+expect_bind_ok "upper-case uuid is still a uuid" "0190ABCD-0000-7000-8000-00000000000F" --resource-id 0190ABCD-0000-7000-8000-00000000000F
+expect_bind_refuse "the literal placeholder PASTE-THE-ID (the P14 input)" --resource-id PASTE-THE-ID
+expect_bind_refuse "<id> placeholder"                     --resource-id '<id>'
+expect_bind_refuse "uuid missing a group"                 --resource-id 0190abcd-0000-7000-8000
+expect_bind_refuse "uuid with a non-hex digit"            --resource-id 0190abcd-0000-7000-8000-00000000000g
+expect_bind_refuse "uuid too long (13 in the last group)" --resource-id 0190abcd-0000-7000-8000-0000000000012
+expect_bind_refuse "uuid without dashes"                  --resource-id 0190abcd000070008000000000000001
+expect_bind_refuse "uuid with trailing space"             --resource-id "0190abcd-0000-7000-8000-000000000001 "
+
+# the refusal must say what an id looks like and where it comes from
+if out="$(aireos_loopback_parse_bind_args --resource-id PASTE-THE-ID 2>&1)"; then
+  bad "bind refusal wording" "expected refusal, got '$out'"
+else
+  case "$out" in
+    *"8-4-4-4-12"*"shown in the cockpit"*) ok "bind refusal wording -- says what an id looks like and to use the id shown in the cockpit" ;;
+    *) bad "bind refusal wording" "message lacks the id shape / cockpit pointer: $out" ;;
+  esac
+fi
+
 echo "== aireos_loopback_authkey_line =="
 
 MARKER="aireos-loopback-demo"

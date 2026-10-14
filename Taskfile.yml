@@ -77,6 +77,11 @@ tasks:
       # it must be run inside golang:1.26 (or another root container) to
       # actually exercise the assertion. See the script's own header.
       - bash infra/offline/install_audit_key_test.sh
+      # install.sh's database-URL check, line editing and RESTART-on-re-run
+      # (T-165, PUB-6 P6/P7/P9): runs the REAL body, so like the test above it
+      # needs root and SKIPS unless it is in a container (it deletes
+      # /etc/aireos between legs). Run inside golang:1.26.
+      - bash infra/offline/install_prompts_test.sh
       # JS workspace unit tests (T-007a). `--if-present` skips packages
       # without a `test` script; packages/ui + packages/config have none yet.
       - pnpm -r --if-present run test
