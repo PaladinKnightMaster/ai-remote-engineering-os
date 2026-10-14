@@ -516,7 +516,7 @@ if [ "${AIREOS_SKIP_SYSTEMCTL:-0}" = "1" ] || ! command -v systemctl >/dev/null 
 else
   log "enable + (re)start systemd units — a re-run must pick up the env it just wrote"
   aireos_enable_and_restart_units \
-    || die "systemd could not enable and restart the AI ReOS units — nothing above is live yet. See: systemctl status 'aireos-*' and journalctl -u aireos-api -u aireos-caddy"
+    || die "systemd could not enable and restart the seven aireos-* units — the install is NOT complete. See: systemctl status 'aireos-*' and journalctl -u aireos-api -u aireos-caddy"
 fi
 log "DONE — cockpit installed (deployment profile: $DEPLOYMENT_PROFILE). Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."
 # ADR-0069 D5/SEC-44: this public key is the trust root for offline
