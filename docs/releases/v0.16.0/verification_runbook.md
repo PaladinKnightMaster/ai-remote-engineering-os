@@ -243,7 +243,16 @@ README alone. Quickstart steps 3, 5 and 6 (the browser UI) were not exercised in
 Desktop's HTTPS port-forwarding on the Windows host breaks native browsers — so nobody but you has tested
 them.
 
-### PUB-6 RESULT — **PENDING.** Not run by this ticket; the CEO records the outcome here.
+### First PUB-6 run — 2026-10-14, by the CEO — **FAILED on documents; PUB-6 is NOT discharged**
+
+Full record: [`pub6-ceo-run.md`](pub6-ceo-run.md). On a fresh Ubuntu 24.04 VM, with the production-signed
+artifacts, **the product passed every step and the documents failed the stranger test** (no signposted
+start in the install guide, a verification block that covered one artifact of two, a placeholder pasted
+verbatim, a resource id no screen showed, and two success claims that were false). The fix pass is
+T-164/T-165/T-166 (criteria §10). **The re-run happens on a FRESH host after the artifacts are rebuilt from
+the fixed commit and re-signed**.
+
+### PUB-6 RESULT — **PENDING.** The first run failed (above); the CEO records the outcome of the re-run here.
 
 ---
 

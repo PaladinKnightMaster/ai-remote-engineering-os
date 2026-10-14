@@ -41,6 +41,59 @@ gate found it.
 installs and runs fully offline. **The proper fix needs its own ADR** and is deferred to a later release
 rather than smuggled into a release that ships no runtime change.
 
+**R1 is latent, not disproven.** On 2026-10-14 the CEO installed the signed artifacts on a freshly
+installed, security-updated Ubuntu 24.04 host and the companion installed cleanly — but only because no
+newer `perl-base` update had shipped since the companion was rebuilt on 2026-10-06. The next such update
+will trigger it again. Do not read that clean install as the limitation being gone.
+
+---
+
+## Found by PUB-6 and fixed before release (2026-10-14)
+
+PUB-6 is the release's own stranger test: the CEO installed the signed artifacts on a fresh Ubuntu 24.04
+virtual machine following only the public `README.md` and what it links. **The product passed every step;
+the documents failed.** The full record is `pub6-ceo-run.md`. Three tickets answered it, and PUB-6 is
+re-run on a fresh host after the artifacts are rebuilt and re-signed.
+
+- **T-165 — the installer and the demo script.** Re-running `install.sh` now restarts all seven services,
+  so a corrected site address or profile actually takes effect; before, Caddy kept serving the old address
+  while the installer printed that it served the new one. The database URL is shape-checked and re-asked
+  at the prompt instead of being written into five files and failing later at the migration; prompts now
+  support arrow-key editing; `setup-loopback-demo.sh bind` refuses anything that is not a resource id,
+  with a plain-English message.
+- **T-166 — the cockpit.** The Get-started panel shows the `generate` command before "Create loopback
+  demo target"; once the target exists it shows the resource id and the exact `bind` command to run. A
+  Run's expanded step shows the resource name and says that command output is not stored and the evidence
+  is in the Audit timeline. A leftover internal sentence on the Dashboard was removed.
+- **T-164 — the documents.** The install guide now starts with the reader's own path (what you need,
+  verify, PostgreSQL, install, check it works, then the quickstart) and keeps build, signing and key
+  custody in a maintainer section at the end. Verification has one home, in the install guide, and covers
+  **both** artifacts — `SECURITY.md` had shown a command for the application bundle only, so a reader
+  following it exactly would never have verified the companion that runs as root. Every command that needs
+  root carries `sudo`; every placeholder is written so that pasting it unchanged fails loudly; the
+  quickstart's paths, resource id and output steps match what now ships; and internal ticket, criterion and
+  source-file references were removed from the pages a stranger reads.
+
+---
+
+## Known limitations
+
+- **The postgres companion on patched hosts (R1)** — above. Latent, not fixed; the fix is ADR-0077
+  (Proposed) and is planned before v1.0.0 Beta 1.
+- **A site address that is not on this host is not warned about (PUB-6 P8).** Typing an IP the server does
+  not hold is accepted silently; you find out at the browser. Re-running the installer with the right
+  address now corrects it.
+- **An operator cannot see a Run's command output (PUB-6 P15b).** Output is never stored — by design for
+  now, a deliberate evidence and privacy decision (ADR-0058). The audit trail records that a command ran and
+  under which decision, not what it printed. Whether an operator should see the output of a Run they
+  launched is a product question that needs its own decision; it is not changed here. A launched Run's
+  expanded step also shows the resource, not the command text.
+- **The installer's restart is not a health check.** The seven services are systemd `Type=simple` units,
+  so a successful `systemctl restart` proves the process was launched, not that it stayed up; a service
+  that crashes at start can still be followed by the installer's success line. The install guide's
+  step 4 (`systemctl is-active` on all seven) is the check that catches it. Deferred to the next installer
+  change.
+
 ---
 
 ## What this release DID do
@@ -137,7 +190,9 @@ instrument, not a product code path.
 
 1. **Sign** both artifacts with the production key (custody outside this repo).
 2. **PUB-6** — a fresh-host install from the signed artifacts, following only the public `README.md`. It
-   must follow signing: the install path says a missing `.sig` means stop.
+   must follow signing: the install path says a missing `.sig` means stop. The first run (2026-10-14)
+   failed on documents; this one runs on a fresh host after the artifacts are rebuilt from the fixed
+   commit and re-signed.
 3. **Tag** the commit the artifacts were built from; the sha lands in a closure commit afterward (the
    v0.15.0 "tag + 1" pattern).
 4. **Push** — last, only after PUB-6 passes. This repo has no git remote today and must not get one

@@ -45,30 +45,25 @@ the scope described and does not involve third parties' systems or data.
 ⭐ **This matters more here than for most projects: verifiable provenance is one of
 this product's own claims, so it should be the first thing you exercise.**
 
-Every shipped artifact carries a detached Ed25519 signature and a CycloneDX SBOM.
-Verification needs **only `openssl`** — already present on the target host — and
-the public key. There is no bespoke verifier binary to trust
-[see [`docs/devops/offline-install-v3.md`](docs/devops/offline-install-v3.md)].
+Every shipped artifact carries a detached Ed25519 signature and a CycloneDX SBOM. There are
+two artifacts to verify — the application bundle and the postgres companion — and **the
+companion matters most: its installer runs as root.** Verification needs **only `openssl`**
+(already present on the target host) and the release public key; there is no bespoke verifier
+binary to trust.
 
-**1. Check the public key is the right one.** Compare its SHA-256 fingerprint
-against the one published in that release's notes, **obtained through a different
-channel than the artifact itself**:
+**The commands are in one place: step 1 of the
+[install guide](docs/devops/offline-install-v3.md#1-verify-the-downloads).** It has you
+(1) compute the public key's SHA-256 fingerprint and compare it with the one published in that
+release's notes, **obtained through a different channel than the artifacts themselves**, and
+(2) verify the signature of **both** artifacts. Both must print
+`Signature Verified Successfully`; **a missing `.sig`, or any other output, means stop** — do
+not extract or run anything from that artifact.
 
-```
-openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
-```
+What a passing check proves: the artifact was produced by whoever holds the release key, and
+has not been altered since. It does **not** prove the build was clean or tie the artifact to a
+source revision, and it claims no SLSA level.
 
-**2. Verify each artifact** — the core bundle and the postgres companion. The
-companion matters most: it is the one whose `install-postgres.sh` runs **as root**.
-
-```
-openssl pkeyutl -verify -pubin -inkey aireos-release.pub   -rawin -in aireos-offline-<version>.tar.gz -sigfile aireos-offline-<version>.tar.gz.sig
-```
-
-Both must print `Signature Verified Successfully`. **A missing `.sig`, or any other
-output, means stop** — do not extract or run anything from that artifact.
-
-**3. The audit chain verifies independently**, offline, with no database and no
+**The audit chain verifies independently**, offline, with no database and no
 network, using the `aireos-verify` binary shipped inside the bundle.
 
 ⚠ **The honest limit of all this.** If you received the artifact and the public key

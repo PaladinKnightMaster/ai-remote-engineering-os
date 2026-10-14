@@ -116,33 +116,24 @@ planned to land, along with an API surface freeze. Neither has happened yet.
 
 ## Install
 
-The product ships as a signed, offline-installable bundle — no container registry,
-and no internet access on the target host once the artifacts are transferred.
+The product ships as a signed, offline-installable bundle — no container registry, and no
+internet access on the target host once the files are copied over. Supported today:
+**Ubuntu 24.04** and **Rocky/RHEL-family 9**, `amd64` (Windows is a browser client only).
 
-1. **Get the release artifacts.** From this repository's **Releases** page, download
-   the core bundle (`aireos-offline-<version>.tar.gz`), the postgres companion for
-   your OS (`aireos-postgres-<ostag>.tar.gz`), a `.sig` file for each, and the
-   release public key `aireos-release.pub`. *(You can also build from source — see
-   the install guide — but a bundle you built yourself has no published signature to
-   check against.)*
-2. **Verify them before you extract anything.** Check the public key's fingerprint
-   against the one in that release's notes, obtained through a different channel
-   than the download, then verify each signature. The exact commands are in
-   [`SECURITY.md` → Verifying a release](SECURITY.md#verifying-a-release-before-you-install-it).
-   A missing `.sig`, or any result other than `Signature Verified Successfully`,
-   means stop.
-3. **Install on the target host** — follow
-   [`docs/devops/offline-install-v3.md`](docs/devops/offline-install-v3.md).
-   Supported today: **Ubuntu 24.04** and **Rocky/RHEL-family 9**, `amd64`. Windows
-   is a browser client only; there is no Windows server build. ⚠ This release's
-   prebuilt postgres companion is **Ubuntu-only** — on Rocky/RHEL 9, build the companion
-   yourself (the postgres guide's first section) or bring your own PostgreSQL 16.
-4. **Walk through your first governed action** —
-   [`docs/devops/quickstart-first-governed-action.md`](docs/devops/quickstart-first-governed-action.md)
-   takes you from a running install to a completed, audited action. Only the
-   `lan-only` deployment profile is proven end to end today.
+1. **Download** the five release files from this repository's **Releases** page — the
+   application bundle and the postgres companion, a `.sig` for each, and the public key
+   `aireos-release.pub` — and copy them to your server (for example with `scp`).
+2. **Follow the [install guide](docs/devops/offline-install-v3.md).** It takes you through
+   verifying the downloads (step 1 — do not skip it: a missing `.sig`, or any result other than
+   `Signature Verified Successfully`, means stop), installing PostgreSQL, installing the
+   application, and checking it works. ⚠ This release's prebuilt postgres companion is
+   **Ubuntu-only**; on Rocky/RHEL 9 see the [postgres guide](docs/devops/offline-postgres-install.md).
+3. **Walk through your first governed action** — the
+   [quickstart](docs/devops/quickstart-first-governed-action.md) takes you from the running
+   install to a completed, audited action. Only the `lan-only` deployment profile is proven end
+   to end today.
 
-> ⚠ **Known install limitation (v0.16.0) — read before step 3.** The prebuilt
+> ⚠ **Known install limitation (v0.16.0) — read before step 2.** The prebuilt
 > postgres companion carries operating-system packages pinned to the versions that
 > were current on the day it was built. On a host that has applied OS security
 > updates since then — which is every well-maintained server — its install stops
@@ -153,6 +144,9 @@ and no internet access on the target host once the artifacts are transferred.
 > [bring your own PostgreSQL](docs/devops/offline-postgres-install.md#bring-your-own-postgresql-16).
 > Everything after postgres installs and runs fully offline. A proper fix is planned
 > for a later release.
+
+Building the bundle from source is a maintainer task, described at the end of the install
+guide; a bundle you build yourself has no published signature to check against.
 
 ---
 

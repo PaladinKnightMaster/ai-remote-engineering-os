@@ -1,27 +1,270 @@
-# Offline install
+# Install guide
 
-How to install the product on a host with no internet access. The core bundle and a
-per-OS postgres companion are built on a connected machine and installed on a target
-host with no public-internet egress. Design records: **ADR-0051** (architecture) and
-**ADR-0052** (postgres companions).
+How to install AI Remote Engineering OS on a Linux server. It works on a server with no
+internet access. **You do not build anything to install** — you verify the downloads, install
+PostgreSQL, install the application, and check that it runs.
 
-> ⚠ **Known limitation — read §Install step 1 before you start.** The prebuilt postgres
-> companion fails on hosts that have applied OS security updates since it was built.
-> A bring-your-own-PostgreSQL workaround is documented there.
+> ⚠ **Known limitation (v0.16.0) — read before step 2.** The prebuilt PostgreSQL companion
+> fails on a server that has applied operating-system security updates since the companion
+> was built, with an error like `perl : Depends: perl-base (= …) but … is to be installed`.
+> That is most well-maintained servers. If you hit it, use your own PostgreSQL 16 instead —
+> [Bring your own PostgreSQL 16](offline-postgres-install.md#bring-your-own-postgresql-16) —
+> and carry on at step 3. A proper fix is planned for a later release.
 
-Offline-first (ADR-0001) governs the **target** host: the bundle + companions are
-built on a connected machine and installed on a host with no public-internet egress.
+## What you need
+
+- **A server**: Ubuntu 24.04 or Rocky/RHEL 9, `amd64`, and a login user that can run `sudo`.
+  (Windows is a browser client only — there is no Windows server.)
+- **Five files** from the project's **Releases** page, copied onto the server into one empty
+  directory (the examples below assume you are in that directory):
+
+  | File | What it is |
+  |---|---|
+  | `aireos-offline-<version>.tar.gz` and `aireos-offline-<version>.tar.gz.sig` | the application, and its signature |
+  | `aireos-postgres-ubuntu2404.tar.gz` and `aireos-postgres-ubuntu2404.tar.gz.sig` | the PostgreSQL 16 companion, and its signature (prebuilt for Ubuntu 24.04 only — on Rocky/RHEL 9 see the [postgres guide](offline-postgres-install.md)) |
+  | `aireos-release.pub` | the release public key |
+
+  Copy them from your own computer with `scp`, run on your computer, not on the server:
+
+  ```sh
+  scp aireos-offline-<version>.tar.gz aireos-offline-<version>.tar.gz.sig aireos-postgres-ubuntu2404.tar.gz aireos-postgres-ubuntu2404.tar.gz.sig aireos-release.pub <user>@<server-ip>:
+  ```
+
+- **The key fingerprint** from the Releases page notes. Read it through a different channel
+  than the downloads (see [what verification proves](../../SECURITY.md#verifying-a-release-before-you-install-it)).
+
+**How to read the commands.** Anything in `<angle brackets>` is a blank you must fill in, and
+the line tells you what to put there. If you paste a line without filling it in, the shell
+stops with an error such as `No such file or directory` — that is the intended safety net, so
+do not "fix" it by deleting the brackets only. In file names, `<version>` is the version
+number in the name of the file you downloaded. In the `scp` line, replace `<user>` with your
+login name on the server and `<server-ip>` with the server's IP address.
+
+---
+
+## 1. Verify the downloads
+
+Do this **before you extract anything**. The installer runs from inside the extracted
+application bundle, so it can never check the archive it came from — and the PostgreSQL
+companion's installer runs as root. Verification uses only `openssl`, which is already on the
+server. Run these in the directory holding the five files.
+
+Print the public key's fingerprint and compare it, character for character, with the one on
+the Releases page:
+
+```sh
+openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
+```
+
+The output ends with a 64-character hex string; that string must equal the published
+fingerprint. If it does not, **stop** — the key is not the project's.
+
+Then verify the application bundle and the PostgreSQL companion:
+
+```sh
+openssl pkeyutl -verify -pubin -inkey aireos-release.pub -rawin -in aireos-offline-<version>.tar.gz -sigfile aireos-offline-<version>.tar.gz.sig
+openssl pkeyutl -verify -pubin -inkey aireos-release.pub -rawin -in aireos-postgres-ubuntu2404.tar.gz -sigfile aireos-postgres-ubuntu2404.tar.gz.sig
+```
+
+**Both must print `Signature Verified Successfully`.** A missing `.sig` file, or any other
+output, means **stop**: do not extract or run anything from that file.
+
+## 2. Install PostgreSQL
+
+The application needs PostgreSQL 16 with `pgcrypto`, and a database and login role named
+`cockpit`. The companion installs all of that from its own packages, with no internet.
+
+Choose a password for the `cockpit` database login. **Use letters and digits only** (no
+spaces or punctuation — it goes straight into a command and later into a URL). Write it down:
+step 3 asks for it. Replace `<password>` below with it, without quotes:
+
+```sh
+tar xzf aireos-postgres-ubuntu2404.tar.gz
+cd aireos-postgres-ubuntu2404
+sudo COCKPIT_PW=<password> ./install-postgres.sh
+cd ..
+```
+
+**What you should see**, at the end:
+
+```
+[postgres] DONE — postgres 16 + pgcrypto ready.
+[postgres] Connection for install.sh:  postgres://cockpit:<password>@localhost:5432/cockpit?sslmode=disable
+```
+
+Keep that second line: it is the template for the database URL in step 3. Re-running is safe
+(it reuses the existing role and database). On a server with no internet you may also see
+`Failed to fetch http://security.ubuntu.com/…` warnings — they are harmless; the packages come
+from the companion. If it stops with a `perl-base` error instead, see the limitation box at
+the top.
+
+## 3. Install the application
+
+Unpack the application bundle and run its installer. **Replace `<address>`** with the address
+operators will type into their browser to reach the cockpit: the server's IP address (find it
+with `ip -4 addr` — use the one on your network, not `127.0.0.1`) or a DNS name that resolves
+to it. Do not use `localhost` unless you will only ever browse from the server itself.
+
+```sh
+tar xzf aireos-offline-<version>.tar.gz
+cd aireos-offline-<version>
+sudo AIREOS_SITE_ADDRESS=<address> AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh
+```
+
+`lan-only` is the deployment profile proven end to end; the others are described under
+[Deployment profiles](#deployment-profiles) below. The installer then asks three things:
+
+1. **Operator username** and 2. **Operator password** — you choose both. They are the
+   login for the cockpit (the operator account is created for you); the password is not shown
+   as you type. Write them down.
+3. **Postgres URL** — type the line step 2 printed, with `<password>` replaced by the
+   password you chose there (remove the angle brackets too):
+   `postgres://cockpit:` + your password + `@localhost:5432/cockpit?sslmode=disable`.
+   Arrow keys edit the line. If the text is not a usable database URL, the installer says so
+   and asks again. A raw `@` inside a password is accepted, but `/`, `#`, `?` and `%` break the
+   URL and would have to be percent-encoded (`%2F`, `%23`, `%3F`, `%25`) — another reason to
+   stick to letters and digits.
+
+When it finishes, it prints a line like this, which you should copy somewhere that is **not
+this server**:
+
+```
+[install] AUDIT CHAIN-HEAD PUBLIC KEY (record out-of-band — …): <64 hex characters>
+```
+
+That is this installation's audit-signing public key. Anyone holding it can later check, on a
+machine with no access to this server, that an exported copy of the audit log has not been
+altered — with the `aireos-verify` program in the bundle's `bin/` directory (procedure:
+[Step 4 of the v0.13.0 verification runbook](../releases/v0.13.0/verification_runbook.md)). A
+copy kept off the server is what makes that check independent of the server.
+
+**Re-running `install.sh` is safe** and is how you correct a mistake — a wrong site address,
+for example. Your keys are kept, and it restarts all seven services so the change takes
+effect. **Pass `AIREOS_SITE_ADDRESS` every time**: if you leave it out the address goes back
+to `localhost`.
+
+## 4. Check it works
+
+**The files are intact.** In each unpacked directory, run the manifest check. It prints
+nothing when every file matches:
+
+```sh
+cd aireos-offline-<version>
+sha256sum -c --quiet SHA256_MANIFEST.txt; echo EXIT=$?
+cd ../aireos-postgres-ubuntu2404
+sha256sum -c --quiet SHA256_MANIFEST.txt; echo EXIT=$?
+cd ..
+```
+
+Expect `EXIT=0` after each. (Do not pipe the command into anything — that hides the exit
+status.)
+
+**The services are running.** Expect the word `active` seven times:
+
+```sh
+systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy
+```
+
+Anything else (`failed`, `inactive`, `activating`) — look at
+`sudo journalctl -u aireos-api -u aireos-caddy`.
+
+**The cockpit answers.** In a browser on a machine that can reach the server, open
+`https://<address>` (the address you chose in step 3). **Expect a certificate warning**:
+the cockpit uses a certificate from its own private certificate authority, which your browser
+has never heard of. Accept it to continue (to make the warning go away for good, see
+[Trusting the certificate](#trusting-the-certificate)), and sign in with the operator username
+and password from step 3. You should land on the Dashboard.
+
+The server is now in the state the quickstart starts from.
+
+## Next: the quickstart
+
+**[Run your first governed action →](quickstart-first-governed-action.md)** It takes you from
+this installation to a completed, audited action.
+
+---
+
+# Reference
+
+## Deployment profiles
+
+Every install declares a deployment profile — `lan-only`, `vpn-first` or `dmz-first` (see
+[network topologies](../deep-dive/03-network-topologies.md)). There is no default. Without
+`AIREOS_DEPLOYMENT_PROFILE` in the command the installer asks; an empty answer (when no earlier
+run saved one) or an unrecognised value stops it before it changes anything. A value in the
+command wins over one saved by an earlier run, which wins over the prompt.
+
+`vpn-first` and `dmz-first` also **refuse** a loopback-only site address, because those
+profiles exist to be reached from outside the server. Give them a routable name or IP, or
+install as `lan-only`. Only `lan-only` has been proven end to end.
+
+## Pairing a phone (optional)
+
+Setting `AIREOS_PAIRING_ENABLED=1` turns on QR device pairing: a phone can be paired to a
+narrow, revocable operator session that can read and approve or deny pending approvals, and
+nothing else. It is **off by default**, and with it off every pairing route answers `404`.
+Nothing prompts for it. A value you set is saved, so a later plain `install.sh` re-run keeps
+it; `AIREOS_PAIRING_ENABLED=0` turns it off again.
+
+```sh
+sudo AIREOS_SITE_ADDRESS=<address> AIREOS_DEPLOYMENT_PROFILE=lan-only AIREOS_PAIRING_ENABLED=1 ./install.sh
+```
+
+## Trusting the certificate
+
+Caddy serves `https://<address>` with a certificate issued by a private certificate authority
+it created on this server. To stop browsers warning, import that authority's root
+certificate into the operators' browsers or operating systems. Its file is, by default:
+
+```sh
+sudo cat /var/lib/aireos/caddy/caddy/pki/authorities/local/root.crt > aireos-ca-root.crt
+```
+
+(If that path does not exist, `sudo find /var/lib/aireos/caddy -name root.crt` finds it.)
+Copy `aireos-ca-root.crt` to the operators' machines. Alternatively, put your own certificate
+in: edit `/etc/aireos/Caddyfile`, replace `tls internal` with `tls <certificate-file>
+<key-file>`, and run `sudo systemctl restart aireos-caddy`. Note that re-running `install.sh`
+puts the stock `Caddyfile` back.
+
+## Unattended install (no prompts)
+
+Every prompt has an environment variable; supply them all and nothing is asked. Replace each
+`<…>` first.
+
+```sh
+sudo AIREOS_DB_URL=postgres://cockpit:<password>@localhost:5432/cockpit?sslmode=disable \
+  AIREOS_BOOTSTRAP_OPERATOR_USER=<operator-username> \
+  AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=<operator-password> \
+  AIREOS_SITE_ADDRESS=<address> AIREOS_DEPLOYMENT_PROFILE=vpn-first ./install.sh
+```
+
+A malformed `AIREOS_DB_URL` is refused before anything is written.
+
+## What the installer does
+
+It creates the `aireos` system user and `/opt/aireos`, `/etc/aireos`, `/var/lib/aireos`;
+installs the programs and the web app; generates the cluster's signing keys on the server;
+creates the operator account; writes `/etc/aireos/aireos.env` (readable by `aireos` only);
+checks the database and runs every migration; then enables and (re)starts seven systemd
+services: `aireos-api`, `aireos-audit`, `aireos-broker`, `aireos-connector`, `aireos-policy`,
+`aireos-mcp-gateway` and `aireos-caddy`.
+
+---
+
+# For maintainers: build, sign and release
+
+**You do not need anything below this line to install.** It is for the person who produces the
+release artifacts.
 
 ## What ships
 
 | Artifact | Contents | Built by |
 |---|---|---|
-| `aireos-offline-<v>.tar.gz` (~45 MB gz) | static `linux/amd64` binaries (api, audit-service, session-broker, **connector-service, policy-service, mcp-gateway** [P1, v0.3.0/v0.4.0 — this table was frozen at v0.1.0 and undercounted them until v0.12.0's DOC-24 pass], **authctl**) + **Caddy** + the SPA + `Caddyfile` + systemd units + `install.sh` + **`setup-loopback-demo.sh`** (the ONB-3 loopback demo target, when present in the source tree — v0.12.0) + `SHA256_MANIFEST.txt` | `task offline-bundle` (T-021a/b) |
-| `aireos-postgres-<ostag>.tar.gz` (~90 MB) | a self-contained postgres-16 + pgcrypto local repo (full closure) + `install-postgres.sh` + **`SHA256_MANIFEST.txt`** (v0.13.0, ADR-0070 D1) | `build-postgres-companions.sh` (T-021c) |
+| `aireos-offline-<version>.tar.gz` (~45 MB) | static `linux/amd64` binaries (api, audit-service, session-broker, connector-service, policy-service, mcp-gateway, authctl, aireos-verify) + Caddy + the web app + `Caddyfile` + systemd units + `install.sh` + `setup-loopback-demo.sh` + `SHA256_MANIFEST.txt` | `task offline-bundle` |
+| `aireos-postgres-<ostag>.tar.gz` (~90 MB) | a self-contained postgres-16 + pgcrypto local package repository (full closure) + `install-postgres.sh` + `SHA256_MANIFEST.txt` | `build-postgres-companions.sh` |
 
-Postgres is a separate per-OS companion (ADR-0052), not in the core bundle.
-OS scope: Ubuntu 24.04 + Rocky/RHEL-family 9, amd64. Windows = browser
-client only (no server build).
+Design records: ADR-0051 (architecture) and ADR-0052 (postgres companions). OS scope: Ubuntu
+24.04 and Rocky/RHEL-family 9, amd64.
 
 ## Build (connected host)
 
@@ -32,13 +275,13 @@ bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404 rocky9
 ```
 
 ⚠ **`task offline-bundle` runs directly on the host — it needs Go 1.26, Node 22 and pnpm
-installed there.** It does **not** containerise itself. On a host without them, run the
-build inside a container that has both toolchains; the procedure the project itself uses
-is recorded in `docs/releases/v0.15.0/verification_runbook.md` (Step 2).
+installed there.** It does **not** containerise itself. On a host without them, run the build
+inside a container that has both toolchains; the procedure the project itself uses is
+recorded in `docs/releases/v0.15.0/verification_runbook.md` (Step 2).
 
 **Sign both artifacts — a separate, host-side step, never part of the build above**
-(ADR-0070 D1/D3). The release private key must never enter a build environment. Signing
-runs afterward, on the machine holding the release private key:
+(ADR-0070 D1/D3). The release private key must never enter a build environment. Signing runs
+afterward, on the machine holding the release private key:
 
 ```sh
 task sign-release -- --key /path/to/aireos-release.key      # signs BOTH artifacts present
@@ -46,199 +289,48 @@ task sign-release -- --key /path/to/aireos-release.key      # signs BOTH artifac
 # -> dist/offline/aireos-postgres-<ostag>.tar.gz.sig
 ```
 
-**Both artifacts are signed, not just the core bundle.** The postgres companion is
-~90 MB, ships a full package repository, and runs `install-postgres.sh` **as root**
-on the target host — leaving it unsigned while signing the artifact that already had
-a manifest would be indefensible (ADR-0070 Context, gap 1).
+**Both artifacts are signed, not just the core bundle.** The postgres companion is ~90 MB,
+ships a full package repository, and runs `install-postgres.sh` as root on the target host —
+leaving it unsigned would be indefensible (ADR-0070 Context, gap 1).
 
-The signing step prints the public key's SHA-256 fingerprint — publish it in the
-release notes (ADR-0070 D4) so an operator who obtains the public key over a second
-channel can cross-check it. See **"Release key custody"** below for where the
-private key comes from and where it must never live.
-
-Transfer the core bundle, its `.sig`, the postgres companion for your target OS, and
-its `.sig` to the air-gapped host — **and the public key**, `aireos-release.pub`,
-distributed out-of-band (SEC-44: the verifier is `openssl`, already on the target
+The signing step prints the public key's SHA-256 fingerprint — publish it in the release
+notes (ADR-0070 D4) so an operator who obtains the public key over a second channel can
+cross-check it. Transfer to the release page: both archives, both `.sig` files, and the
+public key `aireos-release.pub` (SEC-44: the verifier is `openssl`, already on the target
 host; only the public key needs distributing).
 
 ## Release key custody
 
-**The production release key is never generated, stored, printed, or committed by
-any script in this repo.** It is minted out-of-band by the CEO, on a machine that
-never runs untrusted build code:
+**The production release key is never generated, stored, printed, or committed by any script
+in this repo.** It is minted out-of-band by the CEO, on a machine that never runs untrusted
+build code:
 
 ```sh
 openssl genpkey -algorithm ed25519 -out aireos-release.key
 openssl pkey -in aireos-release.key -pubout -out aireos-release.pub
 ```
 
-- The **private key** (`aireos-release.key`) is held by the maintainer, **never**
-  committed to this repository, and **never** placed on a build host — the same host
-  that runs `task offline-bundle`'s container must not also hold this key.
+- The **private key** (`aireos-release.key`) is held by the maintainer, **never** committed
+  to this repository, and **never** placed on a build host — the same host that runs
+  `task offline-bundle`'s container must not also hold this key.
 - It is **distinct from every key `install.sh` mints** (the per-workload PASETO keys,
-  ADR-0069's chain-head key) — those are per-install and machine-generated; this one
-  is per-project and human-held. Never substitute one for the other.
-- The **public key** (`aireos-release.pub`) and its SHA-256 fingerprint are published
-  with each release (out-of-band distribution, SEC-44) and never retired — key
-  rotation is additive-forever (ADR-0070 D8): an operator verifying an older release
-  needs the key it was signed under.
-- **What the signature proves, stated plainly:** this artifact was produced by
-  someone holding the release key and has not been altered since. **The signature
-  itself** does not prove the build was clean, and does not tie the artifact to a
-  source revision, and claims **no SLSA level** — this repo has no CI and no remote
-  (ADR-0070 D3, unedited by this correction). Separately — and NOT part of what
-  the signature attests — every shipped Go binary embeds its own
-  `vcs.revision`/`vcs.modified` (Go's `buildvcs` stamping, on by default, not
-  stripped by `-trimpath -ldflags "-s -w"`); inspect with `go version -m
-  bin/api`. That is a real, checkable provenance fact, but it is self-reported by
-  the build and unsigned, and it is only trustworthy when the release is cut from
-  a clean tree (`vcs.modified=false`) — a dirty tree stamps `vcs.modified=true`
-  into every binary it ships (see the OI-35 reproducibility report, T-130b).
+  ADR-0069's chain-head key) — those are per-install and machine-generated; this one is
+  per-project and human-held. Never substitute one for the other.
+- The **public key** (`aireos-release.pub`) and its SHA-256 fingerprint are published with
+  each release (out-of-band distribution, SEC-44) and never retired — key rotation is
+  additive-forever (ADR-0070 D8): an operator verifying an older release needs the key it
+  was signed under.
+- **What the signature proves, stated plainly:** this artifact was produced by someone
+  holding the release key and has not been altered since. **The signature itself** does not
+  prove the build was clean, and does not tie the artifact to a source revision, and claims
+  **no SLSA level** — this repo has no CI and no remote (ADR-0070 D3). Separately — and NOT
+  part of what the signature attests — every shipped Go binary embeds its own
+  `vcs.revision`/`vcs.modified` (Go's `buildvcs` stamping, on by default, not stripped by
+  `-trimpath -ldflags "-s -w"`); inspect with `go version -m bin/api`. That is a real,
+  checkable provenance fact, but it is self-reported by the build and unsigned, and it is
+  only trustworthy when the release is cut from a clean tree (`vcs.modified=false`).
 
-**A throwaway fixture keypair for tests** lives at
-`infra/offline/testdata/fixture-release-key/` — clearly labelled
-`FIXTURE-DO-NOT-USE-*`, committed on purpose, and unsuitable for any real release
-(anyone with this repo already holds it). Use it only to exercise `task sign-release`
+**A throwaway fixture keypair for tests** lives at `infra/offline/testdata/fixture-release-key/`
+— clearly labelled `FIXTURE-DO-NOT-USE-*`, committed on purpose, and unsuitable for any real
+release (anyone with this repo already holds it). Use it only to exercise `task sign-release`
 and `task provenance-check`; never point a real verification at it.
-
-## Install (target host, offline, as root)
-
-**Verify BEFORE you extract anything (ADR-0070 D2/D4, SEC-44).** `install.sh` runs
-*from inside* the extracted bundle, so it can never verify the archive it came from —
-a check that runs after untrusted content is already unpacked is theatre. Verification
-is therefore a separate operator step, using `openssl` (already on the target host —
-nothing extra to distribute; only the public key needs to travel out-of-band):
-
-```sh
-# core bundle — run this in the directory holding the .tar.gz, its .sig, and
-# aireos-release.pub (obtained out-of-band; compare its fingerprint against the
-# one published in the release notes before trusting it):
-openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
-# ^ must print exactly the fingerprint published in the release notes. Only then:
-openssl pkeyutl -verify -pubin -inkey aireos-release.pub \
-  -rawin -in aireos-offline-<version>.tar.gz -sigfile aireos-offline-<version>.tar.gz.sig
-
-# postgres companion — signed too, and for the same reason it matters most: this
-# is the artifact that runs install-postgres.sh AS ROOT:
-openssl pkeyutl -verify -pubin -inkey aireos-release.pub \
-  -rawin -in aireos-postgres-<ostag>.tar.gz -sigfile aireos-postgres-<ostag>.tar.gz.sig
-```
-
-Both must print `Signature Verified Successfully` before you proceed. A missing
-`.sig`, or any other output, means **stop** — do not extract or run anything from
-that artifact. This deliberately uses no bespoke verifier binary: only the public key
-needs distributing, which is what closes SEC-44's circularity (a trust root must not
-ship solely inside the artifact it validates).
-
-1. **Postgres** — install from the companion (see
-   `docs/devops/offline-postgres-install.md`):
-   ```sh
-   tar xzf aireos-postgres-<ostag>.tar.gz && cd aireos-postgres-<ostag>
-   COCKPIT_PW='strong-password' ./install-postgres.sh
-   ```
-   This is the one documented prerequisite step (ADR-0051 refines OI-3: a guided
-   host-postgres install, then everything is automated).
-
-   ⚠ **Known limitation (v0.16.0).** The companion's packages are pinned to the OS
-   patch level current when it was built. **On a host that has applied OS security
-   updates since then, this step fails** with an unmet dependency (for example
-   `perl : Depends: perl-base (= …) but … is to be installed`). apt will not downgrade
-   a core package, so there is no safe in-place fix. **Instead, bring your own
-   PostgreSQL 16 + `pgcrypto`** from your organisation's package mirror — see
-   `docs/devops/offline-postgres-install.md` §"Bring your own PostgreSQL 16" — and
-   continue at step 2 with its connection string.
-
-   ⓘ On a genuinely air-gapped host, `install-postgres.sh` also prints
-   `Failed to fetch http://security.ubuntu.com/…` warnings: it adds the companion as an
-   *extra* package source while the host's normal online sources stay configured. The
-   warnings are harmless; the companion repo is what installs.
-
-2. **Application** — unpack the core bundle and run the installer:
-   ```sh
-   tar xzf aireos-offline-<v>.tar.gz && cd aireos-offline-<v>
-   AIREOS_SITE_ADDRESS=cockpit.example.com AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh
-   ```
-   `install.sh` (interactive prompts by default; env-var overrides for unattended):
-   - **resolves + asserts the deployment profile first (v0.12.0, ADR-0068 §D1) — a
-     refusal here creates no user, no directories, and deploys nothing;**
-   - creates the `aireos` user + `/opt/aireos`, `/etc/aireos`, `/var/lib/aireos`;
-   - deploys binaries/SPA/config; mints the cluster PASETO key + the separate
-     resource-secret key (offline, via the bundled `authctl`/`api`); provisions the
-     bootstrap operator (argon2id);
-   - prompts for the postgres connection string from step 1, writes the 0600
-     `/etc/aireos/aireos.env` (including the deployment profile), validates the DB +
-     runs all migrations;
-   - enables + starts the seven systemd units: api, audit, broker, connector, policy,
-     mcp-gateway and Caddy.
-
-   **Deployment profile (required, v0.12.0).** Set `AIREOS_DEPLOYMENT_PROFILE` to one
-   of `lan-only`, `vpn-first`, or `dmz-first` (see
-   `docs/deep-dive/03-network-topologies.md`) — env beats a previously persisted value
-   beats an interactive prompt (which shows the persisted value as its default). There
-   is **no silent default**: an unset value with nothing persisted, or an unrecognised
-   value, fails the install loudly. For `vpn-first`/`dmz-first`, the installer
-   additionally **refuses** to proceed if `AIREOS_SITE_ADDRESS` resolves to a
-   loopback-only address — those two profiles exist specifically to be reached from
-   outside this host, and Caddy is the product's only externally-bound process,
-   so a loopback edge would serve nothing reachable. The remedy is either of:
-   set `AIREOS_SITE_ADDRESS` to a routable hostname/IP, or install with
-   `AIREOS_DEPLOYMENT_PROFILE=lan-only` instead. **Re-running is idempotent**: an
-   unchanged profile is a no-op; supplying a different one updates `aireos.env` and
-   re-runs the same assertion. Note: `install.sh` does not (yet) preserve
-   `AIREOS_SITE_ADDRESS` across re-runs (it re-defaults to `localhost` unless
-   re-supplied) — a `vpn-first`/`dmz-first` host re-run without `AIREOS_SITE_ADDRESS`
-   will now correctly **fail loudly** rather than silently reverting to a loopback
-   edge; carrying the site address forward is a known follow-up, tracked separately.
-
-   **Pairing / QR device pairing (optional, v0.12.0, ADR-0068 §D10).** Set
-   `AIREOS_PAIRING_ENABLED=1` to turn on QR device pairing — a phone can then be
-   paired to a scope-narrowed, revocable operator session (`approvals@1`: read +
-   approve/deny pending approvals, nothing else). **Off by default**: a fresh
-   install with the variable unset writes `AIREOS_PAIRING_ENABLED=0` into
-   `aireos.env`, and some locked-down SOCs forbid phones on the floor entirely —
-   pairing enabled by default would be a posture regression shipped as a feature.
-   With pairing off, every pairing route answers `404` (not `403`) — a disabled
-   capability must not advertise its own existence.
-   Resolution is **env beats a previously persisted value beats `0`** — the same
-   precedence the deployment profile uses, minus the interactive prompt (a
-   phone-pairing question on every air-gapped install run would be worse than a
-   safe default, so this one is never prompted). Concretely:
-   - `AIREOS_PAIRING_ENABLED=1 ./install.sh` turns pairing on and **the choice
-     persists** — a later plain `./install.sh` re-run (with the variable unset)
-     reads the persisted `1` back out of `aireos.env` and keeps pairing on,
-     rather than silently reverting to disabled.
-   - Explicitly passing `AIREOS_PAIRING_ENABLED=0` on a re-run turns it back off,
-     the same way an explicit env value always wins for the deployment profile.
-   - A brand-new install with the variable unset and nothing yet persisted
-     writes `0` — the shipped default.
-
-3. **TLS** — Caddy serves `https://<AIREOS_SITE_ADDRESS>` with a self-signed local
-   CA (`tls internal`). Import the CA root (under `/var/lib/aireos/caddy`) into
-   operator browsers to remove warnings, or replace with an operator-supplied cert
-   (ADR-0051 OQ-7).
-
-## Verify
-
-Two layers, deliberately (ADR-0070 D1): the **signature** (above, "Install" §1
-preamble) verifies the whole archive **before** extraction — that is the trust
-decision. The **manifest** below then gives per-file granularity **after**
-extraction, and its build-time self-check already worked before this ticket:
-
-```sh
-# on the unpacked core bundle:
-sha256sum -c SHA256_MANIFEST.txt
-# on the unpacked postgres companion (parity with the core bundle, ADR-0070 D1):
-sha256sum -c SHA256_MANIFEST.txt
-# all seven units should be active:
-systemctl status aireos-api aireos-audit aireos-broker aireos-connector \
-  aireos-policy aireos-mcp-gateway aireos-caddy
-# then walk the quickstart (docs/devops/quickstart-first-governed-action.md)
-```
-
-## Unattended install (CI / WD-1)
-
-```sh
-AIREOS_DB_URL='postgres://cockpit:pw@localhost:5432/cockpit?sslmode=disable' \
-AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=… \
-AIREOS_SITE_ADDRESS=cockpit.example.com AIREOS_DEPLOYMENT_PROFILE=vpn-first ./install.sh
-```
