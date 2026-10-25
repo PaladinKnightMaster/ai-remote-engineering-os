@@ -253,7 +253,26 @@ verbatim, a resource id no screen showed, and two success claims that were false
 T-164/T-165/T-166 (criteria §10). **The re-run happens on a FRESH host after the artifacts are rebuilt from
 the fixed commit and re-signed**.
 
-### PUB-6 RESULT — **PENDING.** The first run failed (above); the CEO records the outcome of the re-run here.
+### Re-cut — 2026-10-14, artifacts rebuilt from `7ca592f` after the fix pass (T-164…T-166)
+
+| Gate (re-cut, artifacts built from `7ca592f`, `vcs.modified=false`) | Result |
+|---|---|
+| `task wd1` (installed stack) | exit 0; `ok aireos.local/tests/e2e 653.157s`; chain `INTACT+ATTESTED through seq 239`; SEC-43 forged chain → `audit-service verify` BROKEN exit 1, offline `aireos-verify` BROKEN exit 1 |
+| quickstart shell gate | exit 0 — generate / bind / `--undo` from the bundle's own script |
+| quickstart browser gate | exit 0 — spec A 1 passed (first execution of T-166's P10/P12 assertions), spec B 1 passed + completion marker |
+| quickstart browser gate, `no-bind` (negative leg) | exit 1 as required — the Run ends `failed · gateway step: unexpected status 502`, never `completed` |
+| `task smoke` | exit 0 — 25 passed / 2 skipped (the quickstart specs, run by the gate above) |
+| sign (production key) | exit 0 — 2 artifacts signed + self-verified, fingerprint `968a29b3…` |
+| provenance-check | exit 0 — both verify against `aireos-release.pub`; SBOM coverage 9/9 executables, 92/92 packages |
+| SEC-45 | **PROVED** 14 passed / 0 failed against `aireos-release.pub`. ⓘ A first run without `RELEASE_PUBLIC_KEY` used the FIXTURE key and its control correctly FAILED (exit 201, 10/4) — an unplanned negative control: the gate refuses a key that did not sign the artifacts |
+
+### PUB-6 RESULT — ✅ **PASSED** (CEO, re-run on the `fresh-install` Hyper-V checkpoint, recorded 2026-10-25)
+
+A fresh, patched Ubuntu Server 24.04 host; the re-signed `7ca592f` artifacts; `README.md` and the guides it links,
+nothing else. The CEO's report: *"works well"* — install through the quickstart's completed, audited action.
+The one `[assumed]` claim T-164 carried, the CA-root path in the install guide's "Trusting the certificate", was
+**confirmed on the host** ("cert path was fine"). No friction lines were reported. Tagged `v0.16.0` → `7ca592f`
+with the derived command below.
 
 ---
 

@@ -67,3 +67,15 @@ after those points is "the product works", not "a stranger succeeds".
    value — and preferably fail loudly if pasted unchanged.
 4. **Commander instrument error, stated:** the first manifest check was piped to `tail -3`, hiding the exit
    code (ops rule: never pipe a gate). Re-run unpiped: exit 0 on both.
+
+---
+
+## Re-run — PASSED (recorded 2026-10-25)
+
+After T-165 (installer), T-166 (cockpit) and T-164 (documents), both artifacts were rebuilt from `7ca592f`,
+re-signed and re-gated (`verification_runbook.md`, Re-cut). The CEO reverted the VM to its `fresh-install`
+checkpoint and followed `README.md` again: *"works well"*, with the CA-root path confirmed on the host and no
+friction reported. **PUB-6 is discharged; `v0.16.0` is tagged at `7ca592f`.**
+
+⭐ The CEO's follow-up after the pass — make the guides friendlier for less terminal-fluent users and move
+terminal steps into the browser — is recorded as the direction for the next release, not as a v0.16.0 defect.

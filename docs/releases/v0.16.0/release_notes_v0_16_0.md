@@ -163,11 +163,17 @@ transcript. Summary:
 
 ## Release provenance
 
-**Not yet signed, tagged, or pushed.** Signing uses the production key held outside this repository and
-minted out-of-band by the CEO; the tag is pinned to the commit the signature attests to; the push is the
-**last** act, after the CEO's fresh-host §human pass (PUB-6) succeeds — publishing before a stranger has
-succeeded would invert this release's own thesis. See `verification_runbook.md` for the CEO's remaining
-steps, in order.
+**Signed, PUB-6 passed, tagged — not yet pushed** (closure commit, 2026-10-25).
+
+| | |
+|---|---|
+| Tag | `v0.16.0` → `7ca592f363e9e1712560f081c9374cd58dc09d5d` — the commit both artifacts' `vcs.revision` attests (`vcs.modified=false`) |
+| Release-key fingerprint (SHA-256 of the DER public key) | `968a29b3623fa79a6d12e37dfe4c9e156b6c66c716b0e57a076026a9d1bc0bbf` |
+| `aireos-offline-0.16.0.tar.gz` | SHA-256 `12674ff0872e35fade209ac1804f0025775ba6b01a0e39a3d710257142af4f77` |
+| `aireos-postgres-ubuntu2404.tar.gz` | SHA-256 `61aff02d526c37468c1be38fe506c7c79404adb61ad530c2b26f2715e00f85a6` |
+
+These supersede the first signed set (built from `e7c14ee`), which PUB-6's first run rejected on documents
+and which was never tagged. The push is the **last** act and still the CEO's (PUB-9, PUB-10).
 
 **Artifact hashes are deliberately NOT recorded in this commit.** Putting a SHA-256 here and then tagging
 this same commit would be circular: the artifacts must be rebuilt from the exact commit the CEO tags
@@ -191,6 +197,8 @@ instrument, not a product code path.
 ---
 
 ## What remains — the CEO's, not this ticket's
+
+✅ Steps 1–3 below are DONE (signed, PUB-6 passed, tagged `7ca592f`); only the push remains.
 
 1. **Sign** both artifacts with the production key (custody outside this repo).
 2. **PUB-6** — a fresh-host install from the signed artifacts, following only the public `README.md`. It
