@@ -137,6 +137,7 @@ VALUE_ALLOWLIST = {
     "postgres:postgres": "Postgres's own default local superuser/db-name pair (3 occurrences), used only for locally-provisioned throwaway CI/dev-compose containers.",
     "user:pass": "Generic placeholder pair used in usage-example prose, never a live DSN.",
     "unused:unused": "Literal word 'unused' on both sides -- self-declaring placeholder.",
+    "USER:PASSWORD": "The ALL-CAPS shape template install.sh prints as help text since T-165 (PUB-6 P7: 'postgres://USER:PASSWORD@HOST:5432/DATABASE'), repeated in its tests; self-declaring placeholder words, never a value an install sets. Exact-case only: 'user:password' or any real password still fires.",
     "cockpit:secret": "The literal word 'secret' used as an example password in one doc; not a value any running instance sets.",
 }
 
