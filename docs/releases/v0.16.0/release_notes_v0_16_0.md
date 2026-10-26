@@ -167,9 +167,9 @@ transcript. Summary:
 
 | | |
 |---|---|
-| Tag | `v0.16.0` → `7ca592f363e9e1712560f081c9374cd58dc09d5d` — the commit both artifacts' `vcs.revision` attests (`vcs.modified=false`) |
+| Tag | `v0.16.0` → `e43cece6bc33c775b8f64b21617a3467fd9c92cd` — the commit both artifacts' `vcs.revision` attests (`vcs.modified=false`) |
 | Release-key fingerprint (SHA-256 of the DER public key) | `968a29b3623fa79a6d12e37dfe4c9e156b6c66c716b0e57a076026a9d1bc0bbf` |
-| `aireos-offline-0.16.0.tar.gz` | SHA-256 `12674ff0872e35fade209ac1804f0025775ba6b01a0e39a3d710257142af4f77` |
+| `aireos-offline-0.16.0.tar.gz` | SHA-256 `e208d12e57d300b922f89977bf8fb9a2c6acd64e0dfc87e9a474c2291c47d146` |
 | `aireos-postgres-ubuntu2404.tar.gz` | SHA-256 `61aff02d526c37468c1be38fe506c7c79404adb61ad530c2b26f2715e00f85a6` |
 
 These supersede the first signed set (built from `e7c14ee`), which PUB-6's first run rejected on documents
@@ -198,7 +198,7 @@ instrument, not a product code path.
 
 ## What remains — the CEO's, not this ticket's
 
-✅ Steps 1–3 below are DONE (signed, PUB-6 passed, tagged `7ca592f`); only the push remains.
+✅ Steps 1–3 below are DONE (signed, PUB-6 passed, tagged `e43cece`); only the push remains.
 
 1. **Sign** both artifacts with the production key (custody outside this repo).
 2. **PUB-6** — a fresh-host install from the signed artifacts, following only the public `README.md`. It

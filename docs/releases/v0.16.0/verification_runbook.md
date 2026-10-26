@@ -253,9 +253,9 @@ verbatim, a resource id no screen showed, and two success claims that were false
 T-164/T-165/T-166 (criteria §10). **The re-run happens on a FRESH host after the artifacts are rebuilt from
 the fixed commit and re-signed**.
 
-### Re-cut — 2026-10-14, artifacts rebuilt from `7ca592f` after the fix pass (T-164…T-166)
+### Re-cut — 2026-10-14, artifacts rebuilt from `7ca592f` (published as `e43cece`) after the fix pass (T-164…T-166)
 
-| Gate (re-cut, artifacts built from `7ca592f`, `vcs.modified=false`) | Result |
+| Gate (re-cut, artifacts built from `7ca592f` (published as `e43cece`), `vcs.modified=false`) | Result |
 |---|---|
 | `task wd1` (installed stack) | exit 0; `ok aireos.local/tests/e2e 653.157s`; chain `INTACT+ATTESTED through seq 239`; SEC-43 forged chain → `audit-service verify` BROKEN exit 1, offline `aireos-verify` BROKEN exit 1 |
 | quickstart shell gate | exit 0 — generate / bind / `--undo` from the bundle's own script |
@@ -268,13 +268,34 @@ the fixed commit and re-signed**.
 
 ### PUB-6 RESULT — ✅ **PASSED** (CEO, re-run on the `fresh-install` Hyper-V checkpoint, recorded 2026-10-25)
 
-A fresh, patched Ubuntu Server 24.04 host; the re-signed `7ca592f` artifacts; `README.md` and the guides it links,
+A fresh, patched Ubuntu Server 24.04 host; the re-signed `7ca592f` (published as `e43cece`) artifacts; `README.md` and the guides it links,
 nothing else. The CEO's report: *"works well"* — install through the quickstart's completed, audited action.
 The one `[assumed]` claim T-164 carried, the CA-root path in the install guide's "Trusting the certificate", was
-**confirmed on the host** ("cert path was fine"). No friction lines were reported. Tagged `v0.16.0` → `7ca592f`
+**confirmed on the host** ("cert path was fine"). No friction lines were reported. Tagged `v0.16.0` → `7ca592f` (published as `e43cece`)
 with the derived command below.
 
 ---
+
+## Pre-publication history rewrite — 2026-10-25 (before the first push)
+
+**What changed.** At the CEO's decision, every commit's and tag's author/committer/tagger email was rewritten
+from a personal address to the GitHub `noreply` address before the repository was published. The v0.16.0 tag
+commit `7ca592f` became **`e43cece`**. Every commit ID changed; **no file content did.** Old IDs cited anywhere
+in this repository resolve through [`pre-publication-commit-map.md`](pre-publication-commit-map.md).
+
+| Check | Result |
+|---|---|
+| Backup | git bundle of all 20 refs, verified and **proven restorable** (445 commits, 16 tags) — kept outside the repo |
+| Trees | **identical** for all 20 refs before vs after (`<ref>^{tree}` compared) |
+| Email | personal address in commit headers **445 → 0**; in tag headers **16 → 0**; never present in file content, commit messages or tag messages (checked with a header-count control) |
+| Core bundle | rebuilt from `e43cece` (`vcs.revision=e43cece…`, `vcs.modified=false`), SHA-256 `e208d12e…` |
+| Equivalence to the PUB-6-tested build | same 26 files; every non-binary identical except `SHA256_MANIFEST.txt` (hashes of the changed files) and `SBOM.cdx.json`; **each of the 8 Go executables is byte-identical to the tested one after substituting the revision string and Go build ID — the only remaining 20 bytes lie inside `.note.gnu.build-id`**, which the linker derives from the build ID. ⓘ The SBOM now names the services `v0.16.0`; the tested build's SBOM had named them `v0.15.1-0.20260901155929-53782dde02ef` because the tag did not exist yet when it was built |
+| Postgres companion | **not rebuilt** — it records no commit ID (0 hits; control: the old core bundle had 2 per binary); its `61aff02d…` artifact and signature are unchanged |
+| Sign / provenance / SEC-45 | core re-signed (production key, fingerprint `968a29b3…`); provenance-check exit 0 (both verify; SBOM 9/9 + 92/92); **SEC-45 PROVED 14/0** |
+| Installed host | on a fresh systemd host with the rebuilt bundle + the unchanged companion: quickstart shell gate **PASS** (generate / bind / `--undo`, exit 0); browser gate **PASS** (spec A + spec B, completion marker present, exit 0) |
+
+PUB-6 was **not** re-run: the software is the same bytes apart from the revision identifiers above, which is
+what PUB-6 does not test.
 
 ## Step 5 — tag, then push — push LAST
 
