@@ -124,6 +124,16 @@ tasks:
       - pnpm --filter @aireos/web build
       - BUNDLE_VERSION={{.BUNDLE_VERSION}} bash infra/offline/build-bundle.sh
 
+  pgsql-trees:
+    desc: "Build the relocatable, source-built PostgreSQL 16 STAGING trees (ADR-0077 D1-D3/D9, T-171): per OS, compile the checksum-verified upstream tarball (pins in infra/offline/postgres/pgsql-build.lock, base images pinned by digest) inside that OS's base image into /opt/aireos/pgsql, bundle only the shared libraries the base image lacks (measured), and emit share/aireos/{HOST_LIBS,BUNDLED_LIBS,COMPONENTS.json}. Proves every ELF has an $ORIGIN-only DT_RPATH. Output: dist/offline/aireos-pgsql-<ostag>/ (git-ignored). Does NOT replace the shipped v0.16.0 companion (T-172 does). Needs Docker + network. Usage: task pgsql-trees -- [ubuntu2404 ubuntu2604 rocky9]"
+    cmds:
+      - bash infra/offline/postgres/build-pgsql-trees.sh build {{.CLI_ARGS}}
+
+  pgsql-trees-smoke:
+    desc: "Prove the PostgreSQL staging trees run on a PRISTINE base (T-171): fresh pinned container, --network none, no package installs -- ldd resolves every ELF, initdb as non-root, pg_ctl start/stop, pgcrypto sha256 + english full-text search + gen_random_uuid, package list byte-identical; prints one PGSQL-TREE-SMOKE PASS line per OS. Also observes the smoke FAIL on (a) a copy with libpq removed and (b) an OpenSSL-bundled tree with the bundled libssl removed -- a smoke never seen failing is not evidence. Needs `task pgsql-trees` first. Usage: task pgsql-trees-smoke -- [ostag...]"
+    cmds:
+      - bash infra/offline/postgres/build-pgsql-trees.sh smoke {{.CLI_ARGS}}
+
   sign-release:
     desc: "HOST-SIDE, out-of-band step (ADR-0070 D1/D3, T-129a): detached Ed25519 signatures over BOTH shipped offline artifacts (core bundle + postgres companion). NEVER run inside build-bundle.sh or any build container — the release key must never enter a build context. Usage: task sign-release -- --key /path/to/release-key.pem [artifact.tar.gz ...] (defaults to every dist/offline/*.tar.gz). The production key is minted out-of-band by the CEO and is NEVER created by this task — see docs/devops/offline-install-v3.md 'Release key custody'; a fixture key for tests lives at infra/offline/testdata/fixture-release-key/. NOTE: this task signs whatever artifact filename/VERSION is on disk — offline-bundle's BUNDLE_VERSION was bumped to 0.13.0 on 2026-08-18 (moved earlier than its original T-136 slot, because T-133's quickstart gate consumes the built bundle); still verify the artifact name matches the real release before signing for an actual release."
     cmds:

@@ -1,0 +1,17 @@
+# pgsql-build.lock — pins for the source-built PostgreSQL tree (ADR-0077 D1, D9; T-171).
+# Plain KEY=value. Read with grep/sed by build-pgsql-trees.sh — NEVER sourced.
+# Provenance [ran: 2026-10-26]:
+#   version  newest v16.* in https://ftp.postgresql.org/pub/source/
+#   sha256   https://ftp.postgresql.org/pub/source/v16.15/postgresql-16.15.tar.bz2.sha256
+#            (same server as the tarball, over HTTPS; PostgreSQL publishes no detached signature
+#            for source tarballs, so this is a published checksum, not an independent attestation)
+#   images   `docker buildx imagetools inspect <tag>` — multi-arch INDEX digests, used with
+#            --platform linux/amd64. rocky9 pins rockylinux/rockylinux:9 (created 2026-05-25, 9.8),
+#            NOT the Docker-Hub-official rockylinux:9, which is frozen at 2023-11-28 (9.3) and so
+#            would test against a base that no maintained Rocky 9 host resembles.
+PGSQL_VERSION=16.15
+PGSQL_URL=https://ftp.postgresql.org/pub/source/v16.15/postgresql-16.15.tar.bz2
+PGSQL_SHA256=c1575341fa7bd40f5274ea465b34390f4dc64cdd0770af327005caaeb9f6b7ed
+IMAGE_ubuntu2404=ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+IMAGE_ubuntu2604=ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+IMAGE_rocky9=rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
