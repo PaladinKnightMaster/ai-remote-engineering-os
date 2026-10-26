@@ -1,8 +1,14 @@
 # PostgreSQL for the install
 
-The application needs **PostgreSQL 16 with the `pgcrypto` extension** on the same host, with a
-database and a login role both named `cockpit`. The core bundle does not include PostgreSQL.
-There are three ways to get it; use the first one that fits.
+**What you will have at the end:** PostgreSQL 16 with the `pgcrypto` extension running on the
+server, with a database and a login both named `cockpit` — what the install guide's step 3
+needs. **Time:** 5–10 minutes of your own work, plus however long your package source takes to
+download. (The *PostgreSQL companion* is the project's prebuilt, offline database package; the
+other words are in the install guide's
+[Words used in this guide](offline-install-v3.md#words-used-in-this-guide).)
+
+The core bundle does not include PostgreSQL. There are three ways to get it; use the first one
+that fits.
 
 | Your server | Use |
 |---|---|
@@ -30,9 +36,8 @@ It is safe to re-run: it reuses an existing role and database.
 
 ⚠ **Use this if `install-postgres.sh` fails with an unmet dependency** such as
 `perl : Depends: perl-base (= …) but … is to be installed`. That happens on any server that
-has applied OS security updates since the companion was built: the companion's packages are
-pinned to its build-time patch level, and `apt` will not downgrade a core package. This is a
-known v0.16.0 limitation; a proper fix is planned for a later release.
+has applied OS security updates since the companion was built — the companion's packages are
+fixed at its build day's versions. This is a known v0.16.0 limitation; a proper fix is planned.
 
 1. Install `postgresql-16` and `postgresql-contrib` (Rocky/RHEL 9: `postgresql16-server` and
    `postgresql16-contrib`) from your organisation's package mirror, then initialise and start

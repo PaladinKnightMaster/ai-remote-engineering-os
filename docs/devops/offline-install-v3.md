@@ -1,8 +1,9 @@
 # Install guide
 
-How to install AI Remote Engineering OS on a Linux server. It works on a server with no
-internet access. **You do not build anything to install** — you verify the downloads, install
-PostgreSQL, install the application, and check that it runs.
+**What you will have at the end:** AI Remote Engineering OS running on a Linux server of your
+own, and you signed in to its web page (the *cockpit*). **Time:** about 15–20 minutes. It works
+on a server with no internet access. You build nothing: you check the downloads, install the
+database, install the application, and check that it runs.
 
 > ⚠ **Known limitation (v0.16.0) — read before step 2.** The prebuilt PostgreSQL companion
 > fails on a server that has applied operating-system security updates since the companion
@@ -15,8 +16,13 @@ PostgreSQL, install the application, and check that it runs.
 
 - **A server**: Ubuntu 24.04 or Rocky/RHEL 9, `amd64`, and a login user that can run `sudo`.
   (Windows is a browser client only — there is no Windows server.)
-- **Five files** from the project's **Releases** page, copied onto the server into one empty
-  directory (the examples below assume you are in that directory):
+- **A terminal on that server**: the server's own console, or `ssh <user>@<server-ip>` from
+  your computer. You will type about a dozen commands; each one is shown in full, with what you
+  should see afterwards.
+- **Five files** from the project's
+  [**Releases** page](https://github.com/PaladinKnightMaster/ai-remote-engineering-os/releases/latest),
+  copied onto the server into one empty directory (the examples assume you are in that
+  directory):
 
   | File | What it is |
   |---|---|
@@ -30,36 +36,64 @@ PostgreSQL, install the application, and check that it runs.
   scp aireos-offline-<version>.tar.gz aireos-offline-<version>.tar.gz.sig aireos-postgres-ubuntu2404.tar.gz aireos-postgres-ubuntu2404.tar.gz.sig aireos-release.pub <user>@<server-ip>:
   ```
 
-- **The key fingerprint** from the Releases page notes. Read it through a different channel
-  than the downloads (see [what verification proves](../../SECURITY.md#verifying-a-release-before-you-install-it)).
+  On Windows 10/11, `scp` is already built into PowerShell; any SFTP client works too.
+
+- **The key fingerprint** — a 64-character code in the Releases page notes. Read it through a
+  different channel than the downloads (see [what verification proves](../../SECURITY.md#verifying-a-release-before-you-install-it)).
 
 **How to read the commands.** Anything in `<angle brackets>` is a blank you must fill in, and
-the line tells you what to put there. If you paste a line without filling it in, the shell
-stops with an error such as `No such file or directory` — that is the intended safety net, so
-do not "fix" it by deleting the brackets only. In file names, `<version>` is the version
-number in the name of the file you downloaded. In the `scp` line, replace `<user>` with your
-login name on the server and `<server-ip>` with the server's IP address.
+the text around it says what to put there. If you paste a line without filling it in, the
+shell stops with an error such as `No such file or directory` — that is the safety net, so do
+not "fix" it by deleting only the brackets. `<version>` is the version number in the name of
+the file you downloaded. In the `scp` line, `<user>` is your login name on the server and
+`<server-ip>` is its IP address. A line starting with `sudo` runs as administrator and may ask
+for your own login password.
+
+## Words used in this guide
+
+- **Governed action** — a command run on a machine through the product: checked against your
+  rules, recorded, and held for a person's approval if you require that.
+- **Resource** — a machine the cockpit is allowed to act on. The product keeps its login
+  details, so people do not have to.
+- **Run** — one or more commands you launch together from the cockpit and watch to the end.
+- **Deployment profile** (`lan-only`) — a setting for where the cockpit can be reached from.
+  `lan-only` means from your own network; it is the one tested end to end.
+- **PostgreSQL companion** — a separate download that installs the database the application
+  keeps its data in, without needing the internet.
+- **Signature** — the `.sig` file that proves a download came from the project and has not
+  been changed. You check it with the project's public key.
+- **Fingerprint** — a short code that identifies that public key. Matching it against the
+  Releases page tells you the key is the project's.
+- **Audit chain-head key** — a code the installer prints. With it, someone on another machine
+  can later check that the audit log was not altered.
+- **Cockpit** — the web page you sign in to, to use the product.
 
 ---
 
 ## 1. Verify the downloads
 
-Do this **before you extract anything**. The installer runs from inside the extracted
-application bundle, so it can never check the archive it came from — and the PostgreSQL
-companion's installer runs as root. Verification uses only `openssl`, which is already on the
-server. Run these in the directory holding the five files.
+Do this **before you extract anything**: the archives contain programs that run as root. It
+needs only `openssl`, already on the server. Run these in the directory holding the five files.
 
-Print the public key's fingerprint and compare it, character for character, with the one on
-the Releases page:
+**Check the key.** Copy the fingerprint from the Releases page. Replace `<fingerprint>` with it,
+keeping the quotes, and run:
+
+```sh
+openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256 | awk '{print $NF}' | grep -qxF "<fingerprint>" && echo MATCH || echo MISMATCH
+```
+
+It must print `MATCH`. `MISMATCH` means **stop** — the key is not the project's (or you
+mistyped the fingerprint; copy it once more). Leaving `<fingerprint>` unreplaced also prints
+`MISMATCH`: the check can only pass on a real match.
+
+To see the fingerprint and compare it yourself instead, run the plain version. Its output ends
+with a 64-character hex string that must equal the published one, character for character:
 
 ```sh
 openssl pkey -pubin -in aireos-release.pub -pubout -outform DER | openssl dgst -sha256
 ```
 
-The output ends with a 64-character hex string; that string must equal the published
-fingerprint. If it does not, **stop** — the key is not the project's.
-
-Then verify the application bundle and the PostgreSQL companion:
+**Check both downloads.** Replace `<version>` as before:
 
 ```sh
 openssl pkeyutl -verify -pubin -inkey aireos-release.pub -rawin -in aireos-offline-<version>.tar.gz -sigfile aireos-offline-<version>.tar.gz.sig
@@ -71,12 +105,12 @@ output, means **stop**: do not extract or run anything from that file.
 
 ## 2. Install PostgreSQL
 
-The application needs PostgreSQL 16 with `pgcrypto`, and a database and login role named
-`cockpit`. The companion installs all of that from its own packages, with no internet.
+The application needs PostgreSQL 16 with `pgcrypto`, and a database and login named `cockpit`.
+The companion installs all of that, with no internet.
 
-Choose a password for the `cockpit` database login. **Use letters and digits only** (no
-spaces or punctuation — it goes straight into a command and later into a URL). Write it down:
-step 3 asks for it. Replace `<password>` below with it, without quotes:
+Choose a password for the `cockpit` database login. **Use letters and digits only** — it goes
+straight into a command and later into a URL. Write it down: step 3 asks for it. Replace
+`<password>` with it, without quotes:
 
 ```sh
 tar xzf aireos-postgres-ubuntu2404.tar.gz
@@ -92,18 +126,16 @@ cd ..
 [postgres] Connection for install.sh:  postgres://cockpit:<password>@localhost:5432/cockpit?sslmode=disable
 ```
 
-Keep that second line: it is the template for the database URL in step 3. Re-running is safe
-(it reuses the existing role and database). On a server with no internet you may also see
-`Failed to fetch http://security.ubuntu.com/…` warnings — they are harmless; the packages come
-from the companion. If it stops with a `perl-base` error instead, see the limitation box at
-the top.
+Keep that second line: it is the template for step 3. Running it again is safe. On a server
+with no internet you may also see `Failed to fetch http://security.ubuntu.com/…` warnings —
+they are harmless. If it stops with a `perl-base` error instead, see the box at the top.
 
 ## 3. Install the application
 
-Unpack the application bundle and run its installer. **Replace `<address>`** with the address
-operators will type into their browser to reach the cockpit: the server's IP address (find it
-with `ip -4 addr` — use the one on your network, not `127.0.0.1`) or a DNS name that resolves
-to it. Do not use `localhost` unless you will only ever browse from the server itself.
+Unpack the application and run its installer. **Replace `<address>`** with the address people
+will type into their browser to reach the cockpit: the server's IP address (`ip -4 addr` shows
+it — use the one on your network, not `127.0.0.1`) or a DNS name that resolves to it. Avoid
+`localhost` unless you will only ever browse from the server itself.
 
 ```sh
 tar xzf aireos-offline-<version>.tar.gz
@@ -111,37 +143,33 @@ cd aireos-offline-<version>
 sudo AIREOS_SITE_ADDRESS=<address> AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh
 ```
 
-`lan-only` is the deployment profile proven end to end; the others are described under
-[Deployment profiles](#deployment-profiles) below. The installer then asks three things:
+The installer asks three things:
 
-1. **Operator username** and 2. **Operator password** — you choose both. They are the
-   login for the cockpit (the operator account is created for you); the password is not shown
-   as you type. Write them down.
-3. **Postgres URL** — type the line step 2 printed, with `<password>` replaced by the
-   password you chose there (remove the angle brackets too):
-   `postgres://cockpit:` + your password + `@localhost:5432/cockpit?sslmode=disable`.
-   Arrow keys edit the line. If the text is not a usable database URL, the installer says so
-   and asks again. A raw `@` inside a password is accepted, but `/`, `#`, `?` and `%` break the
-   URL and would have to be percent-encoded (`%2F`, `%23`, `%3F`, `%25`) — another reason to
-   stick to letters and digits.
+1. **Operator username** and 2. **Operator password** — you choose both. They are the cockpit
+   login; the password is not shown as you type. Write them down.
+3. **Postgres URL** — the line step 2 printed, with `<password>` replaced by your password
+   (remove the angle brackets too): `postgres://cockpit:` + your password +
+   `@localhost:5432/cockpit?sslmode=disable`. Arrow keys edit the line. If it is not a usable
+   database URL, the installer says so and asks again. (With letters and digits only you never
+   need to think about special characters; a raw `@` is fine, but `/`, `#`, `?` and `%` break
+   the URL.)
 
-When it finishes, it prints a line like this, which you should copy somewhere that is **not
-this server**:
+**What you should see**, at the end:
 
 ```
+[install] DONE — cockpit installed (deployment profile: lan-only). Caddy serves https://<address> (self-signed local CA; …).
 [install] AUDIT CHAIN-HEAD PUBLIC KEY (record out-of-band — …): <64 hex characters>
 ```
 
-That is this installation's audit-signing public key. Anyone holding it can later check, on a
-machine with no access to this server, that an exported copy of the audit log has not been
-altered — with the `aireos-verify` program in the bundle's `bin/` directory (procedure:
-[Step 4 of the v0.13.0 verification runbook](../releases/v0.13.0/verification_runbook.md)). A
-copy kept off the server is what makes that check independent of the server.
+Copy the second line somewhere that is **not this server**. It is the audit chain-head key: with
+it, anyone can later check, with no access to this server, that an exported audit log has not
+been altered (procedure:
+[Step 4 of the v0.13.0 verification runbook](../releases/v0.13.0/verification_runbook.md)).
 
-**Re-running `install.sh` is safe** and is how you correct a mistake — a wrong site address,
-for example. Your keys are kept, and it restarts all seven services so the change takes
-effect. **Pass `AIREOS_SITE_ADDRESS` every time**: if you leave it out the address goes back
-to `localhost`.
+**Running `install.sh` again is safe** and is how you correct a mistake, such as a wrong site
+address. Your keys are kept, it asks the same questions again, and it restarts all seven
+services so the change takes effect. **Pass `AIREOS_SITE_ADDRESS` every time**: left out, the
+address goes back to `localhost`.
 
 ## 4. Check it works
 
@@ -165,22 +193,37 @@ status.)
 systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy
 ```
 
-Anything else (`failed`, `inactive`, `activating`) — look at
-`sudo journalctl -u aireos-api -u aireos-caddy`.
-
 **The cockpit answers.** In a browser on a machine that can reach the server, open
-`https://<address>` (the address you chose in step 3). **Expect a certificate warning**:
-the cockpit uses a certificate from its own private certificate authority, which your browser
-has never heard of. Accept it to continue (to make the warning go away for good, see
-[Trusting the certificate](#trusting-the-certificate)), and sign in with the operator username
-and password from step 3. You should land on the Dashboard.
+`https://<address>` (the address from step 3). **Expect a certificate warning** — see
+[Something went wrong?](#something-went-wrong). Accept it, then sign in with the operator
+username and password from step 3. You should land on the Dashboard.
 
-The server is now in the state the quickstart starts from.
+The server is now where the quickstart starts.
 
 ## Next: the quickstart
 
-**[Run your first governed action →](quickstart-first-governed-action.md)** It takes you from
+**[Run your first governed action →](quickstart-first-governed-action.md)** About 10 minutes, from
 this installation to a completed, audited action.
+
+---
+
+## Something went wrong?
+
+Find the message you see in the left column. Messages are quoted from the installers.
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `ERROR: must run as root` (from `install-postgres.sh`, `install.sh` or `setup-loopback-demo.sh`) | You ran the installer without `sudo`. | Run it again with `sudo` at the start of the line, exactly as shown in this guide. |
+| `perl : Depends: perl-base (= …) but … is to be installed` (step 2) | The prebuilt PostgreSQL companion is older than your server's updates. Nothing you did wrong. | Use your own PostgreSQL 16: [Bring your own PostgreSQL 16](offline-postgres-install.md#bring-your-own-postgresql-16), then carry on at step 3. |
+| `run this from the unpacked bundle directory (expected bin/ web/ config/)` | You started `install.sh` from the wrong directory. | `cd` into `aireos-offline-<version>` (the directory you unpacked in step 3) and run it again. |
+| `That is not a PostgreSQL connection URL. It must start with postgres:// (or postgresql://) and name a host, in this shape: …` | What you typed at the "Postgres URL" prompt is not a database address — for instance just `cockpit`, or the template with `<password>` still in it. | The installer asks again. Type `postgres://cockpit:` + your password + `@localhost:5432/cockpit?sslmode=disable`, with no spaces and no angle brackets. |
+| `migration failed for … — is postgres 16 reachable with pgcrypto available?` | The installer could not use the database. | Check that step 2 ended with the `DONE` line and that the password in the URL is the one you chose there. Then run step 3's installer again. |
+| The browser warns that the connection is not private (the wording differs by browser) | Expected. The cockpit uses a certificate from its own private authority, which your browser has not heard of. | Choose your browser's "Advanced" and proceed option. To stop the warning for good: [Trusting the certificate](#trusting-the-certificate). |
+| The browser cannot connect, or the cockpit does not answer at the address you typed | The cockpit answers only at the address you gave the installer in step 3. | Run step 3's `sudo AIREOS_SITE_ADDRESS=<address> AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh` again from the bundle directory, with the address you want. It restarts the services, so the change takes effect. |
+| `systemctl is-active` shows `failed`, `inactive` or `activating`; or the installer says `systemd could not enable and restart the seven aireos-* units — the install is NOT complete.` | A service did not start. | Replace `<service-name>` with the one that is not `active` and run `sudo journalctl -u <service-name> --no-pager -n 50`. Look for the first line that says an error, fix it, and run the installer again. |
+| Step 1 prints anything other than `Signature Verified Successfully`, or a `.sig` file is missing | The file is damaged, incomplete, or not the project's. | Extract nothing. Download it again from the Releases page, copy it over, and repeat step 1. If it fails again, stop and ask. |
+
+Trouble in the quickstart has its own list: [Something went wrong?](quickstart-first-governed-action.md#something-went-wrong).
 
 ---
 
@@ -248,6 +291,9 @@ creates the operator account; writes `/etc/aireos/aireos.env` (readable by `aire
 checks the database and runs every migration; then enables and (re)starts seven systemd
 services: `aireos-api`, `aireos-audit`, `aireos-broker`, `aireos-connector`, `aireos-policy`,
 `aireos-mcp-gateway` and `aireos-caddy`.
+
+**Why verify before extracting.** The installer runs from inside the extracted bundle, so it can
+never check the archive it came from, and the PostgreSQL companion's installer runs as root.
 
 ---
 
