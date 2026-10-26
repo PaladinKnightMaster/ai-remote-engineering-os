@@ -163,7 +163,7 @@ transcript. Summary:
 
 ## Release provenance
 
-**Signed, PUB-6 passed, tagged — not yet pushed** (closure commit, 2026-10-25).
+**Signed, PUB-6 passed, tagged, and published 2026-10-25** — https://github.com/PaladinKnightMaster/ai-remote-engineering-os/releases/tag/v0.16.0.
 
 | | |
 |---|---|
@@ -198,7 +198,7 @@ instrument, not a product code path.
 
 ## What remains — the CEO's, not this ticket's
 
-✅ Steps 1–3 below are DONE (signed, PUB-6 passed, tagged `e43cece`); only the push remains.
+✅ Steps 1–3 below are DONE (signed, PUB-6 passed, tagged `e43cece`); the push is DONE too (published 2026-10-25).
 
 1. **Sign** both artifacts with the production key (custody outside this repo).
 2. **PUB-6** — a fresh-host install from the signed artifacts, following only the public `README.md`. It

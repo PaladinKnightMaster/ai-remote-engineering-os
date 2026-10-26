@@ -317,7 +317,9 @@ and confirm it from a signed-out view; **PUB-10** — create a GitHub Release ca
 `.sig` files and `aireos-release.pub`, with the fingerprint in its notes. README step 1 sends strangers to
 that Releases page.
 
-**The tag is local. This repo has no remote — never push a tag, or anything else, until PUB-6 has
+✅ **PUSHED 2026-10-25** (after PUB-6 passed and the pre-publication email rewrite): `main` + 16 tags to https://github.com/PaladinKnightMaster/ai-remote-engineering-os; PUB-9 and PUB-10 verified signed-out — see the criteria rows.
+
+*(Original instruction, kept for the record:)* **The tag is local. This repo has no remote — never push a tag, or anything else, until PUB-6 has
 already passed.**
 
 ⚠⚠ **The push is the LAST act, after PUB-6 passes — not before.** Publishing before a stranger has
