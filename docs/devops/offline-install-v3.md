@@ -369,7 +369,7 @@ openssl pkey -in aireos-release.key -pubout -out aireos-release.pub
 - **What the signature proves, stated plainly:** this artifact was produced by someone
   holding the release key and has not been altered since. **The signature itself** does not
   prove the build was clean, and does not tie the artifact to a source revision, and claims
-  **no SLSA level** — this repo has no CI and no remote (ADR-0070 D3). Separately — and NOT
+  **no SLSA level** — releases are built and signed by the maintainer, with no CI (ADR-0070 D3). Separately — and NOT
   part of what the signature attests — every shipped Go binary embeds its own
   `vcs.revision`/`vcs.modified` (Go's `buildvcs` stamping, on by default, not stripped by
   `-trimpath -ldflags "-s -w"`); inspect with `go version -m bin/api`. That is a real,

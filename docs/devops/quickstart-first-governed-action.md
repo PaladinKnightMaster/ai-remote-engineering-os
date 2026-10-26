@@ -21,6 +21,9 @@ version number in the bundle's file name). Open a terminal on the server and go 
 cd aireos-offline-<version>
 ```
 
+If you open a new terminal or SSH session part-way through, run this `cd` again first: every
+server command below must run from that directory.
+
 ---
 
 ## 1. Log in
