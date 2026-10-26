@@ -376,7 +376,6 @@ openssl pkey -in aireos-release.key -pubout -out aireos-release.pub
   checkable provenance fact, but it is self-reported by the build and unsigned, and it is
   only trustworthy when the release is cut from a clean tree (`vcs.modified=false`).
 
-**A throwaway fixture keypair for tests** lives at `infra/offline/testdata/fixture-release-key/`
-— clearly labelled `FIXTURE-DO-NOT-USE-*`, committed on purpose, and unsuitable for any real
-release (anyone with this repo already holds it). Use it only to exercise `task sign-release`
-and `task provenance-check`; never point a real verification at it.
+**Testing the signing scripts without the release key:** mint a throwaway pair first, and never
+commit it — see `infra/offline/testdata/fixture-release-key/README.md`. `task sec45-check` refuses to
+run unless `RELEASE_PUBLIC_KEY` names the public key the artifacts were actually signed with.
