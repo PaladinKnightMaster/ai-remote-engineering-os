@@ -63,11 +63,21 @@ import (
 	"aireos.local/services/audit-service/internal/store"
 )
 
-// fixtureSecretKeyHex MUST match docker-compose.e2e.yml's audit: AND tester:
-// AIREOS_AUDIT_CHAIN_SIGN_KEY — a throwaway `authctl genkeypair` fixture,
-// never a real deployment key (T-125 mints a fresh one per real install).
-// This test derives the PUBLIC half from it; it never uses it to sign.
-const fixtureSecretKeyHex = "206f72f4093b3551d7819e7f0c212bda0e2c109983a2f315532e70d1e945ad80b4909c655f888fc007e84e775f75fedcdb234b3d8fb11d1e9b40620902571413"
+// chainSignKeyHex returns the chain-head signing key the live stack runs with.
+// It is read from AIREOS_AUDIT_CHAIN_SIGN_KEY — the very variable the compose
+// `audit` and `tester` services both receive, generated PER RUN by
+// infra/docker-compose/gen-e2e-env.sh (T-168) — so it can never drift from the
+// key the audit-service actually signs with, and no key literal is committed.
+// This test derives the PUBLIC half from it; it never uses it to sign. Fails
+// loud (never skips) when unset: a missing key is a compose regression.
+func chainSignKeyHex(t *testing.T) string {
+	t.Helper()
+	k := os.Getenv("AIREOS_AUDIT_CHAIN_SIGN_KEY")
+	if k == "" {
+		t.Fatal("AIREOS_AUDIT_CHAIN_SIGN_KEY not set — docker-compose.e2e.yml must hand the tester the same chain-signing key as the audit service (generate it with infra/docker-compose/gen-e2e-env.sh)")
+	}
+	return k
+}
 
 func TestLiveChainHeadSweepSignsRealHeads(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
@@ -75,7 +85,7 @@ func TestLiveChainHeadSweepSignsRealHeads(t *testing.T) {
 		t.Skip("DATABASE_URL not set")
 	}
 
-	sk, err := chain.SecretKeyFromHex(fixtureSecretKeyHex)
+	sk, err := chain.SecretKeyFromHex(chainSignKeyHex(t))
 	if err != nil {
 		t.Fatalf("parse fixture secret key: %v", err)
 	}
@@ -239,7 +249,7 @@ func listWholeChain(t *testing.T, ctx context.Context, st *store.Store) []audit.
 // release makes ("a third party with only an export and a public key can
 // check us"), rehearsed end to end against live data.
 //
-// It reuses the same fixtureSecretKeyHex as the tests above to derive the
+// It reuses the same chainSignKeyHex as the tests above to derive the
 // public half; it never uses the secret half to sign anything itself (the
 // export path has no signing key at all — D3).
 func TestLiveExportIsIndependentlyVerifiable(t *testing.T) {
@@ -248,7 +258,7 @@ func TestLiveExportIsIndependentlyVerifiable(t *testing.T) {
 		t.Skip("DATABASE_URL not set")
 	}
 
-	sk, err := chain.SecretKeyFromHex(fixtureSecretKeyHex)
+	sk, err := chain.SecretKeyFromHex(chainSignKeyHex(t))
 	if err != nil {
 		t.Fatalf("parse fixture secret key: %v", err)
 	}
@@ -430,7 +440,7 @@ func TestWD126GAireosVerifyBinaryProvesAllThreeLegs(t *testing.T) {
 		t.Skip("DATABASE_URL not set")
 	}
 
-	sk, err := chain.SecretKeyFromHex(fixtureSecretKeyHex)
+	sk, err := chain.SecretKeyFromHex(chainSignKeyHex(t))
 	if err != nil {
 		t.Fatalf("parse fixture secret key: %v", err)
 	}

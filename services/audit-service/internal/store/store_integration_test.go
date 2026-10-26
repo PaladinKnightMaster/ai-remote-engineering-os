@@ -6,7 +6,7 @@
 // Run them where the Go toolchain and a Postgres are available:
 //
 //	docker compose -f infra/docker-compose/docker-compose.mvp.yml up -d postgres
-//	export AUDIT_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+//	export AUDIT_TEST_DATABASE_URL=postgres://cockpit:change-me@localhost:5432/cockpit?sslmode=disable
 //	go run ./services/audit-service migrate up   # apply 0001_init
 //	go test -tags integration ./services/audit-service/internal/store/...
 package store

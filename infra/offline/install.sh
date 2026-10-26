@@ -205,7 +205,7 @@ aireos_valid_db_url() {
 # aireos_db_url_hint — the plain-English refusal for a value that is not a
 # usable database URL. Deliberately does NOT take or print the value.
 aireos_db_url_hint() {
-  printf '%s' "That is not a PostgreSQL connection URL. It must start with postgres:// (or postgresql://) and name a host, in this shape: postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable"
+  printf '%s' "That is not a PostgreSQL connection URL. It must start with postgres:// (or postgresql://) and name a host, in this shape: postgres://<user>:<password>@<host>:5432/<database>?sslmode=disable"
 }
 
 # The seven units install.sh owns, in start order.
@@ -408,7 +408,7 @@ fi
 # --- 5. DB connection string ------------------------------------------------
 DB_URL="${AIREOS_DB_URL:-}"   # shape already verified in step 1a' when env-supplied
 while [ -z "$DB_URL" ]; do
-  read -e -r -p "Postgres URL (postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable): " DB_URL \
+  read -e -r -p "Postgres URL (postgres://<user>:<password>@<host>:5432/<database>?sslmode=disable): " DB_URL \
     || die "postgres connection URL required — set AIREOS_DB_URL, or run interactively. Install postgres 16 + pgcrypto first (see the offline postgres guide)"
   if ! aireos_valid_db_url "$DB_URL"; then
     # No terminal to re-ask on (piped stdin): fail now, before any env file is written.

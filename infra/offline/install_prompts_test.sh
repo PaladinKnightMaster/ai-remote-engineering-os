@@ -27,6 +27,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# The bootstrap operator password is generated PER RUN (T-168), never committed:
+# a literal here is exactly what secret scanners flag as a "Generic Password".
+# 24 hex chars from the kernel CSPRNG; nothing asserts on its value.
+TEST_OP_PW="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+[ "${#TEST_OP_PW}" -eq 24 ] || { echo "FAIL could not generate a random test password from /dev/urandom"; exit 1; }
+
 if [ "$(id -u)" != "0" ]; then
   echo "SKIP install_prompts_test.sh -- needs root (useradd/chown); run it inside a disposable container (see this file's header)"
   exit 0
@@ -85,7 +91,7 @@ run_install() {
   local stdin="$1"; shift
   env PATH="$STUBBIN:$PATH" \
     AIREOS_DEPLOYMENT_PROFILE=lan-only \
-    AIREOS_BOOTSTRAP_OPERATOR_USER=testop AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=testpw123 \
+    AIREOS_BOOTSTRAP_OPERATOR_USER=testop AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$TEST_OP_PW" \
     "$@" bash "$BUNDLE/install.sh" <"$stdin" >"$WORK/out.log" 2>&1
 }
 NOSTDIN=/dev/null
@@ -94,7 +100,7 @@ echo "== P7: unattended AIREOS_DB_URL=cockpit is refused before ANY env file is 
 fresh
 run_install "$NOSTDIN" AIREOS_DB_URL=cockpit AIREOS_SKIP_SYSTEMCTL=1; rc=$?
 [ "$rc" -ne 0 ] && ok "P7 unattended: exit non-zero (rc=$rc)" || bad "P7 unattended: exit" "accepted 'cockpit' (rc=0)"
-grep -q 'postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable' "$WORK/out.log" \
+grep -q 'postgres://<user>:<password>@<host>:5432/<database>?sslmode=disable' "$WORK/out.log" \
   && ok "P7 unattended: message shows the expected URL shape" || bad "P7 unattended: message" "$(cat "$WORK/out.log")"
 ls /etc/aireos/*.env >/dev/null 2>&1 && bad "P7 unattended: env files" "env files were written: $(ls /etc/aireos)" || ok "P7 unattended: no env file written"
 grep -q 'migration failed' "$WORK/out.log" && bad "P7 unattended: wrong failure" "reached migration (the old misleading hint)" || ok "P7 unattended: did not reach migration"
@@ -104,7 +110,7 @@ fresh
 printf 'cockpit\n' > "$WORK/stdin-bad"
 run_install "$WORK/stdin-bad" AIREOS_SKIP_SYSTEMCTL=1; rc=$?
 [ "$rc" -ne 0 ] && ok "P7 piped: exit non-zero (rc=$rc)" || bad "P7 piped: exit" "accepted 'cockpit' from stdin (rc=0)"
-grep -q 'postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable' "$WORK/out.log" \
+grep -q 'postgres://<user>:<password>@<host>:5432/<database>?sslmode=disable' "$WORK/out.log" \
   && ok "P7 piped: message shows the expected URL shape" || bad "P7 piped: message" "$(cat "$WORK/out.log")"
 ls /etc/aireos/*.env >/dev/null 2>&1 && bad "P7 piped: env files" "env files were written" || ok "P7 piped: no env file written"
 
@@ -125,7 +131,7 @@ if ! command -v script >/dev/null 2>&1; then
 else
   fresh
   (
-    export PATH="$STUBBIN:$PATH" AIREOS_DEPLOYMENT_PROFILE=lan-only AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=testpw123 AIREOS_SKIP_SYSTEMCTL=1
+    export PATH="$STUBBIN:$PATH" AIREOS_DEPLOYMENT_PROFILE=lan-only AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$TEST_OP_PW" AIREOS_SKIP_SYSTEMCTL=1
     unset AIREOS_BOOTSTRAP_OPERATOR_USER AIREOS_DB_URL
     printf 'admn\033[Di\n%s\n%s\n' cockpit "$GOOD_URL" | script -qec "bash $BUNDLE/install.sh" /dev/null > "$WORK/pty.log" 2>&1
   ); rc=$?

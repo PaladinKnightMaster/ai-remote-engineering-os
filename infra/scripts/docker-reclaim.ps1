@@ -39,12 +39,18 @@ function Warn($m) { Write-Host "[reclaim] $m" -ForegroundColor Yellow }
 $repoCompose = Join-Path $PSScriptRoot '..\docker-compose'
 
 # 1. Tear down the known project stacks (ignore errors if a stack isn't up).
-foreach ($f in @('docker-compose.e2e.yml', 'docker-compose.smoke.yml', 'docker-compose.mvp.yml')) {
+# The e2e/smoke files take their keys from a per-run, git-ignored .e2e.env
+# (T-168) and refuse to load without it, so they are torn down BY PROJECT NAME
+# (each file declares `name:`): that needs no file and no keys.
+foreach ($p in @{ 'docker-compose.e2e.yml' = 'aireos-e2e'; 'docker-compose.smoke.yml' = 'aireos-smoke'; 'docker-compose.mvp.yml' = $null }.GetEnumerator()) {
+  $f = $p.Key
   $path = Join-Path $repoCompose $f
   if (Test-Path $path) {
     Info "compose down -v: $f"
     $env:MSYS_NO_PATHCONV = '1'
-    try { docker compose -f $path down -v 2>$null } catch { Warn "  (not running)" }
+    try {
+      if ($p.Value) { docker compose -p $p.Value down -v 2>$null } else { docker compose -f $path down -v 2>$null }
+    } catch { Warn "  (not running)" }
   }
 }
 

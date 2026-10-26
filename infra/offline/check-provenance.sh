@@ -26,9 +26,11 @@
 #
 # Usage: RELEASE_PUBLIC_KEY=<path to aireos-release.pub> bash infra/offline/check-provenance.sh
 #   (CI / a real release run points RELEASE_PUBLIC_KEY at the published key;
-#   local dev/testing can point it at the fixture at
-#   infra/offline/testdata/fixture-release-key/FIXTURE-DO-NOT-USE-release.pub.pem —
-#   NEVER use the fixture to verify a real release artifact.)
+#   local dev/testing can point it at a throwaway public key minted per
+#   infra/offline/testdata/fixture-release-key/README.md — NEVER use a
+#   throwaway key to verify a real release artifact. There is deliberately NO
+#   default key: with artifacts present and RELEASE_PUBLIC_KEY unset this gate
+#   dies loudly (below); with no artifacts at all it self-skips, as documented.)
 #
 # Needs `node` (for the SBOM coverage check) in addition to `openssl` and `tar`.
 set -euo pipefail

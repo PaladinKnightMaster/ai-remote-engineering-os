@@ -92,7 +92,7 @@ func TestSEC43ForgedAuditChainCaughtByBothVerifiers(t *testing.T) {
 		t.Skip("DATABASE_URL not set")
 	}
 
-	sk, err := chain.SecretKeyFromHex(fixtureSecretKeyHex)
+	sk, err := chain.SecretKeyFromHex(chainSignKeyHex(t))
 	if err != nil {
 		t.Fatalf("parse fixture secret key: %v", err)
 	}

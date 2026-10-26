@@ -2,26 +2,28 @@ package chain
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
+
+	"aireos.local/packages/go/auth"
 )
 
-// authctlFixtureSecretHex / authctlFixturePublicHex were produced live by
-// `go run ./packages/go/auth/cmd/authctl genkeypair` (ADR-0060's existing
-// keypair primitive) and hard-coded here to prove — not assume —
-// SecretKeyFromHex/PublicKeyFromHex accept the exact hex format that command
-// prints. Confirmed by inspection: the secret hex's trailing 64 hex chars
-// equal the public hex exactly, i.e. this is the standard raw Ed25519
-// private-key layout (32-byte seed || 32-byte public), which is exactly what
-// crypto/ed25519.PrivateKey expects — the installer seam this ticket must not
-// silently break.
-const (
-	authctlFixtureSecretHex = "6d21c02dfd9843625699dc4c6aefc8e69fd42692cf787fc6cf9df1135c83326" +
-		"a1752d095ae7fa02fae08cde0a2f7b41b959dd27dce12bf0b6461cbd0e20a818b"
-	authctlFixturePublicHex = "1752d095ae7fa02fae08cde0a2f7b41b959dd27dce12bf0b6461cbd0e20a818b"
-)
+// goldenKeyLabel names the fixed, NON-SECRET input the golden-vector key is
+// derived from (T-168). The Ed25519 seed is SHA-256 of this label, computed in
+// code — no key literal is committed anywhere in this package, so secret
+// scanners have nothing to flag. The key is public by construction: anyone can
+// recompute it from this string, and it signs nothing but test vectors.
+const goldenKeyLabel = "aireos/audit-service/chain/head_test.go golden-vector key v1 (public, non-secret)"
+
+// goldenKey derives the golden-vector keypair from goldenKeyLabel.
+func goldenKey() ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte(goldenKeyLabel))
+	return ed25519.NewKeyFromSeed(seed[:])
+}
 
 func testKeypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -163,12 +165,22 @@ func TestWrongPublicKeyRejected(t *testing.T) {
 // PublicKeyFromHex and round-trip a sign/verify. Nothing else in this ticket
 // checks that the two independently-written encodings (go-paseto's
 // ExportHex, this file's raw ed25519 parsing) actually agree.
+//
+// T-168: the pair is no longer a committed literal. It is produced here by
+// auth.GenerateAsymmetricKey — the very function `authctl genkeypair` calls and
+// prints (packages/go/auth/cmd/authctl/main.go) — so the seam is exercised
+// against the real producer on every run rather than against a snapshot of its
+// output, and no secret-shaped string lives in the repo. The layout assertion
+// (secret hex = 32-byte seed || 32-byte public, i.e. its trailing 64 hex chars
+// equal the public hex) is kept: it is what proves the two encodings agree.
 func TestAuthctlKeyFormatCompatibility(t *testing.T) {
-	sk, err := SecretKeyFromHex(authctlFixtureSecretHex)
+	_, _, authctlSecretHex, authctlPublicHex := auth.GenerateAsymmetricKey()
+
+	sk, err := SecretKeyFromHex(authctlSecretHex)
 	if err != nil {
 		t.Fatalf("parse authctl secret key: %v", err)
 	}
-	pub, err := PublicKeyFromHex(authctlFixturePublicHex)
+	pub, err := PublicKeyFromHex(authctlPublicHex)
 	if err != nil {
 		t.Fatalf("parse authctl public key: %v", err)
 	}
@@ -177,6 +189,9 @@ func TestAuthctlKeyFormatCompatibility(t *testing.T) {
 	}
 	if len(pub) != ed25519.PublicKeySize {
 		t.Fatalf("public key wrong size: %d", len(pub))
+	}
+	if !strings.HasSuffix(authctlSecretHex, authctlPublicHex) {
+		t.Fatal("authctl secret hex is not the raw Ed25519 layout (seed || public): its tail != the public hex")
 	}
 
 	h, err := SignHead(sk, 100, "0123456789abcdef", "2026-08-11T00:00:00.000000000Z")
@@ -191,13 +206,13 @@ func TestAuthctlKeyFormatCompatibility(t *testing.T) {
 	if _, err := SecretKeyFromHex("zz"); err == nil {
 		t.Fatal("expected error for malformed secret hex")
 	}
-	if _, err := SecretKeyFromHex(authctlFixturePublicHex); err == nil {
+	if _, err := SecretKeyFromHex(authctlPublicHex); err == nil {
 		t.Fatal("expected error for a public-length key passed as secret")
 	}
 	if _, err := PublicKeyFromHex("zz"); err == nil {
 		t.Fatal("expected error for malformed public hex")
 	}
-	if _, err := PublicKeyFromHex(authctlFixtureSecretHex); err == nil {
+	if _, err := PublicKeyFromHex(authctlSecretHex); err == nil {
 		t.Fatal("expected error for a secret-length key passed as public")
 	}
 }
@@ -212,9 +227,17 @@ func TestAuthctlKeyFormatCompatibility(t *testing.T) {
 // domain separator to avoid.
 //
 // goldenSignature was generated ONCE from this package's own
-// SignHead(goldenSecretHex fixture, seq=42, a fixed chainHash, a fixed
-// RFC3339Nano timestamp) and hard-coded below as a literal, independent of
-// whatever headPayload does today.
+// SignHead(goldenKey(), seq=42, a fixed chainHash, a fixed RFC3339Nano
+// timestamp) and hard-coded below as a literal, independent of whatever
+// headPayload does today. A signature is a public value, not a secret.
+//
+// RE-PINNED at T-168 (and only then): the golden key used to be a committed
+// hex literal, which secret scanners (GitGuardian) flagged on the public repo.
+// It is now derived in code from goldenKeyLabel, so the signing key — and
+// therefore this signature — changed while the signed-head FORMAT did not
+// (the unchanged TestDomainSeparationRequired / TestTamperEachFieldDetected
+// / TestFieldShiftResistance pin that). From here on the rule below is
+// unchanged: a failure means the format moved.
 //
 // IF THIS TEST FAILS: the signed-head format has changed. That means every
 // head signed by every prior version of this code is now unverifiable. The
@@ -226,14 +249,11 @@ func TestSignHeadGoldenVector(t *testing.T) {
 		goldenSeq       = 42
 		goldenChainHash = "5f2f3c9a6f1a8e6c2d9b7a4e1f3c8d6b5a2f0e9d7c4b1a8f6e3d0c9b7a5f2e1d"
 		goldenTimestamp = "2026-08-11T00:00:00.000000000Z"
-		goldenSignature = "268db37766e9ef53bbe235cdb503c6341f34757c9fad344cb7081a03b388d2" +
-			"bbbfad0c9957860e9d412087abaadfc0b94358c0601fb7311a2fd7263d226c5f0b"
+		goldenSignature = "3964a3f334c494d3556129266325fb0bb31e1e67df6a9110a9906816f948b2b2" +
+			"2687f07cf0be7cc52ef7d820470e0f9c1c17a8d43c57f7b450ed6c372558f904"
 	)
 
-	sk, err := SecretKeyFromHex(authctlFixtureSecretHex)
-	if err != nil {
-		t.Fatalf("parse fixture secret key: %v", err)
-	}
+	sk := goldenKey()
 	h, err := SignHead(sk, goldenSeq, goldenChainHash, goldenTimestamp)
 	if err != nil {
 		t.Fatalf("sign golden vector: %v", err)
@@ -243,9 +263,9 @@ func TestSignHeadGoldenVector(t *testing.T) {
 			"bump HeadDomain to -v2, do not update this expected value)", h.Signature, goldenSignature)
 	}
 
-	pub, err := PublicKeyFromHex(authctlFixturePublicHex)
-	if err != nil {
-		t.Fatalf("parse fixture public key: %v", err)
+	pub, ok := sk.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("golden key has no ed25519 public half")
 	}
 	if err := VerifyHead(pub, h); err != nil {
 		t.Fatalf("golden vector must verify: %v", err)

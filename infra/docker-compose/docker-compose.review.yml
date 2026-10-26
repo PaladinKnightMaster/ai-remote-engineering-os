@@ -14,7 +14,8 @@
 # talks to them directly.
 #
 # Bring up (from infra/docker-compose/, Windows: prefix MSYS_NO_PATHCONV=1):
-#   docker compose -f docker-compose.e2e.yml -f docker-compose.review.yml \
+#   bash gen-e2e-env.sh        # per-run keys -> .e2e.env (T-168); compose refuses to start without it
+#   docker compose --env-file .e2e.env -f docker-compose.e2e.yml -f docker-compose.review.yml \
 #     up -d --build api audit broker connector policy mcp-gateway sshd
 # then, from the repo root: pnpm --filter @aireos/web dev   ->   http://localhost:5173
 # Login: admin / e2e-operator-pw   Resources: ...00a2 (flagged), ...00e2 (ungated)

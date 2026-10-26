@@ -64,25 +64,27 @@
 # This is a NEGATIVE PROOF, not a dev-loop gate: unlike check-provenance.sh
 # (which self-skips loudly when nothing has been built yet -- a legitimate,
 # different case), THIS script dies loudly if the real artifacts or the
-# fixture public key are missing. Grafting a self-skip onto a negative proof
+# public key are missing. Grafting a self-skip onto a negative proof
 # is precisely the S-25 dead-guardrail pattern this whole release exists to
 # hunt.
 #
 # Usage:
-#   bash infra/offline/sec45_bundle_mutation_test.sh
 #   RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub bash infra/offline/sec45_bundle_mutation_test.sh
 #
 # Needs every dist/offline/*.tar.gz already built AND signed (task
-# offline-bundle && task sign-release -- --key <fixture-or-real-key>).
+# offline-bundle && task sign-release -- --key <private-key>).
 #
-# The verification key is RELEASE_PUBLIC_KEY when set -- the same env var
-# check-provenance.sh:43 reads, so both gates are pointed at a release by one
-# variable -- and falls back to the fixture public key for local runs. The
-# fallback must NOT be a hardcode: at T-136 the production signature is cut
-# with the CEO's real release key, and a fixture-only script would fail at
-# exactly that moment, looking like SEC-45 had broken on release day when in
-# fact it was only ever able to check one key. NEVER use the fixture to
-# verify a real release artifact.
+# RELEASE_PUBLIC_KEY is REQUIRED (T-168): the public key the artifacts were
+# signed against -- the same env var check-provenance.sh:42 reads, so both gates
+# are pointed at a release by one variable. This script used to fall back to a
+# committed fixture public key when it was unset. That fallback was a footgun:
+# run against production-signed artifacts, the control leg failed with a
+# confusing exit that looked like SEC-45 itself had broken. The fixture keypair
+# is gone (its private half tripped secret scanners on the public repo), and
+# with no default left the only honest behaviour is to refuse to run, say why,
+# and exit non-zero. For a throwaway local run, mint a pair yourself -- see
+# infra/offline/testdata/fixture-release-key/README.md. A throwaway key proves
+# the mechanism only -- NEVER use one to vouch for a real release artifact.
 #
 # VER-16 self-test (fail-proof) mode: set SEC45_TEST_SKIP_MUTATION=1 to make
 # the "mutation" step a no-op (write the SAME byte back) for BOTH artifacts,
@@ -94,10 +96,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$REPO_ROOT/dist/offline"
-FIXTURE_PUB="$REPO_ROOT/infra/offline/testdata/fixture-release-key/FIXTURE-DO-NOT-USE-release.pub.pem"
-# RELEASE_PUBLIC_KEY when set (same variable check-provenance.sh reads), else
-# the fixture -- see the header for why this must not be a hardcode.
-PUB="${RELEASE_PUBLIC_KEY:-$FIXTURE_PUB}"
+PUB="${RELEASE_PUBLIC_KEY:-}"
 CHECK_PROVENANCE="$SCRIPT_DIR/check-provenance.sh"
 
 pass=0
@@ -140,6 +139,13 @@ assert_contains() {
   fi
 }
 
+if [ -z "$PUB" ]; then
+  echo "ERROR: RELEASE_PUBLIC_KEY is not set -- refusing to run." >&2
+  echo "  SEC-45 must be told which public key the artifacts in $DIST_DIR were signed against;" >&2
+  echo "  it has no default (a guessed key makes the control leg fail with a confusing error)." >&2
+  echo "  Usage: RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub task sec45-check" >&2
+  exit 1
+fi
 [ -f "$PUB" ] || { echo "ERROR: public key not found at $PUB -- this is a negative proof, it must not self-skip"; exit 1; }
 echo "verification key: $PUB"
 

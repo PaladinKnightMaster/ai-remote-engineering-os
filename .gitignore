@@ -36,6 +36,9 @@ tests/e2e/.wd10-scratch/
 
 # Env files
 .env
+# Per-run e2e/smoke keys written by infra/docker-compose/gen-e2e-env.sh (T-168)
+.e2e.env
+.e2e.env.*
 .env.local
 **/.env
 !**/env.example

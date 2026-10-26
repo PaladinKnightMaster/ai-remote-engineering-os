@@ -135,7 +135,7 @@ tasks:
       - bash infra/offline/check-provenance.sh
 
   sec45-check:
-    desc: "SEC-45 negative proof (ADR-0070 D1/D2/D9, VER-16, T-130a): mutates ONE byte in a scratch COPY of EVERY already-built+signed dist/offline/*.tar.gz (the artifact list is globbed, never hardcoded — so a second per-OS postgres companion is covered automatically rather than shipping signed but unproven; dist/offline/ itself is never touched) and asserts signature verification fails on that copy — both via raw openssl AND via check-provenance.sh naming the artifact in a 'signature does NOT verify' line — while a control pass on the unmutated copy is proven to verify clean first, on the same code path. The closing line names every artifact actually covered, and says PROVED only on a clean run. A deliberately-invoked release-evidence step, NOT part of the dev-loop release-check gate (not wired into `task release-check`) — it needs the real signed artifacts already on disk, which a dev loop rarely has, and dies loudly rather than self-skipping if they are missing (a negative proof must never graft on a dev-loop self-skip). Verifies against RELEASE_PUBLIC_KEY when set (the same variable provenance-check reads), else the test fixture at infra/offline/testdata/fixture-release-key/ — so the real release key can be used at T-136. Needs node in addition to openssl. Usage: task sec45-check (after `task offline-bundle` + `task sign-release -- --key <fixture-or-real-key>`)."
+    desc: "SEC-45 negative proof (ADR-0070 D1/D2/D9, VER-16, T-130a): mutates ONE byte in a scratch COPY of EVERY already-built+signed dist/offline/*.tar.gz (the artifact list is globbed, never hardcoded — so a second per-OS postgres companion is covered automatically rather than shipping signed but unproven; dist/offline/ itself is never touched) and asserts signature verification fails on that copy — both via raw openssl AND via check-provenance.sh naming the artifact in a 'signature does NOT verify' line — while a control pass on the unmutated copy is proven to verify clean first, on the same code path. The closing line names every artifact actually covered, and says PROVED only on a clean run. A deliberately-invoked release-evidence step, NOT part of the dev-loop release-check gate (not wired into `task release-check`) — it needs the real signed artifacts already on disk, which a dev loop rarely has, and dies loudly rather than self-skipping if they are missing (a negative proof must never graft on a dev-loop self-skip). REQUIRES RELEASE_PUBLIC_KEY (the same variable provenance-check reads) — it refuses to run, with a plain message and a non-zero exit, when unset (T-168: it used to default to a committed fixture key, which broke confusingly against production-signed artifacts; that fixture is gone). Needs node in addition to openssl. Usage: RELEASE_PUBLIC_KEY=/path/to/aireos-release.pub task sec45-check (after `task offline-bundle` + `task sign-release -- --key <private-key>`)."
     cmds:
       - bash infra/offline/sec45_bundle_mutation_test.sh
 
@@ -176,12 +176,16 @@ tasks:
       - go run ./services/connector-service credentials {{.CLI_ARGS}}
 
   e2e:
-    desc: "Live SSH end-to-end harness (T-020b): compose up postgres+api+broker+audit+a test sshd, seed keys+resource, run the tagged Go walkthrough, assert the LIVE audit chain (session.open + terminal.input.line + session.close w/ cast SHA). Closes ADR-0045 §Verification 3. On a Windows host, prefix the docker invocation with MSYS_NO_PATHCONV=1."
+    desc: "Live SSH end-to-end harness (T-020b): compose up postgres+api+broker+audit+a test sshd, seed keys+resource, run the tagged Go walkthrough, assert the LIVE audit chain (session.open + terminal.input.line + session.close w/ cast SHA). Closes ADR-0045 §Verification 3. Keys are generated per run by infra/docker-compose/gen-e2e-env.sh (T-168). On a Windows host, prefix the docker invocation with MSYS_NO_PATHCONV=1."
     dir: infra/docker-compose
     cmds:
-      - docker compose -f docker-compose.e2e.yml build
-      - defer: docker compose -f docker-compose.e2e.yml down -v
-      - docker compose -f docker-compose.e2e.yml run --rm tester
+      # T-168: the stack's keys are generated FRESH per run into the git-ignored
+      # .e2e.env (no key literal is committed); compose reads it via --env-file and
+      # refuses to start without it. If generation fails the task stops here.
+      - bash gen-e2e-env.sh
+      - docker compose --env-file .e2e.env -f docker-compose.e2e.yml build
+      - defer: docker compose --env-file .e2e.env -f docker-compose.e2e.yml down -v
+      - docker compose --env-file .e2e.env -f docker-compose.e2e.yml run --rm tester
 
   wd1:
     desc: "WD-1 installed-stack proof (T-021d, ADR-0051): bring up the REAL offline install under systemd-in-Docker + assert the stack is active + the chain-verify CLI (T-021d-a). The full WD-1 walkthrough is T-021d-b. Prereq: the core bundle + the ubuntu2404 postgres companion in dist/offline/ (build them first — see the script's error messages)."
@@ -192,9 +196,11 @@ tasks:
     desc: "Browser smoke suite (T-034): the headless §12 governed-egress walkthrough in a real Chromium against the BUILT apps/web bundle served same-origin behind Caddy, on the live e2e backend. Asserts the cockpit RENDERS (login → ApprovalPrompt → deny/approve → xterm output + the xterm.css regression guard → audit timeline). Complements `task e2e` (which owns the byte-exact live audit chain). Pulls the Playwright image — CI/full-env only, not the air-gapped box. On a Windows host, prefix with MSYS_NO_PATHCONV=1."
     dir: infra/docker-compose
     cmds:
-      - docker compose -f docker-compose.smoke.yml build
-      - defer: docker compose -f docker-compose.smoke.yml down -v
-      - docker compose -f docker-compose.smoke.yml run --rm smoke
+      # T-168: per-run keys for the included e2e backend -- see `e2e` above.
+      - bash gen-e2e-env.sh
+      - docker compose --env-file .e2e.env -f docker-compose.smoke.yml build
+      - defer: docker compose --env-file .e2e.env -f docker-compose.smoke.yml down -v
+      - docker compose --env-file .e2e.env -f docker-compose.smoke.yml run --rm smoke
 
   doc-check:
     desc: "Assert every in-repo file path referenced in CANONICAL_SOURCE_OF_TRUTH.md + the ADRs resolves on disk (release-criteria DOC-1; §11a-1). Needs python3."

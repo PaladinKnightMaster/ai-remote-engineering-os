@@ -21,9 +21,9 @@
 # and is held OUTSIDE this repository, outside any build host, and outside
 # any automated run or transcript — see the "Release key custody" section of
 # docs/devops/offline-install-v3.md for the full procedure and where the key
-# must NOT live. A THROWAWAY fixture keypair for tests only, clearly labelled
-# as a fixture and never suitable for a real release, lives at
-# infra/offline/testdata/fixture-release-key/.
+# must NOT live. For tests, mint a THROWAWAY keypair yourself (no fixture key
+# is committed any more -- T-168; see
+# infra/offline/testdata/fixture-release-key/README.md).
 #
 # VERSION DISCIPLINE (the T-129a dependency, RESOLVED 2026-08-18): Taskfile.yml's
 # `offline-bundle` now sets BUNDLE_VERSION: "0.13.0". It was stale at "0.12.0"

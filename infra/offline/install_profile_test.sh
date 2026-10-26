@@ -226,7 +226,7 @@ expect_url "the old placeholder pasted verbatim, missing scheme" bad 'user:pass@
 # the hint must show the expected shape and must NEVER echo a candidate value
 HINT="$(aireos_db_url_hint)"
 case "$HINT" in
-  *"postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=disable"*) echo "PASS db-url hint shows the expected shape"; pass=$((pass + 1)) ;;
+  *"postgres://<user>:<password>@<host>:5432/<database>?sslmode=disable"*) echo "PASS db-url hint shows the expected shape"; pass=$((pass + 1)) ;;
   *) echo "FAIL db-url hint does not show the expected shape: $HINT"; fail=$((fail + 1)) ;;
 esac
 

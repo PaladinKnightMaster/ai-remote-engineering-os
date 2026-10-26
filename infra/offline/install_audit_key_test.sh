@@ -32,6 +32,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# The bootstrap operator password is generated PER RUN (T-168), never committed:
+# a literal here is exactly what secret scanners flag as a "Generic Password".
+# 24 hex chars from the kernel CSPRNG; nothing asserts on its value.
+TEST_OP_PW="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
+[ "${#TEST_OP_PW}" -eq 24 ] || { echo "FAIL could not generate a random test password from /dev/urandom"; exit 1; }
+
 if [ "$(id -u)" != "0" ]; then
   echo "SKIP install_audit_key_test.sh -- needs root (useradd/chown); run it inside a disposable container (see this file's header)"
   exit 0
@@ -100,7 +106,7 @@ chmod +x "$BUNDLE/install.sh"
 run_install() {
   AIREOS_DEPLOYMENT_PROFILE=lan-only \
   AIREOS_BOOTSTRAP_OPERATOR_USER=testop \
-  AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=testpw123 \
+  AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$TEST_OP_PW" \
   AIREOS_DB_URL="postgres://unused:unused@127.0.0.1:5432/unused?sslmode=disable" \
   AIREOS_SKIP_SYSTEMCTL=1 \
   bash "$BUNDLE/install.sh" >"$WORK/install.log" 2>&1
