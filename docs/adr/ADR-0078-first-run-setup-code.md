@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** — 2026-10-26 (v0.17.0 "Install & First-Run Experience", ticket T-169). Commander seat.
+**Accepted** — 2026-10-26 (CEO). Proposed 2026-10-26 (v0.17.0 "Install & First-Run Experience", ticket T-169). Commander seat.
 **Decider: CEO.**
 
 **Refines ADR-0046** (operator authentication at P0) — *where* the single bootstrap operator's

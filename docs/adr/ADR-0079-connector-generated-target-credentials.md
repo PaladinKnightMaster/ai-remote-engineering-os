@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** — 2026-10-26 (v0.17.0 "Install & First-Run Experience", ticket T-170). Commander seat.
+**Accepted** — 2026-10-26 (CEO). Proposed 2026-10-26 (v0.17.0 "Install & First-Run Experience", ticket T-170). Commander seat.
 **Decider: CEO.**
 
 **Extends ADR-0053** (connector-service is the sole custody and decrypt authority for target
