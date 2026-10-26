@@ -7,7 +7,7 @@
 
 **The reverse index is the point.** Gate **G2** forbids editing an Accepted ADR, so an ADR whose clause is later superseded carries **no forward pointer** — a reader of ADR-0041 cannot learn that its Go-version clause is dead. *Named by* below supplies that pointer **additively, outside the ADR files**, satisfying both G2 and the MADR convention that a superseded decision must link forward.
 
-**77 ADRs.** **Accepted: 68** · **Proposed: 9**
+**77 ADRs.** **Accepted: 69** · **Proposed: 8**
 
 ## Known corpus defects (measured, not impressions)
 
@@ -96,4 +96,4 @@
 | [ADR-0074](ADR-0074-governed-decision-policy.md) | `policy-service` evaluates operator-authored rules, so the decision point can decide | **Accepted** | 2026-08-28 | Decider: CEO. Discharges ADR-0054 §1 and §3 — both Accepted 2026-06-01, both only half-built. This ADR supersedes nothing and edits nothing — it builds what ADR-0054 already decided, and adds the o… | — |
 | [ADR-0075](ADR-0075-open-source-licence.md) | ADR-0075 — Open-source licence for the product | **Accepted** | 2026-09-01 | — | ADR-0076 |
 | [ADR-0076](ADR-0076-contribution-provenance-dco.md) | ADR-0076 — Contribution provenance: DCO, not a CLA | **Accepted** | 2026-09-01 | Discharges ADR-0075's deferred item ("CLA vs DCO", which that ADR left open with an explicit trigger). Refines ADR-0075. ⚠ ADR-0075 is Accepted and immutable under gate G2, which is why this is a s… | — |
-| [ADR-0077](ADR-0077-self-contained-postgres-companion.md) | ADR-0077 — Self-contained PostgreSQL companion | **Proposed** | 2026-10-06 | Decider: CEO. Refines ADR-0052 decision 2 — how the postgres companion is packaged. | — |
+| [ADR-0077](ADR-0077-self-contained-postgres-companion.md) | ADR-0077 — Self-contained PostgreSQL companion | **Accepted** | 2026-10-26 | Decider: CEO. Refines ADR-0052 decisions 2 and 3 — how the postgres companion is packaged (decision 2) and, added before acceptance at the CEO's request, which OSes it is built for (decision 3: Ubu… | — |

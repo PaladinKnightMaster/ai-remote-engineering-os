@@ -2,11 +2,13 @@
 
 ## Status
 
-**Proposed** — 2026-10-06 (v0.16.0 PUB-6 rehearsal, finding R1). Commander seat. **Decider: CEO.**
+**Accepted** — 2026-10-26 (CEO, at v0.17.0 scoping). Proposed 2026-10-06 (v0.16.0 PUB-6 rehearsal, finding R1);
+authored in the Commander seat. **Decider: CEO.**
 
-**Refines ADR-0052 decision 2** — *how* the postgres companion is packaged. ADR-0052's decisions 1
-(per-OS companion artifacts, outside the core bundle), 3 (OS scope) and 4 (build artifacts, never
-committed) are **unchanged**. Supersedes nothing.
+**Refines ADR-0052 decisions 2 and 3** — *how* the postgres companion is packaged (decision 2) and, added
+before acceptance at the CEO's request, *which OSes* it is built for (decision 3: Ubuntu 26.04 joins the
+scope — see decision 9). ADR-0052's decisions 1 (per-OS companion artifacts, outside the core bundle) and
+4 (build artifacts, never committed) are **unchanged**. Supersedes nothing.
 
 ⚠ **Nothing in this ADR is implemented or measured yet** beyond what §Context marks `[ran:]`. It is a
 design for the release between v0.16.0 and v1.0.0 Beta 1.
@@ -103,6 +105,10 @@ skew between them.** Only an independently provisioned host could, which is what
    co-build proves nothing, by construction.
 8. **Bring-your-own PostgreSQL stays supported** — `install.sh` has only ever needed a connection URL —
    but stops being a workaround for a broken default.
+9. **OS scope (refines ADR-0052 decision 3): Ubuntu 24.04, Ubuntu 26.04 and Rocky/RHEL-family 9, `amd64`.**
+   Each OS gets its own source-built tree, and **each must pass decision 7's later-host test on its own** — a
+   pass on one OS proves nothing about another. ⚠ No `rocky9` companion was in the v0.15.0 or v0.16.0
+   release sets [ran: `ls dist/offline/` at each cut], so Rocky is untested ground, not a regression baseline.
 
 ---
 
