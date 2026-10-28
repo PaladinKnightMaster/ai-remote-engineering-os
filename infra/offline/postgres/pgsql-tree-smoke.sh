@@ -5,8 +5,9 @@
 # every ELF resolves, bundled libs come from the tree, initdb + start + pgcrypto
 # + full-text search work as a non-root user, and the package database is untouched.
 # Prints exactly one `PGSQL-TREE-SMOKE PASS` line on success; any failure exits non-zero.
-# Env: OSTAG PGSQL_VERSION
+# Env: OSTAG PGSQL_VERSION [SMOKE_BASE=floor|latest, only labels the PASS line]
 set -euo pipefail
+export LC_ALL=C
 
 PREFIX=/opt/aireos/pgsql
 : "${OSTAG:?}" "${PGSQL_VERSION:?}"
@@ -22,13 +23,15 @@ pkgs() {
 pkgs >/tmp/pkgs.before
 mkdir -p "$(dirname "$PREFIX")"; cp -a /stage "$PREFIX"
 SH="$PREFIX/share/aireos"
-for f in HOST_LIBS BUNDLED_LIBS COMPONENTS.json; do [ -e "$SH/$f" ] || die "missing manifest $f"; done
-[ -s "$SH/HOST_LIBS" ] && [ -s "$SH/COMPONENTS.json" ] || die "HOST_LIBS / COMPONENTS.json is empty"   # BUNDLED_LIBS may be empty
+for f in HOST_LIBS HOST_LIB_VERSIONS BUNDLED_LIBS COMPONENTS.json; do [ -e "$SH/$f" ] || die "missing manifest $f"; done
+[ -s "$SH/HOST_LIBS" ] && [ -s "$SH/HOST_LIB_VERSIONS" ] && [ -s "$SH/COMPONENTS.json" ] || die "HOST_LIBS / HOST_LIB_VERSIONS / COMPONENTS.json is empty"   # BUNDLED_LIBS may be empty
 
 # 1. every ELF resolves — no `not found` anywhere (names the missing library).
 elfs=0; missing=""; lddall=/tmp/ldd.all; : >"$lddall"
-while read -r f; do
-  [ "$(od -An -tx1 -N4 "$f" | tr -d ' \n')" = 7f454c46 ] || continue
+# Bash globbing, not find: a pristine Rocky 9.0 base has no findutils (a missing find once made this scan vacuous).
+shopt -s globstar dotglob
+for f in "$PREFIX"/**; do
+  [ -f "$f" ] && [ ! -L "$f" ] && [ "$(od -An -tx1 -N4 "$f" | tr -d ' \n')" = 7f454c46 ] || continue
   elfs=$((elfs+1)); out="$(ldd "$f" 2>&1 || true)"
   # Canonicalise: the loader reports e.g. <prefix>/bin/../lib/x.so, which must still count as "inside the tree".
   while read -r n a p _; do
@@ -36,9 +39,34 @@ while read -r f; do
   done <<<"$out"
   nf="$(grep 'not found' <<<"$out" || true)"
   [ -z "$nf" ] || missing="$missing"$'\n'"  $f: $(tr -s ' \t' ' ' <<<"$nf" | tr '\n' ';')"
-done < <(find "$PREFIX" -type f)
-[ -z "$missing" ] || die "unresolved shared libraries (ldd: not found):$missing"
-say "ldd: $elfs ELF files, zero 'not found'"
+done
+shopt -u globstar dotglob
+# A scan that saw nothing proves nothing: the server, client and pgcrypto must all be in what was scanned.
+for f in bin/postgres bin/initdb bin/pg_ctl bin/psql lib/pgcrypto.so; do
+  [ -e "$PREFIX/$f" ] || die "expected file missing from the tree: $f"
+done
+[ "$elfs" -ge 50 ] || die "only $elfs ELF files scanned (expected >= 50) — the scan is vacuous"
+say "ldd: $elfs ELF files scanned"
+
+# 1b. every expected host library is on this base, AND defines the symbol versions the tree was linked
+# against (HOST_LIB_VERSIONS — T-172's fail-fast check consumes the same data). A soname alone cannot see
+# "libcrypto.so.3 is present but too old". The tag is looked up as a NUL-delimited string in the library's
+# .dynstr (the version-definition names), so no binutils are needed on a pristine base.
+nh=0; verbad=""
+while read -r s; do
+  [ -n "$s" ] || continue; nh=$((nh+1))
+  ldconfig -p | awk -v s="$s" '$1==s{f=1} END{exit !f}' || verbad="$verbad"$'\n'"  expected host library absent on this base: $s"
+done <"$SH/HOST_LIBS"
+while read -r s v; do
+  [ -n "$s" ] || continue
+  p="$(ldconfig -p | awk -v s="$s" '$1==s && /x86-64/ {print $NF; exit}')"
+  [ -n "$p" ] && grep -qaP "\x00\Q$v\E\x00" "$(readlink -f "$p")" \
+    || verbad="$verbad"$'\n'"  host library version missing: $s does not provide $v (the tree requires it; this host is older than the build floor)"
+done <"$SH/HOST_LIB_VERSIONS"
+[ -z "$missing" ] || problems="${problems:-}"$'\n'"unresolved shared libraries (ldd: not found):$missing"
+[ -z "$verbad" ] || problems="${problems:-}"$'\n'"host library check failed:$verbad"
+[ -z "${problems:-}" ] || die "$problems"
+say "ldd: zero 'not found'; $nh host libs present; $(wc -l <"$SH/HOST_LIB_VERSIONS") symbol-version requirements met"
 
 # 2. bundled libs are present AND are the ones loaded (not a same-named host copy).
 nb=0
@@ -48,12 +76,6 @@ while read -r s; do
   grep -E "^$s => " "$lddall" | grep -vq "=> $PREFIX/lib/" && die "$s resolved outside $PREFIX/lib"
   grep -qE "^$s => $PREFIX/lib/" "$lddall" || die "bundled $s is never loaded from $PREFIX/lib"
 done <"$SH/BUNDLED_LIBS"
-# 3. every expected host library is really on this base (the fail-fast check T-172 will own).
-nh=0
-while read -r s; do
-  [ -n "$s" ] || continue; nh=$((nh+1))
-  ldconfig -p | awk -v s="$s" '$1==s{f=1} END{exit !f}' || die "expected host library absent on this base: $s"
-done <"$SH/HOST_LIBS"
 
 # 4. initdb as a non-root user, start on a unix socket, real queries, clean stop.
 "$PREFIX/bin/postgres" --version | grep -qF "(PostgreSQL) $PGSQL_VERSION" || die "wrong server version: $("$PREFIX/bin/postgres" --version)"
@@ -79,4 +101,4 @@ as_pg pg_ctl -D "$d/data" -m fast -w stop >/dev/null || die "pg_ctl stop failed"
 pkgs >/tmp/pkgs.after
 # coreutils only (a pristine Rocky base has neither cmp nor diff, and the smoke installs nothing).
 [ "$(sha256sum </tmp/pkgs.before)" = "$(sha256sum </tmp/pkgs.after)" ] || { comm -3 /tmp/pkgs.before /tmp/pkgs.after >&2; die "package list changed"; }
-echo "PGSQL-TREE-SMOKE PASS ostag=$OSTAG pg=$PGSQL_VERSION elfs=$elfs bundled=$nb host_libs=$nh pkgs=$(wc -l </tmp/pkgs.before) unchanged=yes"
+echo "PGSQL-TREE-SMOKE PASS ostag=$OSTAG base=${SMOKE_BASE:-?} pg=$PGSQL_VERSION elfs=$elfs bundled=$nb host_libs=$nh pkgs=$(wc -l </tmp/pkgs.before) unchanged=yes"

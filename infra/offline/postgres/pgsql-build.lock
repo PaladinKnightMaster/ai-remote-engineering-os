@@ -1,17 +1,31 @@
 # pgsql-build.lock — pins for the source-built PostgreSQL tree (ADR-0077 D1, D9; T-171).
 # Plain KEY=value. Read with grep/sed by build-pgsql-trees.sh — NEVER sourced.
+# FLOOR RULE: trees are BUILT (and the base library set MEASURED) on each OS's oldest supported
+# image, because a binary built on a newer patch level can require symbol versions an older
+# patch level lacks (R1 in reverse: Rocky 9.8-built pgcrypto.so needs OPENSSL_3.4.0; Rocky 9.0-9.6 ship
+# OpenSSL 3.0-3.2). IMAGE_* is the floor; LATEST_* is the newest image, used only to smoke the tree.
 # Provenance [ran: 2026-10-26]:
 #   version  newest v16.* in https://ftp.postgresql.org/pub/source/
 #   sha256   https://ftp.postgresql.org/pub/source/v16.15/postgresql-16.15.tar.bz2.sha256
 #            (same server as the tarball, over HTTPS; PostgreSQL publishes no detached signature
 #            for source tarballs, so this is a published checksum, not an independent attestation)
 #   images   `docker buildx imagetools inspect <tag>` — multi-arch INDEX digests, used with
-#            --platform linux/amd64. rocky9 pins rockylinux/rockylinux:9 (created 2026-05-25, 9.8),
-#            NOT the Docker-Hub-official rockylinux:9, which is frozen at 2023-11-28 (9.3) and so
-#            would test against a base that no maintained Rocky 9 host resembles.
+#            --platform linux/amd64.
+#     ubuntu2404 floor noble-20240423 (published GA day, 2024-04-25): libc6 2.39-0ubuntu8, libssl3t64 3.0.13-0ubuntu3.
+#                latest 24.04 carries 2.39-0ubuntu8.9 / 3.0.13-0ubuntu3.16 — same upstream versions.
+#     ubuntu2604 floor resolute-20260421 (GA-week image): libc6 2.43-2ubuntu2, libssl3t64 3.5.5-1ubuntu3.
+#                latest 26.04 carries 2.43-2ubuntu2.4 / 3.5.5-1ubuntu3.7 — same upstream versions.
+#     rocky9     floor rockylinux/rockylinux:9.0 (openssl-libs 3.0.1, glibc 2.34); latest is rockylinux/rockylinux:9
+#                (9.8, created 2026-05-25), NOT the Docker-Hub-official rockylinux:9, frozen at 2023-11-28 (9.3).
+#   VAULT_rocky9: 9.0's own repos are EOL, and the image's baseurl uses $releasever=9 (= newest 9.x), which would
+#            silently upgrade the floor. The build points baseos/appstream at this vault URL, gpgcheck stays ON.
 PGSQL_VERSION=16.15
 PGSQL_URL=https://ftp.postgresql.org/pub/source/v16.15/postgresql-16.15.tar.bz2
 PGSQL_SHA256=c1575341fa7bd40f5274ea465b34390f4dc64cdd0770af327005caaeb9f6b7ed
-IMAGE_ubuntu2404=ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
-IMAGE_ubuntu2604=ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
-IMAGE_rocky9=rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+IMAGE_ubuntu2404=ubuntu:noble-20240423@sha256:562456a05a0dbd62a671c1854868862a4687bf979a96d48ae8e766642cd911e8
+LATEST_ubuntu2404=ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+IMAGE_ubuntu2604=ubuntu:resolute-20260421@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
+LATEST_ubuntu2604=ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+IMAGE_rocky9=rockylinux/rockylinux:9.0@sha256:ae6a9dde882e4234324850d6fadf15c6a9cfc8a064052fd87530efe0f775dea2
+LATEST_rocky9=rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+VAULT_rocky9=https://dl.rockylinux.org/vault/rocky/9.0

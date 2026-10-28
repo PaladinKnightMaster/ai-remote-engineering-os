@@ -5,7 +5,8 @@
 #   PHASE=all     deps -> download+verify -> configure/make/install -> bundle -> prove
 #   PHASE=bundle  only the bundle+prove steps, on a tree mounted at /in (used to
 #                 self-test the bundling path against a doctored reference set)
-# Env: OSTAG PGSQL_VERSION PGSQL_URL PGSQL_SHA256 BASE_IMAGE REFERENCE_LIBS [PHASE OUT]
+# Env: OSTAG PGSQL_VERSION PGSQL_URL PGSQL_SHA256 BASE_IMAGE REFERENCE_LIBS [PHASE OUT DNF_VAULT_BASEURL]
+# The image is the OS FLOOR (pgsql-build.lock): a tree must not require symbol versions newer than the oldest host.
 set -euo pipefail
 
 PREFIX=/opt/aireos/pgsql
@@ -34,9 +35,14 @@ install_deps() {
     [ "$PHASE" = all ] && pk="$pk build-essential perl pkg-config curl ca-certificates bzip2 libssl-dev zlib1g-dev libsystemd-dev"
     apt-get install -y -qq --no-install-recommends $pk >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
-    local pk="binutils jq"
+    local pk="binutils jq findutils" dopt=()
     [ "$PHASE" = all ] && pk="$pk gcc make perl bzip2 diffutils openssl-devel zlib-devel systemd-devel"
-    dnf install -y -q $pk >/dev/null
+    if [ -n "${DNF_VAULT_BASEURL:-}" ]; then   # EOL floor: pin baseos/appstream to the vault (gpgcheck stays on), else $releasever=9 pulls the newest 9.x
+      sed -i 's|^baseurl=http://dl.rockylinux.org/$contentdir/$releasever/|baseurl='"$DNF_VAULT_BASEURL"'/|' /etc/yum.repos.d/rocky.repo
+      grep -q "^baseurl=$DNF_VAULT_BASEURL/BaseOS" /etc/yum.repos.d/rocky.repo || die "vault rewrite of rocky.repo did not apply"
+      dopt=(--disablerepo='*' --enablerepo='baseos,appstream')
+    fi
+    dnf "${dopt[@]}" install -y -q $pk >/dev/null
   else
     die "need apt-get or dnf"
   fi
@@ -74,7 +80,7 @@ needed() { readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'; }
 # ADR-0077 D3: the glibc family is never bundled, whatever the measurement says.
 is_glibc() { case "$1" in libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libutil.so.*|libanl.so.*|ld-linux*|ld64*) return 0;; esac; return 1; }
 in_ref() { grep -qxF "$1" "$REFERENCE_LIBS"; }
-all_elfs() { find "$PREFIX" -type f | while read -r f; do is_elf "$f" && echo "$f"; done; true; }
+all_elfs() { command -v find >/dev/null || die "find missing (findutils)"; find "$PREFIX" -type f | while read -r f; do is_elf "$f" && echo "$f"; done; true; }
 
 # patchelf gives a bundled lib its own $ORIGIN rpath. Ubuntu: installed with the deps. Rocky: only in EPEL,
 # so it is fetched lazily — a normal build (nothing bundled) never adds that repository.
@@ -101,6 +107,7 @@ bundle() {
   local share="$PREFIX/share/aireos"; mkdir -p "$share"
   local hostf=/tmp/host.txt bund=/tmp/bundled.tsv; : >"$hostf"; : >"$bund"
   local -a queue; mapfile -t queue < <(all_elfs)
+  [ "${#queue[@]}" -gt 0 ] || die "no ELF files found in $PREFIX — nothing to bundle-check"
   local f s src pk
   while [ "${#queue[@]}" -gt 0 ]; do     # fixpoint: bundled libs' own deps are classified too
     f="${queue[0]}"; queue=("${queue[@]:1}")
@@ -113,6 +120,7 @@ bundle() {
         [ -n "$src" ] || die "$s needed by $f is neither in the base image nor in the build container"
         pk="$(pkg_of "$src")"      # assignment, so a failure aborts (die inside $(...) alone would not)
         log "BUNDLE $s <- $src  (package: $(cut -f1,2 <<<"$pk" | tr '\t' ' '))"
+        log "WARNING: $s bundled from the FLOOR image ($(cut -f1,2 <<<"$pk" | tr -s '[:space:]' ' ')) = that release's UNPATCHED copy; the project now owns its security updates (ADR-0077 Consequences)"
         cp -L "$src" "$PREFIX/lib/$s"; chmod 755 "$PREFIX/lib/$s"
         need_patchelf
         patchelf --remove-rpath "$PREFIX/lib/$s"; patchelf --force-rpath --set-rpath '$ORIGIN' "$PREFIX/lib/$s"
@@ -126,14 +134,24 @@ bundle() {
   all_elfs | while read -r f; do awk -F'\t' -v n="$(basename "$f")" '$1==n{f=1} END{exit !f}' "$bund" || strip --strip-unneeded "$f" || true; done
   sort -u "$hostf" >"$share/HOST_LIBS"
   cut -f1 "$bund" | sort -u >"$share/BUNDLED_LIBS"
+  # HOST_LIB_VERSIONS: per host soname, the HIGHEST symbol-version tag per family (GLIBC_, OPENSSL_, LIBSYSTEMD_ ...)
+  # the tree requires. A soname check alone cannot see "libcrypto.so.3 is present but too old" (Rocky 9.0-9.6 vs OPENSSL_3.4.0).
+  all_elfs | while read -r f; do readelf -V "$f"; done | awk '
+      /^Version /          { file="" }
+      /File: /             { for (i=1;i<=NF;i++) if ($i=="File:") file=$(i+1) }
+      /Name: / && file!="" { for (i=1;i<=NF;i++) if ($i=="Name:" && $(i+1) ~ /_[0-9]/) print file, $(i+1) }' | sort -u \
+    | awk 'NR==FNR { host[$1]=1; next } ($1 in host) { n=$2; sub(/_[0-9][0-9.]*$/,"",n); print $1, n, $2 }' "$share/HOST_LIBS" - \
+    | sort -k1,1 -k2,2 -k3,3V | awk '{ last[$1" "$2]=$3 } END { for (k in last) { split(k,a," "); print a[1], last[k] } }' | sort >"$share/HOST_LIB_VERSIONS"
+  [ -s "$share/HOST_LIB_VERSIONS" ] || die "no host symbol versions found — readelf -V parsing is broken"
   jq -n --arg os "$OSTAG" --arg img "$BASE_IMAGE" --arg v "$PGSQL_VERSION" --arg u "$PGSQL_URL" \
     --arg h "$PGSQL_SHA256" --arg cf "${CONFIGURE_FLAGS[*]}" --arg pfx "$PREFIX" \
-    --rawfile hl "$share/HOST_LIBS" --rawfile bt "$bund" \
+    --rawfile hl "$share/HOST_LIBS" --rawfile hv "$share/HOST_LIB_VERSIONS" --rawfile bt "$bund" \
     '{schema:1, ostag:$os, base_image:$img, prefix:$pfx,
       postgres:{version:$v, source_url:$u, sha256:$h, configure_flags:$cf, contrib:["pgcrypto"]},
       bundled:($bt|split("\n")|map(select(length>0)|split("\t")|
         {soname:.[0], sha256:.[1], source_sha256:.[2], source_path:.[3], package:.[4], package_version:.[5], package_arch:.[6]})),
-      host_libs:($hl|split("\n")|map(select(length>0)))}' >"$share/COMPONENTS.json"
+      host_libs:($hl|split("\n")|map(select(length>0))),
+      host_lib_versions:($hv|split("\n")|map(select(length>0)|split(" ")|{soname:.[0], min_symbol_version:.[1]}))}' >"$share/COMPONENTS.json"
   jq -e . "$share/COMPONENTS.json" >/dev/null || die "COMPONENTS.json is not valid JSON"
 }
 
@@ -144,6 +162,7 @@ prove() {   # D3 relocatable linking: every ELF carries an $ORIGIN-only DT_RPATH
     if readelf -d "$f" | grep -q '(RUNPATH)'; then echo "RUNPATH present: $f" >&2; bad=1; fi
     if [ -z "$rp" ] || [ -n "$(tr ':' '\n' <<<"$rp" | grep -v '^\$ORIGIN' || true)" ]; then echo "bad/absent RPATH '${rp}': $f" >&2; bad=1; fi
   done < <(all_elfs)
+  [ "$n" -ge 50 ] || die "rpath proof saw only $n ELF files — vacuous"
   [ "$bad" = 0 ] || die "rpath proof failed"
   local leak; leak="$(grep -rlaF /tmp/pgbuild "$PREFIX" 2>/dev/null || true)"
   [ -z "$leak" ] || die "build-directory path leaked into: $leak"
