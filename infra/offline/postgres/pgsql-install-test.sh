@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pgsql-install-test.sh — prove install-pgsql.sh on a REAL systemd host per OS (ADR-0077 D4-D6,
+# pgsql-install-test.sh — prove install-postgres.sh on a REAL systemd host per OS (ADR-0077 D4-D6,
 # INS-2/3/4/8/11; T-172a). Host = the OS's FLOOR image (pgsql-build.lock) + only systemd, built as a
 # local image; the companion layout is assembled from the staging tree and mounted read-only; the
 # container runs --network none. Needs Docker, `task pgsql-trees`, and network for the image builds.
@@ -54,7 +54,7 @@ EOF
 mk_companion() {   # $1=volume $2=ostag(dir name) $3=tree dir $4=host image $5=mutation run in the copied pgsql/ root
   docker volume rm -f "$1" >/dev/null; docker volume create "$1" >/dev/null; VOLUMES+=("$1")
   docker run --rm --network none -v "$3":/t:ro -v "$HERE":/src:ro -v "$1":/c "$4" sh -c \
-    "d=/c/aireos-postgres-$2 && mkdir -p \$d && cp -a /t \$d/pgsql && cp /src/install-pgsql.sh /src/aireos-postgres.service \$d/ && chmod 755 \$d/install-pgsql.sh && cd \$d/pgsql && ${5:-true}"
+    "d=/c/aireos-postgres-$2 && mkdir -p \$d && cp -a /t \$d/pgsql && cp /src/install-postgres.sh /src/aireos-postgres.service \$d/ && chmod 755 \$d/install-postgres.sh && cd \$d/pgsql && ${5:-true}"
 }
 start_host() {   # $1=name $2=image, then extra docker args
   docker rm -f "$1" >/dev/null 2>&1 || true; CONTAINERS+=("$1")
@@ -63,7 +63,7 @@ start_host() {   # $1=name $2=image, then extra docker args
   wait_up "$1"
 }
 wait_up() { local i; for i in $(seq 1 90); do case "$(docker exec "$1" systemctl is-system-running 2>&1 || true)" in running|degraded) return 0;; esac; sleep 1; done; die "systemd did not come up in $1"; }
-inst() { local c="$1" comp="$2"; shift 2; docker exec -e COCKPIT_PW="$PW" "$@" "$c" bash -c "/comp/$comp/*/install-pgsql.sh"; }
+inst() { local c="$1" comp="$2"; shift 2; docker exec -e COCKPIT_PW="$PW" "$@" "$c" bash -c "/comp/$comp/*/install-postgres.sh"; }
 sql() {   # $1=container $2=port $3=sql : a TCP password login as cockpit, with the tree's own psql (password in env, never argv)
   docker exec -e PGPASSWORD="${PGPW:-$PW}" "$1" /opt/aireos/pgsql/bin/psql "host=127.0.0.1 port=$2 dbname=cockpit user=cockpit sslmode=disable" -X -At -c "$3"
 }

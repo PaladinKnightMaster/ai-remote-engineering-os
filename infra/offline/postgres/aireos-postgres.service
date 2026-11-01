@@ -1,5 +1,5 @@
 # systemd unit — the self-contained PostgreSQL 16 (ADR-0077 D4; T-172a).
-# Installed by install-pgsql.sh to /etc/systemd/system. Deliberately NOT in
+# Installed by install-postgres.sh to /etc/systemd/system. Deliberately NOT in
 # infra/offline/systemd/: build-bundle.sh copies every *.service there into the CORE
 # bundle and install.sh installs them all — this unit ships only in the postgres companion.
 # Tree /opt/aireos/pgsql (root-owned, read-only to the service); data /var/lib/aireos/pgsql;

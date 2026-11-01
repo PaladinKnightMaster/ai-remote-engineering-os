@@ -11,8 +11,11 @@
 #               version + SHA-512 build-bundle.sh already verifies. Merged
 #               into ONE SBOM via merge-sbom.mjs.
 #
-#   companion — parses the companion's own repo/Packages deb index (no new
-#               scanner tool — see generate-companion-sbom.mjs) into ONE SBOM.
+#   companion — builds ONE SBOM from the source-built PostgreSQL tree's own build
+#               record, <stage>/pgsql/share/aireos/COMPONENTS.json (no scanner tool
+#               — see generate-companion-sbom.mjs): a `postgresql` component plus one
+#               component per BUNDLED library. Every companion OS (deb and rpm) gets one;
+#               --stage is the companion directory (aireos-postgres-<ostag>/), not a package repo.
 #
 # In both cases the result is written to --out (the artifact's PUBLISHED
 # sibling, "<artifact>.sbom.json" by convention) AND copied to
@@ -21,8 +24,10 @@
 # extract (ADR-0070 D5).
 #
 # Called from build-bundle.sh / build-postgres-companions.sh, which already
-# have the pinned Caddy version+hash and the staged repo/Packages in scope —
-# so this script does not need to guess or re-derive them.
+# have the pinned Caddy version+hash (bundle) and the assembled companion
+# stage (companion) in scope — so this script does not need to guess or
+# re-derive them. The companion's coverage is checked by check-coverage.mjs
+# against the ARCHIVE, not against this generator's input (INS-7).
 #
 # Prereqs: go 1.23 (for the Go fragments) + node/npx with apps/web's
 # node_modules already installed (for the node fragment, bundle kind only) +
@@ -124,12 +129,10 @@ case "$KIND" in
 
   companion)
     [ -n "$OSTAG" ] || die "--ostag is required for --kind companion"
-    [ -f "$STAGE/repo/Packages" ] || die "$STAGE/repo/Packages not found — build the companion first"
-    PKG_KIND="$(cat "$STAGE/PKG_KIND" 2>/dev/null || echo "")"
-    [ "$PKG_KIND" = "deb" ] || die "companion SBOM generation only supports PKG_KIND=deb today (got '$PKG_KIND') — an rpm-format companion needs its own parser, not silently skipped"
-    log "companion fragment (deb) -> $OUT"
+    [ -f "$STAGE/pgsql/share/aireos/COMPONENTS.json" ] || die "$STAGE/pgsql/share/aireos/COMPONENTS.json not found — assemble the companion from a built tree first"
+    log "companion SBOM (from COMPONENTS.json) -> $OUT"
     node "$SCRIPT_DIR/generate-companion-sbom.mjs" \
-      --packages "$STAGE/repo/Packages" --name "aireos-postgres-$OSTAG" \
+      --components "$STAGE/pgsql/share/aireos/COMPONENTS.json" --name "aireos-postgres-$OSTAG" \
       --output "$OUT" || die "generate-companion-sbom failed"
     ;;
 

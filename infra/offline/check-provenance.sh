@@ -10,8 +10,11 @@
 #     check ("a file called *.sbom.json exists") is NOT enough per ADR-0070
 #     D9: the gate must catch a component quietly dropped from an otherwise-
 #     present SBOM, not just a wholly-missing one. check-coverage.mjs does
-#     the actual comparison (bin/ executables for the core bundle; the
-#     repo/Packages entry count for the postgres companion).
+#     the actual comparison: bin/ executables for the core bundle; for a
+#     postgres companion (INS-7, ADR-0077) the version COMPILED INTO the
+#     archive's pgsql/bin/postgres, plus every non-PostgreSQL-built file in
+#     pgsql/lib/ — asserted against the archive itself, never against the
+#     SBOM generator's own input.
 #
 # "A provenance gate that cannot fail is the S-25 pattern" (ADR-0070 D9) —
 # this gate must be demonstrated failing on a missing signature, a missing
