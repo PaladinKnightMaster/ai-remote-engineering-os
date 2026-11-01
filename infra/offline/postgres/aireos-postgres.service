@@ -1,0 +1,35 @@
+# systemd unit — the self-contained PostgreSQL 16 (ADR-0077 D4; T-172a).
+# Installed by install-pgsql.sh to /etc/systemd/system. Deliberately NOT in
+# infra/offline/systemd/: build-bundle.sh copies every *.service there into the CORE
+# bundle and install.sh installs them all — this unit ships only in the postgres companion.
+# Tree /opt/aireos/pgsql (root-owned, read-only to the service); data /var/lib/aireos/pgsql;
+# socket in the unit-owned RuntimeDirectory, never /var/run/postgresql. Port, listen address
+# and socket dir come from <data>/aireos-managed.conf (written by the installer).
+[Unit]
+Description=AI ReOS — PostgreSQL 16 (self-contained)
+After=network.target
+
+[Service]
+# Type=notify: the tree is built --with-systemd, so `systemctl start` returns when the server accepts connections.
+Type=notify
+User=aireos-pg
+Group=aireos-pg
+RuntimeDirectory=aireos-postgres
+RuntimeDirectoryMode=0750
+ExecStart=/opt/aireos/pgsql/bin/postgres -D /var/lib/aireos/pgsql
+ExecReload=/bin/kill -HUP $MAINPID
+# Stop like pg_ctl -m fast: SIGINT to the postmaster, then the children.
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=600
+Restart=on-failure
+RestartSec=2
+# Hardening, as the other aireos-* units; the data dir is the only writable path.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aireos/pgsql
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
