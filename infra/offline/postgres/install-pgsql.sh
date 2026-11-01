@@ -56,7 +56,13 @@ tree_digest() {   # content digest of a tree: file hashes + symlink targets (bas
 { [ "$(cat /proc/1/comm 2>/dev/null)" = systemd ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null; } \
   || bad "systemd is not running as PID 1 on this host, and this PostgreSQL runs as a systemd service; run the installer on a systemd host (a container without systemd cannot run it)."
 
-installed_port=""; [ -f "$CONF" ] && installed_port="$(sed -n 's/^port = \([0-9]*\)$/\1/p' "$CONF")"
+# $DATA belongs to the service user: root never follows a symlink planted there (see the act section).
+installed_port=""
+if [ -L "$CONF" ] || [ -L "$DATA/postgresql.conf" ] || [ -L "$DATA/PG_VERSION" ]; then
+  bad "A file in $DATA (aireos-managed.conf, postgresql.conf or PG_VERSION) is a symbolic link, which this installer never follows; something other than this installer changed it, so check the host, replace the link with the real file, and re-run."
+elif [ -f "$CONF" ]; then
+  installed_port="$(sed -n 's/^port = \([0-9]*\)$/\1/p' "$CONF")"
+fi
 PORT="${AIREOS_PG_PORT:-${installed_port:-5432}}"
 if ! { [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ]; }; then
   bad "AIREOS_PG_PORT '$PORT' is not a TCP port between 1024 and 65535; set it to a free port, for example AIREOS_PG_PORT=5433."
@@ -93,7 +99,7 @@ fi
 LC_ALL=C locale -a 2>/dev/null | grep -qix 'c\.utf-\?8' || bad "The $LOCALE locale is not available on this host, and the database is created with it; install your OS's C.UTF-8 locale (glibc locale data) and re-run."
 
 if [ -f "$DATA/PG_VERSION" ]; then
-  dv="$(cat "$DATA/PG_VERSION")"
+  dv="$(head -c 16 "$DATA/PG_VERSION" | tr -cd '0-9')"   # digits only: never echo arbitrary file content
   [ "$dv" = "${tree_major:-}" ] || bad "The data directory $DATA holds PostgreSQL $dv data but this tree is PostgreSQL ${tree_major:-?}; this installer never upgrades across major versions, so move that directory aside or use a matching companion."
 elif [ -d "$DATA" ] && [ -n "$(ls -A "$DATA")" ]; then
   bad "$DATA exists and is not empty but is not a PostgreSQL data directory; move it aside and re-run."
@@ -142,19 +148,22 @@ if [ "$(sha_of "$DIR/$UNIT.service")" != "$(sha_of "$UNIT_FILE")" ]; then
 fi
 
 if [ -f "$DATA/PG_VERSION" ]; then
-  log "data directory $DATA exists (PostgreSQL $(cat "$DATA/PG_VERSION")) — not re-initialising"
+  log "data directory $DATA exists (PostgreSQL $dv) — not re-initialising"
 else
   log "initdb $DATA (UTF8, $LOCALE; scram-sha-256 over TCP, peer on the socket)"
   install -d -m 0700 -o "$PGUID" -g "$PGGID" "$DATA"
   as_pg "$PREFIX/bin/initdb" -D "$DATA" -E UTF8 --locale="$LOCALE" -U "$PGOS" --auth-host=scram-sha-256 --auth-local=peer >/dev/null
 fi
-grep -q aireos-managed.conf "$DATA/postgresql.conf" || echo "include_if_exists = 'aireos-managed.conf'" >>"$DATA/postgresql.conf"
+# $DATA is owned by $PGOS, so root never reads, writes or chowns a path inside it: a planted symlink
+# (e.g. aireos-managed.conf -> /etc/shadow) would otherwise turn a re-run into root writing through it.
+# Every access below runs AS $PGOS, so it can touch nothing that user could not already touch.
+as_pg sh -c 'grep -q aireos-managed.conf "$1/postgresql.conf" || echo "include_if_exists = '\''aireos-managed.conf'\''" >>"$1/postgresql.conf"' sh "$DATA"
 want="# managed by install-pgsql.sh; edits are overwritten on re-run
 listen_addresses = 'localhost'
 port = $PORT
 unix_socket_directories = '$SOCKDIR'"
-if [ "$(cat "$CONF" 2>/dev/null)" != "$want" ]; then
-  printf '%s\n' "$want" >"$CONF"; chown "$PGUID:$PGGID" "$CONF"; chmod 0600 "$CONF"; changed=1
+if [ "$(as_pg cat "$CONF" 2>/dev/null)" != "$want" ]; then
+  printf '%s\n' "$want" | as_pg sh -c 'umask 077 && cat >"$1.tmp" && mv -f "$1.tmp" "$1"' sh "$CONF"; changed=1
 fi
 
 systemctl enable "$UNIT" >/dev/null 2>&1

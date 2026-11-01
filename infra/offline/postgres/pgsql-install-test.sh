@@ -171,8 +171,23 @@ EOF
   XB "$C" 'echo 16 > /var/lib/aireos/pgsql/PG_VERSION'
   eq "N5 service untouched" active "$(XB "$C" 'systemctl is-active aireos-postgres')"
 
+  # ---- N6: a symlink planted by the service user inside $DATA must not make a root re-run write or chown
+  # through it (security review of 159ed4e: the committed installer wrote AND chowned a root file through
+  # exactly this link — observed by the Commander, then fixed). Preflight now refuses the link outright;
+  # the act section's writes also run as aireos-pg, so a link planted after preflight is equally harmless.
+  XB "$C" "cp -p /var/lib/aireos/pgsql/aireos-managed.conf /var/tmp/managed.keep && printf 'SECRET-CANARY\n' >/etc/pgit-canary && chmod 600 /etc/pgit-canary && setpriv --reuid aireos-pg --regid aireos-pg --clear-groups ln -sf /etc/pgit-canary /var/lib/aireos/pgsql/aireos-managed.conf"
+  out="$(inst "$C" ok 2>&1)" && die "[$OS] N6: a re-run over a planted symlink was accepted"
+  has "N6 refused a symlink planted in the data dir" "$out" "is a symbolic link, which this installer never follows"
+  eq "N6 root file not written or chowned through the link" "root:root SECRET-CANARY" "$(XB "$C" 'echo "$(stat -c %U:%G /etc/pgit-canary) $(head -1 /etc/pgit-canary)"')"
+  XB "$C" 'cp -p /var/tmp/managed.keep /var/lib/aireos/pgsql/aireos-managed.conf.tmp && mv -f /var/lib/aireos/pgsql/aireos-managed.conf.tmp /var/lib/aireos/pgsql/aireos-managed.conf'
+  inst "$C" ok >/dev/null 2>&1 || die "[$OS] N6: the re-run after restoring the real file failed"
+  eq "N6 service active after the restore + re-run" active "$(XB "$C" 'systemctl is-active aireos-postgres')"
+
   # ---- (e) the password never appeared in any cmdline; the canary proves the sampler can see one
-  docker exec -d "$C" bash -c 'sleep 2' "canary-$PW"; sleep 1
+  # Wait for the sampler to SEE the canary (a fixed 1 s sleep raced a slow sweep on rocky9), bounded at 20 s.
+  XB "$C" 'for f in /proc/[0-9]*/cmdline; do tr "\0" " " <"$f" 2>/dev/null; echo; done | grep -q "[s]ampler\.sh"' || die "[$OS] (e) the cmdline sampler is not running - the check would be blind"
+  docker exec -d "$C" bash -c 'sleep 30' "canary-$PW"
+  for _ in $(seq 1 20); do XB "$C" 'grep -q canary /var/tmp/pw.hits' && break; sleep 1; done
   XB "$C" 'touch /var/tmp/sampler.stop'; sleep 2
   hits="$(XB "$C" 'sort /var/tmp/pw.hits | uniq -c | tr -s " \n" " "')"
   eq "(e) cmdline hits = the planted canary ONLY (sampler can see a password; installer leaked none)" " $(XB "$C" "grep -c canary /var/tmp/pw.hits") canary " "$hits"
@@ -181,7 +196,7 @@ EOF
 
   # ---- (d) INS-2
   eq "(d) INS-2 package database byte-identical (sha256 of the sorted list)" "$pk0" "$(XB "$C" "$PKGS")"
-  echo "PGSQL-INSTALL-TEST PASS os=$OS (a)install+login+pgcrypto (b)restart (c)idempotent+swap (d)pkgs-unchanged (e)no-pw-in-cmdline N2$([ "$OS" != rocky9 ] || echo ' N1')$([ "$OS" != ubuntu2404 ] || echo ' N3') N5"
+  echo "PGSQL-INSTALL-TEST PASS os=$OS (a)install+login+pgcrypto (b)restart (c)idempotent+swap (d)pkgs-unchanged (e)no-pw-in-cmdline N2$([ "$OS" != rocky9 ] || echo ' N1')$([ "$OS" != ubuntu2404 ] || echo ' N3') N5 N6"
   docker rm -f "$C" >/dev/null
 }
 
