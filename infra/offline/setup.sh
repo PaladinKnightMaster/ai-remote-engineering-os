@@ -48,7 +48,7 @@ case "${1:-}" in
 esac
 
 # Caddy's `tls internal` root: aireos-caddy.service sets XDG_DATA_HOME=$STATE/caddy, and Caddy keeps its PKI under caddy/pki.
-CA_ROOT="$STATE/caddy/caddy/pki/authorities/local/root.crt"
+CA_DIR="$STATE/caddy/caddy/pki/authorities/local"; CA_ROOT="$CA_DIR/root.crt"; CA_INT="$CA_DIR/intermediate.crt"
 
 # ---- 1. preflight: nothing on the host changes until every check here has passed --------------------------------------
 osr() { sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | head -1 | tr -d '"' || true; }
@@ -132,12 +132,18 @@ open_address() {
 }
 
 # ---- 5. the setup code (ADR-0078 D1/D6/D7) -----------------------------------------------------------------------------
-# issue_setup_code <database-url> -> SETUP_CODE, SETUP_CA (colon-separated SHA-256). Returns 2 when an operator exists (no code
-# is issued then). The URL travels as environment inside a subshell (never argv); the code is read from the command's stdout
-# into this shell's memory and printed to the terminal -- it is never written anywhere.
+# What a browser can show (T-175e): Caddy serves the leaf and the INTERMEDIATE ("Caddy Local Authority - ECC Intermediate"), never the
+# root -- so the fingerprint to COMPARE is the intermediate's. The root is printed second, for an operator who imports the CA to remove
+# the warning. The intermediate rotates (7 days), so every issue (setup.sh and --new-setup-code) re-reads both files. Coreutils only.
+cert_fp() {   # SHA-256 of the first PEM certificate in file $1, as the colon-separated upper-case hex a browser shows
+  sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/{/-----/!p;/END CERTIFICATE/q}' "$1" | base64 -d | sha256sum | cut -d' ' -f1 | tr a-f A-F | sed 's/../&:/g; s/:$//'
+}
+# issue_setup_code <database-url> -> SETUP_CODE, SETUP_CA_INT, SETUP_CA_ROOT. Returns 2 when an operator exists (no code is issued
+# then). The URL travels as environment inside a subshell (never argv); the code is read from the command's stdout into this shell's
+# memory and printed to the terminal -- it is never written anywhere.
 issue_setup_code() {
   local out rc=0 fp
-  [ -f "$CA_ROOT" ] || die "Caddy's certificate authority file is not there yet ($CA_ROOT), so no setup code was issued. Check that aireos-caddy is running (systemctl status aireos-caddy) and run  sudo $SETUP_DIR/setup.sh --new-setup-code"
+  [ -f "$CA_ROOT" ] && [ -f "$CA_INT" ] || die "Caddy's certificate authority files are not there yet ($CA_DIR), so no setup code was issued. Check that aireos-caddy is running (systemctl status aireos-caddy) and run  sudo $SETUP_DIR/setup.sh --new-setup-code"
   out="$( export API_DATABASE_URL="$1" DATABASE_URL="$1"; exec "$PREFIX/bin/api" setup-code issue --ca-root "$CA_ROOT" 2>&1 )" || rc=$?
   if [ "$rc" != 0 ]; then
     if grep -qF 'setup is complete' <<<"$out"; then return 2; fi
@@ -146,13 +152,16 @@ issue_setup_code() {
   SETUP_CODE="$(grep -Em1 '^[0-9A-Z]{5}(-[0-9A-Z]{5}){3}$' <<<"$out" || true)"
   fp="$(sed -n 's/^ca-sha256: \([0-9a-f]\{64\}\)$/\1/p' <<<"$out")"
   [ -n "$SETUP_CODE" ] && [ -n "$fp" ] || die "api printed a setup code or fingerprint in a form this script does not recognise; run  sudo $SETUP_DIR/setup.sh --new-setup-code  and report this if it happens again"
-  SETUP_CA="$(sed 's/../&:/g; s/:$//' <<<"$fp" | tr a-f A-F)"
+  SETUP_CA_ROOT="$(sed 's/../&:/g; s/:$//' <<<"$fp" | tr a-f A-F)"
+  SETUP_CA_INT="$(cert_fp "$CA_INT")"
+  [[ "$SETUP_CA_INT" =~ ^([0-9A-F]{2}:){31}[0-9A-F]{2}$ ]] || die "could not compute the fingerprint of $CA_INT; run  sudo $SETUP_DIR/setup.sh --new-setup-code  once Caddy is healthy"
 }
 
 print_setup_block() {   # $1=address to open
   printf '\n  Setup code:   \033[1m%s\033[0m      (works once, for 60 minutes)\n\n' "$SETUP_CODE"
-  printf '  Certificate fingerprint (SHA-256) of this server'"'"'s certificate authority:\n      %s\n' "$SETUP_CA"
-  printf '  Your browser will warn that the certificate is not trusted: open the certificate'"'"'s details and check that this fingerprint matches before you type the code.\n\n'
+  printf '  Before you type the code, check you are talking to this server. Your browser will warn that the certificate is not trusted:\n'
+  printf '  open its details, select the certificate named "Caddy Local Authority - ECC Intermediate", and check that its SHA-256 fingerprint is\n      %s\n' "$SETUP_CA_INT"
+  printf '  (If you import this server'"'"'s certificate authority to remove the warning, its root certificate'"'"'s SHA-256 fingerprint is\n      %s)\n\n' "$SETUP_CA_ROOT"
   printf '  Missed it, or it expired?   sudo %s/setup.sh --new-setup-code   (the old code then stops working)\n' "$SETUP_DIR"
   printf '\n\033[1;36m[setup]\033[0m Open %s in your browser and enter the setup code to create the operator account.\n' "$1"
 }

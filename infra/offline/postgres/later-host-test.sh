@@ -245,13 +245,38 @@ body() { sed '$d' <<<"$1"; }
 setup_json() { printf '{"code":"%s","username":"admin","password":"%s"}' "$1" "$2"; }   # exactly what the SPA's form sends
 CODE_RE='[0-9A-Z]{5}(-[0-9A-Z]{5}){3}'
 code_in() { local c; c="$(grep -Eo "$CODE_RE" <<<"$1" || true)"; [ -n "$c" ] && [ "$(wc -l <<<"$c")" = 1 ] || die "[$OS] expected exactly one setup code in the output, got: '$c'"; printf '%s' "$c"; }
-# The CA fingerprint setup.sh prints must equal the SHA-256 of Caddy's root certificate computed WITHOUT the product (base64 + sha256sum).
+# The chain the server ACTUALLY serves on :443, as "CN|SHA-256" lines (leaf first). A throwaway node container joins the later host's
+# network namespace (the host itself has no network and gets no packages); the trust store is empty, so the chain it reports is
+# exactly what was sent.
+SERVED_JS="$(cat <<'EOF'
+const s = require("tls").connect({ host: "localhost", port: 443, servername: "localhost", rejectUnauthorized: false }, () => {
+  const seen = new Set(); const out = [];
+  for (let c = s.getPeerCertificate(true); c && c.fingerprint256 && !seen.has(c.fingerprint256); c = c.issuerCertificate) { seen.add(c.fingerprint256); out.push(c.subject.CN + "|" + c.fingerprint256); }
+  console.log(out.join("\n")); s.end();
+});
+s.on("error", (e) => { console.error(e.message); process.exit(1); });
+EOF
+)"
+served_chain() { docker run --rm --network "container:$1" node:22-alpine node -e "$SERVED_JS"; }
+CERT_FP='sed -n "/BEGIN CERTIFICATE/,/END CERTIFICATE/{/-----/!p;/END CERTIFICATE/q}" $f | base64 -d | sha256sum | cut -d" " -f1 | tr a-f A-F | sed "s/../&:/g; s/:\$//"'
+# T-175e: what setup.sh prints for the operator to compare must be a certificate the browser can actually SHOW. Caddy serves the leaf
+# and the INTERMEDIATE, never the root, so the first fingerprint (the one to compare) must be a served certificate named "Caddy Local
+# Authority - ECC Intermediate"; the second (the root, for operators who import the CA) must match NONE of the served certificates
+# -- that is the negative control, and the reason a root-only fingerprint was unusable. Both are also recomputed without the product.
 check_fingerprint() {   # $1=container $2=setup.sh output
-  local want got
-  got="$(grep -Eo '([0-9A-F]{2}:){31}[0-9A-F]{2}' <<<"$2" || true)"
-  want="$(XB "$1" 'sed "/-----/d" /var/lib/aireos/caddy/caddy/pki/authorities/local/root.crt | base64 -d | sha256sum | cut -d" " -f1 | tr a-f A-F | sed "s/../&:/g; s/:\$//"')"
-  [ -n "$got" ] && [ "$got" = "$want" ] || die "[$OS] the printed CA fingerprint ('$got') is not the root certificate's SHA-256 ('$want')"
-  ok "the printed CA fingerprint equals base64+sha256sum of Caddy's root.crt: $got"
+  local fps n_fp got_i got_r served want_i want_r l
+  fps="$(grep -Eo '([0-9A-F]{2}:){31}[0-9A-F]{2}' <<<"$2" || true)"; n_fp="$(grep -c . <<<"$fps" || true)"
+  [ "$n_fp" = 2 ] || die "[$OS] setup.sh printed $n_fp certificate fingerprints, expected 2 (the intermediate to compare, then the root): '$fps'"
+  got_i="$(sed -n 1p <<<"$fps")"; got_r="$(sed -n 2p <<<"$fps")"
+  served="$(served_chain "$1")"; [ "$(grep -c . <<<"$served")" -ge 2 ] || die "[$OS] the server serves fewer than 2 certificates: '$served'"
+  grep -qxF "Caddy Local Authority - ECC Intermediate|$got_i" <<<"$served" || die "[$OS] the fingerprint to compare ($got_i) is not the served 'Caddy Local Authority - ECC Intermediate'; the server serves: $(tr '\n' ' ' <<<"$served")"
+  ! grep -qF "$got_r" <<<"$served" || die "[$OS] the ROOT fingerprint ($got_r) matches a served certificate: the root/intermediate distinction is not being measured"
+  grep -qF "$got_i" <<<"x|$got_i" || die "(self-test) the served-chain match cannot find a planted fingerprint"
+  for l in intermediate root; do
+    want_i="$(XB "$1" "f=/var/lib/aireos/caddy/caddy/pki/authorities/local/$l.crt; $CERT_FP")"
+    [ "$want_i" = "$([ $l = root ] && echo "$got_r" || echo "$got_i")" ] || die "[$OS] the printed $l fingerprint differs from base64+sha256sum of $l.crt ($want_i)"
+  done
+  ok "setup.sh's fingerprint to compare = the SERVED intermediate $got_i; the root $got_r matches no served certificate (negative control); both equal base64+sha256sum of their .crt"
 }
 # complete_setup <container> <code> : POST the form the SPA sends; sets CS_OUT (body + status)
 complete_setup() { CS_OUT="$(hx "$1" POST /v1/setup/complete "$(setup_json "$2" "$OPPW")")"; }
