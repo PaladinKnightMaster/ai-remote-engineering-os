@@ -164,6 +164,12 @@ missing=""
 for u in $SEVEN; do grep -qE "^restart (.* )?$u( |\$)" "$SYSTEMCTL_LOG" || missing="$missing $u"; done
 [ -z "$missing" ] && ok "P9 re-run: all seven restarted, so the new env is what serves" || bad "P9 re-run: restart" "not restarted:$missing"
 
+echo "== T-174 review: a re-run WITHOUT AIREOS_SITE_ADDRESS keeps the persisted address (an upgrade must not reset a LAN install to localhost) =="
+run_install "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL"; rc=$?
+[ "$rc" -eq 0 ] && ok "site-address re-run: rc=0" || bad "site-address re-run" "rc=$rc"
+grep -q '^AIREOS_SITE_ADDRESS=b.test$' /etc/aireos/aireos.env && ok "site-address re-run: the persisted b.test survives an env-less re-run" \
+  || bad "site-address re-run" "aireos.env now says '$(sed -n 's/^AIREOS_SITE_ADDRESS=//p' /etc/aireos/aireos.env)' (reset instead of persisted)"
+
 echo "== P9: a FAILED restart fails loudly — non-zero exit and NO DONE line =="
 : > "$SYSTEMCTL_LOG"
 run_install "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL" AIREOS_SITE_ADDRESS=c.test SYSTEMCTL_FAIL_ON=restart; rc=$?

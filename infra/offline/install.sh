@@ -374,9 +374,12 @@ if [ -z "${AIREOS_DEPLOYMENT_PROFILE:-}" ]; then
   fi
 fi
 DEPLOYMENT_PROFILE="$(aireos_resolve_profile "${AIREOS_DEPLOYMENT_PROFILE:-}" "$PERSISTED_PROFILE" "$ANSWER")"
-aireos_assert_profile "$DEPLOYMENT_PROFILE" "${AIREOS_SITE_ADDRESS:-}"
+# Site address: env beats persisted beats localhost — like the profile. Without the persisted step a plain re-run
+# (an upgrade: `sudo ./setup.sh` again) silently reset a LAN install to localhost and cut every other machine off.
+SITE_ADDRESS="${AIREOS_SITE_ADDRESS:-$(aireos_persisted_value "AIREOS_SITE_ADDRESS" "$ENV_FILE")}"
+aireos_assert_profile "$DEPLOYMENT_PROFILE" "$SITE_ADDRESS"
 log "deployment profile: $DEPLOYMENT_PROFILE"
-SITE_ADDRESS="${AIREOS_SITE_ADDRESS:-localhost}"
+SITE_ADDRESS="${SITE_ADDRESS:-localhost}"
 aireos_warn_site_address "$SITE_ADDRESS"   # INS-9: a warning only
 
 # --- 1a'. unattended database URL shape (PUB-6 P7) ---------------------------
