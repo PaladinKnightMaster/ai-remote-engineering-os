@@ -139,6 +139,11 @@ tasks:
     cmds:
       - bash infra/offline/postgres/pgsql-install-test.sh {{.CLI_ARGS}}
 
+  later-host-test:
+    desc: "INS-1 + SEC-63 (ADR-0077 D7/D9, T-173): the instrument WD-1 cannot be. Per OS (Ubuntu 24.04, 26.04, Rocky 9) provision a host INDEPENDENTLY of the companion build -- the LATEST_<ostag> image + a FULL OS upgrade with network at test time, never the floor/build image -- record glibc/OpenSSL (perl-base) vs the companion's build floor and DIE unless the host is strictly newer; then, with --network none, leg A: install-postgres.sh (active, TCP login, pgcrypto round trip, INS-2) and leg B: the core bundle's real install.sh + CHECKPOINT/restart + all 8 units + the SPA over HTTPS. SEC-63: the v0.16.0 companion (dist/v0.16.0-release, read-only, sha256-pinned) through the same install path on the ubuntu2404 later host must FAIL on apt's unmet-dependency signature -- an older-pinned synthetic copy is the instrument control. Exits non-zero, saying so, if the old companion installs (no skew to measure). Needs Docker + network (image builds), `task pgsql-trees`, build-postgres-companions.sh and `task offline-bundle` output in dist/offline/. Usage: task later-host-test -- [ubuntu2404 ubuntu2604 rocky9]"
+    cmds:
+      - bash infra/offline/postgres/later-host-test.sh {{.CLI_ARGS}}
+
   sign-release:
     desc: "HOST-SIDE, out-of-band step (ADR-0070 D1/D3, T-129a): detached Ed25519 signatures over BOTH shipped offline artifacts (core bundle + postgres companion). NEVER run inside build-bundle.sh or any build container — the release key must never enter a build context. Usage: task sign-release -- --key /path/to/release-key.pem [artifact.tar.gz ...] (defaults to every dist/offline/*.tar.gz). The production key is minted out-of-band by the CEO and is NEVER created by this task — see docs/devops/offline-install-v3.md 'Release key custody'; a fixture key for tests lives at infra/offline/testdata/fixture-release-key/. NOTE: this task signs whatever artifact filename/VERSION is on disk — offline-bundle's BUNDLE_VERSION was bumped to 0.13.0 on 2026-08-18 (moved earlier than its original T-136 slot, because T-133's quickstart gate consumes the built bundle); still verify the artifact name matches the real release before signing for an actual release."
     cmds:

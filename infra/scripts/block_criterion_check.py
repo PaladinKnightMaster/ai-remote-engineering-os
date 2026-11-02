@@ -69,7 +69,10 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]  # infra/scripts/ -> repo root
 
 PRUNE_DIRS = {"node_modules", ".git", "dist", "build", ".task", "bin", ".venv", "__pycache__"}
-DEFN_EXTS = (".go", ".py", ".ts", ".tsx", ".js", ".jsx")
+# `.sh` is indexed since T-173 (the later-host harness declares its tests as bash functions). The definition regex
+# below needs the explicit `function` keyword, so a bare `name() {` is deliberately NOT indexed: ordinary shell helpers
+# (`log() {`, `die() {`) must never satisfy a `[test: Name]` marker -- only a function written `function Name()` does.
+DEFN_EXTS = (".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".sh")
 
 ROW_ID = re.compile(r"^\|\s*\*\*([A-Z]{2,5}-\d+)\*\*")
 TEST_MARKER = re.compile(r"\[test:\s*(none|[A-Za-z_][A-Za-z0-9_]*)\b[^\]]*\]", re.I)
