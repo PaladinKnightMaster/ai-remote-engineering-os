@@ -6,6 +6,7 @@
 //
 //	api serve                       # default; run the HTTP server
 //	api migrate up|version|force <v>
+//	api setup-code issue [--ca-root <path>]   # first-run setup code (ADR-0078)
 //
 // Target-credential custody moved to connector-service at v0.2.0 (ADR-0053,
 // T-030): provisioning is `connector-service credentials …`; api holds no
@@ -72,10 +73,12 @@ func run(args []string) error {
 		}, args[1:])
 	case "outbox":
 		return runOutbox(dsn, args[1:])
+	case "setup-code":
+		return runSetupCode(dsn, args[1:], os.Stdout)
 	case "serve":
 		return serve(dsn)
 	default:
-		return fmt.Errorf("unknown command %q (want serve|migrate|outbox)", cmd)
+		return fmt.Errorf("unknown command %q (want serve|migrate|outbox|setup-code)", cmd)
 	}
 }
 
