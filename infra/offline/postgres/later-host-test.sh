@@ -12,13 +12,16 @@
 #       leg A  the new companion: install-postgres.sh, unit active, TCP password login, pgcrypto round trip, INS-2
 #       leg B  the full stack: the core bundle's real install.sh against that PostgreSQL, CHECKPOINT + restart
 #              (T-172c), all eight units active, Caddy serves the SPA
-#   TestSEC63OldCompanionFailsOnLaterHost   the v0.16.0 package-closure companion (dist/v0.16.0-release, read-only,
-#       sha256-pinned) through the SAME try_install on the ubuntu2404 later host: it must FAIL, and FOR THE RIGHT
-#       REASON — apt's unmet-dependency signature. Any other failure is "SEC-63 INVALID". If it PASSES, the test does
-#       not measure skew (ADR-0077 D7): reported as such, never adjusted until green.
+#   TestSEC63OldCompanionFailsOnLaterHost   the negative control (CEO ruling 2026-11-01): the v0.16.0 RECIPE, unchanged
+#       (fetch-postgres.sh + install-postgres.sh from tag v0.16.0, blob-checked), rebuilt against Ubuntu's archive
+#       snapshot of 2026-09-01 into dist/sec63-old-recipe/ (NEVER dist/offline/), goes through the SAME try_install on
+#       the ubuntu2404 later host: it must FAIL, and FOR THE RIGHT REASON — apt's unmet-dependency signature, with the
+#       host's perl-base strictly newer than the control's pin. Any other failure is "SEC-63 INVALID". If it PASSES,
+#       the test does not measure skew (ADR-0077 D7): reported as such, never adjusted until green. The SHIPPED v0.16.0
+#       companion (dist/v0.16.0-release, read-only, sha256-pinned) is also run, as an informational NOTE only.
 #
 # Usage: bash infra/offline/postgres/later-host-test.sh [ostag...]     (default: ubuntu2404 ubuntu2604 rocky9)
-# Needs Docker, network (image builds only), `task pgsql-trees` + `bash build-postgres-companions.sh` +
+# Needs Docker, network (image builds; snapshot.ubuntu.com for the SEC-63 control, built once and reused), `task pgsql-trees` + `bash build-postgres-companions.sh` +
 # `task offline-bundle` output in dist/offline/ (rebuild if stale — the test checks the shipped installers match HEAD).
 set -euo pipefail
 
@@ -98,10 +101,17 @@ psql_tcp() {   # $1=container $2=sql : a TCP password login as cockpit with the 
 
 # --- artifacts must be what HEAD ships --------------------------------------------------------------------------------
 check_artifacts() {
-  local os core t
+  local os core t list
   [ -f "$OLD_DIR/aireos-postgres-ubuntu2404.tar.gz" ] || die "no v0.16.0 companion at $OLD_DIR"
   [ "$(sha256sum "$OLD_DIR/aireos-postgres-ubuntu2404.tar.gz" | cut -d' ' -f1)" = "$OLD_SHA" ] \
     || die "the v0.16.0 companion does not hash to $OLD_SHA — it is not the released artifact; refusing to use it as the negative control"
+  # A control artifact (or any package-closure companion) in dist/offline/ could be signed and SHIPPED by sign-release /
+  # sec45-check, which glob dist/offline/*.tar.gz. Every tarball there must be the core bundle or a source-built companion.
+  for t in "$DIST"/*.tar.gz; do
+    case "$(basename "$t")" in aireos-offline-*.tar.gz) continue;; aireos-postgres-*.tar.gz) ;; *) die "unexpected tarball in dist/offline/: $t";; esac
+    list="$(tar --force-local -tzf "$t")"   # a variable, not a pipe: grep -q exiting early would SIGPIPE tar under pipefail
+    grep -q '^aireos-postgres-[a-z0-9]*/pgsql/bin/postgres$' <<<"$list" || die "$t has no pgsql/ tree — a package-closure/control companion must never sit in dist/offline/ (it would be signed and shipped)"
+  done
   local cores=("$DIST"/aireos-offline-*.tar.gz); [ "${#cores[@]}" = 1 ] && [ -f "${cores[0]}" ] || die "expected exactly ONE aireos-offline-*.tar.gz in $DIST, found ${#cores[@]}"
   CORE="$(basename "${cores[0]}")"
   # A stale artifact would test yesterday's installers: the shipped scripts must be byte-identical to HEAD's.
@@ -182,23 +192,73 @@ function TestINS1LaterHost() {
 }
 
 # --- SEC-63 ----------------------------------------------------------------------------------------------------------
+# CEO ruling 2026-11-01: the negative control is the v0.16.0 RECIPE (fetch-postgres.sh + install-postgres.sh, exactly as
+# tagged), rebuilt against Ubuntu's dated archive snapshot of 2026-09-01 — the archive state of the PUB-6 rehearsal's
+# failing companion. The SHIPPED v0.16.0 companion pins today's archive head, so it installs today (R1 is latent in it);
+# it is still run, and reported as an informational NOTE, never as a gate input.
+SNAP=20260901T000000Z; SNAP_LABEL=snapshot-20260901
+OLD_BASE=ubuntu:noble-20260810@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517   # perl-base 5.38.2-3.2ubuntu0.3 installed
+CTL="$REPO_ROOT/dist/sec63-old-recipe"   # OUTSIDE dist/offline: sign-release / sec45-check glob dist/offline/*.tar.gz
+CTL_TAR=aireos-postgres-ubuntu2404.tar.gz
+
 # apt's unmet-dependency signature. A line like "perl : Depends: perl-base (= X) but Y is to be installed" is exact
 # version-pin skew; "unmet dependencies" is apt's summary of the same failure.
 skew_line() { grep -E -m1 'Depends:.* but .*is to be installed' <<<"$1" || grep -E -m1 'unmet dependencies' <<<"$1" || true; }   # the exact pin line first
+perl_pin() { awk '/^Package: perl$/{f=1;next} /^$/{f=0} f&&/^Depends:/{match($0,/perl-base \(= [^)]*\)/); s=substr($0,RSTART,RLENGTH); sub(/^perl-base \(= /,"",s); sub(/\)$/,"",s); print s; exit}' <<<"$1"; }
+
+# Build (once) the v0.16.0 recipe's companion against the 2026-09-01 snapshot. The recipe is extracted from the tag and
+# hash-checked against it; only the ENVIRONMENT differs (base image, apt source) — see the comments for packaging.
+build_control() {
+  local f p tagsha filesha
+  git -C "$REPO_ROOT" rev-parse -q --verify v0.16.0 >/dev/null || die "SEC-63 INVALID: cannot build control — tag v0.16.0 is not in this repo"
+  mkdir -p "$CTL/src" "$CTL/ca"
+  for f in fetch-postgres.sh install-postgres.sh; do
+    p="infra/offline/postgres/$f"; tagsha="$(git -C "$REPO_ROOT" rev-parse "v0.16.0:$p")"
+    git -C "$REPO_ROOT" show "v0.16.0:$p" > "$CTL/src/$f"
+    filesha="$(git -C "$REPO_ROOT" hash-object --no-filters "$CTL/src/$f")"
+    [ "$filesha" = "$tagsha" ] || die "SEC-63 INVALID: $f extracted from v0.16.0 is not the tagged blob ($filesha != $tagsha)"
+    log "recipe $f = blob $tagsha (v0.16.0:$p)"
+  done
+  if [ -f "$CTL/$CTL_TAR" ]; then log "control companion already built ($CTL/$CTL_TAR) — reusing; its embedded pins are re-verified below"; return 0; fi
+  log "build the control: v0.16.0 recipe, unchanged, on $OLD_BASE with apt pointed at snapshot.ubuntu.com/ubuntu/$SNAP/"
+  # TLS stays VERIFIED: the base image has no CA bundle, so a bundle copied from the (ca-certificates-bearing) later-host
+  # image is mounted read-only. apt's signed-Release checks are untouched too.
+  docker run --rm --platform linux/amd64 -v "$CTL/ca":/o aireos-later-host-ubuntu2404 cp /etc/ssl/certs/ca-certificates.crt /o/ || die "SEC-63 INVALID: cannot build control — no CA bundle"
+  docker run --rm --platform linux/amd64 -v "$CTL":/w "$OLD_BASE" bash -c 'rm -rf /w/pkg && mkdir -p /w/pkg/aireos-postgres-ubuntu2404'
+  docker run --rm --platform linux/amd64 -v "$CTL/src":/src:ro -v "$CTL/pkg/aireos-postgres-ubuntu2404":/out \
+    -v "$CTL/ca/ca-certificates.crt":/etc/ssl/certs/ca-certificates.crt:ro -w /src "$OLD_BASE" bash -c "set -e
+      v=\$(dpkg-query -W -f='\${Version}' perl-base); dpkg --compare-versions \"\$v\" le 5.38.2-3.2ubuntu0.4 || { echo \"base perl-base \$v is newer than the 2026-09-01 archive\" >&2; exit 3; }
+      echo \"control base: perl-base \$v installed (period-correct: <= 5.38.2-3.2ubuntu0.4)\"
+      sed -i 's#^URIs: .*#URIs: https://snapshot.ubuntu.com/ubuntu/$SNAP/#' /etc/apt/sources.list.d/ubuntu.sources
+      exec bash /src/fetch-postgres.sh" || die "SEC-63 INVALID: cannot build control (snapshot.ubuntu.com unreachable, or the recipe failed)"
+  # Packaging: v0.16.0's build-postgres-companions.sh commands, copied as written (manifest + normalized tar | gzip -n).
+  # Differences, all non-functional: run in the same pinned image rather than on the host; no SBOM step (SBOM.cdx.json
+  # is not read by install-postgres.sh); output lands in dist/sec63-old-recipe/, never dist/offline/.
+  docker run --rm --platform linux/amd64 -v "$CTL/pkg":/pkg -w /pkg "$OLD_BASE" bash -c "set -e
+      ( cd aireos-postgres-ubuntu2404 && find . -type f ! -name SHA256_MANIFEST.txt -print0 | sort -z | xargs -0 sha256sum > SHA256_MANIFEST.txt )
+      ( cd aireos-postgres-ubuntu2404 && sha256sum -c SHA256_MANIFEST.txt >/dev/null )
+      tar -C /pkg --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - aireos-postgres-ubuntu2404 | gzip -n > /pkg/$CTL_TAR" \
+    || die "SEC-63 INVALID: cannot build control — packaging failed"
+  docker run --rm --platform linux/amd64 -v "$CTL":/w "$OLD_BASE" bash -c "mv /w/pkg/$CTL_TAR /w/$CTL_TAR && rm -rf /w/pkg"
+  log "control built: $CTL/$CTL_TAR"
+}
+
+# $1=container : a fresh later host with the shipped release dir (/old) and the control dir (/ctl) mounted read-only
+sec63_host() { start_host "$1" aireos-later-host-ubuntu2404 -v "$OLD_DIR":/old:ro -v "$CTL":/ctl:ro; }
 
 function TestSEC63OldCompanionFailsOnLaterHost() {
-  OS=ubuntu2404; local C=aireos-later-sec63 old_tar=aireos-postgres-ubuntu2404.tar.gz pins pin_perl host_perl line pk0 sample skew
+  OS=ubuntu2404; local C=aireos-later-sec63 old_tar=aireos-postgres-ubuntu2404.tar.gz pins pin_perl host_perl line sample ctl_pins shipped_rc shipped_pin
   # Rule 12: the signature matcher must match the real rehearsal line and must NOT match a harness-style failure.
   sample='perl : Depends: perl-base (= 5.38.2-3.2ubuntu0.4) but 5.38.2-3.2ubuntu0.6 is to be installed'
   [ -n "$(skew_line "$sample")" ] || die "SEC-63 INVALID: the skew matcher does not recognise the PUB-6 rehearsal's own apt line"
   [ -z "$(skew_line './install-postgres.sh: No such file or directory
 E: Unable to locate package postgresql-16')" ] || die "SEC-63 INVALID: the skew matcher accepts a non-skew failure"
   ok "(self-test) the skew matcher recognises the PUB-6 apt line and rejects a harness-style failure"
-  # Instrument control (independent of what the archive happens to carry today): a SYNTHETIC copy of the old companion
-  # whose `perl` deb pins an OLDER perl-base (made inside the container; dist/ is never touched) reproduces the PUB-6
-  # rehearsal's exact shape. The same try_install on the same host image must fail with the skew signature; if it does
-  # not, the harness could not tell skew from anything else and the real SEC-63 result below means nothing.
-  start_host "$C" aireos-later-host-ubuntu2404 -v "$OLD_DIR":/old:ro
+  build_control
+  # Instrument control (independent of any archive): a SYNTHETIC copy of the SHIPPED companion whose `perl` deb pins an
+  # OLDER perl-base (made inside the container; dist/ is never touched). The same try_install on the same host image
+  # must fail with the skew signature; if not, the harness could not tell skew from anything else.
+  sec63_host "$C"
   XB "$C" "set -e; mkdir -p /root/synth && cd /root/synth && tar xzf /old/$old_tar && cd aireos-postgres-ubuntu2404/repo \
     && awk '/^Package: perl\$/{f=1} /^\$/{f=0} f&&/^Depends:/{sub(/perl-base \\(= [^)]*\\)/,\"perl-base (= 5.38.2-3.2ubuntu0.5)\")} {print}' Packages >P && mv P Packages && gzip -9f -k Packages \
     && grep -c 'perl-base (= 5.38.2-3.2ubuntu0.5)' Packages >/dev/null && tar czf /root/synth.tar.gz -C /root/synth aireos-postgres-ubuntu2404"
@@ -207,32 +267,37 @@ E: Unable to locate package postgresql-16')" ] || die "SEC-63 INVALID: the skew 
   line="$(skew_line "$TI_OUT")"; [ -n "$line" ] || { echo "$TI_OUT" | tail -15; die "SEC-63 INVALID: the synthetic skewed companion failed for the wrong reason"; }
   ok "(instrument control) a synthetic older-pinned companion FAILS through the same try_install: $(sed 's/^[[:space:]]*//' <<<"$line")"
   docker rm -f "$C" >/dev/null
-  start_host "$C" aireos-later-host-ubuntu2404 -v "$OLD_DIR":/old:ro
-  # the skew must be real, by version: the host's perl-base vs the perl-base the old companion's `perl` deb pins
-  pins="$(XB "$C" "tar -xzOf /old/$old_tar aireos-postgres-ubuntu2404/repo/Packages")"
-  pin_perl="$(awk '/^Package: perl$/{f=1;next} /^$/{f=0} f&&/^Depends:/{match($0,/perl-base \(= [^)]*\)/); s=substr($0,RSTART,RLENGTH); sub(/^perl-base \(= /,"",s); sub(/\)$/,"",s); print s; exit}' <<<"$pins")"
-  [ -n "$pin_perl" ] || die "SEC-63 INVALID: could not read the perl-base pin from the old companion's repo/Packages"
+  # ---- the SHIPPED v0.16.0 companion: informational only (not a gate input)
+  sec63_host "$C"
+  pins="$(XB "$C" "tar -xzOf /old/$old_tar aireos-postgres-ubuntu2404/repo/Packages")"; shipped_pin="$(perl_pin "$pins")"
   host_perl="$(get "$(XB "$C" "$LIBS")" perl-base)"; [ -n "$host_perl" ] || die "SEC-63 INVALID: the later host has no perl-base"
-  log "[ubuntu2404] old companion pins perl-base (= $pin_perl) ; later host has perl-base $host_perl ; old libssl3t64 in repo: $(awk '/^Package: libssl3t64$/{f=1;next} /^$/{f=0} f&&/^Version:/{print $2; exit}' <<<"$pins")"
-  # The skew precondition is checked, not assumed — but the install is attempted either way so the report carries
-  # what the old companion ACTUALLY does on this host (evidence, never a reason to adjust the test until green).
-  skew=1; gt "$C" "$host_perl" "$pin_perl" && ok "skew is real by version: host perl-base $host_perl > old companion's perl-base $pin_perl (dpkg --compare-versions)" \
-    || { skew=0; log "NO SKEW: host perl-base $host_perl is NOT newer than the old companion's pin $pin_perl (dpkg --compare-versions)"; }
-  pk0="$(XB "$C" "$PKGS")"
-  log "[ubuntu2404] SEC-63: the v0.16.0 companion through the SAME try_install, on the same later host image"
-  try_install "$C" "/old/$old_tar" aireos-postgres-ubuntu2404
+  try_install "$C" "/old/$old_tar" aireos-postgres-ubuntu2404; shipped_rc="$TI_RC"
+  docker rm -f "$C" >/dev/null
+  # ---- the control: the v0.16.0 recipe at the 2026-09-01 snapshot, through the SAME host image and the SAME try_install
+  sec63_host "$C"
+  [ "$(XB "$C" "tar -xzOf /ctl/$CTL_TAR aireos-postgres-ubuntu2404/install-postgres.sh | sha256sum | cut -d' ' -f1")" = "$(git -C "$REPO_ROOT" show v0.16.0:infra/offline/postgres/install-postgres.sh | sha256sum | cut -d' ' -f1)" ] \
+    || die "SEC-63 INVALID: the control companion's install-postgres.sh is not the v0.16.0 one"   # a cached artifact must carry the tagged installer
+  ctl_pins="$(XB "$C" "tar -xzOf /ctl/$CTL_TAR aireos-postgres-ubuntu2404/repo/Packages")"; pin_perl="$(perl_pin "$ctl_pins")"
+  [ -n "$pin_perl" ] || die "SEC-63 INVALID: could not read the perl-base pin from the control companion's repo/Packages"
+  log "[ubuntu2404] control companion pins perl-base (= $pin_perl) ; later host has perl-base $host_perl"
+  gt "$C" "$host_perl" "$pin_perl" || die "SEC-63 INVALID: host perl-base $host_perl is NOT strictly newer than the control's pin $pin_perl (dpkg --compare-versions) — no skew to measure"
+  ok "skew is real by version: host perl-base $host_perl > control companion's perl-base $pin_perl (dpkg --compare-versions)"
+  log "[ubuntu2404] SEC-63: the v0.16.0-recipe@$SNAP_LABEL companion through the SAME try_install, on the same later host image"
+  try_install "$C" "/ctl/$CTL_TAR" aireos-postgres-ubuntu2404
   if [ "$TI_RC" = 0 ]; then
     echo "$TI_OUT" | tail -6
-    [ "$skew" = 1 ] && die "SEC-63 NOT PROVED — THE OLD COMPANION INSTALLED on a host with real skew (rc=0). ADR-0077 D7: this test does not measure skew. Do not adjust until green; escalate."
-    die "SEC-63 NOT PROVED — the v0.16.0 companion INSTALLED (rc=0) on the fully-updated later host, and there is no skew to measure: the archive has not moved past the packages it was built from (host perl-base $host_perl = its pin $pin_perl). This instrument cannot discriminate on this archive today; escalate."
+    die "SEC-63 NOT PROVED — the control INSTALLED (rc=0) on a host with real skew. ADR-0077 D7: this test does not measure skew. Do not adjust until green; escalate."
   fi
-  [ "$skew" = 1 ] || die "SEC-63 INVALID: the old companion failed (rc=$TI_RC) but the host is not newer than its pins, so the failure is not version skew"
   line="$(skew_line "$TI_OUT")"
   if [ -z "$line" ]; then echo "$TI_OUT" | tail -20; die "SEC-63 INVALID: failed for the wrong reason (rc=$TI_RC, no apt unmet-dependency signature in the output)"; fi
   line="$(sed 's/^[[:space:]]*//' <<<"$line")"
-  [ "$(XB "$C" "$PKGS")" != "$pk0" ] && log "note: the failed install changed the package list" || true
-  echo "SEC-63 PROVED os=ubuntu2404 v0.16.0-companion FAILED on version skew: $line"
-  echo "SEC-63 evidence: rc=$TI_RC ; host perl-base $host_perl > companion pin $pin_perl"
+  echo "SEC-63 PROVED os=ubuntu2404 v0.16.0-recipe@$SNAP_LABEL FAILED on version skew: $line"
+  echo "SEC-63 evidence: rc=$TI_RC ; host perl-base $host_perl > control pin $pin_perl (dpkg --compare-versions)"
+  if [ "$shipped_rc" = 0 ] && [ "$shipped_pin" = "$host_perl" ]; then
+    echo "SEC-63 NOTE shipped v0.16.0 companion installs today (rc=0): pins perl-base $shipped_pin = archive head — R1 latent, triggers on the next perl update"
+  else
+    echo "SEC-63 NOTE shipped v0.16.0 companion today: rc=$shipped_rc, pins perl-base $shipped_pin, host has $host_perl"
+  fi
   docker rm -f "$C" >/dev/null
 }
 
