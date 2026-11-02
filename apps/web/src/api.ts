@@ -46,6 +46,20 @@ export const apiClient = createApiClient({
 });
 
 /**
+ * Is first-run setup open (ADR-0078)? GET /v1/setup answers 200 {setupRequired:true} only while no operator
+ * exists; once one does it is an unknown route (404). Anything else — 404, a network error, an old server — is
+ * "no", and the SPA runs normally.
+ */
+export async function fetchSetupRequired(): Promise<boolean> {
+  try {
+    const { data } = await apiClient.GET("/v1/setup");
+    return data?.setupRequired === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Adapter for <CapabilityProvider fetchCapability={...}>.
  * Maps the typed Identity from /v1/auth/me into the packages/ui
  * `Capability` shape (subject + edge + deploymentProfile + scope). Returns

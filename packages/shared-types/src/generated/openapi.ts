@@ -1269,7 +1269,7 @@ export interface components {
         };
         SetupStatus: {
             /** @description Always true when the route answers 200; once setup is complete the route is gone. */
-            setup_required: boolean;
+            setupRequired: boolean;
         };
         SetupCompleteRequest: {
             /** @description The one-time setup code printed on the server's terminal (XXXXX-XXXXX-XXXXX-XXXXX; case, spaces and dashes are forgiven). Body only, never the URL. */

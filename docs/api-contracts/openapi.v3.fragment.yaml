@@ -2512,9 +2512,9 @@ components:
           type: string
     SetupStatus:
       type: object
-      required: [setup_required]
+      required: [setupRequired]
       properties:
-        setup_required:
+        setupRequired:
           type: boolean
           description: Always true when the route answers 200; once setup is complete the route is gone.
     SetupCompleteRequest:

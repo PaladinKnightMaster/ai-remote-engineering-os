@@ -155,7 +155,7 @@ func TestSetupModeIsTotal(t *testing.T) {
 	t.Logf("%d routes checked; exempt: GET /v1/setup, POST /v1/setup/complete (none else)", checked)
 
 	rec := do(h, http.MethodGet, "/v1/setup", "", "")
-	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"setup_required":true}` {
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"setupRequired":true}` {
 		t.Fatalf("GET /v1/setup: %d %s", rec.Code, rec.Body)
 	}
 }

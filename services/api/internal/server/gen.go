@@ -654,7 +654,7 @@ type SetupCompleteRequest struct {
 // SetupStatus defines model for SetupStatus.
 type SetupStatus struct {
 	// SetupRequired Always true when the route answers 200; once setup is complete the route is gone.
-	SetupRequired bool `json:"setup_required"`
+	SetupRequired bool `json:"setupRequired"`
 }
 
 // Workstream defines model for Workstream.

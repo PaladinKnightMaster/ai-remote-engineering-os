@@ -11,3 +11,7 @@ playwright-report/
 # T-133b (Commander review): spec B's completion marker — proves the test
 # BODY ran, since a skipped Playwright test still exits 0.
 .quickstart-b-done
+
+# T-175d: setup-browser-gate.sh seams -- the printed setup code (a one-time secret) and the test-body completion marker.
+.setup-code
+.setup-done

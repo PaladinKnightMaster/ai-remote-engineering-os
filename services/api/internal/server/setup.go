@@ -72,7 +72,7 @@ func (a *apiHandlers) GetSetupStatus(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"setup_required": true})
+	writeJSON(w, http.StatusOK, map[string]bool{"setupRequired": true})
 }
 
 // CompleteSetup (POST /v1/setup/complete) creates the first operator from the setup code

@@ -34,9 +34,14 @@ DBPW=demosecret
 OPPW=demo-operator-pw
 RID=01900000-0000-7000-8000-0000000000e2
 SEED_RESOURCE=1
+NO_OPERATOR=0
+SETUP_CODE_FILE="${SETUP_CODE_FILE:-$REPO_ROOT/tests/smoke/.setup-code}"   # --no-operator: where the printed setup code is saved (git-ignored)
 for arg in "$@"; do
   case "$arg" in
     --no-seed-resource) SEED_RESOURCE=0 ;;
+    # T-175d: install through setup.sh with NO operator, so the first operator is made in the BROWSER (ADR-0078). Implies
+    # nothing about the resource seed, but the seed's own steps need no operator, so both flags combine.
+    --no-operator) NO_OPERATOR=1 ;;
     *) echo "unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -95,6 +100,18 @@ done
 
 log "install postgres (offline)"
 docker exec "$HOST" bash -c 'rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true'
+if [ "$NO_OPERATOR" = "1" ]; then
+  # T-175d: the REAL one-command path with NO operator anywhere -- setup.sh installs the companion and the app, api starts in setup
+  # mode, and setup.sh prints the one-time code (which only a root shell on the host ever sees). The code is saved for the browser run.
+  log "--no-operator: setup.sh (companion + app, browser setup path, ADR-0078); NO operator is created"
+  SETUP_OUT="$(docker exec "$HOST" bash -c "set -e; mkdir -p /root/inst && cd /root/inst && cp /artifacts/aireos-postgres-ubuntu2404.tar.gz . &&
+    tar xzf /artifacts/aireos-offline-*.tar.gz && AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only ./aireos-offline-*/setup.sh" 2>&1)" \
+    || { echo "$SETUP_OUT" | tail -20; exit 1; }
+  CODE="$(grep -Eo '[0-9A-Z]{5}(-[0-9A-Z]{5}){3}' <<<"$SETUP_OUT" || true)"
+  [ -n "$CODE" ] && [ "$(wc -l <<<"$CODE")" = 1 ] || { echo "$SETUP_OUT" | tail -20; echo "expected exactly one setup code in setup.sh's output"; exit 1; }
+  mkdir -p "$(dirname "$SETUP_CODE_FILE")"; ( umask 077; printf '%s\n' "$CODE" > "$SETUP_CODE_FILE" )
+  log "setup.sh printed a setup code (saved to $SETUP_CODE_FILE for the browser run)"
+else
 docker exec "$HOST" bash -c "set -e; mkdir -p /root/inst && cd /root/inst &&
   tar xzf /artifacts/aireos-postgres-ubuntu2404.tar.gz && cd aireos-postgres-ubuntu2404 &&
   COCKPIT_PW=$DBPW ./install-postgres.sh"
@@ -105,6 +122,7 @@ docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-
   AIREOS_DB_URL='postgres://cockpit:$DBPW@localhost:5432/cockpit?sslmode=disable' \
   AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW \
   AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh"
+fi
 
 if [ "$SEED_RESOURCE" = "1" ]; then
   log "seed the flagged ssh resource (requires_approval=true)"
@@ -127,4 +145,4 @@ docker exec "$HOST" chmod +x /usr/local/bin/fire-agent.sh
 log "assert all units active"
 docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy aireos-postgres
 
-log "DEMO STACK UP -> https://localhost:8443  (operator: admin / $OPPW)"
+if [ "$NO_OPERATOR" = "1" ]; then log "DEMO STACK UP, NO OPERATOR (setup mode) -> https://localhost:8443  (setup code in $SETUP_CODE_FILE)"; else log "DEMO STACK UP -> https://localhost:8443  (operator: admin / $OPPW)"; fi

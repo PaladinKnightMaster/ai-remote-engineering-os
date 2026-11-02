@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { CapabilityProvider, useCapability } from "@aireos/ui";
 import { fetchCurrentCapability } from "./api";
 import { Login } from "./routes/Login";
+import { SetupGate } from "./routes/Setup";
 import { Dashboard } from "./routes/Dashboard";
 import { Sessions } from "./routes/Sessions";
 import { SessionView } from "./routes/SessionView";
@@ -34,6 +35,8 @@ export function App() {
   return (
     <CapabilityProvider fetchCapability={fetchCurrentCapability}>
       <BrowserRouter>
+        {/* First-run setup (ADR-0078): while no operator exists every route is the setup page. */}
+        <SetupGate>
         <Routes>
           <Route path="/login" element={<Login />} />
           {/* Unauthenticated by design (ADR-0068 §D6): the device redeeming a
@@ -130,6 +133,7 @@ export function App() {
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </SetupGate>
       </BrowserRouter>
     </CapabilityProvider>
   );
