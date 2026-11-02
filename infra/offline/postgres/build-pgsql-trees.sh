@@ -2,7 +2,7 @@
 # build-pgsql-trees.sh — host orchestrator for the source-built PostgreSQL tree
 # (ADR-0077 D1-D3, D9; T-171). Needs Docker. Builds STAGING trees only:
 #   dist/offline/aireos-pgsql-<ostag>/    (dist/ is git-ignored)
-# It does NOT replace the shipped v0.16.0 companion (build-postgres-companions.sh) — T-172 does.
+# build-postgres-companions.sh packages these trees into the shipped companions (T-172b); this script does not.
 #
 # Usage: bash infra/offline/postgres/build-pgsql-trees.sh build|smoke [ostag...]
 #   default OS set: ubuntu2404 ubuntu2604 rocky9      (pins: pgsql-build.lock)

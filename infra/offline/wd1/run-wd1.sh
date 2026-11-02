@@ -5,8 +5,8 @@
 # then drives the operator walkthrough through Caddy HTTPS and asserts the audit
 # chain host-internally.
 #
-#   Bring-up (T-021d-a): real install-postgres.sh + install.sh (systemctl enabled);
-#     all six units + postgres active; Caddy serves the SPA over HTTPS.
+#   Bring-up (T-021d-a): real install-postgres.sh (source-built PostgreSQL, ADR-0077) + install.sh;
+#     all six units + aireos-postgres active; Caddy serves the SPA over HTTPS.
 #   Walkthrough (T-021d-b + T-033b): login → resource picker → create against the
 #     requires_approval-flagged resource → operator APPROVE → SSH session →
 #     command → end → DENY a second session → logout, through Caddy HTTPS; then
@@ -40,6 +40,9 @@ OPPW=e2e-operator-pw   # must match operatorPass in tests/e2e/harness_test.go
 RID=01900000-0000-7000-8000-0000000000e2   # must match tests/e2e/cmd/seed + harness_test.go
 
 log() { printf '\033[1;35m[wd1]\033[0m %s\n' "$*"; }
+# psql as the cluster superuser (T-172b, ADR-0077): the source-built PostgreSQL has no `postgres` OS user and
+# no `psql` on PATH; its service user is aireos-pg and its socket is /run/aireos-postgres (peer auth).
+hostpsql() { docker exec -i "$HOST" su -s /bin/bash aireos-pg -c "$(printf '%q ' /opt/aireos/pgsql/bin/psql -h /run/aireos-postgres -U aireos-pg "$@")"; }
 cleanup() {
   docker rm -f "$HOST" "$SSHD" >/dev/null 2>&1 || true
   docker volume rm "$KEYVOL" "$CTXVOL" >/dev/null 2>&1 || true
@@ -118,6 +121,20 @@ docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-
   AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW \
   AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only ./install.sh"
 
+# 7b. T-172c regression: PostgreSQL must survive a CHECKPOINT and a RESTART *after* install.sh ran. The
+#     order is the real one (companion first, then install.sh). install.sh once left /var/lib/aireos 0750
+#     aireos, so aireos-pg could not reach /var/lib/aireos/pgsql: the running server looked healthy until
+#     its next checkpoint (PANIC ... pg_control: Permission denied) — minutes later, as a 500 deep in WD-9.
+#     CHECKPOINT forces that file open now, and the restart proves the data dir is reachable on a cold start.
+log "assert: PostgreSQL survives a checkpoint + restart after install.sh (state-dir traversal, T-172c)"
+hostpsql -v ON_ERROR_STOP=1 -d postgres -c CHECKPOINT </dev/null \
+  || { echo "T-172c FAILED: CHECKPOINT after install.sh failed"; docker exec "$HOST" journalctl -u aireos-postgres -n 8 --no-pager; exit 1; }
+docker exec "$HOST" systemctl restart aireos-postgres \
+  || { echo "T-172c FAILED: aireos-postgres did not restart after install.sh"; docker exec "$HOST" journalctl -u aireos-postgres -n 8 --no-pager; exit 1; }
+[ "$(docker exec "$HOST" systemctl is-active aireos-postgres)" = active ] || { echo "T-172c FAILED: aireos-postgres is not active after the restart"; exit 1; }
+[ "$(hostpsql -tA -d cockpit -c 'SELECT 1' </dev/null)" = 1 ] || { echo "T-172c FAILED: no query answered after the restart"; exit 1; }
+echo "T-172c OK — aireos-postgres survived CHECKPOINT + restart after install.sh (/var/lib/aireos is $(docker exec "$HOST" stat -c '%a' /var/lib/aireos))"
+
 # 8. seed the ssh resource into the installed DB. requires_approval=true: the
 #    installed walkthrough drives the GOVERNED wedge (WD-2.3) — the ungated path
 #    stays covered by the compose e2e (T-033a). Credential provisioning goes
@@ -126,7 +143,7 @@ docker exec "$HOST" bash -c "set -e; cd /root/inst && tar xzf /artifacts/aireos-
 log "seed the flagged ssh resource in the installed DB"
 HOSTKEY="$(docker exec "$HOST" cat /wd1keys/ssh_host_key_pub)"
 LABELS="$(printf '{"ssh_host":"%s","ssh_port":"2222","ssh_user":"aireos","ssh_host_key":"%s","requires_approval":"true"}' "$SSHD" "$HOSTKEY")"
-docker exec -i "$HOST" su - postgres -c "psql -v ON_ERROR_STOP=1 -d cockpit" <<SQL
+hostpsql -v ON_ERROR_STOP=1 -d cockpit <<SQL
 INSERT INTO resources (id, type, name, labels)
 VALUES ('$RID', 'ssh', 'wd1-target', '$LABELS'::jsonb)
 ON CONFLICT (id) DO UPDATE SET labels = EXCLUDED.labels;
@@ -138,7 +155,7 @@ docker exec "$HOST" bash -c 'DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env |
 
 # 9. bring-up assertions (T-021d-a; six units since OI-6).
 log "assert: units active + Caddy serves the SPA over HTTPS"
-docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy postgresql
+docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy aireos-postgres
 docker exec "$HOST" bash -c 'curl -sk https://localhost/ | grep -qiE "<!doctype html|<html" && echo "SPA OK"'
 
 # 9b. SEC-20 (v0.4.0/ADR-0060): assert install.sh keyed the agent-facing gateway as
@@ -336,7 +353,7 @@ docker exec "$HOST" bash -c '
 # (operator:admin#paired, AUD-34) is asserted separately below.
 WANTS="auth.login.success policy.decision:requires_approval approval.granted credential.leased opened input.line closed:operator approval.denied:operator auth.logout tool.invoked remote.exec tool.result run.launched run.completed grant.issued grant.revoked run.canceled workstream.chartered workstream.retired memory.written memory.redacted memory.expired plan.requested plan.submitted plan.expired memory.read memory.shared memory.unshared run.denied context.source.registered context.read pairing.requested pairing.redeemed pairing.revoked"
 for attempt in 1 2 3 4 5 6; do
-  OUTCOMES="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT outcome FROM audit_events ORDER BY seq\"")"
+  OUTCOMES="$(hostpsql -tA -d cockpit -c "SELECT outcome FROM audit_events ORDER BY seq" </dev/null)"
   MISSING=""
   for want in $WANTS; do
     echo "$OUTCOMES" | grep -qx "$want" || MISSING="$MISSING $want"
@@ -351,7 +368,7 @@ done
 # rides the same ordered api relay and was waited for above, so the earlier delegated
 # run.launched is already delivered; retry a beat anyway.
 for attempt in 1 2 3; do
-  AGENT_LAUNCHED="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT count(*) FROM audit_events WHERE outcome='run.launched' AND actor LIKE 'agent:%'\"")"
+  AGENT_LAUNCHED="$(hostpsql -tA -d cockpit -c "SELECT count(*) FROM audit_events WHERE outcome='run.launched' AND actor LIKE 'agent:%'" </dev/null)"
   [ "${AGENT_LAUNCHED:-0}" -ge 1 ] && break
   [ "$attempt" = 3 ] && { echo "no agent-actor run.launched in the installed chain — delegated attribution (AUD-17) missing"; exit 1; }
   sleep 5
@@ -361,7 +378,7 @@ done
 # installed chain (AUD-17/AUD-18 — distinguishable from WD-5's operator and WD-6's agent
 # launches). Proves the in-process ticker fired a governed Run on the real install.
 for attempt in 1 2 3; do
-  WS_LAUNCHED="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT count(*) FROM audit_events WHERE outcome='run.launched' AND actor LIKE 'workstream:%'\"")"
+  WS_LAUNCHED="$(hostpsql -tA -d cockpit -c "SELECT count(*) FROM audit_events WHERE outcome='run.launched' AND actor LIKE 'workstream:%'" </dev/null)"
   [ "${WS_LAUNCHED:-0}" -ge 1 ] && break
   [ "$attempt" = 3 ] && { echo "no workstream-actor run.launched in the installed chain — the schedule ticker did not fire (OI-14)"; exit 1; }
   sleep 5
@@ -373,7 +390,7 @@ done
 # WD-11's leg 3 (the held invocation was approved FROM the paired session) on the
 # real install, not just on compose.
 for attempt in 1 2 3; do
-  PAIRED_APPROVED="$(docker exec "$HOST" su - postgres -c "psql -tA -d cockpit -c \"SELECT count(*) FROM audit_events WHERE outcome='approval.granted' AND actor='operator:admin#paired'\"")"
+  PAIRED_APPROVED="$(hostpsql -tA -d cockpit -c "SELECT count(*) FROM audit_events WHERE outcome='approval.granted' AND actor='operator:admin#paired'" </dev/null)"
   [ "${PAIRED_APPROVED:-0}" -ge 1 ] && break
   [ "$attempt" = 3 ] && { echo "no operator:admin#paired approval.granted in the installed chain — AUD-34's paired-origin attribution missing"; exit 1; }
   sleep 5
@@ -421,6 +438,8 @@ log "SEC-43/VER-16: forged-chain negative proof (installed stack, FINAL step —
 docker exec -i "$HOST" bash <<'SEC43EOF'
 say() { printf '\033[1;35m[wd1:sec43]\033[0m %s\n' "$*"; }
 fail() { echo "SEC-43 FAILED: $*" >&2; exit 1; }
+# the source-built PostgreSQL ships its psql in its own tree, not on PATH (T-172b)
+export PATH="/opt/aireos/pgsql/bin:$PATH"
 
 DU=$(grep "^DATABASE_URL=" /etc/aireos/aireos.env | head -1 | cut -d= -f2-)
 SK=$(grep "^AIREOS_AUDIT_CHAIN_SIGN_KEY=" /etc/aireos/audit.env | head -1 | cut -d= -f2-)

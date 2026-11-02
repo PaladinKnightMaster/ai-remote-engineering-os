@@ -41,6 +41,9 @@ for arg in "$@"; do
   esac
 done
 log() { printf '\033[1;36m[demo]\033[0m %s\n' "$*"; }
+# psql as the cluster superuser (T-172b, ADR-0077): the source-built PostgreSQL has no `postgres` OS user and
+# no `psql` on PATH; its service user is aireos-pg and its socket is /run/aireos-postgres (peer auth).
+hostpsql() { docker exec -i "$HOST" su -s /bin/bash aireos-pg -c "$(printf '%q ' /opt/aireos/pgsql/bin/psql -h /run/aireos-postgres -U aireos-pg "$@")"; }
 
 # assert_exactly_one_bundle — OI-37's cousin finding (T-133a, Commander audit
 # finding B): a bare `aireos-offline-*.tar.gz` glob, and this script's own
@@ -107,7 +110,7 @@ if [ "$SEED_RESOURCE" = "1" ]; then
   log "seed the flagged ssh resource (requires_approval=true)"
   HOSTKEY="$(docker exec "$HOST" cat /demokeys/ssh_host_key_pub)"
   LABELS="$(printf '{"ssh_host":"%s","ssh_port":"2222","ssh_user":"aireos","ssh_host_key":"%s","requires_approval":"true"}' "$SSHD" "$HOSTKEY")"
-  docker exec -i "$HOST" su - postgres -c "psql -v ON_ERROR_STOP=1 -d cockpit" <<SQL
+  hostpsql -v ON_ERROR_STOP=1 -d cockpit <<SQL
 INSERT INTO resources (id, type, name, labels)
 VALUES ('$RID', 'ssh', 'demo-target', '$LABELS'::jsonb)
 ON CONFLICT (id) DO UPDATE SET labels = EXCLUDED.labels;
@@ -122,6 +125,6 @@ docker exec -i "$HOST" tee /usr/local/bin/fire-agent.sh >/dev/null < "$SCRIPT_DI
 docker exec "$HOST" chmod +x /usr/local/bin/fire-agent.sh
 
 log "assert all units active"
-docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy postgresql
+docker exec "$HOST" systemctl is-active aireos-api aireos-audit aireos-broker aireos-connector aireos-policy aireos-mcp-gateway aireos-caddy aireos-postgres
 
 log "DEMO STACK UP -> https://localhost:8443  (operator: admin / $OPPW)"

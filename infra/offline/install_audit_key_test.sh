@@ -154,8 +154,15 @@ STATE_MODE="$(stat -c '%a %U:%G' "$STATE_AUDIT" 2>/dev/null)"
 SESS_MODE="$(stat -c '%a %U:%G' /var/lib/aireos/sessions 2>/dev/null)"
 assert_eq "\$STATE/audit mode+ownership matches the other state dirs (sessions)" "$STATE_MODE" "$SESS_MODE"
 
+# T-172c: the PostgreSQL companion's aireos-pg must traverse $STATE to its data dir (ADR-0077 D4):
+# the parent is 751 (traversable, not listable); its children stay 750.
+assert_eq "T-172c: /var/lib/aireos is 751 aireos:aireos" "$(stat -c '%a %U:%G' /var/lib/aireos 2>/dev/null)" "751 aireos:aireos"
+assert_eq "T-172c: sessions/caddy/audit stay 750" "$(stat -c '%a' /var/lib/aireos/sessions /var/lib/aireos/caddy /var/lib/aireos/audit 2>/dev/null | tr '\n' ' ')" "750 750 750 "
+chmod 750 /var/lib/aireos   # a host installed by an earlier release: the re-run must CORRECT it
+
 echo "== second install run (OI-41: must REUSE, never regenerate) =="
 run_install || true
+assert_eq "T-172c: a re-run corrects a 750 parent to 751" "$(stat -c '%a' /var/lib/aireos 2>/dev/null)" "751"
 SECRET2="$(sed -n 's/^AIREOS_AUDIT_CHAIN_SIGN_KEY=//p' "$AUDIT_ENV" 2>/dev/null)"
 PUB2="$(sed -n 's/^AIREOS_AUDIT_CHAIN_PUBLIC_KEY=//p' "$SHARED_ENV" 2>/dev/null)"
 assert_eq "OI-41: secret is BYTE-IDENTICAL across re-install" "$SECRET2" "$SECRET1"

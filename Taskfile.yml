@@ -125,7 +125,7 @@ tasks:
       - BUNDLE_VERSION={{.BUNDLE_VERSION}} bash infra/offline/build-bundle.sh
 
   pgsql-trees:
-    desc: "Build the relocatable, source-built PostgreSQL 16 STAGING trees (ADR-0077 D1-D3/D9, T-171): per OS, compile the checksum-verified upstream tarball (pins in infra/offline/postgres/pgsql-build.lock, base images pinned by digest) inside that OS's base image into /opt/aireos/pgsql, bundle only the shared libraries the base image lacks (measured), and emit share/aireos/{HOST_LIBS,BUNDLED_LIBS,COMPONENTS.json}. Proves every ELF has an $ORIGIN-only DT_RPATH. Output: dist/offline/aireos-pgsql-<ostag>/ (git-ignored). Does NOT replace the shipped v0.16.0 companion (T-172 does). Needs Docker + network. Usage: task pgsql-trees -- [ubuntu2404 ubuntu2604 rocky9]"
+    desc: "Build the relocatable, source-built PostgreSQL 16 STAGING trees (ADR-0077 D1-D3/D9, T-171): per OS, compile the checksum-verified upstream tarball (pins in infra/offline/postgres/pgsql-build.lock, base images pinned by digest) inside that OS's base image into /opt/aireos/pgsql, bundle only the shared libraries the base image lacks (measured), and emit share/aireos/{HOST_LIBS,BUNDLED_LIBS,COMPONENTS.json}. Proves every ELF has an $ORIGIN-only DT_RPATH. Output: dist/offline/aireos-pgsql-<ostag>/ (git-ignored). Packaged into the companion by build-postgres-companions.sh (T-172b). Needs Docker + network. Usage: task pgsql-trees -- [ubuntu2404 ubuntu2604 rocky9]"
     cmds:
       - bash infra/offline/postgres/build-pgsql-trees.sh build {{.CLI_ARGS}}
 
@@ -135,7 +135,7 @@ tasks:
       - bash infra/offline/postgres/build-pgsql-trees.sh smoke {{.CLI_ARGS}}
 
   pgsql-install-test:
-    desc: "Prove infra/offline/postgres/install-pgsql.sh (T-172a, ADR-0077 D4-D6) on a REAL systemd host per OS: the OS's FLOOR image + only systemd, --network none, companion layout mounted read-only. Asserts install + TCP login + pgcrypto, restart + container restart, idempotent re-run + tree-swap upgrade, package list byte-identical (INS-2), no password in /proc/*/cmdline; and observes the installer REFUSE, host unchanged, on a newest-built tree on the 9.0 floor (INS-11), an absent host soname (INS-4), the wrong OS, a taken port 5432 then success on 5433 beside a distro PostgreSQL (INS-3/8, ubuntu2404 only), and another-major data dir. Needs Docker + network (image builds) and `task pgsql-trees`. Usage: task pgsql-install-test -- [ubuntu2404 ubuntu2604 rocky9]"
+    desc: "Prove infra/offline/postgres/install-postgres.sh (T-172a, ADR-0077 D4-D6) on a REAL systemd host per OS: the OS's FLOOR image + only systemd, --network none, companion layout mounted read-only. Asserts install + TCP login + pgcrypto, restart + container restart, idempotent re-run + tree-swap upgrade, package list byte-identical (INS-2), no password in /proc/*/cmdline; and observes the installer REFUSE, host unchanged, on a newest-built tree on the 9.0 floor (INS-11), an absent host soname (INS-4), the wrong OS, a taken port 5432 then success on 5433 beside a distro PostgreSQL (INS-3/8, ubuntu2404 only), and another-major data dir. Needs Docker + network (image builds) and `task pgsql-trees`. Usage: task pgsql-install-test -- [ubuntu2404 ubuntu2604 rocky9]"
     cmds:
       - bash infra/offline/postgres/pgsql-install-test.sh {{.CLI_ARGS}}
 
@@ -203,7 +203,7 @@ tasks:
       - docker compose --env-file .e2e.env -f docker-compose.e2e.yml run --rm tester
 
   wd1:
-    desc: "WD-1 installed-stack proof (T-021d, ADR-0051): bring up the REAL offline install under systemd-in-Docker + assert the stack is active + the chain-verify CLI (T-021d-a). The full WD-1 walkthrough is T-021d-b. Prereq: the core bundle + the ubuntu2404 postgres companion in dist/offline/ (build them first — see the script's error messages)."
+    desc: "WD-1 installed-stack proof (T-021d, ADR-0051): bring up the REAL offline install under systemd-in-Docker + assert the stack is active + the chain-verify CLI (T-021d-a). The full WD-1 walkthrough is T-021d-b. Prereq: the core bundle + the ubuntu2404 postgres companion (source-built PostgreSQL, ADR-0077) in dist/offline/ (build them first: task offline-bundle + bash infra/offline/postgres/build-postgres-companions.sh ubuntu2404; WD-1 covers ubuntu2404 only — the other OSes are proven by task pgsql-install-test and the later-host test — see the script's error messages)."
     cmds:
       - bash infra/offline/wd1/run-wd1.sh
 

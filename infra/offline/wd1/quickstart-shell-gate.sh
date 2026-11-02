@@ -42,6 +42,9 @@ ACCOUNT=aireos-demo
 RID=01900000-0000-7000-8000-0000000000e3
 
 log() { printf '\033[1;32m[quickstart]\033[0m %s\n' "$*"; }
+# psql as the cluster superuser (T-172b, ADR-0077): the source-built PostgreSQL has no `postgres` OS user and
+# no `psql` on PATH; its service user is aireos-pg and its socket is /run/aireos-postgres (peer auth).
+hostpsql() { docker exec -i "$HOST" su -s /bin/bash aireos-pg -c "$(printf '%q ' /opt/aireos/pgsql/bin/psql -h /run/aireos-postgres -U aireos-pg "$@")"; }
 die() { printf '\033[1;31m[quickstart] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
@@ -85,7 +88,7 @@ log "step 2 PASSED -- generate produced host=127.0.0.1 port=22 username=$ACCOUNT
 # POST /v1/resources call through the cockpit UI on this same shell chain.
 log "T-133b SEAM: step 3 (cockpit 'Create loopback demo target') is out of scope here -- inserting the resource row directly to obtain an id for step 4, NOT via POST /v1/resources. T-133b replaces this with the real UI flow."
 LABELS="$(printf '{"ssh_host":"127.0.0.1","ssh_port":"22","ssh_user":"%s","ssh_host_key":"%s"}' "$ACCOUNT" "$HOSTKEY_LINE")"
-docker exec -i "$HOST" su - postgres -c "psql -v ON_ERROR_STOP=1 -d cockpit" <<SQL
+hostpsql -v ON_ERROR_STOP=1 -d cockpit <<SQL
 INSERT INTO resources (id, type, name, labels)
 VALUES ('$RID', 'ssh', 'quickstart-loopback-demo', '$LABELS'::jsonb)
 ON CONFLICT (id) DO UPDATE SET labels = EXCLUDED.labels;

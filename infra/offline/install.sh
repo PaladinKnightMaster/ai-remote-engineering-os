@@ -281,7 +281,11 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     || useradd -r -s /sbin/nologin "$SVC_USER"   # Ubuntu vs RHEL nologin path
 fi
 install -d -m 755 "$PREFIX/bin" "$PREFIX/web" "$ETC"
-install -d -m 750 -o "$SVC_USER" -g "$SVC_USER" "$STATE" "$STATE/sessions" "$STATE/caddy" "$STATE/audit"
+# $STATE is 0751, not 0750: the PostgreSQL companion keeps its data dir at $STATE/pgsql (ADR-0077 D4, 0700 aireos-pg),
+# and aireos-pg must TRAVERSE here to reach it. A 0750 parent locked it out at the next checkpoint (PANIC ... pg_control:
+# Permission denied; found by T-172b WD-1). Others can traverse but not list; every child below stays 0750.
+install -d -m 751 -o "$SVC_USER" -g "$SVC_USER" "$STATE"
+install -d -m 750 -o "$SVC_USER" -g "$SVC_USER" "$STATE/sessions" "$STATE/caddy" "$STATE/audit"
 
 # --- 2. deploy binaries + SPA + config --------------------------------------
 log "deploy binaries, SPA, config"
