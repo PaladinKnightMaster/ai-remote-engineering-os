@@ -41,6 +41,7 @@ import (
 	"aireos.local/services/api/internal/pairing"
 	runengine "aireos.local/services/api/internal/run"
 	"aireos.local/services/api/internal/server"
+	"aireos.local/services/api/internal/setup"
 	"aireos.local/services/api/internal/store"
 	"aireos.local/services/api/internal/workstream"
 )
@@ -101,7 +102,7 @@ func serve(dsn string) error {
 	}
 	defer pool.Close()
 
-	v, signer, authn, err := buildAuth()
+	v, signer, authn, setupOpts, err := buildAuth(context.Background(), pool)
 	if err != nil {
 		return err
 	}
@@ -167,7 +168,7 @@ func serve(dsn string) error {
 	// One run store is shared by both. The step client signs with the api agent-plane
 	// asymmetric key so the gateway's onlyAPI pin (subject=="api") accepts it; an
 	// untyped-nil issuer (no key) sends no bearer (dev).
-	opts := []server.Option{
+	opts := append(setupOpts,
 		server.WithGateway(os.Getenv("GATEWAY_URL")),
 		server.WithAgentSigner(agentPlaneSigner()),
 		// The active deployment profile (ADR-0068 §D2, OI-24): echoed verbatim on
@@ -183,7 +184,7 @@ func serve(dsn string) error {
 		// Backs the four /v1/pairing-*/paired-sessions* handlers AND
 		// gateByDeclaredSecurity's per-request liveness check (SEC-34).
 		server.WithPairingStore(pairingStore),
-	}
+	)
 
 	// The delegation-grant engine (ADR-0062, T-063): the operator issue/list/revoke
 	// routes. Grants are api-local (no gateway needed), so they are wired
@@ -286,15 +287,18 @@ func serve(dsn string) error {
 
 // buildAuth resolves the capability Verifier plus the Signer + operator
 // Authenticator used by login (ADR-0046). With AIREOS_PASETO_KEY set: a real
-// PASETO verifier (audience "api"), a Signer, and the env-provisioned bootstrap
-// operator (login is disabled with a 503 if the operator env is absent). Else
-// API_DEV_INSECURE_AUTH=1 gives the dev allow-all verifier (no signer/operator,
+// PASETO verifier (audience "api"), a Signer, and the operator, resolved in this
+// order (ADR-0078 §D4): the env-provisioned bootstrap operator ALWAYS wins and setup
+// mode is never entered; else the operator the browser first-run setup stored in the
+// operators table; else api starts in SETUP MODE (every route but the two setup routes
+// answers 503 until an operator is created) and returns the server.WithSetup option.
+// Else API_DEV_INSECURE_AUTH=1 gives the dev allow-all verifier (no signer/operator,
 // so login is disabled). Else fail loud.
-func buildAuth() (mw.Verifier, *auth.Signer, server.Authenticator, error) {
+func buildAuth(ctx context.Context, pool *pgxpool.Pool) (mw.Verifier, *auth.Signer, server.Authenticator, []server.Option, error) {
 	if keyHex := os.Getenv("AIREOS_PASETO_KEY"); keyHex != "" {
 		key, err := auth.NewKeyFromHex(keyHex)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("invalid AIREOS_PASETO_KEY: %w", err)
 		}
 		issuer := os.Getenv("AIREOS_CLUSTER_ID") // optional; empty skips the issuer rule
 		// Operator routes stay SYMMETRIC-ONLY: they must reject the gateway's v4.public token
@@ -304,18 +308,31 @@ func buildAuth() (mw.Verifier, *auth.Signer, server.Authenticator, error) {
 		v := auth.AsMiddlewareVerifier(auth.NewVerifier(key, issuer, "api"))
 		signer := auth.NewSigner(key, issuer)
 		var authn server.Authenticator
+		var setupOpts []server.Option
 		if op, err := account.FromEnv(); err == nil {
-			authn = op
+			authn = op // the environment operator wins; the operators table is not even read
 		} else {
-			log.Printf("operator login disabled: %v", err)
+			st := setup.NewStore(pool, store.OutboxTable)
+			switch tableOp, terr := st.Operator(ctx); {
+			case terr == nil:
+				authn = tableOp
+				log.Print("operator login: using the operator created by first-run setup")
+			case errors.Is(terr, setup.ErrNoOperator):
+				holder := account.NewHolder(nil)
+				authn = holder
+				setupOpts = append(setupOpts, server.WithSetup(st, holder))
+				log.Print("no operator configured: SETUP MODE (all routes answer 503 until setup completes; run `api setup-code issue` on this server)")
+			default:
+				return nil, nil, nil, nil, fmt.Errorf("load operator: %w", terr)
+			}
 		}
-		return v, signer, authn, nil
+		return v, signer, authn, setupOpts, nil
 	}
 	if os.Getenv("API_DEV_INSECURE_AUTH") == "1" {
 		log.Print("WARNING: API_DEV_INSECURE_AUTH=1 — using dev allow-all capability verifier; NOT for production")
-		return devAllowAll{}, nil, nil, nil
+		return devAllowAll{}, nil, nil, nil, nil
 	}
-	return nil, nil, nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY (hex cluster key, ADR-0046) or API_DEV_INSECURE_AUTH=1 for local dev")
+	return nil, nil, nil, nil, errors.New("no capability verifier configured: set AIREOS_PASETO_KEY (hex cluster key, ADR-0046) or API_DEV_INSECURE_AUTH=1 for local dev")
 }
 
 // gatewayVerifier builds the verifier for the inbound delegated-launch forward (ADR-0062,

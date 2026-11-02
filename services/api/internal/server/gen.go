@@ -639,6 +639,24 @@ type SessionResolve struct {
 // SessionResolveDecision defines model for SessionResolve.Decision.
 type SessionResolveDecision string
 
+// SetupCompleteRequest defines model for SetupCompleteRequest.
+type SetupCompleteRequest struct {
+	// Code The one-time setup code printed on the server's terminal (XXXXX-XXXXX-XXXXX-XXXXX; case, spaces and dashes are forgiven). Body only, never the URL.
+	Code string `json:"code"`
+
+	// Password At least 12 characters.
+	Password string `json:"password"`
+
+	// Username 3-64 characters; letters, digits, '.', '_', '@' or '-'.
+	Username string `json:"username"`
+}
+
+// SetupStatus defines model for SetupStatus.
+type SetupStatus struct {
+	// SetupRequired Always true when the route answers 200; once setup is complete the route is gone.
+	SetupRequired bool `json:"setup_required"`
+}
+
 // Workstream defines model for Workstream.
 type Workstream struct {
 	// Composer The named composer agent subject for an adaptive charter (R2, ADR-0065 §4); absent for a template charter.
@@ -887,6 +905,9 @@ type CreateSessionJSONRequestBody = SessionCreate
 // ResolveSessionJSONRequestBody defines body for ResolveSession for application/json ContentType.
 type ResolveSessionJSONRequestBody = SessionResolve
 
+// CompleteSetupJSONRequestBody defines body for CompleteSetup for application/json ContentType.
+type CompleteSetupJSONRequestBody = SetupCompleteRequest
+
 // CreateWorkstreamJSONRequestBody defines body for CreateWorkstream for application/json ContentType.
 type CreateWorkstreamJSONRequestBody = WorkstreamCreate
 
@@ -1027,6 +1048,12 @@ type ServerInterface interface {
 	// Approve or deny a session parked pending approval (ADR-0054; same-operator self-approval at v0.2.0)
 	// (POST /v1/sessions/{id}/resolve)
 	ResolveSession(w http.ResponseWriter, r *http.Request, id string)
+	// Is first-run setup open? (public; 404 once an operator exists)
+	// (GET /v1/setup)
+	GetSetupStatus(w http.ResponseWriter, r *http.Request)
+	// Create the first operator with the one-time setup code, and sign in
+	// (POST /v1/setup/complete)
+	CompleteSetup(w http.ResponseWriter, r *http.Request)
 	// List the caller's Workstreams (operator-scoped; no templates)
 	// (GET /v1/workstreams)
 	ListWorkstreams(w http.ResponseWriter, r *http.Request, params ListWorkstreamsParams)
@@ -1318,6 +1345,18 @@ func (_ Unimplemented) EndSession(w http.ResponseWriter, r *http.Request, id str
 // Approve or deny a session parked pending approval (ADR-0054; same-operator self-approval at v0.2.0)
 // (POST /v1/sessions/{id}/resolve)
 func (_ Unimplemented) ResolveSession(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Is first-run setup open? (public; 404 once an operator exists)
+// (GET /v1/setup)
+func (_ Unimplemented) GetSetupStatus(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create the first operator with the one-time setup code, and sign in
+// (POST /v1/setup/complete)
+func (_ Unimplemented) CompleteSetup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2723,6 +2762,34 @@ func (siw *ServerInterfaceWrapper) ResolveSession(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// GetSetupStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetSetupStatus(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSetupStatus(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CompleteSetup operation middleware
+func (siw *ServerInterfaceWrapper) CompleteSetup(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CompleteSetup(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListWorkstreams operation middleware
 func (siw *ServerInterfaceWrapper) ListWorkstreams(w http.ResponseWriter, r *http.Request) {
 
@@ -3155,6 +3222,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/sessions/{id}/resolve", wrapper.ResolveSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/setup", wrapper.GetSetupStatus)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/setup/complete", wrapper.CompleteSetup)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/workstreams", wrapper.ListWorkstreams)

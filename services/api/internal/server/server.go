@@ -36,6 +36,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -43,6 +44,7 @@ import (
 	"aireos.local/packages/go/auth"
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/outbox"
+	"aireos.local/services/api/internal/account"
 	"aireos.local/services/api/internal/ctxindex"
 	"aireos.local/services/api/internal/gateway"
 	"aireos.local/services/api/internal/grant"
@@ -220,6 +222,12 @@ type apiHandlers struct {
 	// though in practice no such token can exist without this store having
 	// minted the session whose row id it carries as its jti.
 	pairings pairingStore
+	// setup / setupHolder / setupRequired are first-run setup mode (ADR-0078, setup.go):
+	// WithSetup sets all three. setupRequired is true only while no operator exists; it
+	// is flipped in-process by CompleteSetup, and setupGuard reads it on every request.
+	setup         setupStore
+	setupHolder   *account.Holder
+	setupRequired atomic.Bool
 }
 
 // Option configures optional, additively-wired dependencies on New without churning
@@ -466,6 +474,11 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 		}
 	}
 	base := chi.NewRouter()
+	// setupGuard is a router-level middleware, registered before ANY route so it runs for
+	// every request -- the internal RPCs below and unmatched paths included (setup.go): in
+	// setup mode all routes but the two setup routes are 503; after it, those two are
+	// unknown routes. (Kept on the chi.Mux, not a wrapper, so New still returns chi.Routes.)
+	base.Use(h.setupGuard)
 	// api's FIRST inbound service-service route (ADR-0062, T-065a): the gateway forwards a
 	// delegated Run launch here. Manual — NOT in the OpenAPI fragment (an internal RPC, like
 	// the gateway's /v1/steps). Gated by a ROUTE-SCOPED verifier (h.gatewayVerifier) that
@@ -763,6 +776,14 @@ func (a *apiHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid credentials")
 		return
 	}
+	a.establishSession(w, r, subject)
+}
+
+// establishSession mints the operator session for an already-authenticated subject: the
+// session + CSRF cookies, the auth.login.success event (SEC-9) and the login response
+// body. Shared by Login and by first-run setup completion (CompleteSetup), so a freshly
+// created operator is signed in exactly as a returning one is.
+func (a *apiHandlers) establishSession(w http.ResponseWriter, r *http.Request, subject string) {
 	// Operator tokens are scoped to this gateway's audience ("api").
 	token, err := a.signer.IssueOperator(subject, "api")
 	if err != nil {

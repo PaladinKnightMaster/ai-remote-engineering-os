@@ -44,6 +44,14 @@ tags:
     description: Layer 1 Live/Context Index operator surface on services/api (T-100, ADR-0066; charter-bound, operator-registered local context sources the agent-plane context.search tool reads at plan time — registration/list/remove only; the agent read path is a separate internal RPC, not in this fragment).
   - name: pairing
     description: QR device pairing + revocable paired operator sessions on services/api (T-114, ADR-0068 §D4-§D6; the product's first server-side session revocation primitive, narrowed to the approvals@1 scope — a scope within human-agent, not a new capability edge). Ships disabled by default (AIREOS_PAIRING_ENABLED=0); every route answers 404 while off (SEC-41).
+  - name: setup
+    description: >-
+      First-run operator setup on services/api (ADR-0078, T-175b; v0.17 FRX-2/3). Exists
+      ONLY while no operator does: the operator is created in the browser by presenting a
+      one-time setup code that only root on the server can print. While it is open, every
+      other route answers 503 setup_required; once an operator exists (or one came from
+      AIREOS_BOOTSTRAP_OPERATOR_*, which always wins) these two routes answer exactly as
+      an unknown route does (SEC-65).
   - name: policy-rules
     description: >-
       Operator-authored policy rule CRUD on services/api (T-151b, ADR-0074; the
@@ -327,6 +335,76 @@ paths:
       responses:
         '204':
           description: Both cookies cleared. No body.
+  # --- first-run setup (T-175b, ADR-0078) ----------------------------------------
+  /v1/setup:
+    get:
+      tags: [setup]
+      operationId: getSetupStatus
+      summary: Is first-run setup open? (public; 404 once an operator exists)
+      security: []
+      responses:
+        '200':
+          description: No operator exists yet; the SPA should show its setup page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetupStatus'
+        '404':
+          description: >-
+            Setup is complete (or the operator came from the environment). Byte-identical
+            to the answer for a route that does not exist (SEC-65) -- not this schema.
+  /v1/setup/complete:
+    post:
+      tags: [setup]
+      operationId: completeSetup
+      summary: Create the first operator with the one-time setup code, and sign in
+      # Public, and CSRF-token-free ON PURPOSE: there is no session yet to bind a
+      # double-submit token to, and the setup code is itself the secret. A cross-site
+      # form post cannot carry it (the code is in the body) and cannot be application/json
+      # (an HTML form cannot send that type; a cross-origin fetch would need a CORS
+      # preflight api never grants) -- hence the mandatory Content-Type below.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupCompleteRequest'
+      responses:
+        '200':
+          description: >-
+            The operator was created and the setup code consumed. The session + CSRF
+            cookies are set exactly as /v1/auth/login sets them; the body is the same
+            LoginResponse. Setup mode ends in-process -- no restart.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: >-
+            Malformed body, or a username/password the rules refuse (3-64 character
+            username; password of at least 12 characters). Never echoes the code or the
+            password, and does not count as a wrong code attempt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: >-
+            The setup code is wrong, expired, already used, or locked after five wrong
+            attempts -- one answer for all of them (no oracle, SEC-64).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Setup is complete; indistinguishable from a route that does not exist (SEC-65).
+        '415':
+          description: The request was not Content-Type application/json.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/auth/me:
     get:
       tags: [auth]
@@ -2432,6 +2510,30 @@ components:
           type: string
         password:
           type: string
+    SetupStatus:
+      type: object
+      required: [setup_required]
+      properties:
+        setup_required:
+          type: boolean
+          description: Always true when the route answers 200; once setup is complete the route is gone.
+    SetupCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [code, username, password]
+      properties:
+        code:
+          type: string
+          description: >-
+            The one-time setup code printed on the server's terminal (XXXXX-XXXXX-XXXXX-XXXXX;
+            case, spaces and dashes are forgiven). Body only, never the URL.
+        username:
+          type: string
+          description: 3-64 characters; letters, digits, '.', '_', '@' or '-'.
+        password:
+          type: string
+          format: password
+          description: At least 12 characters.
     LoginResponse:
       # ADR-0047 §Decision: the PASETO token is set in an HttpOnly cookie, not
       # returned in this body. The body carries only the session expiry so the

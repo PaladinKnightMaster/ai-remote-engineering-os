@@ -264,6 +264,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Is first-run setup open? (public; 404 once an operator exists) */
+        get: operations["getSetupStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/setup/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create the first operator with the one-time setup code, and sign in */
+        post: operations["completeSetup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/me": {
         parameters: {
             query?: never;
@@ -1233,6 +1267,21 @@ export interface components {
             username: string;
             password: string;
         };
+        SetupStatus: {
+            /** @description Always true when the route answers 200; once setup is complete the route is gone. */
+            setup_required: boolean;
+        };
+        SetupCompleteRequest: {
+            /** @description The one-time setup code printed on the server's terminal (XXXXX-XXXXX-XXXXX-XXXXX; case, spaces and dashes are forgiven). Body only, never the URL. */
+            code: string;
+            /** @description 3-64 characters; letters, digits, '.', '_', '@' or '-'. */
+            username: string;
+            /**
+             * Format: password
+             * @description At least 12 characters.
+             */
+            password: string;
+        };
         LoginResponse: {
             /**
              * Format: date-time
@@ -1656,6 +1705,91 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getSetupStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No operator exists yet; the SPA should show its setup page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupStatus"];
+                };
+            };
+            /** @description Setup is complete (or the operator came from the environment). Byte-identical to the answer for a route that does not exist (SEC-65) -- not this schema. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    completeSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupCompleteRequest"];
+            };
+        };
+        responses: {
+            /** @description The operator was created and the setup code consumed. The session + CSRF cookies are set exactly as /v1/auth/login sets them; the body is the same LoginResponse. Setup mode ends in-process -- no restart. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description Malformed body, or a username/password the rules refuse (3-64 character username; password of at least 12 characters). Never echoes the code or the password, and does not count as a wrong code attempt. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The setup code is wrong, expired, already used, or locked after five wrong attempts -- one answer for all of them (no oracle, SEC-64). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Setup is complete; indistinguishable from a route that does not exist (SEC-65). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request was not Content-Type application/json. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
             };
         };
     };

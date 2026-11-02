@@ -26,3 +26,4 @@ output-options:
     - context-sources
     - pairing
     - policy-rules
+    - setup
