@@ -76,9 +76,13 @@ cat > "$STUBBIN/systemctl" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$SYSTEMCTL_LOG"
 [ -n "${SYSTEMCTL_FAIL_ON:-}" ] && [ "$1" = "$SYSTEMCTL_FAIL_ON" ] && exit 1
+# INS-10 probes: every unit is active with a stable PID, except the one named by SYSTEMCTL_FAILED_UNIT.
+if [ "$1" = "is-active" ]; then [ "$2" = "${SYSTEMCTL_FAILED_UNIT:-}" ] && { echo failed; exit 3; }; echo active; exit 0; fi
+if [ "$1" = "show" ]; then echo active; echo 0; echo 4242; exit 0; fi
 exit 0
 EOF
 chmod +x "$STUBBIN/systemctl"
+printf '#!/bin/sh\necho 200\n' > "$STUBBIN/curl"; chmod +x "$STUBBIN/curl"   # Caddy "answers" (INS-10 part 2)
 export SYSTEMCTL_LOG="$WORK/systemctl.log"
 
 fresh() { rm -rf /etc/aireos /var/lib/aireos; rm -f /etc/systemd/system/aireos-*.service; : > "$SYSTEMCTL_LOG"; }
@@ -90,7 +94,7 @@ SEVEN="aireos-api.service aireos-audit.service aireos-broker.service aireos-conn
 run_install() {
   local stdin="$1"; shift
   env PATH="$STUBBIN:$PATH" \
-    AIREOS_DEPLOYMENT_PROFILE=lan-only \
+    AIREOS_DEPLOYMENT_PROFILE=lan-only AIREOS_HEALTH_SETTLE=1 \
     AIREOS_BOOTSTRAP_OPERATOR_USER=testop AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$TEST_OP_PW" \
     "$@" bash "$BUNDLE/install.sh" <"$stdin" >"$WORK/out.log" 2>&1
 }
@@ -166,6 +170,14 @@ run_install "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL" AIREOS_SITE_ADDRESS=c.test SYST
 [ "$rc" -ne 0 ] && ok "P9 failed restart: exit non-zero (rc=$rc)" || bad "P9 failed restart" "install reported success"
 grep -q 'DONE' "$WORK/out.log" && bad "P9 failed restart: DONE" "DONE line printed despite the failed restart" || ok "P9 failed restart: no DONE line"
 grep -q 'could not enable and restart' "$WORK/out.log" && ok "P9 failed restart: plain-English message" || bad "P9 failed restart: message" "$(cat "$WORK/out.log")"
+
+echo "== INS-10: a unit that is not active fails the install, NAMED, with no DONE line =="
+: > "$SYSTEMCTL_LOG"
+run_install "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL" AIREOS_SITE_ADDRESS=d.test SYSTEMCTL_FAILED_UNIT=aireos-policy.service; rc=$?
+[ "$rc" -ne 0 ] && ok "INS-10 failed unit: exit non-zero (rc=$rc)" || bad "INS-10 failed unit" "install reported success"
+grep -q 'aireos-policy.service is not staying active' "$WORK/out.log" && grep -q 'journalctl -u aireos-policy' "$WORK/out.log" \
+  && ok "INS-10 failed unit: names aireos-policy.service and where to look" || bad "INS-10 failed unit: message" "$(cat "$WORK/out.log")"
+grep -q 'DONE' "$WORK/out.log" && bad "INS-10 failed unit: DONE" "DONE printed despite a failed unit" || ok "INS-10 failed unit: no DONE line"
 
 fresh
 echo

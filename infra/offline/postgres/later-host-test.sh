@@ -12,6 +12,13 @@
 #       leg A  the new companion: install-postgres.sh, unit active, TCP password login, pgcrypto round trip, INS-2
 #       leg B  the full stack: the core bundle's real install.sh against that PostgreSQL, CHECKPOINT + restart
 #              (T-172c), all eight units active, Caddy serves the SPA
+#       leg C  (T-174, INS-5/6/8/10) on a FRESH host per OS, laid out like a real download (core tarball + companion tarball
+#              side by side, only the core unpacked): `setup.sh` unattended from cwd=/ -> exit 0, last line names
+#              https://localhost/, /etc/aireos/db-password 0600 root, the password in NO output / cmdline / history, units
+#              active, SPA over HTTPS, INS-9 warnings; then a RE-RUN (same password bytes, DB still answers). Negatives, each
+#              observed failing: N-C1 a unit that cannot start (INS-10: non-zero, names aireos-api, no DONE), N-C2 the companion
+#              tarball missing (refused, naming the file, host unchanged), N-C3 (ubuntu2404) an existing install whose
+#              DATABASE_URL is a distro PostgreSQL on 5432 (INS-8: reused, no companion, distro cluster untouched, healthy)
 #   TestSEC63OldCompanionFailsOnLaterHost   the negative control (CEO ruling 2026-11-01): the v0.16.0 RECIPE, unchanged
 #       (fetch-postgres.sh + install-postgres.sh from tag v0.16.0, blob-checked), rebuilt against Ubuntu's archive
 #       snapshot of 2026-09-01 into dist/sec63-old-recipe/ (NEVER dist/offline/), goes through the SAME try_install on
@@ -123,8 +130,10 @@ check_artifacts() {
     done
   done
   core="${CORE%.tar.gz}"
-  [ "$(tar --force-local -xzOf "$DIST/$CORE" "$core/install.sh" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "$REPO_ROOT/infra/offline/install.sh" | cut -d' ' -f1)" ] \
-    || die "STALE: $CORE carries a different install.sh than HEAD — task offline-bundle"
+  for t in install.sh setup.sh; do
+    [ "$(tar --force-local -xzOf "$DIST/$CORE" "$core/$t" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "$REPO_ROOT/infra/offline/$t" | cut -d' ' -f1)" ] \
+      || die "STALE: $CORE carries a different (or no) $t than HEAD — task offline-bundle"
+  done
   log "artifacts: $CORE + new companions match HEAD's installers; the v0.16.0 companion hashes to $OLD_SHA"
 }
 
@@ -189,6 +198,126 @@ function TestINS1LaterHost() {
     echo "LATER-HOST-TEST PASS os=$os legA legB"
     docker rm -f "$C" >/dev/null
   done
+}
+
+# --- leg C: setup.sh, the one install command (T-174) ----------------------------------------------------------------------
+HSNAP='shopt -s globstar dotglob nullglob; printf "%s\n" /etc/** /opt/** /var/lib/** /usr/local/** /usr/lib/systemd/system/** /root/** | sort'
+SAMPLER='shopt -s nullglob; n=0
+while [ ! -e /var/tmp/sampler.stop ]; do
+  for f in /proc/[0-9]*/cmdline; do mapfile -d "" -t a <"$f" 2>/dev/null || continue; s="${a[*]}"; [[ "$s" =~ [0-9a-f]{64} ]] && echo "${BASH_REMATCH[0]}" >>/var/tmp/hex.hits; done
+  n=$((n+1)); echo $n >/var/tmp/sweeps
+done'
+CANARY="$(printf 'ca%.0s' $(seq 1 32))"   # 64 hex chars, what the sampler hunts for: planted so a blind sampler is detected
+UNITS7="${UNITS% aireos-postgres}"
+SETUP_ENV=(-e AIREOS_BOOTSTRAP_OPERATOR_USER=admin -e AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$OPPW" -e AIREOS_SITE_ADDRESS=localhost -e AIREOS_DEPLOYMENT_PROFILE=lan-only)
+legc_layout() { XB "$1" "mkdir -p /root/dl && cp /artifacts/$CORE /root/dl/ && { [ $2 = 0 ] || cp /artifacts/aireos-postgres-$OS.tar.gz /root/dl/; } && cd /root/dl && tar xzf $CORE"; }   # $2=1: companion tarball beside it
+legc_setup() { LC_OUT="$(docker exec "${SETUP_ENV[@]}" "$1" bash -c "$2" 2>&1)" && LC_RC=0 || LC_RC=$?; }   # sets LC_OUT LC_RC; never dies
+done_line() { grep -qF 'cockpit installed (deployment profile' <<<"$1"; }   # install.sh's DONE (the companion prints its own, different one)
+stack_ok() {   # $1=container $2=units : all active + the SPA over HTTPS
+  eq "legC units active ($2)" "active " "$(XB "$1" "systemctl is-active $2 | sort -u | tr '\n' ' '")"
+  XB "$1" 'curl -sk https://localhost/ | grep -qiE "<!doctype html|<html"' || die "[$OS] legC: https://localhost/ does not serve the SPA"; ok "legC Caddy serves the SPA over HTTPS"
+}
+# The stored URL is split in-script and the password handed over as PGPASSWORD: psql's own argv must not carry it (the sampler would flag the harness).
+db_ok() { eq "legC $2 DB answers with the stored DATABASE_URL's credentials" 1 "$(XB "$1" 'u=$(sed -n s/^DATABASE_URL=//p /etc/aireos/aireos.env); r=${u#*://}; p=${r#*:}; p=${p%%@*}; h=${r#*@}; h=${h#*:}; h=${h%%/*}; PGPASSWORD=$p /opt/aireos/pgsql/bin/psql "host=localhost port=$h dbname=cockpit user=cockpit sslmode=disable" -X -At -c "select 1"')"; }
+pw_in() { docker exec -e PW="$PW_SECRET" "$1" bash -c "grep -qsF \"\$PW\" $2"; }   # is the password a substring of file $2 ? (it travels as env, never argv)
+warn_probe() { docker exec -i "$1" bash -s -- "$2" 2>&1 <<'EOF'
+cd /root/dl/aireos-offline-*/ && source ./install.sh && aireos_warn_site_address "$1"; true
+EOF
+}
+
+function TestSetupShLegC() {
+  local os C C2 pw h1 s0 s1 i
+  for os in "${OSES[@]}"; do
+    OS="$os"; C="aireos-later-c-$os"
+    start_host "$C" "aireos-later-host-$os"; legc_layout "$C" 1
+    docker exec -i "$C" bash -c 'cat >/var/tmp/sampler.sh' <<<"$SAMPLER"; XB "$C" ': >/var/tmp/hex.hits'; docker exec -d "$C" bash /var/tmp/sampler.sh
+    docker exec -d "$C" bash -c 'sleep 90' "canary-$CANARY"
+    s0="$(XB "$C" "$HSNAP")"
+    log "[$os] leg C: setup.sh unattended from cwd=/ on a FRESH host (core unpacked beside the companion tarball)"
+    legc_setup "$C" 'cd / && /root/dl/aireos-offline-*/setup.sh'
+    [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -25; die "[$os] legC: setup.sh failed (rc=$LC_RC)"; }
+    echo "$LC_OUT" | tail -4
+    has "legC the last line names the address to open" "$(tail -n1 <<<"$LC_OUT")" "https://localhost/"
+    done_line "$LC_OUT" && ok "legC install.sh's DONE line printed (so N-C1's grep for its absence can match)" || die "[$os] legC: no DONE line"
+    s1="$(XB "$C" "$HSNAP")"; [ "$s0" != "$s1" ] || die "[$os] legC (self-test): the host snapshot did not change across an install"
+    pw="$(XB "$C" 'cat /etc/aireos/db-password')"
+    eq "legC db-password mode/owner" "600 root" "$(XB "$C" 'stat -c "%a %U" /etc/aireos/db-password')"
+    [[ "$pw" =~ ^[0-9a-f]{64}$ ]] || die "[$os] legC: db-password is not 64 hex characters (256 bits)"; ok "legC password is 64 hex chars = 256 bits from urandom"
+    grep -qF -- "$pw" <<<"planted $pw" || die "(self-test) the leak grep cannot find a planted password"
+    ! grep -qF -- "$pw" <<<"$LC_OUT" || die "[$os] legC: the generated password appears in setup.sh's output"; ok "legC password absent from setup.sh's stdout+stderr (the grep finds a planted one)"
+    eq "legC aireos.env URL carries the real port" 5432 "$(XB "$C" 'sed -n "s#^DATABASE_URL=postgres://cockpit:[^@]*@localhost:\([0-9]*\)/cockpit.*#\1#p" /etc/aireos/aireos.env')"
+    stack_ok "$C" "$UNITS"; db_ok "$C" first
+    # ---- INS-9: warns, never blocks; loopback and this host's own address are silent
+    eq "legI9 loopback is silent" "" "$(warn_probe "$C" 'localhost 127.0.0.1')"
+    has "legI9 a foreign IP warns" "$(warn_probe "$C" 192.0.2.7)" "is not an address of this host"
+    has "legI9 an unresolvable name warns" "$(warn_probe "$C" no-such-host.invalid)" "does not resolve"
+    if XB "$C" 'command -v ip >/dev/null'; then XB "$C" 'ip addr add 10.77.0.5/32 dev lo'; eq "legI9 (ip path) this host's own address is silent" "" "$(warn_probe "$C" 10.77.0.5)"
+    else log "[$os] legI9 no 'ip' on this host: the /proc/net/fib_trie fallback ran (the own-address leg needs iproute to add an address)"; fi
+    # ---- re-run (relative path, another cwd): same password bytes, still healthy
+    h1="$(XB "$C" 'sha256sum </etc/aireos/db-password')"
+    legc_setup "$C" 'cd /root/dl && ./aireos-offline-*/setup.sh'
+    [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -25; die "[$os] legC: the re-run failed (rc=$LC_RC)"; }
+    eq "legC re-run: db-password bytes unchanged" "$h1" "$(XB "$C" 'sha256sum </etc/aireos/db-password')"
+    stack_ok "$C" "$UNITS"; db_ok "$C" re-run
+    # ---- the password never reached a command line or the shell history (sampler: any 64-hex token in /proc/*/cmdline)
+    for i in $(seq 1 20); do XB "$C" "grep -qF $CANARY /var/tmp/hex.hits" && break; sleep 1; done
+    XB "$C" 'touch /var/tmp/sampler.stop'; sleep 4
+    XB "$C" "grep -qF $CANARY /var/tmp/hex.hits" || die "[$os] legC: the cmdline sampler never saw the planted canary - it is blind"
+    PW_SECRET="$pw"; XB "$C" "printf %s $pw >/var/tmp/plant"; pw_in "$C" /var/tmp/plant || die "(self-test) pw_in cannot find a planted password"
+    ! pw_in "$C" /var/tmp/hex.hits || die "[$os] legC: the password appeared in a /proc cmdline"
+    ! pw_in "$C" /root/.bash_history || die "[$os] legC: the password is in the shell history"
+    ok "legC password in no /proc/*/cmdline ($(XB "$C" 'cat /var/tmp/sweeps') sweeps over setup + re-run; planted canary seen) and not in the shell history; by code path it only ever moves as environment"
+    # ---- N-C1: INS-10 - a unit that cannot start fails the install, named, and never prints DONE
+    XB "$C" 'mkdir -p /etc/systemd/system/aireos-api.service.d && printf "[Service]\nExecStart=\nExecStart=/bin/false\n" >/etc/systemd/system/aireos-api.service.d/bad.conf'
+    legc_setup "$C" 'cd /root/dl && ./aireos-offline-*/setup.sh'
+    [ "$LC_RC" != 0 ] || { echo "$LC_OUT" | tail -8; die "N-C1 INVALID: setup.sh succeeded with aireos-api unable to start"; }
+    has "N-C1 names the failed unit" "$LC_OUT" "aireos-api.service is not staying active"
+    has "N-C1 says where to look" "$LC_OUT" "journalctl -u aireos-api"
+    ! done_line "$LC_OUT" && ! grep -qF 'Setup is complete' <<<"$LC_OUT" || die "N-C1: DONE / the open-this-address line was printed despite a dead unit"
+    log "NEG-OK N-C1/$os (INS-10): rc=$LC_RC, named aireos-api.service, no DONE, no 'Setup is complete'"
+    docker rm -f "$C" >/dev/null
+    # ---- N-C2: the companion tarball is missing -> refused, naming the file, nothing changed
+    C2="aireos-later-c2-$os"; start_host "$C2" "aireos-later-host-$os"; legc_layout "$C2" 0
+    s0="$(XB "$C2" "$HSNAP")"; legc_setup "$C2" 'cd / && /root/dl/aireos-offline-*/setup.sh'
+    [ "$LC_RC" != 0 ] || die "N-C2 INVALID: setup.sh succeeded without the companion tarball"
+    has "N-C2 names the exact expected file" "$LC_OUT" "/root/dl/aireos-postgres-$os.tar.gz"
+    [ "$s0" = "$(XB "$C2" "$HSNAP")" ] || die "N-C2: the host changed during a refused setup"; ok "N-C2 nothing changed on the host (snapshot of /etc /opt /var/lib /usr/local /root identical)"
+    XB "$C2" '[ ! -e /etc/aireos ] && [ ! -e /opt/aireos ] && ! getent passwd aireos aireos-pg >/dev/null' || die "N-C2: aireos state exists after the refusal"
+    log "NEG-OK N-C2/$os: refused rc=$LC_RC naming /root/dl/aireos-postgres-$os.tar.gz; host byte-identical"
+    docker rm -f "$C2" >/dev/null
+    echo "LATER-HOST-TEST PASS os=$os legC N-C1 N-C2"
+  done
+}
+
+# N-C3 (ubuntu2404): an existing install whose DATABASE_URL is a distro PostgreSQL on 5432 -> INS-8
+function TestSetupShExistingInstall() {
+  OS=ubuntu2404; local C=aireos-later-c3 i url="postgres://cockpit:v016pw@localhost:5432/cockpit?sslmode=disable" u0 d0
+  docker build -q --platform linux/amd64 -t aireos-later-distropg - >/dev/null <<'EOF'
+FROM aireos-later-host-ubuntu2404
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql && apt-get clean && rm -rf /var/lib/apt/lists/*
+EOF
+  start_host "$C" aireos-later-distropg; legc_layout "$C" 1
+  for i in $(seq 1 30); do XB "$C" 'systemctl is-active --quiet postgresql@16-main' 2>/dev/null && break; sleep 1; done
+  docker exec -u postgres "$C" psql -v ON_ERROR_STOP=1 -q -d postgres -c "CREATE ROLE cockpit LOGIN PASSWORD 'v016pw'" -c "CREATE DATABASE cockpit OWNER cockpit" >/dev/null
+  docker exec -u postgres "$C" psql -v ON_ERROR_STOP=1 -q -d cockpit -c "CREATE TABLE v016(x int); INSERT INTO v016 VALUES (16)" >/dev/null
+  dsum() { docker exec -u postgres "$C" psql -d cockpit -At -c 'SELECT sum(x) FROM v016'; }
+  log "[ubuntu2404] N-C3: model an existing install - install.sh against the distro PostgreSQL on 5432 (aireos.env gets its URL)"
+  docker exec "${SETUP_ENV[@]}" -e AIREOS_DB_URL="$url" "$C" bash -c 'cd /root/dl/aireos-offline-*/ && ./install.sh' >/dev/null 2>&1 || die "N-C3: could not model the existing install"
+  u0="$(XB "$C" 'sed -n s/^DATABASE_URL=//p /etc/aireos/aireos.env')"; d0="$(XB "$C" 'ls -l /var/lib/postgresql/16/main/PG_VERSION | wc -l')"
+  eq "N-C3 the modelled install points at the distro PostgreSQL" "$url" "$u0"
+  legc_setup "$C" 'cd / && /root/dl/aireos-offline-*/setup.sh'
+  [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -20; die "N-C3: setup.sh failed on an existing install (rc=$LC_RC)"; }
+  has "N-C3 one sentence says the existing PostgreSQL is left untouched" "$LC_OUT" "that PostgreSQL is left untouched, and no PostgreSQL companion is installed"
+  has "N-C3 still ends with the address to open" "$(tail -n1 <<<"$LC_OUT")" "https://localhost/"
+  eq "N-C3 DATABASE_URL reused unchanged" "$u0" "$(XB "$C" 'sed -n s/^DATABASE_URL=//p /etc/aireos/aireos.env')"
+  XB "$C" '[ ! -e /opt/aireos/pgsql ] && [ ! -e /var/lib/aireos/pgsql ] && [ ! -e /etc/aireos/db-password ] && [ ! -e /etc/systemd/system/aireos-postgres.service ] && ! getent passwd aireos-pg >/dev/null' || die "N-C3: a companion artifact exists - it must not be installed"
+  ok "N-C3 no companion installed (no tree, data dir, unit, user or password file) although the tarball sits beside the bundle"
+  eq "N-C3 the distro cluster is still online" online "$(XB "$C" 'pg_lsclusters -h | awk "{print \$4}"')"
+  eq "N-C3 the distro cockpit data is intact" 16 "$(dsum)"
+  eq "N-C3 the distro data dir is untouched (PG_VERSION present)" "$d0" "$(XB "$C" 'ls -l /var/lib/postgresql/16/main/PG_VERSION | wc -l')"
+  stack_ok "$C" "$UNITS7"
+  echo "LATER-HOST-TEST PASS os=ubuntu2404 N-C3 (existing install reused its distro PostgreSQL; no companion; cluster and data untouched; healthy)"
+  docker rm -f "$C" >/dev/null
 }
 
 # --- SEC-63 ----------------------------------------------------------------------------------------------------------
@@ -304,5 +433,7 @@ E: Unable to locate package postgresql-16')" ] || die "SEC-63 INVALID: the skew 
 check_artifacts
 for os in "${OSES[@]}"; do lock_get "LATEST_$os" >/dev/null; lock_get "IMAGE_$os" >/dev/null; build_host "$os"; done
 TestINS1LaterHost
+TestSetupShLegC
+if printf '%s\n' "${OSES[@]}" | grep -qx ubuntu2404; then TestSetupShExistingInstall; else echo "N-C3 NOT RUN (ubuntu2404 not in this run's OS set)"; fi
 if printf '%s\n' "${OSES[@]}" | grep -qx ubuntu2404; then TestSEC63OldCompanionFailsOnLaterHost; else echo "SEC-63 NOT RUN (ubuntu2404 not in this run's OS set)"; fi
 log "done (${OSES[*]})"

@@ -3,7 +3,7 @@
 # AIREOS_CAST_DIR (/var/lib/aireos/sessions) and runs the in-process outbox relay.
 [Unit]
 Description=AI ReOS — session-broker (cockpit data plane)
-After=network-online.target
+After=network-online.target aireos-postgres.service
 Wants=network-online.target
 
 [Service]

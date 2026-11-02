@@ -4,7 +4,7 @@
 # its outbox relay delivers policy.decision / approval.* to the audit chain.
 [Unit]
 Description=AI ReOS — policy-service (approval/policy decision point)
-After=network-online.target
+After=network-online.target aireos-postgres.service
 Wants=network-online.target
 
 [Service]

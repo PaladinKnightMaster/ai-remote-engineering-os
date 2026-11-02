@@ -2,8 +2,10 @@
 # install.sh — offline installer for the AI ReOS application tier (§OI-b, ADR-0051).
 #
 # Run as root on the TARGET host, from the unpacked bundle directory, AFTER
-# postgres 16 + pgcrypto are installed and a cockpit database + role exist (use
-# the staged offline companion packages + the offline postgres guide, T-021c).
+# a PostgreSQL 16 + pgcrypto with a cockpit database + role exists. The normal
+# entry point is setup.sh beside this file (T-174, ADR-0077), which installs the
+# PostgreSQL companion, generates the DB password and then runs this script; this
+# script alone is the bring-your-own-PostgreSQL / unattended path (it needs a URL).
 #
 # It deploys the binaries + SPA + config, mints the cluster keys, provisions the
 # single bootstrap operator, validates the DB + runs every service's migrations,
@@ -36,6 +38,8 @@
 #                                        instead of silently flipping back off (see
 #                                        docs/devops/offline-install-v3.md).
 #   AIREOS_SKIP_SYSTEMCTL=1             deploy + provision but don't enable units
+#   AIREOS_HEALTH_TIMEOUT / _SETTLE     seconds to wait for the units to be active (60) and to stay
+#                                        active unchanged (5) before DONE is printed (INS-10)
 set -euo pipefail
 
 PREFIX=/opt/aireos
@@ -46,6 +50,7 @@ SVC_USER=aireos
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log() { printf '\033[1;34m[install]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[install] WARNING:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m[install] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- deployment-profile + pairing-enablement helpers (ADR-0068 §D1/§D10) ----
@@ -226,6 +231,123 @@ aireos_enable_and_restart_units() {
   systemctl restart "${AIREOS_UNITS[@]}" || return 1
 }
 
+# --- INS-9 site-address sanity + INS-10 post-start health (T-174) -------------
+
+# aireos_site_host <token> — the host of one site-address token (scheme, path, :port stripped; IPv6 brackets
+# removed). Fails for a bare ":port", which binds every interface and has no host to compare.
+aireos_site_host() {
+  local t host
+  t="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"; t="${t#http://}"; t="${t#https://}"; t="${t%%/*}"
+  if [[ "$t" == \[* ]]; then host="${t#\[}"; host="${host%%]*}"
+  elif [ "$(printf '%s' "$t" | tr -cd ':' | wc -c)" -eq 1 ]; then host="${t%%:*}"
+  else host="$t"; fi
+  [ -n "$host" ] || return 1
+  printf '%s' "$host"
+}
+
+# aireos_site_port <token> <default> — the explicit :port of a site-address token, else <default>.
+aireos_site_port() {
+  local t="${1#http://}"; t="${t#https://}"; t="${t%%/*}"
+  if [[ "$t" =~ ^(\[[^]]*\]|[^:]*):([0-9]+)$ ]]; then printf '%s' "${BASH_REMATCH[2]}"; else printf '%s' "$2"; fi
+}
+
+# aireos_local_addrs — every address configured on this host, one per line. `ip` where present; else IPv4 from
+# /proc (Rocky 9 minimal may lack iproute). Prints nothing when neither works (callers then stay silent).
+aireos_local_addrs() {
+  if command -v ip >/dev/null 2>&1; then
+    ip -o addr 2>/dev/null | awk '{sub(/\/.*/,"",$4); print $4}'
+  elif [ -r /proc/net/fib_trie ]; then
+    awk '/^Local:/{l=1} /^Main:/{l=0} l&&/\|--/{a=$2} l&&/\/32 host LOCAL/{print a}' /proc/net/fib_trie
+  fi
+  return 0
+}
+
+# aireos_warn_site_address <value> — INS-9, a WARNING only (never blocks): for each token of AIREOS_SITE_ADDRESS
+# that neither is nor resolves to an address on this host, say so in one sentence. Loopback is always local.
+aireos_warn_site_address() {
+  local tok host ips ip mine found
+  local -; set -f
+  mine="$(aireos_local_addrs)"
+  for tok in $1; do
+    if aireos_site_is_loopback "$tok"; then continue; fi
+    host="$(aireos_site_host "$tok")" || continue
+    [[ "$host" == *\** ]] && continue
+    [[ "$host" == *:* ]] && ! command -v ip >/dev/null 2>&1 && continue   # cannot list IPv6 addresses here: say nothing
+    if [[ "$host" =~ ^[0-9.]+$ || "$host" == *:* ]]; then ips="$host"
+    else ips="$(getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u || true)"; fi
+    if [ -z "$ips" ]; then
+      warn "AIREOS_SITE_ADDRESS '$tok' does not resolve to any address, so browsers will not reach this host by that name; fix the DNS name or set AIREOS_SITE_ADDRESS to this host's name or IP. Continuing."
+      continue
+    fi
+    found=0
+    for ip in $ips; do
+      ip="${ip#::ffff:}"
+      case "$ip" in 127.*|::1) found=1 ;; esac
+      if [ -n "$mine" ] && grep -qxF -- "$ip" <<<"$mine"; then found=1; fi
+    done
+    if [ "$found" = 0 ] && [ -n "$mine" ]; then
+      warn "AIREOS_SITE_ADDRESS '$tok' (${ips//$'\n'/ }) is not an address of this host, so browsers that use it will not reach Caddy here; set AIREOS_SITE_ADDRESS to this host's own name or IP. Continuing."
+    fi
+  done
+  return 0
+}
+
+# aireos_unit_fail <unit> <state> — INS-10 failure: name the unit and where to look; never returns.
+aireos_unit_fail() {
+  die "$1 is not staying active (state: ${2:-unknown}), so the install is NOT complete. Look at: journalctl -u ${1%.service} -n 50 --no-pager   (and: systemctl status $1)"
+}
+
+# aireos_wait_units_stable <unit...> — INS-10 part 1. Within AIREOS_HEALTH_TIMEOUT (60 s) every unit must be
+# `active` AND stay unchanged (same state, restart count and main PID) for AIREOS_HEALTH_SETTLE (5) consecutive
+# one-second polls: a crash-loop that flickers `active` between restarts changes a PID or a counter and resets
+# the streak. A unit in `failed` (e.g. start limit hit) is final: no waiting.
+aireos_wait_units_stable() {
+  local deadline=$((SECONDS + ${AIREOS_HEALTH_TIMEOUT:-60})) settle="${AIREOS_HEALTH_SETTLE:-5}" streak=0 u st cur bad changed
+  local -A last=()
+  while :; do
+    bad=""; changed=""
+    for u in "$@"; do
+      st="$(systemctl is-active "$u" 2>/dev/null || true)"
+      [ "$st" != failed ] || aireos_unit_fail "$u" failed
+      if [ "$st" != active ]; then bad="${bad:-$u|$st}"; continue; fi
+      cur="$(systemctl show -p ActiveState,NRestarts,MainPID --value "$u" 2>/dev/null | tr '\n' ' ')"
+      if [ "${last[$u]:-$cur}" != "$cur" ]; then changed="${changed:-$u}"; fi
+      last[$u]="$cur"
+    done
+    if [ -n "$bad" ] || [ -n "$changed" ]; then streak=0; else streak=$((streak + 1)); fi
+    [ "$streak" -lt "$settle" ] || return 0
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      if [ -n "$bad" ]; then aireos_unit_fail "${bad%%|*}" "${bad#*|}"; fi
+      aireos_unit_fail "${changed:-$1}" "restarting"
+    fi
+    sleep 1
+  done
+}
+
+# aireos_wait_https <site-address-value> — INS-10 part 2: every site-address token must get a 2xx/3xx answer
+# from Caddy over HTTPS (curl -k: the local CA is not trusted yet). A hostname is pinned to 127.0.0.1 with
+# --resolve (SNI stays the real name), an IPv4 literal is routed there with --connect-to; no DNS is needed.
+aireos_wait_https() {
+  local deadline=$((SECONDS + ${AIREOS_HEALTH_TIMEOUT:-60})) tok host port scheme url code; local -a args
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl is not installed, so Caddy's HTTPS answer was not checked (the units themselves are up)."; return 0
+  fi
+  local -; set -f
+  for tok in $1; do
+    scheme=https; [[ "$tok" == http://* ]] && scheme=http
+    port="$(aireos_site_port "$tok" "$([ "$scheme" = http ] && echo 80 || echo 443)")"
+    host="$(aireos_site_host "$tok")" || host=localhost
+    args=(-ks -o /dev/null -w '%{http_code}' --max-time 5); url="$scheme://$host:$port/"
+    if [[ "$host" == *:* ]]; then url="$scheme://[$host]:$port/"
+    elif [[ "$host" =~ ^[0-9.]+$ ]]; then args+=(--connect-to "$host:$port:127.0.0.1:$port")
+    else args+=(--resolve "$host:$port:127.0.0.1"); fi
+    until code="$(curl "${args[@]}" "$url" 2>/dev/null || true)"; [[ "$code" =~ ^[23] ]]; do
+      [ "$SECONDS" -lt "$deadline" ] || die "Caddy did not answer HTTPS at $url (last status: ${code:-none}), so the install is NOT complete. Look at: journalctl -u aireos-caddy -n 50 --no-pager   (and: systemctl status aireos-caddy)"
+      sleep 1
+    done
+  done
+}
+
 # Sourceable guard (install_profile_test.sh sources this file to reach the
 # helpers above without running the installer body). NOTE: `set -euo pipefail`
 # above already applies to the sourcing shell by the time this guard runs —
@@ -254,6 +376,8 @@ fi
 DEPLOYMENT_PROFILE="$(aireos_resolve_profile "${AIREOS_DEPLOYMENT_PROFILE:-}" "$PERSISTED_PROFILE" "$ANSWER")"
 aireos_assert_profile "$DEPLOYMENT_PROFILE" "${AIREOS_SITE_ADDRESS:-}"
 log "deployment profile: $DEPLOYMENT_PROFILE"
+SITE_ADDRESS="${AIREOS_SITE_ADDRESS:-localhost}"
+aireos_warn_site_address "$SITE_ADDRESS"   # INS-9: a warning only
 
 # --- 1a'. unattended database URL shape (PUB-6 P7) ---------------------------
 # An env-supplied AIREOS_DB_URL cannot be re-asked, so refuse it now — before any
@@ -439,7 +563,7 @@ AIREOS_AUDIT_CHAIN_PUBLIC_KEY=$AUDIT_PK
 AIREOS_AUDIT_ANCHOR_PATH=$STATE/audit/chain-heads.ndjson
 AIREOS_CAST_DIR=$STATE/sessions
 AIREOS_AUDIT_URL=http://127.0.0.1:8081
-AIREOS_SITE_ADDRESS=${AIREOS_SITE_ADDRESS:-localhost}
+AIREOS_SITE_ADDRESS=$SITE_ADDRESS
 AIREOS_DEPLOYMENT_PROFILE=$DEPLOYMENT_PROFILE
 AIREOS_PAIRING_ENABLED=$PAIRING_ENABLED
 AIREOS_BOOTSTRAP_OPERATOR_USER=$OP_USER
@@ -521,8 +645,14 @@ else
   log "enable + (re)start systemd units — a re-run must pick up the env it just wrote"
   aireos_enable_and_restart_units \
     || die "systemd could not enable and restart the seven aireos-* units — the install is NOT complete. See: systemctl status 'aireos-*' and journalctl -u aireos-api -u aireos-caddy"
+  # INS-10: DONE is printed only once every unit (and aireos-postgres, when this host runs it) is active and STAYS
+  # so, and Caddy answers HTTPS for the configured address. Each helper dies, naming the unit, on failure.
+  log "wait for the units to stay active and for Caddy to answer HTTPS"
+  mapfile -t HEALTH_UNITS < <(printf '%s\n' "${AIREOS_UNITS[@]}"; [ ! -f /etc/systemd/system/aireos-postgres.service ] || echo aireos-postgres.service)
+  aireos_wait_units_stable "${HEALTH_UNITS[@]}"
+  aireos_wait_https "$SITE_ADDRESS"
 fi
-log "DONE — cockpit installed (deployment profile: $DEPLOYMENT_PROFILE). Caddy serves https://${AIREOS_SITE_ADDRESS:-localhost} (self-signed local CA; import the CA root to remove browser warnings)."
+log "DONE — cockpit installed (deployment profile: $DEPLOYMENT_PROFILE). Caddy serves https://$SITE_ADDRESS (self-signed local CA; import the CA root to remove browser warnings)."
 # ADR-0069 D5/SEC-44: this public key is the trust root for offline
 # third-party chain verification — record it OUT-OF-BAND (e.g. print this
 # line to a separate channel, not just this host's install log) so a verifier

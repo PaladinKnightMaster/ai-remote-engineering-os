@@ -6,7 +6,8 @@
 # aireos-connector.service (SEC-13/OI-6: api holds no credential key since v0.2.0).
 [Unit]
 Description=AI ReOS — API control plane
-After=network-online.target
+# After= (not Wants=) aireos-postgres: at boot the services migrate/connect to the DB at start, and without ordering they race the self-contained PostgreSQL, exit, and burn their start-limit; a no-op when the operator brings their own PostgreSQL (T-174). All DB-using units carry it.
+After=network-online.target aireos-postgres.service
 Wants=network-online.target
 
 [Service]

@@ -11,7 +11,7 @@
 # mint a foreign-edge token. Holds no resource-secret key (SEC-13/17).
 [Unit]
 Description=AI ReOS — mcp-gateway (Typed MCP Gateway, the agent surface)
-After=network-online.target
+After=network-online.target aireos-postgres.service
 Wants=network-online.target
 
 [Service]

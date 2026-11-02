@@ -2,7 +2,7 @@
 # The append-only chained-hash chain authority (ADR-0045).
 [Unit]
 Description=AI ReOS — audit-service (chain authority)
-After=network-online.target
+After=network-online.target aireos-postgres.service
 Wants=network-online.target
 
 [Service]

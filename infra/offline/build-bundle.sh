@@ -7,7 +7,7 @@
 #   bin/      api, audit-service, session-broker (static linux/amd64) + caddy
 #   web/      the built SPA static assets (apps/web/dist)
 #   config/   Caddyfile + systemd unit templates
-#   install.sh, setup-loopback-demo.sh, postgres/   included when present
+#   setup.sh, install.sh, setup-loopback-demo.sh, postgres/   included when present (setup.sh: required)
 #             (authored in §OI-b; setup-loopback-demo.sh is the ONB-3 demo
 #             quickstart's step 2, T-118b)
 #   VERSION, SHA256_MANIFEST.txt, SBOM.cdx.json
@@ -125,6 +125,14 @@ if [ -f "$SCRIPT_DIR/install.sh" ]; then
   cp "$SCRIPT_DIR/install.sh" "$STAGE/install.sh"; chmod +x "$STAGE/install.sh"
 else
   log "NOTE: infra/offline/install.sh not present — added by §OI-b"
+fi
+
+# --- 5a. include setup.sh (T-174, INS-5): the one install command. Same shape as install.sh; it sources
+#         install.sh for its helpers, so the two must ship together.
+if [ -f "$SCRIPT_DIR/setup.sh" ]; then
+  cp "$SCRIPT_DIR/setup.sh" "$STAGE/setup.sh"; chmod +x "$STAGE/setup.sh"
+else
+  die "infra/offline/setup.sh not present — the bundle's one install command (T-174)"
 fi
 
 # --- 5b. include the ONB-3 loopback demo quickstart's step-2 script (T-118b).
