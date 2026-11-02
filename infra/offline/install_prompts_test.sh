@@ -98,6 +98,12 @@ run_install() {
     AIREOS_BOOTSTRAP_OPERATOR_USER=testop AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$TEST_OP_PW" \
     "$@" bash "$BUNDLE/install.sh" <"$stdin" >"$WORK/out.log" 2>&1
 }
+# run_bare <stdin-file> [VAR=val ...] — NO operator in the environment (T-175c): the persisted / browser / prompt paths.
+run_bare() {
+  local stdin="$1"; shift
+  env -u AIREOS_BOOTSTRAP_OPERATOR_USER -u AIREOS_BOOTSTRAP_OPERATOR_PASSWORD -u AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH     PATH="$STUBBIN:$PATH" AIREOS_DEPLOYMENT_PROFILE=lan-only AIREOS_HEALTH_SETTLE=1 AIREOS_SKIP_SYSTEMCTL=1     "$@" bash "$BUNDLE/install.sh" <"$stdin" >"$WORK/out.log" 2>&1
+}
+envval() { sed -n "s/^$1=//p" /etc/aireos/aireos.env; }
 NOSTDIN=/dev/null
 
 echo "== P7: unattended AIREOS_DB_URL=cockpit is refused before ANY env file is written =="
@@ -184,6 +190,37 @@ run_install "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL" AIREOS_SITE_ADDRESS=d.test SYST
 grep -q 'aireos-policy.service is not staying active' "$WORK/out.log" && grep -q 'journalctl -u aireos-policy' "$WORK/out.log" \
   && ok "INS-10 failed unit: names aireos-policy.service and where to look" || bad "INS-10 failed unit: message" "$(cat "$WORK/out.log")"
 grep -q 'DONE' "$WORK/out.log" && bad "INS-10 failed unit: DONE" "DONE printed despite a failed unit" || ok "INS-10 failed unit: no DONE line"
+
+echo "== T-175c (ADR-0078 §D4): a re-run keeps the operator already in aireos.env — no prompt, no terminal needed =="
+fresh
+run_install "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL"; rc=$?
+U1="$(envval AIREOS_BOOTSTRAP_OPERATOR_USER)"; H1="$(envval AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH)"
+[ "$rc" -eq 0 ] && [ "$U1" = testop ] && [ -n "$H1" ] && ok "persisted: the env-provisioned install wrote its operator" || bad "persisted: setup of the leg" "rc=$rc user=$U1"
+run_bare "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL"; rc=$?
+[ "$rc" -eq 0 ] && ok "persisted: a re-run with no operator env and no terminal succeeds (rc=0), i.e. it did not prompt" || bad "persisted: re-run" "rc=$rc: $(tail -3 "$WORK/out.log")"
+[ "$(envval AIREOS_BOOTSTRAP_OPERATOR_USER)" = "$U1" ] && [ "$(envval AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH)" = "$H1" ]   && ok "persisted: the same user and password hash are still there" || bad "persisted: kept" "user/hash changed"
+run_bare "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL" AIREOS_BOOTSTRAP_OPERATOR_USER=newop AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$TEST_OP_PW-2"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(envval AIREOS_BOOTSTRAP_OPERATOR_USER)" = newop ] && [ "$(envval AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH)" != "$H1" ]   && ok "persisted: an operator in the environment still wins (the lost-password recovery path)" || bad "persisted: env wins" "rc=$rc user=$(envval AIREOS_BOOTSTRAP_OPERATOR_USER)"
+
+echo "== T-175c: AIREOS_OPERATOR_SETUP=browser (setup.sh) writes NO operator, asks nothing =="
+fresh
+run_bare "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL" AIREOS_OPERATOR_SETUP=browser; rc=$?
+[ "$rc" -eq 0 ] && ok "browser: install completes with no operator env and no terminal (rc=0)" || bad "browser: install" "rc=$rc: $(tail -3 "$WORK/out.log")"
+grep -q 'AIREOS_BOOTSTRAP_OPERATOR' /etc/aireos/aireos.env && bad "browser: operator lines" "aireos.env still carries an operator: an env operator would always win over setup" || ok "browser: aireos.env has no AIREOS_BOOTSTRAP_OPERATOR_* line (api will start in setup mode)"
+[ "$(stat -c %a /etc/aireos/aireos.env)" = 600 ] && [ -n "$(envval DATABASE_URL)" ] && ok "browser: aireos.env is still 0600 and complete" || bad "browser: aireos.env" "mode/DATABASE_URL"
+run_bare "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL" AIREOS_OPERATOR_SETUP=browser; rc=$?
+[ "$rc" -eq 0 ] && ! grep -q 'AIREOS_BOOTSTRAP_OPERATOR' /etc/aireos/aireos.env && ok "browser: a re-run stays operator-less and succeeds" || bad "browser: re-run" "rc=$rc"
+
+echo "== T-175c: a bare install.sh (no signal) still asks at the terminal (ADR-0078 alternative 1) =="
+fresh
+printf 'someone
+%s
+' "$TEST_OP_PW" > "$WORK/stdin-op"
+run_bare "$WORK/stdin-op" AIREOS_DB_URL="$GOOD_URL"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(envval AIREOS_BOOTSTRAP_OPERATOR_USER)" = someone ] && [ -n "$(envval AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH)" ]   && ok "prompt: the username and password typed at the prompts become the operator" || bad "prompt: bare install" "rc=$rc user=$(envval AIREOS_BOOTSTRAP_OPERATOR_USER)"
+fresh
+run_bare "$NOSTDIN" AIREOS_DB_URL="$GOOD_URL"; rc=$?
+[ "$rc" -ne 0 ] && ! ls /etc/aireos/aireos.env >/dev/null 2>&1 && ok "prompt: with nothing to read, a bare install stops before writing aireos.env" || bad "prompt: nothing to read" "rc=$rc"
 
 fresh
 echo

@@ -15,6 +15,13 @@
 #   existing install aireos.env has DATABASE_URL, no password   -> INS-8: its PostgreSQL is left alone; that URL is reused
 #   fresh            none of the above                          -> generate the password, install the companion
 #
+# The operator (ADR-0078, T-175c): with AIREOS_BOOTSTRAP_OPERATOR_* set, or already in aireos.env from an earlier install, the
+# operator is exactly that and the script ends with the address to open. Otherwise NO operator is made at the terminal: api
+# starts in setup mode, and this script prints a one-time SETUP CODE plus the SHA-256 fingerprint of the cockpit's certificate
+# authority (so the operator can check the certificate their browser shows before typing the code). The code is only ever
+# printed to the terminal, never written to a file, a log or the command line; `sudo ./setup.sh --new-setup-code` issues a
+# fresh one (and kills the old one) while no operator exists, and changes nothing else.
+#
 # The password: 256 bits from /dev/urandom as hex, kept in /etc/aireos/db-password (root, 0600 from its first byte),
 # NEVER printed and NEVER in argv — it reaches install-postgres.sh as COCKPIT_PW and install.sh as AIREOS_DB_URL, both
 # environment. It is reused on every re-run: an existing role keeps its password, so a fresh one would write a URL the
@@ -32,6 +39,16 @@ WORK=""; trap '[ -z "$WORK" ] || rm -rf "$WORK"' EXIT
 
 log() { printf '\033[1;36m[setup]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[setup] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+NEW_CODE=0
+case "${1:-}" in
+  "") ;;
+  --new-setup-code) NEW_CODE=1 ;;
+  *) die "unknown argument '$1'. Usage: sudo $SETUP_DIR/setup.sh        (install)   or   sudo $SETUP_DIR/setup.sh --new-setup-code" ;;
+esac
+
+# Caddy's `tls internal` root: aireos-caddy.service sets XDG_DATA_HOME=$STATE/caddy, and Caddy keeps its PKI under caddy/pki.
+CA_ROOT="$STATE/caddy/caddy/pki/authorities/local/root.crt"
 
 # ---- 1. preflight: nothing on the host changes until every check here has passed --------------------------------------
 osr() { sed -n "s/^$1=//p" /etc/os-release 2>/dev/null | head -1 | tr -d '"' || true; }
@@ -98,20 +115,70 @@ step_database() {
 }
 
 # ---- 3. the application ------------------------------------------------------------------------------------------------
-# T-175 SEAM: operator provisioning happens in this one step. Today it is install.sh's own (a prompt, or
-# AIREOS_BOOTSTRAP_OPERATOR_* env); ADR-0078's setup code replaces it HERE without touching the database steps above.
+# The operator is install.sh's business (aireos_resolve_operator_mode): env, else the one already persisted, else -- because
+# of the signal below -- none, and the browser makes it (ADR-0078). This script only has to notice which one happened.
 step_install_app_and_operator() {
   log "install the application (install.sh)"
-  ( export AIREOS_DB_URL="$DB_URL"; exec bash "$SETUP_DIR/install.sh" )
+  ( export AIREOS_DB_URL="$DB_URL" AIREOS_OPERATOR_SETUP=browser; exec bash "$SETUP_DIR/install.sh" )
 }
+
+# ---- 4. the one address to open: what Caddy actually serves (install.sh wrote it to aireos.env) ------------------------
+open_address() {
+  local tok scheme=https
+  read -r tok _ <<<"$(aireos_persisted_value AIREOS_SITE_ADDRESS "$ENV_FILE")"
+  tok="${tok:-localhost}"; [[ "$tok" != http://* ]] || scheme=http
+  tok="${tok#http://}"; tok="${tok#https://}"; tok="${tok%%/*}"; [[ "$tok" != :* ]] || tok="localhost$tok"   # a bare ":port" binds every interface
+  printf '%s://%s/' "$scheme" "$tok"
+}
+
+# ---- 5. the setup code (ADR-0078 D1/D6/D7) -----------------------------------------------------------------------------
+# issue_setup_code <database-url> -> SETUP_CODE, SETUP_CA (colon-separated SHA-256). Returns 2 when an operator exists (no code
+# is issued then). The URL travels as environment inside a subshell (never argv); the code is read from the command's stdout
+# into this shell's memory and printed to the terminal -- it is never written anywhere.
+issue_setup_code() {
+  local out rc=0 fp
+  [ -f "$CA_ROOT" ] || die "Caddy's certificate authority file is not there yet ($CA_ROOT), so no setup code was issued. Check that aireos-caddy is running (systemctl status aireos-caddy) and run  sudo $SETUP_DIR/setup.sh --new-setup-code"
+  out="$( export API_DATABASE_URL="$1" DATABASE_URL="$1"; exec "$PREFIX/bin/api" setup-code issue --ca-root "$CA_ROOT" 2>&1 )" || rc=$?
+  if [ "$rc" != 0 ]; then
+    if grep -qF 'setup is complete' <<<"$out"; then return 2; fi
+    die "a setup code could not be issued: $(tail -n1 <<<"$out")"
+  fi
+  SETUP_CODE="$(grep -Em1 '^[0-9A-Z]{5}(-[0-9A-Z]{5}){3}$' <<<"$out" || true)"
+  fp="$(sed -n 's/^ca-sha256: \([0-9a-f]\{64\}\)$/\1/p' <<<"$out")"
+  [ -n "$SETUP_CODE" ] && [ -n "$fp" ] || die "api printed a setup code or fingerprint in a form this script does not recognise; run  sudo $SETUP_DIR/setup.sh --new-setup-code  and report this if it happens again"
+  SETUP_CA="$(sed 's/../&:/g; s/:$//' <<<"$fp" | tr a-f A-F)"
+}
+
+print_setup_block() {   # $1=address to open
+  printf '\n  Setup code:   \033[1m%s\033[0m      (works once, for 60 minutes)\n\n' "$SETUP_CODE"
+  printf '  Certificate fingerprint (SHA-256) of this server'"'"'s certificate authority:\n      %s\n' "$SETUP_CA"
+  printf '  Your browser will warn that the certificate is not trusted: open the certificate'"'"'s details and check that this fingerprint matches before you type the code.\n\n'
+  printf '  Missed it, or it expired?   sudo %s/setup.sh --new-setup-code   (the old code then stops working)\n' "$SETUP_DIR"
+  printf '\n\033[1;36m[setup]\033[0m Open %s in your browser and enter the setup code to create the operator account.\n' "$1"
+}
+
+if [ "$NEW_CODE" = 1 ]; then
+  # Re-issue only: no preflight of the bundle or the companion, nothing installed, nothing but a fresh code changes.
+  [ "$(id -u)" = 0 ] || die "This must run as root: use  sudo $SETUP_DIR/setup.sh --new-setup-code"
+  { [ -x "$PREFIX/bin/api" ] && [ -f "$ENV_FILE" ] && [ -n "$(aireos_persisted_value DATABASE_URL "$ENV_FILE")" ]; } \
+    || die "AI ReOS is not installed on this host, so there is no setup to continue. Run  sudo $SETUP_DIR/setup.sh  to install it. Nothing was changed."
+  [ -z "$(aireos_persisted_value AIREOS_BOOTSTRAP_OPERATOR_USER "$ENV_FILE")" ] \
+    || die "Setup is already complete: this install has an operator account, so no setup code can be issued. Nothing was changed."
+  rc=0; issue_setup_code "$(aireos_persisted_value DATABASE_URL "$ENV_FILE")" || rc=$?
+  [ "$rc" != 2 ] || die "Setup is already complete: an operator account exists, so no setup code can be issued. Nothing was changed."
+  print_setup_block "$(open_address)"
+  exit 0
+fi
 
 step_preflight
 step_database
 step_install_app_and_operator
 
-# ---- 4. the one address to open: what Caddy actually serves (install.sh wrote it to aireos.env) ------------------------
-read -r tok _ <<<"$(aireos_persisted_value AIREOS_SITE_ADDRESS "$ENV_FILE")"
-scheme=https; tok="${tok:-localhost}"; [[ "$tok" != http://* ]] || scheme=http
-tok="${tok#http://}"; tok="${tok#https://}"; tok="${tok%%/*}"; [[ "$tok" != :* ]] || tok="localhost$tok"   # a bare ":port" binds every interface
-addr="$scheme://$tok/"
-printf '\n\033[1;36m[setup]\033[0m Setup is complete. Open %s in your browser to continue.\n' "$addr"
+addr="$(open_address)"
+rc=0
+if [ -z "$(aireos_persisted_value AIREOS_BOOTSTRAP_OPERATOR_USER "$ENV_FILE")" ]; then issue_setup_code "$DB_URL" || rc=$?; else rc=2; fi   # no operator line: the browser path
+if [ "$rc" = 0 ]; then
+  print_setup_block "$addr"
+else   # the operator came from the environment, from an earlier install, or from an earlier browser setup: nothing to enter
+  printf '\n\033[1;36m[setup]\033[0m Setup is complete. Open %s in your browser to continue.\n' "$addr"
+fi

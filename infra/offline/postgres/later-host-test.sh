@@ -6,6 +6,14 @@
 # and then installs with --network none. It never uses the floor image or a build image (the layers the companion
 # came from).
 #
+#   (T-175c) leg C runs setup.sh with NO operator in the environment: the browser path (ADR-0078). It captures the setup code
+#       from setup.sh's own output and completes setup over HTTP through Caddy as the SPA will (GET /v1/setup; POST
+#       /v1/setup/complete as JSON -> 200 + session cookie; login; then /v1/setup is an unknown route and --new-setup-code
+#       refuses); a re-run after setup prints no code. TestSetupCodeReissue: --new-setup-code kills the old code, the new one
+#       works. TestSEC67SetupCodeNeverLeaks: after a completed setup the code and the operator password are searched for in the
+#       audit chain / every table, the whole journal, history and bounded file trees, with a planted control in the SAME run.
+#       The env-operator unattended path (INS-6) stays covered by N-C3 (ubuntu2404); the other OSes' env path is install.sh
+#       itself, run by leg B on all three and by WD-1.
 #   TestINS1LaterHost                       per OS (ubuntu2404 ubuntu2604 rocky9), each on its own host:
 #       "later" is a CHECKED property: glibc/OpenSSL (+perl-base) of the host vs the companion's build floor, compared
 #       with dpkg/rpm's own version comparison — if the host is not strictly newer, the test is not measuring skew: die
@@ -209,7 +217,8 @@ while [ ! -e /var/tmp/sampler.stop ]; do
 done'
 CANARY="$(printf 'ca%.0s' $(seq 1 32))"   # 64 hex chars, what the sampler hunts for: planted so a blind sampler is detected
 UNITS7="${UNITS% aireos-postgres}"
-SETUP_ENV=(-e AIREOS_BOOTSTRAP_OPERATOR_USER=admin -e AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$OPPW" -e AIREOS_SITE_ADDRESS=localhost -e AIREOS_DEPLOYMENT_PROFILE=lan-only)
+SETUP_ENV=(-e AIREOS_SITE_ADDRESS=localhost -e AIREOS_DEPLOYMENT_PROFILE=lan-only)   # NO operator: setup.sh takes the browser path (ADR-0078)
+SETUP_ENV_OP=("${SETUP_ENV[@]}" -e AIREOS_BOOTSTRAP_OPERATOR_USER=admin -e AIREOS_BOOTSTRAP_OPERATOR_PASSWORD="$OPPW")   # the unattended env path (INS-6)
 legc_layout() { XB "$1" "mkdir -p /root/dl && cp /artifacts/$CORE /root/dl/ && { [ $2 = 0 ] || cp /artifacts/aireos-postgres-$OS.tar.gz /root/dl/; } && cd /root/dl && tar xzf $CORE"; }   # $2=1: companion tarball beside it
 legc_setup() { LC_OUT="$(docker exec "${SETUP_ENV[@]}" "$1" bash -c "$2" 2>&1)" && LC_RC=0 || LC_RC=$?; }   # sets LC_OUT LC_RC; never dies
 done_line() { grep -qF 'cockpit installed (deployment profile' <<<"$1"; }   # install.sh's DONE (the companion prints its own, different one)
@@ -225,20 +234,115 @@ cd /root/dl/aireos-offline-*/ && source ./install.sh && aireos_warn_site_address
 EOF
 }
 
+# hx <container> <GET|POST> <path> [json] : the body, then the HTTP status on the LAST line. A JSON body travels on stdin (never in
+# a container command line); response headers land in /var/tmp/hx.hdr. Goes through Caddy, as a browser does.
+hx() {
+  if [ -n "${4:-}" ]; then docker exec -i "$1" curl -sk -X "$2" -H 'Content-Type: application/json' --data-binary @- -D /var/tmp/hx.hdr -w '\n%{http_code}' "https://localhost$3" <<<"$4"
+  else docker exec "$1" curl -sk -X "$2" -D /var/tmp/hx.hdr -w '\n%{http_code}' "https://localhost$3"; fi
+}
+status() { tail -n1 <<<"$1"; }
+body() { sed '$d' <<<"$1"; }
+setup_json() { printf '{"code":"%s","username":"admin","password":"%s"}' "$1" "$2"; }   # exactly what the SPA's form sends
+CODE_RE='[0-9A-Z]{5}(-[0-9A-Z]{5}){3}'
+code_in() { local c; c="$(grep -Eo "$CODE_RE" <<<"$1" || true)"; [ -n "$c" ] && [ "$(wc -l <<<"$c")" = 1 ] || die "[$OS] expected exactly one setup code in the output, got: '$c'"; printf '%s' "$c"; }
+# The CA fingerprint setup.sh prints must equal the SHA-256 of Caddy's root certificate computed WITHOUT the product (base64 + sha256sum).
+check_fingerprint() {   # $1=container $2=setup.sh output
+  local want got
+  got="$(grep -Eo '([0-9A-F]{2}:){31}[0-9A-F]{2}' <<<"$2" || true)"
+  want="$(XB "$1" 'sed "/-----/d" /var/lib/aireos/caddy/caddy/pki/authorities/local/root.crt | base64 -d | sha256sum | cut -d" " -f1 | tr a-f A-F | sed "s/../&:/g; s/:\$//"')"
+  [ -n "$got" ] && [ "$got" = "$want" ] || die "[$OS] the printed CA fingerprint ('$got') is not the root certificate's SHA-256 ('$want')"
+  ok "the printed CA fingerprint equals base64+sha256sum of Caddy's root.crt: $got"
+}
+# complete_setup <container> <code> : POST the form the SPA sends; sets CS_OUT (body + status)
+complete_setup() { CS_OUT="$(hx "$1" POST /v1/setup/complete "$(setup_json "$2" "$OPPW")")"; }
+session_cookie() { XB "$1" "grep -ci '^set-cookie: aireos_session=' /var/tmp/hx.hdr || true"; }
+
+# ---- SEC-67: the setup code (and the operator password) never leave the terminal and the browser ----------------------------
+# Scope, stated: the whole journal (every aireos-* unit, aireos-postgres, Caddy and api land there; `-o verbose` includes the
+# _CMDLINE of each entry); EVERY table of the cockpit database (audit_events included); shell-history files; and these file trees,
+# searched binary-safe and case-insensitively: /etc/aireos /var/lib/aireos (the PostgreSQL data files too) /tmp /var/tmp /var/log
+# /root /home. Caddy has no access log (asserted). Needles are the secret as given and without its dashes; they travel as
+# environment, never in a container command line.
+SEC67_SCAN="$(cat <<'EOF'
+g() { grep -qiaF -f <(tr ',' '\n' <<<"$NEEDLES"); }
+dbq() { local u r p h; u=$(sed -n s/^DATABASE_URL=//p /etc/aireos/aireos.env); r=${u#*://}; p=${r#*:}; p=${p%%@*}; h=${r#*@}; h=${h#*:}; h=${h%%/*}
+  PGPASSWORD=$p /opt/aireos/pgsql/bin/psql "host=localhost port=$h dbname=cockpit user=cockpit sslmode=disable" -X -At -c "$1"; }
+db_all() { local t; for t in $(dbq "SELECT format('%I.%I', schemaname, tablename) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')"); do dbq "SELECT x::text FROM $t x"; done; }
+TREES="/etc/aireos /var/lib/aireos /tmp /var/tmp /var/log /root /home"
+case "$1" in
+  scan)
+    journalctl --no-pager -a -o verbose 2>/dev/null | g && echo "HIT journal"
+    db_all | g && echo "HIT database"
+    cat /root/.*history* /home/*/.*history* 2>/dev/null | g && echo "HIT history"
+    for d in $TREES; do
+      [ -z "$(grep -rlaiF -f <(tr ',' '\n' <<<"$NEEDLES") "$d" 2>/dev/null | head -1)" ] || echo "HIT tree:$d"
+    done ;;
+  db_all) db_all ;;
+  plant)
+    printf '%s\n' "$PLANT" | logger -t sec67-control
+    printf '%s\n' "$PLANT" >> /root/.bash_history
+    for d in $TREES; do printf '%s\n' "$PLANT" > "$d/.sec67-plant"; done
+    dbq "CREATE TABLE sec67_plant(t text); INSERT INTO sec67_plant VALUES ('$PLANT')" >/dev/null ;;
+  unplant)
+    for d in $TREES; do rm -f "$d/.sec67-plant"; done
+    dbq "DROP TABLE sec67_plant" >/dev/null; : > /root/.bash_history ;;
+esac
+true
+EOF
+)"
+sec67() {   # <container> <scan|db_all|plant|unplant> [secret...]; $PLANT is what `plant` writes
+  local C="$1" mode="$2" n="" s; shift 2
+  for s in "$@"; do n+="$s,${s//-/},"; done
+  docker exec -i -e NEEDLES="${n%,}" -e PLANT="${PLANT:-}" "$C" bash -s -- "$mode" <<<"$SEC67_SCAN"
+}
+
+# $1=container $2=the setup code that completed setup $3=the operator password
+function TestSEC67SetupCodeNeverLeaks() {
+  local C="$1" code="$2" opw="$3" real planted dump l secret i
+  local -a all=(journal database history tree:/etc/aireos tree:/var/lib/aireos tree:/tmp tree:/var/tmp tree:/var/log tree:/root tree:/home)
+  # Positive controls on the INSTRUMENT: it must be reading the right data, not an empty set.
+  dump="$(sec67 "$C" db_all)"
+  for l in setup.completed setup.code.issued operator:admin; do grep -qF "$l" <<<"$dump" || die "[$OS] SEC-67 INVALID: the database dump has no '$l' - the audit chain is not what is being searched"; done
+  ok "SEC-67 the searched tables hold the setup audit events ($(grep -o 'setup\.[a-z.]*' <<<"$dump" | sort -u | tr '\n' ' ')) and operator:admin - not an empty set"
+  for l in aireos-api aireos-caddy aireos-audit aireos-postgres; do [ "$(XB "$C" "journalctl -u $l --no-pager | wc -l")" -gt 5 ] || die "[$OS] SEC-67 INVALID: the journal has no lines for $l"; done
+  ok "SEC-67 the journal holds lines from api, caddy, audit and postgres"
+  XB "$C" '! grep -Eq "^[[:space:]]*log([[:space:]{]|$)" /etc/aireos/Caddyfile && ! ls /var/log/caddy* >/dev/null 2>&1' || die "[$OS] SEC-67: Caddy has an access log configured - it would have to be searched"
+  ok "SEC-67 Caddy has no access log (no 'log' directive in /etc/aireos/Caddyfile, nothing in /var/log/caddy*); the code travels in a POST body, never a URL"
+  # The real search, on the real data, BEFORE anything is planted.
+  real="$(sec67 "$C" scan "$code" "$opw")"
+  [ -z "$real" ] || die "[$OS] SEC-67 FAILED: the setup code or the operator password was found in: $(tr '\n' ' ' <<<"$real")"
+  ok "SEC-67 CLEAN on the real data: neither the setup code nor the operator password is in any of ${#all[@]} locations (${all[*]})"
+  # Rule 12: the same search, with each secret planted in every location class, must find every one.
+  for secret in "$code" "$opw"; do
+    PLANT="$secret" sec67 "$C" plant
+    for i in 1 2 3 4 5; do planted="$(sec67 "$C" scan "$secret")"; grep -qx 'HIT journal' <<<"$planted" && break; XB "$C" 'journalctl --sync' || true; sleep 1; done
+    for l in "${all[@]}"; do grep -qx "HIT $l" <<<"$planted" || die "[$OS] SEC-67 INVALID: the search is blind to a planted secret in $l (it found: $(tr '\n' ' ' <<<"$planted"))"; done
+    PLANT="$secret" sec67 "$C" unplant
+  done
+  ok "SEC-67 CONTROL: with the setup code planted, and then the password, the same search found all ${#all[@]} locations each time"
+  echo "SEC-67 PROVED os=$OS: the setup code and the operator password are in none of: audit chain + every table, the whole journal (api, caddy, audit, postgres), shell history, 7 bounded trees; the planted control was found in all ${#all[@]}"
+}
+
 function TestSetupShLegC() {
-  local os C C2 pw h1 s0 s1 i
+  local os C C2 pw h1 s0 s1 i code fp r
   for os in "${OSES[@]}"; do
     OS="$os"; C="aireos-later-c-$os"
     start_host "$C" "aireos-later-host-$os"; legc_layout "$C" 1
     docker exec -i "$C" bash -c 'cat >/var/tmp/sampler.sh' <<<"$SAMPLER"; XB "$C" ': >/var/tmp/hex.hits'; docker exec -d "$C" bash /var/tmp/sampler.sh
     docker exec -d "$C" bash -c 'sleep 90' "canary-$CANARY"
     s0="$(XB "$C" "$HSNAP")"
-    log "[$os] leg C: setup.sh unattended from cwd=/ on a FRESH host (core unpacked beside the companion tarball)"
+    log "[$os] leg C: setup.sh from cwd=/ on a FRESH host with NO operator in the environment (core unpacked beside the companion tarball)"
     legc_setup "$C" 'cd / && /root/dl/aireos-offline-*/setup.sh'
     [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -25; die "[$os] legC: setup.sh failed (rc=$LC_RC)"; }
-    echo "$LC_OUT" | tail -4
+    echo "$LC_OUT" | tail -9
     has "legC the last line names the address to open" "$(tail -n1 <<<"$LC_OUT")" "https://localhost/"
     done_line "$LC_OUT" && ok "legC install.sh's DONE line printed (so N-C1's grep for its absence can match)" || die "[$os] legC: no DONE line"
+    code="$(code_in "$LC_OUT")"; ok "legC setup.sh printed exactly one setup code (shape XXXXX-XXXXX-XXXXX-XXXXX)"
+    check_fingerprint "$C" "$LC_OUT"
+    has "legC the block says how long the code lasts and how to get a new one" "$LC_OUT" "works once, for 60 minutes"
+    has "legC the block names --new-setup-code" "$LC_OUT" "setup.sh --new-setup-code"
+    XB "$C" '! grep -q AIREOS_BOOTSTRAP_OPERATOR /etc/aireos/aireos.env' || die "[$os] legC: aireos.env carries an operator - an env operator would win over setup"
+    ok "legC aireos.env carries no operator line (api started in setup mode)"
     s1="$(XB "$C" "$HSNAP")"; [ "$s0" != "$s1" ] || die "[$os] legC (self-test): the host snapshot did not change across an install"
     pw="$(XB "$C" 'cat /etc/aireos/db-password')"
     eq "legC db-password mode/owner" "600 root" "$(XB "$C" 'stat -c "%a %U" /etc/aireos/db-password')"
@@ -253,12 +357,30 @@ function TestSetupShLegC() {
     has "legI9 an unresolvable name warns" "$(warn_probe "$C" no-such-host.invalid)" "does not resolve"
     if XB "$C" 'command -v ip >/dev/null'; then XB "$C" 'ip addr add 10.77.0.5/32 dev lo'; eq "legI9 (ip path) this host's own address is silent" "" "$(warn_probe "$C" 10.77.0.5)"
     else log "[$os] legI9 no 'ip' on this host: the /proc/net/fib_trie fallback ran (the own-address leg needs iproute to add an address)"; fi
-    # ---- re-run (relative path, another cwd): same password bytes, still healthy
+    # ---- the browser path (ADR-0078), through Caddy, as the SPA does
+    r="$(hx "$C" GET /v1/setup)"; eq "legC GET /v1/setup says setup is required" 200 "$(status "$r")"
+    grep -Eq '"setup_?[Rr]equired": *true' <<<"$(body "$r")" || die "[$os] legC: /v1/setup did not say setup is required: $(body "$r")"
+    eq "legC setup mode is total: another route answers 503" 503 "$(status "$(hx "$C" GET /v1/auth/me)")"
+    eq "legC a wrong code is refused" 403 "$(status "$(hx "$C" POST /v1/setup/complete "$(setup_json AAAAA-AAAAA-AAAAA-AAAAA "$OPPW")")")"
+    complete_setup "$C" "$code"; eq "legC POST /v1/setup/complete (JSON, the printed code) creates the operator" 200 "$(status "$CS_OUT")"
+    eq "legC ... and sets the session cookie" 1 "$(session_cookie "$C")"
+    r="$(hx "$C" POST /v1/auth/login "{\"username\":\"admin\",\"password\":\"$OPPW\"}")"; eq "legC login with the password chosen in setup" 200 "$(status "$r")"
+    r="$(hx "$C" GET /v1/setup)"; eq "legC after setup GET /v1/setup is an unknown route" 404 "$(status "$r")"
+    eq "legC ... byte-identical to a route that never existed" "$(body "$(hx "$C" GET /v1/no-such-route)")" "$(body "$r")"
+    eq "legC the used code is dead (replay)" 404 "$(status "$(hx "$C" POST /v1/setup/complete "$(setup_json "$code" "$OPPW")")")"
+    legc_setup "$C" '/root/dl/aireos-offline-*/setup.sh --new-setup-code'
+    [ "$LC_RC" != 0 ] || die "[$os] legC: --new-setup-code succeeded after setup completed"
+    has "legC --new-setup-code refuses once an operator exists" "$LC_OUT" "Setup is already complete"
+    ! grep -Eq "$CODE_RE" <<<"$LC_OUT" || die "[$os] legC: the refused --new-setup-code printed a code"
+    # ---- re-run (relative path, another cwd): same password bytes, still healthy, no new code, the operator survives the restart
     h1="$(XB "$C" 'sha256sum </etc/aireos/db-password')"
     legc_setup "$C" 'cd /root/dl && ./aireos-offline-*/setup.sh'
     [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -25; die "[$os] legC: the re-run failed (rc=$LC_RC)"; }
     eq "legC re-run: db-password bytes unchanged" "$h1" "$(XB "$C" 'sha256sum </etc/aireos/db-password')"
+    ! grep -Eq "$CODE_RE" <<<"$LC_OUT" || die "[$os] legC: the re-run after setup printed a setup code"
+    has "legC re-run after setup ends with the plain address line" "$(tail -n1 <<<"$LC_OUT")" "Open https://localhost/ in your browser to continue"
     stack_ok "$C" "$UNITS"; db_ok "$C" re-run
+    eq "legC the operator chosen in the browser still logs in after the re-run restarted every unit" 200 "$(status "$(hx "$C" POST /v1/auth/login "{\"username\":\"admin\",\"password\":\"$OPPW\"}")")"
     # ---- the password never reached a command line or the shell history (sampler: any 64-hex token in /proc/*/cmdline)
     for i in $(seq 1 20); do XB "$C" "grep -qF $CANARY /var/tmp/hex.hits" && break; sleep 1; done
     XB "$C" 'touch /var/tmp/sampler.stop'; sleep 4
@@ -267,13 +389,14 @@ function TestSetupShLegC() {
     ! pw_in "$C" /var/tmp/hex.hits || die "[$os] legC: the password appeared in a /proc cmdline"
     ! pw_in "$C" /root/.bash_history || die "[$os] legC: the password is in the shell history"
     ok "legC password in no /proc/*/cmdline ($(XB "$C" 'cat /var/tmp/sweeps') sweeps over setup + re-run; planted canary seen) and not in the shell history; by code path it only ever moves as environment"
+    TestSEC67SetupCodeNeverLeaks "$C" "$code" "$OPPW"   # SEC-67: on this host, whose setup was completed by the browser path
     # ---- N-C1: INS-10 - a unit that cannot start fails the install, named, and never prints DONE
     XB "$C" 'mkdir -p /etc/systemd/system/aireos-api.service.d && printf "[Service]\nExecStart=\nExecStart=/bin/false\n" >/etc/systemd/system/aireos-api.service.d/bad.conf'
     legc_setup "$C" 'cd /root/dl && ./aireos-offline-*/setup.sh'
     [ "$LC_RC" != 0 ] || { echo "$LC_OUT" | tail -8; die "N-C1 INVALID: setup.sh succeeded with aireos-api unable to start"; }
     has "N-C1 names the failed unit" "$LC_OUT" "aireos-api.service is not staying active"
     has "N-C1 says where to look" "$LC_OUT" "journalctl -u aireos-api"
-    ! done_line "$LC_OUT" && ! grep -qF 'Setup is complete' <<<"$LC_OUT" || die "N-C1: DONE / the open-this-address line was printed despite a dead unit"
+    ! done_line "$LC_OUT" && ! grep -qF 'Setup is complete' <<<"$LC_OUT" && ! grep -qF 'in your browser' <<<"$LC_OUT" || die "N-C1: DONE / the open-this-address line was printed despite a dead unit"
     log "NEG-OK N-C1/$os (INS-10): rc=$LC_RC, named aireos-api.service, no DONE, no 'Setup is complete'"
     docker rm -f "$C" >/dev/null
     # ---- N-C2: the companion tarball is missing -> refused, naming the file, nothing changed
@@ -282,6 +405,11 @@ function TestSetupShLegC() {
     [ "$LC_RC" != 0 ] || die "N-C2 INVALID: setup.sh succeeded without the companion tarball"
     has "N-C2 names the exact expected file" "$LC_OUT" "/root/dl/aireos-postgres-$os.tar.gz"
     [ "$s0" = "$(XB "$C2" "$HSNAP")" ] || die "N-C2: the host changed during a refused setup"; ok "N-C2 nothing changed on the host (snapshot of /etc /opt /var/lib /usr/local /root identical)"
+    # ---- N-C2b: --new-setup-code on a host with nothing installed is refused, plainly, and changes nothing
+    legc_setup "$C2" '/root/dl/aireos-offline-*/setup.sh --new-setup-code'
+    [ "$LC_RC" != 0 ] || die "N-C2b INVALID: --new-setup-code succeeded on a host with nothing installed"
+    has "N-C2b says AI ReOS is not installed" "$LC_OUT" "is not installed on this host"
+    [ "$s0" = "$(XB "$C2" "$HSNAP")" ] || die "N-C2b: the host changed during a refused --new-setup-code"; ok "N-C2b nothing changed on the host"
     XB "$C2" '[ ! -e /etc/aireos ] && [ ! -e /opt/aireos ] && ! getent passwd aireos aireos-pg >/dev/null' || die "N-C2: aireos state exists after the refusal"
     log "NEG-OK N-C2/$os: refused rc=$LC_RC naming /root/dl/aireos-postgres-$os.tar.gz; host byte-identical"
     docker rm -f "$C2" >/dev/null
@@ -302,7 +430,7 @@ EOF
   docker exec -u postgres "$C" psql -v ON_ERROR_STOP=1 -q -d cockpit -c "CREATE TABLE v016(x int); INSERT INTO v016 VALUES (16)" >/dev/null
   dsum() { docker exec -u postgres "$C" psql -d cockpit -At -c 'SELECT sum(x) FROM v016'; }
   log "[ubuntu2404] N-C3: model an existing install - install.sh against the distro PostgreSQL on 5432 (aireos.env gets its URL)"
-  docker exec "${SETUP_ENV[@]}" -e AIREOS_DB_URL="$url" "$C" bash -c 'cd /root/dl/aireos-offline-*/ && ./install.sh' >/dev/null 2>&1 || die "N-C3: could not model the existing install"
+  docker exec "${SETUP_ENV_OP[@]}" -e AIREOS_DB_URL="$url" "$C" bash -c 'cd /root/dl/aireos-offline-*/ && ./install.sh' >/dev/null 2>&1 || die "N-C3: could not model the existing install"
   u0="$(XB "$C" 'sed -n s/^DATABASE_URL=//p /etc/aireos/aireos.env')"; d0="$(XB "$C" 'ls -l /var/lib/postgresql/16/main/PG_VERSION | wc -l')"
   eq "N-C3 the modelled install points at the distro PostgreSQL" "$url" "$u0"
   legc_setup "$C" 'cd / && /root/dl/aireos-offline-*/setup.sh'
@@ -316,7 +444,35 @@ EOF
   eq "N-C3 the distro cockpit data is intact" 16 "$(dsum)"
   eq "N-C3 the distro data dir is untouched (PG_VERSION present)" "$d0" "$(XB "$C" 'ls -l /var/lib/postgresql/16/main/PG_VERSION | wc -l')"
   stack_ok "$C" "$UNITS7"
+  # The operator is NOT made in the browser here (T-175c, ADR-0078 §D4/INS-6): the existing install's persisted operator is kept with
+  # no prompt and no code, and an operator supplied in the environment still works through setup.sh.
+  ! grep -Eq "$CODE_RE" <<<"$LC_OUT" || die "N-C3: setup.sh printed a setup code although the install already has an operator"
+  eq "N-C3 setup mode is never entered (the persisted operator wins): GET /v1/setup is an unknown route" 404 "$(status "$(hx "$C" GET /v1/setup)")"
+  eq "N-C3 the persisted operator logs in" 200 "$(status "$(hx "$C" POST /v1/auth/login "{\"username\":\"admin\",\"password\":\"$OPPW\"}")")"
+  LC_OUT="$(docker exec "${SETUP_ENV_OP[@]}" "$C" bash -c 'cd / && /root/dl/aireos-offline-*/setup.sh' 2>&1)" && LC_RC=0 || LC_RC=$?
+  [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -20; die "N-C3: the unattended env-operator setup.sh failed (rc=$LC_RC)"; }
+  ! grep -Eq "$CODE_RE" <<<"$LC_OUT" || die "N-C3: the env-operator run printed a setup code"
+  has "N-C3 the env-operator run ends with the plain address line" "$(tail -n1 <<<"$LC_OUT")" "Open https://localhost/ in your browser to continue"
+  eq "N-C3 the env operator logs in after the unattended run" 200 "$(status "$(hx "$C" POST /v1/auth/login "{\"username\":\"admin\",\"password\":\"$OPPW\"}")")"
   echo "LATER-HOST-TEST PASS os=ubuntu2404 N-C3 (existing install reused its distro PostgreSQL; no companion; cluster and data untouched; healthy)"
+  docker rm -f "$C" >/dev/null
+}
+
+# ADR-0078 D1: --new-setup-code issues a fresh code and the previous one stops working (ubuntu2404; a fresh browser-path host)
+function TestSetupCodeReissue() {
+  OS=ubuntu2404; local C=aireos-later-c4 old new
+  start_host "$C" aireos-later-host-ubuntu2404; legc_layout "$C" 1
+  legc_setup "$C" 'cd / && /root/dl/aireos-offline-*/setup.sh'; [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -20; die "reissue: setup.sh failed (rc=$LC_RC)"; }
+  old="$(code_in "$LC_OUT")"
+  legc_setup "$C" '/root/dl/aireos-offline-*/setup.sh --new-setup-code'; [ "$LC_RC" = 0 ] || { echo "$LC_OUT" | tail -20; die "reissue: --new-setup-code failed (rc=$LC_RC)"; }
+  new="$(code_in "$LC_OUT")"; [ "$new" != "$old" ] || die "reissue: --new-setup-code printed the SAME code"
+  check_fingerprint "$C" "$LC_OUT"
+  has "reissue: --new-setup-code ends with the address to open" "$(tail -n1 <<<"$LC_OUT")" "https://localhost/"
+  complete_setup "$C" "$old"; eq "reissue: the OLD code is refused" 403 "$(status "$CS_OUT")"
+  eq "reissue: ... also typed in lower case without dashes (how a person might)" 403 "$(status "$(hx "$C" POST /v1/setup/complete "$(setup_json "$(tr 'A-Z' 'a-z' <<<"${old//-/}")" "$OPPW")")")"
+  complete_setup "$C" "$new"; eq "reissue: the NEW code completes setup" 200 "$(status "$CS_OUT")"
+  eq "reissue: ... and sets the session cookie" 1 "$(session_cookie "$C")"
+  echo "LATER-HOST-TEST PASS os=ubuntu2404 reissue (--new-setup-code: old code refused, new code works)"
   docker rm -f "$C" >/dev/null
 }
 
@@ -430,10 +586,18 @@ E: Unable to locate package postgresql-16')" ] || die "SEC-63 INVALID: the skew 
   docker rm -f "$C" >/dev/null
 }
 
+# Iteration aids ONLY (the gate runs everything, with freshly built hosts): LHT_ONLY="TestSetupShLegC ..." runs just those
+# tests; LHT_REUSE_HOSTS=1 skips rebuilding the later-host images. The tests that need ubuntu2404 are skipped, loudly, without it.
+only() { [ -z "${LHT_ONLY:-}" ] || [[ " $LHT_ONLY " == *" $1 "* ]]; }
+has2404() { printf '%s\n' "${OSES[@]}" | grep -qx ubuntu2404; }
 check_artifacts
-for os in "${OSES[@]}"; do lock_get "LATEST_$os" >/dev/null; lock_get "IMAGE_$os" >/dev/null; build_host "$os"; done
-TestINS1LaterHost
-TestSetupShLegC
-if printf '%s\n' "${OSES[@]}" | grep -qx ubuntu2404; then TestSetupShExistingInstall; else echo "N-C3 NOT RUN (ubuntu2404 not in this run's OS set)"; fi
-if printf '%s\n' "${OSES[@]}" | grep -qx ubuntu2404; then TestSEC63OldCompanionFailsOnLaterHost; else echo "SEC-63 NOT RUN (ubuntu2404 not in this run's OS set)"; fi
+for os in "${OSES[@]}"; do
+  lock_get "LATEST_$os" >/dev/null; lock_get "IMAGE_$os" >/dev/null
+  if [ "${LHT_REUSE_HOSTS:-0}" = 1 ]; then log "[$os] LHT_REUSE_HOSTS=1: reusing the existing later-host image (NOT a gate run)"; else build_host "$os"; fi
+done
+if only TestINS1LaterHost; then TestINS1LaterHost; fi
+if only TestSetupShLegC; then TestSetupShLegC; fi
+if only TestSetupShExistingInstall; then if has2404; then TestSetupShExistingInstall; else echo "N-C3 NOT RUN (ubuntu2404 not in this run's OS set)"; fi; fi
+if only TestSetupCodeReissue; then if has2404; then TestSetupCodeReissue; else echo "reissue NOT RUN (ubuntu2404 not in this run's OS set)"; fi; fi
+if only TestSEC63OldCompanionFailsOnLaterHost; then if has2404; then TestSEC63OldCompanionFailsOnLaterHost; else echo "SEC-63 NOT RUN (ubuntu2404 not in this run's OS set)"; fi; fi
 log "done (${OSES[*]})"

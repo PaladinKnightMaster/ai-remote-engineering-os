@@ -22,6 +22,11 @@
 #   AIREOS_DB_URL                       postgres connection string (required)
 #   AIREOS_BOOTSTRAP_OPERATOR_USER      operator username
 #   AIREOS_BOOTSTRAP_OPERATOR_PASSWORD  operator password (argon2id-hashed here)
+#                                        The operator, in this order (ADR-0078 §D4): any of the three above
+#                                        set -> used; else aireos.env already holds one -> kept, nothing asked
+#                                        (a re-run); else AIREOS_OPERATOR_SETUP=browser (set by setup.sh) ->
+#                                        none written, the first operator is made in the browser with a setup
+#                                        code; else (a bare install.sh) the prompts.
 #   AIREOS_SITE_ADDRESS                 Caddy site address (default: localhost)
 #   AIREOS_DEPLOYMENT_PROFILE           lan-only | vpn-first | dmz-first (required,
 #                                        never defaulted — ADR-0068 §D1/OI-21). Persisted
@@ -157,6 +162,22 @@ aireos_resolve_pairing_enabled() {
   else
     printf '%s' "0"
   fi
+}
+
+# aireos_resolve_operator_mode <env-user> <env-hash> <env-password> <persisted-user> <persisted-hash> <setup-signal>
+# — which of the four ways the operator comes about (ADR-0078 §D4, T-175c); pure, no I/O. Prints one of:
+#   env        any AIREOS_BOOTSTRAP_OPERATOR_* is set: as always; anything it leaves out is prompted for
+#   persisted  aireos.env already carries the user AND the hash: keep them, ask nothing (a re-run / upgrade)
+#   browser    <setup-signal> is "browser" (setup.sh sets it): write NO operator, api starts in setup mode
+#   prompt     a bare install.sh: ask at the terminal, as before (ADR-0078 alternative 1)
+# The environment wins over what is persisted (that is how a lost password is recovered); a half-persisted pair
+# is not an operator.
+aireos_resolve_operator_mode() {
+  local env_user="$1" env_hash="$2" env_pw="$3" p_user="$4" p_hash="$5" signal="$6"
+  if [ -n "$env_user$env_hash$env_pw" ]; then printf env
+  elif [ -n "$p_user" ] && [ -n "$p_hash" ]; then printf persisted
+  elif [ "$signal" = browser ]; then printf browser
+  else printf prompt; fi
 }
 
 # aireos_assert_profile <profile> <site> — die() (never silently default) if
@@ -525,16 +546,28 @@ fi
 [ -n "$AUDIT_SK" ] && [ -n "$AUDIT_PK" ] || die "audit chain-head key generation failed"
 [ "$AUDIT_SK" != "$GW_SK" ] && [ "$AUDIT_SK" != "$API_AGENT_SK" ] || die "audit chain-head sign key must differ from the other per-workload keys (ADR-0060 authority separation)"
 
-# --- 4. operator credentials (prompt default, env override; OQ-4) -----------
+# --- 4. operator credentials (env > persisted > browser setup > prompt; OQ-4, ADR-0078 §D4) ----------------
 OP_USER="${AIREOS_BOOTSTRAP_OPERATOR_USER:-}"
 OP_HASH="${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH:-}"
-if [ -z "$OP_HASH" ]; then
-  [ -n "$OP_USER" ] || read -e -r -p "Operator username: " OP_USER
-  OP_PW="${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD:-}"
-  if [ -z "$OP_PW" ]; then read -r -s -p "Operator password: " OP_PW; echo; fi
-  [ -n "$OP_USER" ] && [ -n "$OP_PW" ] || die "operator username + password are required"
-  OP_HASH="$("$PREFIX/bin/authctl" hash "$OP_PW")"
-fi
+P_OP_USER="$(aireos_persisted_value AIREOS_BOOTSTRAP_OPERATOR_USER "$ENV_FILE")"
+P_OP_HASH="$(aireos_persisted_value AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH "$ENV_FILE")"
+OP_MODE="$(aireos_resolve_operator_mode "$OP_USER" "$OP_HASH" "${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD:-}" "$P_OP_USER" "$P_OP_HASH" "${AIREOS_OPERATOR_SETUP:-}")"
+case "$OP_MODE" in
+  persisted)   # a re-run keeps the operator the last run wrote (like the site address): no prompt, nothing to type
+    OP_USER="$P_OP_USER"; OP_HASH="$P_OP_HASH"
+    log "operator: keeping the account already in $ENV_FILE" ;;
+  browser)     # setup.sh: no operator lines at all, so api starts in setup mode and the first operator is made in the browser
+    OP_USER=""; OP_HASH=""
+    log "operator: none yet; the first one is created in the browser with a setup code (ADR-0078)" ;;
+  *)
+    if [ -z "$OP_HASH" ]; then
+      [ -n "$OP_USER" ] || read -e -r -p "Operator username: " OP_USER
+      OP_PW="${AIREOS_BOOTSTRAP_OPERATOR_PASSWORD:-}"
+      if [ -z "$OP_PW" ]; then read -r -s -p "Operator password: " OP_PW; echo; fi
+      [ -n "$OP_USER" ] && [ -n "$OP_PW" ] || die "operator username + password are required"
+      OP_HASH="$("$PREFIX/bin/authctl" hash "$OP_PW")"
+    fi ;;
+esac
 
 # --- 5. DB connection string ------------------------------------------------
 DB_URL="${AIREOS_DB_URL:-}"   # shape already verified in step 1a' when env-supplied
@@ -569,8 +602,6 @@ AIREOS_AUDIT_URL=http://127.0.0.1:8081
 AIREOS_SITE_ADDRESS=$SITE_ADDRESS
 AIREOS_DEPLOYMENT_PROFILE=$DEPLOYMENT_PROFILE
 AIREOS_PAIRING_ENABLED=$PAIRING_ENABLED
-AIREOS_BOOTSTRAP_OPERATOR_USER=$OP_USER
-AIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH=$OP_HASH
 API_ADDR=127.0.0.1:8080
 AUDIT_ADDR=127.0.0.1:8081
 BROKER_ADDR=127.0.0.1:8082
@@ -582,6 +613,8 @@ POLICY_URL=http://127.0.0.1:8084
 BROKER_URL=http://127.0.0.1:8082
 GATEWAY_URL=http://127.0.0.1:8085
 EOF
+  # No operator lines in browser mode: an operator in the environment would always win over setup (ADR-0078 §D4).
+  [ -z "$OP_HASH" ] || printf 'AIREOS_BOOTSTRAP_OPERATOR_USER=%s\nAIREOS_BOOTSTRAP_OPERATOR_PASSWORD_HASH=%s\n' "$OP_USER" "$OP_HASH" >> "$ENV_FILE"
 )
 chown "$SVC_USER:$SVC_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
 log "write $CONNECTOR_ENV (sole holder of AIREOS_RESOURCE_SECRET_KEY)"
