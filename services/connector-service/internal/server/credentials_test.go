@@ -86,3 +86,29 @@ func TestGenerationInputValidation(t *testing.T) {
 		t.Errorf("unconfigured key = %d, want 503", got)
 	}
 }
+
+// T-176c1: the 4096-byte body cap on the two body-reading routes. A well-formed
+// body padded past the cap must be refused (400) BEFORE any DB access (Pool is nil
+// here, so an uncapped read would reach the store and crash, not answer 400).
+func TestGenerationBodiesAreCapped(t *testing.T) {
+	cfg := Config{Verifier: apiVerifier{}, SecretKey: "k"}
+	pad := strings.Repeat("a", 5000)
+	gen := `{"rotate":false,"operator_subject":"operator:admin","pad":"` + pad + `"}`
+	bind := `{"resource_id":"` + someID + `","operator_subject":"operator:admin","pad":"` + pad + `"}`
+	if got := status(t, cfg, "tok", "POST", "/v1/credentials/"+someID+"/generate", gen); got != http.StatusBadRequest {
+		t.Errorf("oversized generate body = %d, want 400", got)
+	}
+	if got := status(t, cfg, "tok", "POST", "/v1/credentials/pending/loopback-demo/bind", bind); got != http.StatusBadRequest {
+		t.Errorf("oversized bind body = %d, want 400", got)
+	}
+}
+
+// T-176c1: every new route sits behind the service-service token check: no token
+// is 401 (not the 403 of a wrong subject, and never a handler answer).
+func TestGenerationRoutesNeedAToken(t *testing.T) {
+	for _, rt := range credRoutes {
+		if got := status(t, Config{Verifier: apiVerifier{}, SecretKey: "k"}, "", rt.method, rt.path, rt.body); got != http.StatusUnauthorized {
+			t.Errorf("%s %s without a token = %d, want 401", rt.method, rt.path, got)
+		}
+	}
+}

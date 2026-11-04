@@ -164,3 +164,15 @@ func TestAuthorizedKeysOptionsMatchTheInstallScript(t *testing.T) {
 		t.Fatalf("script RESTRICT_OPTS = %q, Go = %q", m, authorizedKeysOptions)
 	}
 }
+
+// T-176c1: a connector 404 on GET .../public (an imported key, or none recorded) is
+// api's own 404 with its fixed sentence, not a 502 and not the connector's body.
+func TestCredentialReadMapsConnector404(t *testing.T) {
+	key, _ := auth.GenerateKey()
+	s := newStub(t, 404, "connector says: not found")
+	h, _ := credHandler(t, s, key)
+	rec := req(t, h, http.MethodGet, credURL, "", true)
+	if rec.Code != 404 || !strings.Contains(rec.Body.String(), "no public key is recorded") || strings.Contains(rec.Body.String(), "connector says") {
+		t.Errorf("connector 404 on GET public: %d %s, want api's own 404", rec.Code, rec.Body)
+	}
+}
