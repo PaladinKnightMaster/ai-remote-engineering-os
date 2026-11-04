@@ -24,7 +24,15 @@ const DISMISSED_KEY = "aireos.onboarding.dismissed";
 // special-cased "mark done", the same derived-state read T-118a already uses.
 // deleteRefusal, when set, simulates the store's 409 in-use refusal (T-118c)
 // instead of letting the DELETE succeed — the resource stays `created`.
-function mockClient(opts: { resourceExists?: boolean; actionCompleted?: boolean; deleteRefusal?: boolean }) {
+// unbound: the demo resource has no stored key (GET .../credential -> 404); default is a bound, generated key (200).
+// demoTarget: how POST /v1/demo-target answers (default 201, which also makes the resource appear).
+function mockClient(opts: {
+  resourceExists?: boolean;
+  actionCompleted?: boolean;
+  deleteRefusal?: boolean;
+  unbound?: boolean;
+  demoTarget?: { status: number; message?: string };
+}) {
   let created = opts.resourceExists ?? false;
   vi.mocked(apiClient.GET).mockImplementation(((path: string) => {
     if (path === "/v1/resources") {
@@ -44,9 +52,32 @@ function mockClient(opts: { resourceExists?: boolean; actionCompleted?: boolean;
         error: undefined,
       });
     }
+    if (path === "/v1/resources/{id}/credential") {
+      return Promise.resolve(
+        opts.unbound
+          ? { data: undefined, error: { message: "no public key is recorded for this resource" }, response: { status: 404 } }
+          : {
+              data: { publicKey: "ssh-ed25519 AAAA", fingerprint: "SHA256:x", authorizedKeysLine: "restrict ssh-ed25519 AAAA" },
+              error: undefined,
+              response: { status: 200 },
+            },
+      );
+    }
     throw new Error(`unexpected GET ${path}`);
   }) as never);
   vi.mocked(apiClient.POST).mockImplementation(((path: string, init: { body: Record<string, unknown> }) => {
+    if (path === "/v1/demo-target") {
+      const d = opts.demoTarget ?? { status: 201 };
+      if (d.status === 201) {
+        created = true;
+        return Promise.resolve({ data: { id: "r1", type: "ssh", name: "loopback-demo" }, error: undefined, response: { status: 201 } });
+      }
+      return Promise.resolve({
+        data: undefined,
+        error: d.message === undefined ? {} : { message: d.message },
+        response: { status: d.status },
+      });
+    }
     if (path === "/v1/resources") {
       created = true;
       return Promise.resolve({
@@ -182,18 +213,22 @@ describe("OnboardingChecklist — T-118b loopback demo target create action", ()
     expect(screen.queryByRole("button", { name: "Create loopback demo target" })).toBeNull();
   });
 
-  it("tells the operator which host script prints the username and host key, before the demo resource exists (PUB-6 P10)", async () => {
+  it("tells the operator which host script prints the username and host key, on the script path before the demo resource exists (PUB-6 P10)", async () => {
     mockClient({ resourceExists: false, actionCompleted: false });
     renderChecklist();
 
+    // The default path shows no server command at all (FRX-5); only the script-path fallback does.
+    await screen.findByRole("button", { name: "Create loopback demo target" });
+    expect(screen.queryByText(/setup-loopback-demo.sh generate/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use the script path instead" }));
     const cmd = await screen.findByText("sudo ./setup-loopback-demo.sh generate --account aireos-demo");
     expect(cmd.tagName).toBe("CODE");
     expect(cmd.parentElement?.textContent).toMatch(/directory the bundle was unpacked into/);
     expect(cmd.parentElement?.textContent).toMatch(/prints both/);
   });
 
-  it("renders the demo resource id and the exact bind command once it exists and no action has completed (PUB-6 P12)", async () => {
-    mockClient({ resourceExists: true, actionCompleted: false });
+  it("renders the demo resource id and the exact bind command once it exists WITHOUT a stored key and no action has completed (PUB-6 P12)", async () => {
+    mockClient({ resourceExists: true, actionCompleted: false, unbound: true });
     renderChecklist();
 
     const group = await screen.findByRole("group", { name: "bind the demo credential" });
@@ -203,6 +238,16 @@ describe("OnboardingChecklist — T-118b loopback demo target create action", ()
     expect(screen.getByText("r1").tagName).toBe("CODE");
     // And the existing next-step hint still follows it.
     expect(screen.getByRole("link", { name: "Runs" })).toBeTruthy();
+  });
+
+  it("does not tell the operator to bind once the key is already bound (the one-click path binds server-side)", async () => {
+    mockClient({ resourceExists: true, actionCompleted: false });
+    renderChecklist();
+
+    await waitFor(() => expect(apiClient.GET).toHaveBeenCalledWith("/v1/resources/{id}/credential", expect.anything()));
+    await waitFor(() => expect(screen.getByRole("link", { name: "Runs" })).toBeTruthy());
+    expect(screen.queryByRole("group", { name: "bind the demo credential" })).toBeNull();
+    expect(screen.queryByText(/setup-loopback-demo.sh/)).toBeNull();
   });
 
   it("shows neither the generate instruction nor the bind block when they do not apply", async () => {
@@ -225,8 +270,8 @@ describe("OnboardingChecklist — T-118b loopback demo target create action", ()
     mockClient({ resourceExists: false, actionCompleted: false });
     renderChecklist();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Create loopback demo target" }));
-    fireEvent.change(screen.getByLabelText("username"), { target: { value: "aireos-demo" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Use the script path instead" }));
+    fireEvent.change(await screen.findByLabelText("username"), { target: { value: "aireos-demo" } });
     fireEvent.change(screen.getByLabelText("ssh host key"), {
       target: { value: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDBW1UcckoHRnBiFg8uDK8QWN0hpPHzWKFGhwim2P5Cr aireos-loopback-demo" },
     });
@@ -261,6 +306,57 @@ describe("OnboardingChecklist — T-118b loopback demo target create action", ()
     // not a special case — the create action never sets a "done" flag itself.
     await waitFor(() => expect(screen.getByText("Register a resource").previousSibling?.textContent).toBe("✓"));
     expect(screen.queryByRole("form", { name: "create loopback demo target" })).toBeNull();
+  });
+});
+
+describe("OnboardingChecklist — T-176d no-paste demo button (FRX-5, ADR-0079 D4)", () => {
+  it("creates the demo target with ONE click, no fields and no body, and flips the checklist", async () => {
+    mockClient({ resourceExists: false, actionCompleted: false });
+    renderChecklist();
+
+    expect(screen.queryByLabelText("username")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Create loopback demo target" }));
+
+    await waitFor(() => expect(apiClient.POST).toHaveBeenCalledWith("/v1/demo-target", {}));
+    expect(vi.mocked(apiClient.POST).mock.calls.some((c) => c[0] === "/v1/resources")).toBe(false);
+    await waitFor(() => expect(screen.getByText("Register a resource").previousSibling?.textContent).toBe("✓"));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("409 (not prepared): one plain sentence naming both ways forward, and the button stays", async () => {
+    mockClient({ resourceExists: false, actionCompleted: false, demoTarget: { status: 409, message: "server text" } });
+    renderChecklist();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create loopback demo target" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/sudo \.\/setup\.sh/);
+    expect(alert.textContent).toMatch(/answer yes to the demo/);
+    expect(alert.textContent).toMatch(/setup-loopback-demo\.sh/);
+    expect(screen.getByRole("button", { name: "Create loopback demo target" })).toBeTruthy();
+    expect(screen.getByText("Register a resource").previousSibling?.textContent).toBe("○");
+  });
+
+  it.each([
+    [500, "the demo target was created but could not be bound; remove the resource r9 in the cockpit"],
+    [502, "connector-service is unavailable or answered unusably"],
+    [503, "demo target creation is not configured: CONNECTOR_URL is not set"],
+  ])("%i shows the server's own message after a fixed prefix, inventing nothing", async (status, message) => {
+    mockClient({ resourceExists: false, actionCompleted: false, demoTarget: { status, message } });
+    renderChecklist();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create loopback demo target" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(`Could not create the demo target: ${message}`);
+  });
+
+  it("a failure with no message still says what failed and its status", async () => {
+    mockClient({ resourceExists: false, actionCompleted: false, demoTarget: { status: 502 } });
+    renderChecklist();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create loopback demo target" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not create the demo target (status 502).");
   });
 });
 

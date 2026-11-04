@@ -11,6 +11,12 @@
 // resources, launch Runs, or take almost anything else this panel points at,
 // so it must never see the panel (ADR-0068 §D5).
 //
+// T-176d (ADR-0079 D4, FRX-5): the default way to get a demo target is ONE button with NO fields — "Create loopback demo
+// target" calls POST /v1/demo-target, which reads the key and account that setup.sh prepared and binds them server-side. The
+// older flow (run a script on the server, paste its username and host key here, run a bind command) survives ONLY as the
+// "script path" fallback behind a plain button, because operators who declined the demo at setup.sh have no other way to
+// create the resource for setup-loopback-demo.sh (FRX-6 keeps that script supported). It is not on the default path.
+//
 // ONB-1: completion is DERIVED from live state on every mount — never cached,
 // never a stored flag/column. Two conditions, not the three ADR-0068 §D8
 // names:
@@ -125,6 +131,28 @@ function useDerivedOnboardingState(): DerivedState {
   return { resourceExists, actionCompleted, demoResourceId, loading, refresh };
 }
 
+// Is the demo resource still WITHOUT a stored key? The one-click button binds server-side, so the bind command only matters
+// after the script path's manual form. GET /v1/resources/{id}/credential answers 404 when there is nothing to show (no key —
+// or an imported one, which also has no public half; the API does not tell them apart), 200 once a generated key is bound.
+function useDemoUnbound(resourceId: string | null): boolean {
+  const [unbound, setUnbound] = useState(false);
+  useEffect(() => {
+    if (!resourceId) {
+      setUnbound(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const { response } = await apiClient.GET("/v1/resources/{id}/credential", { params: { path: { id: resourceId } } });
+      if (!cancelled) setUnbound(response?.status === 404);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [resourceId]);
+  return unbound;
+}
+
 function ChecklistItem({ done, children }: { done: boolean; children: ReactNode }) {
   return (
     <li className="flex items-center gap-2 text-sm">
@@ -144,7 +172,7 @@ const LOOPBACK_HOST = "127.0.0.1";
 const LOOPBACK_PORT = "22";
 
 // The single source of truth for the demo resource's `name` field — used both
-// to CREATE it (CreateLoopbackDemoTarget's POST body) and to FIND it again
+// to CREATE it (ManualDemoTargetForm's POST body) and to FIND it again
 // (useDerivedOnboardingState's lookup, T-118c's Remove action target). Before
 // T-118c review caught it, these were two independent string literals: diverge
 // them and the create still succeeds but the Remove action never appears,
@@ -157,14 +185,54 @@ const LOOPBACK_PORT = "22";
 // side for this constant to stay in sync with.
 const DEMO_RESOURCE_NAME = "loopback-demo";
 
-// The two host-side commands the operator runs from the directory the offline
-// bundle was unpacked into (PUB-6 P10/P12: the cockpit never mentioned the
-// script, and no screen rendered the resource id its bind step needs). Creating
-// the unix account first is a quickstart step, not repeated here.
+// The script-path commands (the fallback only; see the T-176d note at the top). Creating the unix account first is a
+// quickstart step, not repeated here.
 const GENERATE_COMMAND = "sudo ./setup-loopback-demo.sh generate --account aireos-demo";
 const bindCommand = (resourceId: string) => `sudo ./setup-loopback-demo.sh bind --resource-id ${resourceId}`;
 
-// CreateLoopbackDemoTarget — the first UI call site for POST /v1/resources
+// What the operator is told when POST /v1/demo-target answers 409 (the demo was not prepared at install time). The server
+// sends its own message too; this one is the cockpit's plain sentence naming the two ways forward.
+const DEMO_NOT_PREPARED =
+  "The demo target was not prepared when this server was installed. Re-run sudo ./setup.sh and answer yes to the demo, or use the script path (setup-loopback-demo.sh) below.";
+
+// CreateDemoTargetButton — the no-paste demo target (T-176d; ADR-0079 D4, FRX-5). Statuses are POST /v1/demo-target's own:
+// 201 created, 409 not prepared, 500 (the message names a leftover resource), 502/503 (connector unavailable or unconfigured).
+// Non-409 failures show the SERVER's message verbatim after a fixed prefix; nothing is invented on its behalf.
+function CreateDemoTargetButton({ onCreated }: { onCreated: () => void }) {
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onCreate() {
+    setCreating(true);
+    setError(null);
+    try {
+      const { error: apiErr, response } = await apiClient.POST("/v1/demo-target", {});
+      if (apiErr) {
+        if (response?.status === 409) setError(DEMO_NOT_PREPARED);
+        else setError(apiErr.message ? `Could not create the demo target: ${apiErr.message}` : `Could not create the demo target (status ${response?.status ?? "unknown"}).`);
+        return;
+      }
+      onCreated();
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 space-y-1">
+      <Button variant="primary" size="xs" type="button" onClick={() => void onCreate()} disabled={creating}>
+        {creating ? "Creating…" : "Create loopback demo target"}
+      </Button>
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ManualDemoTargetForm (was CreateLoopbackDemoTarget; now the script-path fallback) — the first UI call site for POST /v1/resources
 // (T-118b; ADR-0068 §D8/§D11, ONB-3/ONB-4). Deliberately a narrow demo-target
 // creator, not a general resource-management form: it collects exactly the
 // two values the setup script prints that the cockpit cannot already know
@@ -181,10 +249,9 @@ const bindCommand = (resourceId: string) => `sudo ./setup-loopback-demo.sh bind 
 // defeating ONB-3, so it is collected as a fourth field here alongside
 // host/port/username; setup-loopback-demo.sh's `generate` prints it for
 // exactly this reason. See the ticket report for this called out explicitly.
-function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
+function ManualDemoTargetForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
   const [username, setUsername] = useState("");
   const [hostKey, setHostKey] = useState("");
-  const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -223,19 +290,10 @@ function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
       }
       setUsername("");
       setHostKey("");
-      setOpen(false);
       onCreated(); // ONB-1 flips on its own from the next derived-state read — not special-cased here.
     } finally {
       setSubmitting(false);
     }
-  }
-
-  if (!open) {
-    return (
-      <Button variant="default" size="xs" type="button" onClick={() => setOpen(true)}>
-        Create loopback demo target
-      </Button>
-    );
   }
 
   return (
@@ -278,7 +336,7 @@ function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
         <Button variant="primary" size="xs" type="submit" disabled={submitting || !username.trim() || !hostKey.trim()}>
           {submitting ? "Creating…" : "Create"}
         </Button>
-        <Button variant="default" size="xs" type="button" onClick={() => setOpen(false)} disabled={submitting}>
+        <Button variant="default" size="xs" type="button" onClick={onCancel} disabled={submitting}>
           Cancel
         </Button>
       </div>
@@ -288,11 +346,11 @@ function CreateLoopbackDemoTarget({ onCreated }: { onCreated: () => void }) {
 
 // RemoveLoopbackDemoTarget — T-118c's UI half of ONB-4 ("removable through
 // the existing surface"): a DELETE against the same governed
-// /v1/resources/{id} route CreateLoopbackDemoTarget's POST used, gated
+// /v1/resources/{id} route the create actions used, gated
 // identically (operator-only, per gateByDeclaredSecurity). Narrow by
 // construction — resourceId always comes from the derived-state lookup
 // above (never a general resource picker/manager), matching
-// CreateLoopbackDemoTarget's own scope discipline. Surfaces the store's 409
+// the create actions' own scope discipline. Surfaces the store's 409
 // in-use refusal (a non-terminal session/Run/Workstream still references it)
 // honestly rather than pretending the click worked; ONB-1 flips item 1 back
 // on its own from the next derived-state read on success — not special-cased
@@ -335,6 +393,8 @@ function RemoveLoopbackDemoTarget({ resourceId, onRemoved }: { resourceId: strin
 export function OnboardingChecklist() {
   const [dismissed, setDismissed] = useState(readDismissed);
   const { resourceExists, actionCompleted, demoResourceId, loading, refresh } = useDerivedOnboardingState();
+  const [manual, setManual] = useState(false);
+  const demoUnbound = useDemoUnbound(demoResourceId);
 
   if (dismissed) return null;
 
@@ -362,21 +422,32 @@ export function OnboardingChecklist() {
         <ChecklistItem done={resourceExists}>Register a resource</ChecklistItem>
         <ChecklistItem done={actionCompleted}>Complete a governed action</ChecklistItem>
       </ul>
-      {!loading && !resourceExists && (
-        <p className="mb-2 mt-2 text-xs text-muted-foreground">
-          Creating the target asks for a username and an SSH host key that only the server can print. On the server, from the
-          directory the bundle was unpacked into, run{" "}
-          <code className="select-all font-mono text-foreground">{GENERATE_COMMAND}</code> — it prints both.
+      {!loading && !resourceExists && <CreateDemoTargetButton onCreated={refresh} />}
+      {!loading && !resourceExists && !manual && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Prefer the terminal?{" "}
+          <button type="button" className="underline" onClick={() => setManual(true)}>
+            Use the script path instead
+          </button>
         </p>
       )}
-      {!loading && !resourceExists && <CreateLoopbackDemoTarget onCreated={refresh} />}
+      {!loading && !resourceExists && manual && (
+        <div role="group" aria-label="script path" className="mt-2">
+          <p className="mb-2 text-xs text-muted-foreground">
+            The script path asks for a username and an SSH host key that only the server can print. On the server, from the
+            directory the bundle was unpacked into, run <code className="select-all font-mono text-foreground">{GENERATE_COMMAND}</code>{" "}
+            — it prints both.
+          </p>
+          <ManualDemoTargetForm onCreated={refresh} onCancel={() => setManual(false)} />
+        </div>
+      )}
       {!loading && demoResourceId && <RemoveLoopbackDemoTarget resourceId={demoResourceId} onRemoved={refresh} />}
-      {!loading && demoResourceId && !actionCompleted && (
+      {!loading && demoResourceId && !actionCompleted && demoUnbound && (
         <div role="group" aria-label="bind the demo credential" className="mt-2 space-y-1 text-xs text-muted-foreground">
           <p>
             Demo target resource id: <code className="select-all font-mono text-foreground">{demoResourceId}</code>
           </p>
-          <p>Then, on the server, bind its credential:</p>
+          <p>It has no key yet. On the server, bind the one the script prepared:</p>
           <pre className="select-all overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-foreground">
             {bindCommand(demoResourceId)}
           </pre>
