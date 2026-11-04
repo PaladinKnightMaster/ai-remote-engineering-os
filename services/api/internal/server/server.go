@@ -45,6 +45,7 @@ import (
 	mw "aireos.local/packages/go/middleware"
 	"aireos.local/packages/go/outbox"
 	"aireos.local/services/api/internal/account"
+	"aireos.local/services/api/internal/connector"
 	"aireos.local/services/api/internal/ctxindex"
 	"aireos.local/services/api/internal/gateway"
 	"aireos.local/services/api/internal/grant"
@@ -182,8 +183,11 @@ type apiHandlers struct {
 	policy      policyDecider // POLICY_URL decision point (ADR-0054 / T-031b); nil → requires_approval resources fail closed
 	gateway     gatewayProxy  // GATEWAY_URL invocation-approval proxy (ADR-0057 §4 / T-040b); nil → 503
 	gatewayURL  string        // set by WithGateway; the client is built in New after all options apply (ADR-0060)
-	runs        runStore      // WithRunStore; the operator Run launch/status routes (ADR-0061 / T-057); nil → 503
-	grants      grantStore    // WithGrantStore; the operator delegation-grant routes (ADR-0062 / T-063); nil → 503
+	// connector: ADR-0079 key-generation client; nil -> credential routes answer 503.
+	connector    *connector.Client
+	connectorURL string
+	runs         runStore   // WithRunStore; the operator Run launch/status routes (ADR-0061 / T-057); nil → 503
+	grants       grantStore // WithGrantStore; the operator delegation-grant routes (ADR-0062 / T-063); nil → 503
 	// gatewayVerifier verifies the gateway's v4.public token on the delegated-launch forward
 	// ONLY (ADR-0062 / T-065a) — route-scoped so the operator routes stay symmetric-only
 	// (SEC-20). nil → the forward route is not mounted.
@@ -240,6 +244,13 @@ type Option func(*apiHandlers)
 // can pick the agent-plane signer regardless of option order (ADR-0060).
 func WithGateway(baseURL string) Option {
 	return func(h *apiHandlers) { h.gatewayURL = baseURL }
+}
+
+// WithConnector wires the key-generation client (ADR-0079). Empty is a no-op: the routes
+// answer 503 with a reason rather than failing boot, so an upgraded install whose
+// aireos.env predates CONNECTOR_URL still starts.
+func WithConnector(baseURL string) Option {
+	return func(h *apiHandlers) { h.connectorURL = baseURL }
 }
 
 // WithAgentSigner wires the asymmetric agent-plane signer (ADR-0060): api signs
@@ -472,6 +483,9 @@ func New(s Store, authn Authenticator, signer *auth.Signer, v mw.Verifier, audit
 		default:
 			h.gateway = gateway.NewClient(h.gatewayURL, nil)
 		}
+	}
+	if h.connectorURL != "" {
+		h.connector = connector.NewClient(h.connectorURL, h.signer)
 	}
 	base := chi.NewRouter()
 	// setupGuard is a router-level middleware, registered before ANY route so it runs for

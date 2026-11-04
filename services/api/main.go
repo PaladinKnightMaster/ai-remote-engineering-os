@@ -170,6 +170,7 @@ func serve(dsn string) error {
 	// untyped-nil issuer (no key) sends no bearer (dev).
 	opts := append(setupOpts,
 		server.WithGateway(os.Getenv("GATEWAY_URL")),
+		server.WithConnector(os.Getenv("CONNECTOR_URL")), // ADR-0079; unset -> credential routes answer 503
 		server.WithAgentSigner(agentPlaneSigner()),
 		// The active deployment profile (ADR-0068 §D2, OI-24): echoed verbatim on
 		// GetMe, no validation here — install.sh is the sole validation authority.

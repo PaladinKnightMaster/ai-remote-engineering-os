@@ -292,6 +292,11 @@ type ContextSourceScopeType string
 // ContextSourceStatus errored surfaces an unreadable/absent root (CTX-5) rather than crashing the sweep.
 type ContextSourceStatus string
 
+// CredentialGenerateRequest defines model for CredentialGenerateRequest.
+type CredentialGenerateRequest struct {
+	Rotate bool `json:"rotate"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Code    string                  `json:"code"`
@@ -555,6 +560,18 @@ type Resource struct {
 // ResourceType defines model for Resource.Type.
 type ResourceType string
 
+// ResourceCredential defines model for ResourceCredential.
+type ResourceCredential struct {
+	// AuthorizedKeysLine The restricted authorized_keys entry to install on the target machine.
+	AuthorizedKeysLine string `json:"authorizedKeysLine"`
+
+	// Fingerprint SHA-256 fingerprint of the public key.
+	Fingerprint string `json:"fingerprint"`
+
+	// PublicKey OpenSSH `ssh-ed25519 ...` public key line.
+	PublicKey string `json:"publicKey"`
+}
+
 // ResourceInput defines model for ResourceInput.
 type ResourceInput struct {
 	Labels *map[string]string `json:"labels,omitempty"`
@@ -770,11 +787,17 @@ type PairingSessionsLimit = int
 // PresetParam defines model for PresetParam.
 type PresetParam string
 
+// BadGateway defines model for BadGateway.
+type BadGateway = Error
+
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
 
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
+
+// NotConfigured defines model for NotConfigured.
+type NotConfigured = Error
 
 // NotFound defines model for NotFound.
 type NotFound = Error
@@ -896,6 +919,9 @@ type PatchPolicyRuleJSONRequestBody = PolicyRulePatch
 // CreateResourceJSONRequestBody defines body for CreateResource for application/json ContentType.
 type CreateResourceJSONRequestBody = ResourceInput
 
+// CreateResourceCredentialJSONRequestBody defines body for CreateResourceCredential for application/json ContentType.
+type CreateResourceCredentialJSONRequestBody = CredentialGenerateRequest
+
 // CreateRunJSONRequestBody defines body for CreateRun for application/json ContentType.
 type CreateRunJSONRequestBody = RunCreate
 
@@ -1015,6 +1041,12 @@ type ServerInterface interface {
 	// Fetch a resource
 	// (GET /v1/resources/{id})
 	GetResource(w http.ResponseWriter, r *http.Request, id string)
+	// Read the resource's public key and authorized_keys line
+	// (GET /v1/resources/{id}/credential)
+	GetResourceCredential(w http.ResponseWriter, r *http.Request, id string)
+	// Generate (or, with rotate, replace) the resource's SSH key pair
+	// (POST /v1/resources/{id}/credential)
+	CreateResourceCredential(w http.ResponseWriter, r *http.Request, id string)
 	// List the caller's Runs (operator-scoped; no cross-operator scope)
 	// (GET /v1/runs)
 	ListRuns(w http.ResponseWriter, r *http.Request, params ListRunsParams)
@@ -1279,6 +1311,18 @@ func (_ Unimplemented) DeleteResource(w http.ResponseWriter, r *http.Request, id
 // Fetch a resource
 // (GET /v1/resources/{id})
 func (_ Unimplemented) GetResource(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Read the resource's public key and authorized_keys line
+// (GET /v1/resources/{id}/credential)
+func (_ Unimplemented) GetResourceCredential(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Generate (or, with rotate, replace) the resource's SSH key pair
+// (POST /v1/resources/{id}/credential)
+func (_ Unimplemented) CreateResourceCredential(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2423,6 +2467,68 @@ func (siw *ServerInterfaceWrapper) GetResource(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// GetResourceCredential operation middleware
+func (siw *ServerInterfaceWrapper) GetResourceCredential(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetResourceCredential(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateResourceCredential operation middleware
+func (siw *ServerInterfaceWrapper) CreateResourceCredential(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateResourceCredential(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListRuns operation middleware
 func (siw *ServerInterfaceWrapper) ListRuns(w http.ResponseWriter, r *http.Request) {
 
@@ -3189,6 +3295,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/resources/{id}", wrapper.GetResource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/resources/{id}/credential", wrapper.GetResourceCredential)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/resources/{id}/credential", wrapper.CreateResourceCredential)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/runs", wrapper.ListRuns)

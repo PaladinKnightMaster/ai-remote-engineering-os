@@ -230,6 +230,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/resources/{id}/credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Read the resource's public key and authorized_keys line */
+        get: operations["getResourceCredential"];
+        put?: never;
+        /**
+         * Generate (or, with rotate, replace) the resource's SSH key pair
+         * @description Refused with 409 if a credential exists unless rotate is true; a rotation breaks access until the new key is installed.
+         */
+        post: operations["createResourceCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/login": {
         parameters: {
             query?: never;
@@ -971,6 +994,17 @@ export interface components {
                 [key: string]: string;
             };
         };
+        CredentialGenerateRequest: {
+            rotate: boolean;
+        };
+        ResourceCredential: {
+            /** @description OpenSSH `ssh-ed25519 ...` public key line. */
+            publicKey: string;
+            /** @description SHA-256 fingerprint of the public key. */
+            fingerprint: string;
+            /** @description The restricted authorized_keys entry to install on the target machine. */
+            authorizedKeysLine: string;
+        };
         ResourceInput: {
             /** @enum {string} */
             type: "rdp" | "vnc" | "ssh" | "meshcentral" | "workspace" | "agentic_desktop";
@@ -1408,6 +1442,24 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description connector-service is unreachable or answered unusably. */
+        BadGateway: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Credential generation is not configured (CONNECTOR_URL unset). */
+        NotConfigured: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
     };
     parameters: {
         LimitParam: number;
@@ -1662,6 +1714,74 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    getResourceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The public material. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceCredential"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["NotConfigured"];
+        };
+    };
+    createResourceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialGenerateRequest"];
+            };
+        };
+        responses: {
+            /** @description The public half, fingerprint and the authorized_keys line to install on the target. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceCredential"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description A credential already exists; request rotation explicitly. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["NotConfigured"];
         };
     };
     login: {

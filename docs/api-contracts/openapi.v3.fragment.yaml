@@ -294,6 +294,60 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  # --- connector-generated target credential (T-176b, ADR-0079): PUBLIC material only (SEC-66)
+  /v1/resources/{id}/credential:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [resources]
+      operationId: createResourceCredential
+      summary: Generate (or, with rotate, replace) the resource's SSH key pair
+      description: Refused with 409 if a credential exists unless rotate is true; a rotation breaks access until the new key is installed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialGenerateRequest'
+      responses:
+        '200':
+          description: The public half, fingerprint and the authorized_keys line to install on the target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCredential'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: A credential already exists; request rotation explicitly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502': { $ref: '#/components/responses/BadGateway' }
+        '503': { $ref: '#/components/responses/NotConfigured' }
+    get:
+      tags: [resources]
+      operationId: getResourceCredential
+      summary: Read the resource's public key and authorized_keys line
+      responses:
+        '200':
+          description: The public material.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceCredential'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+        '503': { $ref: '#/components/responses/NotConfigured' }
   # --- operator auth (T-015b, services/api) -----------------------------------
   /v1/auth/login:
     post:
@@ -1805,6 +1859,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    BadGateway:
+      description: connector-service is unreachable or answered unusably.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotConfigured:
+      description: Credential generation is not configured (CONNECTOR_URL unset).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
   schemas:
     # The three P0 domain schemas are mirrored from the authoritative
     # JSON Schema files in packages/shared-schemas/ (T-003). Those files
@@ -1908,6 +1974,26 @@ components:
           type: object
           additionalProperties:
             type: string
+    CredentialGenerateRequest:
+      type: object
+      required: [rotate]
+      additionalProperties: false
+      properties:
+        rotate:
+          type: boolean
+    ResourceCredential:
+      type: object
+      required: [publicKey, fingerprint, authorizedKeysLine]
+      properties:
+        publicKey:
+          type: string
+          description: OpenSSH `ssh-ed25519 ...` public key line.
+        fingerprint:
+          type: string
+          description: SHA-256 fingerprint of the public key.
+        authorizedKeysLine:
+          type: string
+          description: The restricted authorized_keys entry to install on the target machine.
     # Create/update body for /v1/resources (T-005b). id is server-assigned, so
     # it is not part of the input; additionalProperties:false rejects a
     # client-supplied id with 400.
