@@ -253,6 +253,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/demo-target": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create the loopback demo target from the install-time pending key
+         * @description Creates the demo resource through the governed create path from the pending credential's non-secret metadata, then binds the key. No request body.
+         */
+        post: operations["createDemoTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/login": {
         parameters: {
             query?: never;
@@ -1773,6 +1793,48 @@ export interface operations {
             404: components["responses"]["NotFound"];
             /** @description A credential already exists; request rotation explicitly. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            502: components["responses"]["BadGateway"];
+            503: components["responses"]["NotConfigured"];
+        };
+    };
+    createDemoTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The demo resource, bound to its key. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Resource"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description The demo target was not prepared at install time. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Created but could not be bound or removed again; the message names the resource. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

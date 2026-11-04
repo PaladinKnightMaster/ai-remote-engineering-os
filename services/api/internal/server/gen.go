@@ -963,6 +963,9 @@ type ServerInterface interface {
 	// Remove a context source (owner-scoped; stops future agent reads — cannot recall past ones, GOV-11)
 	// (DELETE /v1/context-sources/{id})
 	DeleteContextSource(w http.ResponseWriter, r *http.Request, id string)
+	// Create the loopback demo target from the install-time pending key
+	// (POST /v1/demo-target)
+	CreateDemoTarget(w http.ResponseWriter, r *http.Request)
 	// List the caller's delegation grants (operator-scoped)
 	// (GET /v1/grants)
 	ListGrants(w http.ResponseWriter, r *http.Request, params ListGrantsParams)
@@ -1155,6 +1158,12 @@ func (_ Unimplemented) CreateContextSource(w http.ResponseWriter, r *http.Reques
 // Remove a context source (owner-scoped; stops future agent reads — cannot recall past ones, GOV-11)
 // (DELETE /v1/context-sources/{id})
 func (_ Unimplemented) DeleteContextSource(w http.ResponseWriter, r *http.Request, id string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Create the loopback demo target from the install-time pending key
+// (POST /v1/demo-target)
+func (_ Unimplemented) CreateDemoTarget(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1673,6 +1682,26 @@ func (siw *ServerInterfaceWrapper) DeleteContextSource(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteContextSource(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateDemoTarget operation middleware
+func (siw *ServerInterfaceWrapper) CreateDemoTarget(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateDemoTarget(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3217,6 +3246,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/v1/context-sources/{id}", wrapper.DeleteContextSource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/demo-target", wrapper.CreateDemoTarget)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/grants", wrapper.ListGrants)

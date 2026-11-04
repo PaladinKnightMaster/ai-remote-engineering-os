@@ -348,6 +348,35 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '502': { $ref: '#/components/responses/BadGateway' }
         '503': { $ref: '#/components/responses/NotConfigured' }
+  /v1/demo-target:
+    post:
+      tags: [resources]
+      operationId: createDemoTarget
+      summary: Create the loopback demo target from the install-time pending key
+      description: Creates the demo resource through the governed create path from the pending credential's non-secret metadata, then binds the key. No request body.
+      responses:
+        '201':
+          description: The demo resource, bound to its key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The demo target was not prepared at install time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Created but could not be bound or removed again; the message names the resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502': { $ref: '#/components/responses/BadGateway' }
+        '503': { $ref: '#/components/responses/NotConfigured' }
   # --- operator auth (T-015b, services/api) -----------------------------------
   /v1/auth/login:
     post:

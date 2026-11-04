@@ -50,16 +50,38 @@ func NewClient(baseURL string, signer *auth.Signer) *Client {
 	}}
 }
 
+// Pending is a pending credential's public half plus the non-secret metadata the
+// installer recorded; Public is all a generate/public response may carry.
+type Pending struct {
+	Public
+	Account string `json:"account,omitempty"`
+	HostKey string `json:"host_key,omitempty"`
+}
+
 func (c *Client) Generate(ctx context.Context, resourceID, operator string, rotate bool) (Public, error) {
-	return c.call(ctx, http.MethodPost, "/v1/credentials/"+resourceID+"/generate",
+	p, err := c.call(ctx, http.MethodPost, "/v1/credentials/"+resourceID+"/generate",
 		map[string]any{"rotate": rotate, "operator_subject": operator})
+	return p.Public, err
 }
 
 func (c *Client) PublicKey(ctx context.Context, resourceID string) (Public, error) {
-	return c.call(ctx, http.MethodGet, "/v1/credentials/"+resourceID+"/public", nil)
+	p, err := c.call(ctx, http.MethodGet, "/v1/credentials/"+resourceID+"/public", nil)
+	return p.Public, err
 }
 
-func (c *Client) call(ctx context.Context, method, path string, body any) (Public, error) {
+// Pending reads the install-time pending credential's metadata (ErrNotFound if none).
+func (c *Client) Pending(ctx context.Context, label string) (Pending, error) {
+	return c.call(ctx, http.MethodGet, "/v1/credentials/pending/"+label, nil)
+}
+
+// Bind moves the pending credential onto resourceID; operator becomes the audit actor.
+func (c *Client) Bind(ctx context.Context, label, resourceID, operator string) (Public, error) {
+	p, err := c.call(ctx, http.MethodPost, "/v1/credentials/pending/"+label+"/bind",
+		map[string]any{"resource_id": resourceID, "operator_subject": operator})
+	return p.Public, err
+}
+
+func (c *Client) call(ctx context.Context, method, path string, body any) (Pending, error) {
 	var rd io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -67,11 +89,11 @@ func (c *Client) call(ctx context.Context, method, path string, body any) (Publi
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rd)
 	if err != nil {
-		return Public{}, fmt.Errorf("build connector request: %w", err)
+		return Pending{}, fmt.Errorf("build connector request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if tok, err := c.Token(ctx); err != nil {
-		return Public{}, fmt.Errorf("mint connector token: %w", err)
+		return Pending{}, fmt.Errorf("mint connector token: %w", err)
 	} else if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
@@ -81,31 +103,34 @@ func (c *Client) call(ctx context.Context, method, path string, body any) (Publi
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return Public{}, fmt.Errorf("connector request: %w", err)
+		return Pending{}, fmt.Errorf("connector request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return parsePublic(io.LimitReader(resp.Body, 16<<10))
+		return parse(io.LimitReader(resp.Body, 16<<10))
 	case http.StatusConflict:
-		return Public{}, ErrExists
+		return Pending{}, ErrExists
 	case http.StatusNotFound:
-		return Public{}, ErrNotFound
+		return Pending{}, ErrNotFound
 	default: // the body is never read into an error: it is not ours to relay
-		return Public{}, fmt.Errorf("connector: unexpected status %d", resp.StatusCode)
+		return Pending{}, fmt.Errorf("connector: unexpected status %d", resp.StatusCode)
 	}
 }
 
-func parsePublic(r io.Reader) (Public, error) {
+var acctLine = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+func parse(r io.Reader) (Pending, error) {
 	raw, _ := io.ReadAll(r)
 	if bytes.Contains(raw, []byte("PRIVATE")) || bytes.Contains(raw, []byte("-----")) {
-		return Public{}, fmt.Errorf("%w: private-key marker in response (dropped)", ErrBadResponse)
+		return Pending{}, fmt.Errorf("%w: private-key marker in response (dropped)", ErrBadResponse)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var p Public
-	if err := dec.Decode(&p); err != nil || !pubLine.MatchString(p.PublicKey) || !fpLine.MatchString(p.Fingerprint) {
-		return Public{}, fmt.Errorf("%w: not a public key and fingerprint", ErrBadResponse)
+	var p Pending
+	if err := dec.Decode(&p); err != nil || !pubLine.MatchString(p.PublicKey) || !fpLine.MatchString(p.Fingerprint) ||
+		(p.Account != "" && !acctLine.MatchString(p.Account)) || strings.ContainsAny(p.HostKey, "\r\n") {
+		return Pending{}, fmt.Errorf("%w: not a public key, fingerprint and metadata", ErrBadResponse)
 	}
 	return p, nil
 }
