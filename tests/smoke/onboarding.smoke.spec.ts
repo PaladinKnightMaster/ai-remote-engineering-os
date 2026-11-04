@@ -93,19 +93,27 @@ async function stubChecklistReads(page: Page, resources: unknown[]) {
         ? route.fulfill({ json: { items: resources, page: {} } })
         : route.fallback(),
   );
+  // T-176d: the bind command shows only while the demo resource has NO stored key (GET .../credential -> 404).
+  await page.route(
+    (url) => /^\/v1\/resources\/[^/]+\/credential$/.test(url.pathname),
+    (route) => route.fulfill({ status: 404, json: { code: "not_found", message: "no public key is recorded for this resource" } }),
+  );
   await page.route(
     (url) => url.pathname === "/v1/audit/events" && url.searchParams.get("outcome") === "tool.result",
     (route) => route.fulfill({ json: { items: [], page: {} } }),
   );
 }
 
-test("before the demo resource exists, the checklist says which host script prints the values the form asks for (P10)", async ({ page }, testInfo) => {
+test("on the script path, before the demo resource exists, the checklist says which host script prints the values the form asks for (P10)", async ({ page }, testInfo) => {
   await login(page);
   await stubChecklistReads(page, []);
   await page.goto("/");
 
   const panel = page.getByRole("region", { name: "first-run checklist" });
   await expect(panel.getByRole("button", { name: "Create loopback demo target" })).toBeVisible({ timeout: 15_000 });
+  // T-176d: the default path names no server command; only the script-path fallback does.
+  await expect(panel).not.toContainText("setup-loopback-demo.sh");
+  await panel.getByRole("button", { name: "Use the script path instead" }).click();
   await expect(panel).toContainText("sudo ./setup-loopback-demo.sh generate --account aireos-demo");
   await expect(panel).toContainText("directory the bundle was unpacked into");
   await expect(panel).not.toContainText("infra/offline");

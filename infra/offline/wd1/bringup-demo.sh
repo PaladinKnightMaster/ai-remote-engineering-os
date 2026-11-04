@@ -35,6 +35,7 @@ OPPW=demo-operator-pw
 RID=01900000-0000-7000-8000-0000000000e2
 SEED_RESOURCE=1
 NO_OPERATOR=0
+DEMO=0
 SETUP_CODE_FILE="${SETUP_CODE_FILE:-$REPO_ROOT/tests/smoke/.setup-code}"   # --no-operator: where the printed setup code is saved (git-ignored)
 for arg in "$@"; do
   case "$arg" in
@@ -42,6 +43,10 @@ for arg in "$@"; do
     # T-175d: install through setup.sh with NO operator, so the first operator is made in the BROWSER (ADR-0078). Implies
     # nothing about the resource seed, but the seed's own steps need no operator, so both flags combine.
     --no-operator) NO_OPERATOR=1 ;;
+    # T-176d: install through setup.sh WITH an environment operator (admin / $OPPW) and AIREOS_LOOPBACK_DEMO=yes, so the stack is
+    # what a real operator has after `sudo ./setup.sh`: the demo account + a pending key prepared, the cockpit's "Create loopback
+    # demo target" button ready. Combine with --no-seed-resource. (Without --no-operator the browser setup path is not used.)
+    --demo) DEMO=1 ;;
     *) echo "unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -100,17 +105,24 @@ done
 
 log "install postgres (offline)"
 docker exec "$HOST" bash -c 'rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true'
-if [ "$NO_OPERATOR" = "1" ]; then
+if [ "$NO_OPERATOR" = "1" ] || [ "$DEMO" = "1" ]; then
   # T-175d: the REAL one-command path with NO operator anywhere -- setup.sh installs the companion and the app, api starts in setup
   # mode, and setup.sh prints the one-time code (which only a root shell on the host ever sees). The code is saved for the browser run.
-  log "--no-operator: setup.sh (companion + app, browser setup path, ADR-0078); NO operator is created"
+  # T-176d: --demo adds AIREOS_LOOPBACK_DEMO=yes, and (without --no-operator) an environment operator, so no setup code is issued.
+  SETUP_ENV="AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only"
+  [ "$DEMO" = "1" ] && SETUP_ENV="$SETUP_ENV AIREOS_LOOPBACK_DEMO=yes"
+  [ "$NO_OPERATOR" = "1" ] || SETUP_ENV="$SETUP_ENV AIREOS_BOOTSTRAP_OPERATOR_USER=admin AIREOS_BOOTSTRAP_OPERATOR_PASSWORD=$OPPW"
+  log "setup.sh (companion + app; demo=$DEMO, browser-setup-operator=$NO_OPERATOR)"
   SETUP_OUT="$(docker exec "$HOST" bash -c "set -e; mkdir -p /root/inst && cd /root/inst && cp /artifacts/aireos-postgres-ubuntu2404.tar.gz . &&
-    tar xzf /artifacts/aireos-offline-*.tar.gz && AIREOS_SITE_ADDRESS='localhost $HOST' AIREOS_DEPLOYMENT_PROFILE=lan-only ./aireos-offline-*/setup.sh" 2>&1)" \
+    tar xzf /artifacts/aireos-offline-*.tar.gz && $SETUP_ENV ./aireos-offline-*/setup.sh" 2>&1)" \
     || { echo "$SETUP_OUT" | tail -20; exit 1; }
-  CODE="$(grep -Eo '[0-9A-Z]{5}(-[0-9A-Z]{5}){3}' <<<"$SETUP_OUT" || true)"
-  [ -n "$CODE" ] && [ "$(wc -l <<<"$CODE")" = 1 ] || { echo "$SETUP_OUT" | tail -20; echo "expected exactly one setup code in setup.sh's output"; exit 1; }
-  mkdir -p "$(dirname "$SETUP_CODE_FILE")"; ( umask 077; printf '%s\n' "$CODE" > "$SETUP_CODE_FILE" )
-  log "setup.sh printed a setup code (saved to $SETUP_CODE_FILE for the browser run)"
+  echo "$SETUP_OUT" | tail -8
+  if [ "$NO_OPERATOR" = "1" ]; then
+    CODE="$(grep -Eo '[0-9A-Z]{5}(-[0-9A-Z]{5}){3}' <<<"$SETUP_OUT" || true)"
+    [ -n "$CODE" ] && [ "$(wc -l <<<"$CODE")" = 1 ] || { echo "$SETUP_OUT" | tail -20; echo "expected exactly one setup code in setup.sh's output"; exit 1; }
+    mkdir -p "$(dirname "$SETUP_CODE_FILE")"; ( umask 077; printf '%s\n' "$CODE" > "$SETUP_CODE_FILE" )
+    log "setup.sh printed a setup code (saved to $SETUP_CODE_FILE for the browser run)"
+  fi
 else
 docker exec "$HOST" bash -c "set -e; mkdir -p /root/inst && cd /root/inst &&
   tar xzf /artifacts/aireos-postgres-ubuntu2404.tar.gz && cd aireos-postgres-ubuntu2404 &&

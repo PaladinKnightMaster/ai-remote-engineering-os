@@ -8,7 +8,7 @@
 // credential) happens on the host shell in between — the quickstart
 // alternates planes (browser -> host shell -> browser) and cannot be one
 // Playwright run (Commander finding B). QUICKSTART_RESOURCE_ID is the id
-// spec A created and the orchestrator's shell step 4 bound.
+// spec A created (T-176d: the no-paste button also bound it).
 
 import { test, expect, type Page } from "@playwright/test";
 import fs from "node:fs";
@@ -19,6 +19,7 @@ const RESOURCE_ID = process.env.QUICKSTART_RESOURCE_ID;
 const DONE_FILE = process.env.QUICKSTART_DONE_FILE ?? "/smoke/.quickstart-b-done";
 const RESOURCE_LABEL = process.env.QUICKSTART_RESOURCE_LABEL ?? "loopback-demo (ssh)"; // "{name} ({type})", Runs.tsx
 const COMMAND = "whoami";
+const EVIDENCE = process.env.QUICKSTART_EVIDENCE_DIR; // T-176d: also save the passing-Run screenshot as evidence
 
 async function login(page: Page) {
   await expect(async () => {
@@ -56,13 +57,13 @@ test("quickstart steps 5/6/7-cockpit: launch a governed Run, see its events in t
   expect(runResp.ok(), "POST /v1/runs").toBeTruthy();
   const run = (await runResp.json()) as { id: string };
 
-  // This is the assertion VER-16's negative leg breaks: without step 4's
-  // bind, the connector has no credential and the step fails instead of
-  // completing.
+  // This is the assertion VER-16's negative leg breaks: with no key the target trusts, the step fails instead of
+  // completing. (T-176d: this spec now also runs AFTER a rotation + the operator installing the new line.)
   const steps = page.getByRole("list", { name: "run steps" });
   await expect(steps).toContainText("completed", { timeout: 180_000 });
 
   await testInfo.attach("quickstart-step5-run-completed", { body: await page.screenshot(), contentType: "image/png" });
+  if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/08-run-passes-after-new-line-installed.png`, fullPage: true });
 
   // Step 6: the audit surface shows the exact events the doc names, each
   // targeting the id the as-built code actually targets (services/mcp-gateway
@@ -70,18 +71,22 @@ test("quickstart steps 5/6/7-cockpit: launch a governed Run, see its events in t
   const banner = page.getByRole("region", { name: "filtered view" });
   const rows = page.locator("tbody tr");
 
-  async function assertAuditRow(outcome: string, targetSubstring: string) {
+  // minRows: run:<id> events are unique to this Run (exactly 1); resource:<id> tool.result also counts the completed Run
+  // quickstart-credential.smoke.spec.ts launched before the rotation (T-176d), so it is "at least 2", never "exactly 1".
+  async function assertAuditRow(outcome: string, targetSubstring: string, minRows = 1) {
     await expect(async () => {
       await page.goto("/audit");
       await page.getByLabel("outcome").fill(outcome);
       await page.getByRole("button", { name: "Apply" }).click();
       await expect(banner).toContainText(outcome, { timeout: 5_000 });
-      await expect(rows.filter({ hasText: targetSubstring })).toHaveCount(1, { timeout: 5_000 });
+      const matching = rows.filter({ hasText: targetSubstring });
+      if (minRows === 1) await expect(matching).toHaveCount(1, { timeout: 5_000 });
+      else await expect.poll(() => matching.count(), { timeout: 5_000 }).toBeGreaterThanOrEqual(minRows);
     }).toPass({ timeout: 60_000 });
   }
 
   await assertAuditRow("run.completed", `run:${run.id}`);
-  await assertAuditRow("tool.result", `resource:${RESOURCE_ID}`);
+  await assertAuditRow("tool.result", `resource:${RESOURCE_ID}`, 2);
   await assertAuditRow("run.launched", `run:${run.id}`);
 
   await testInfo.attach("quickstart-step6-audit-events", { body: await page.screenshot(), contentType: "image/png" });

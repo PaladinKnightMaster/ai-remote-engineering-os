@@ -15,3 +15,6 @@ playwright-report/
 # T-175d: setup-browser-gate.sh seams -- the printed setup code (a one-time secret) and the test-body completion marker.
 .setup-code
 .setup-done
+
+# T-176d: the old/new authorized_keys lines quickstart-credential.smoke.spec.ts hands to the gate
+.quickstart-lines.json
