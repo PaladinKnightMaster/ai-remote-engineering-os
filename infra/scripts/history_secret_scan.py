@@ -91,6 +91,25 @@ ALLOWLIST = {
         "the value names itself as a placeholder; e2e-only compose env, never "
         "deployed."
     ),
+    "services/api/internal/server/credentials_test.go": (
+        "SEC-66 instrument (T-176b): a fake OpenSSH PEM WRAPPER around a plain marker word, planted to "
+        "prove the api never relays private material -- inspected 2026-11-04 by the Commander: no key "
+        "body, no key bytes; the header string is the point of the test."
+    ),
+    "services/api/internal/server/demo_target_test.go": (
+        "SEC-66 instrument (T-176b): the bare PEM header string substituted into a connector reply as a "
+        "HOSTILE input the api must refuse with 502 -- inspected 2026-11-04: a header literal only, no key."
+    ),
+    "services/connector-service/internal/server/credentials_integration_test.go": (
+        "SEC-66 instrument (T-176a2): the PEM header/footer literals passed to strings.NewReplacer to strip "
+        "a freshly generated, per-run test key down to its body -- inspected 2026-11-04: no key is stored in "
+        "the file; the keys exist only in memory during the test."
+    ),
+    "apps/web/src/routes/Setup.test.tsx": (
+        "Vitest fixture (T-175d): the setup code 'abcde-fghjk-mnpqr-stvwx' is an alphabet sequence in the "
+        "code format, and the password is the well-known 'correct horse battery' phrase -- inspected "
+        "2026-11-04; neither was ever issued or set on any system."
+    ),
     "infra/docker-compose/env.example": (
         "A `.env.example` template by definition holds placeholders, not live "
         "values -- every credential in it is the literal word 'change-me' "
@@ -136,6 +155,7 @@ VALUE_ALLOWLIST = {
     "cockpit:change-me": "This project's own placeholder DSN password (34 occurrences, git grep), used verbatim in every local/CI Postgres test DSN since T-004b; the literal words say 'change this'.",
     "postgres:postgres": "Postgres's own default local superuser/db-name pair (3 occurrences), used only for locally-provisioned throwaway CI/dev-compose containers.",
     "user:pass": "Generic placeholder pair used in usage-example prose, never a live DSN.",
+    "cockpit:v016pw": "later-host-test.sh's N-C3 leg (T-174): the password of a THROWAWAY distro PostgreSQL inside a test container that models a pre-existing v0.16.0 host; created and destroyed per run, never deployed (2 occurrences, git grep, 2026-11-04).",
     "unused:unused": "Literal word 'unused' on both sides -- self-declaring placeholder.",
     "USER:PASSWORD": "The ALL-CAPS shape template install.sh prints as help text since T-165 (PUB-6 P7: 'postgres://USER:PASSWORD@HOST:5432/DATABASE'), repeated in its tests; self-declaring placeholder words, never a value an install sets. Exact-case only: 'user:password' or any real password still fires.",
     "cockpit:secret": "The literal word 'secret' used as an example password in one doc; not a value any running instance sets.",
