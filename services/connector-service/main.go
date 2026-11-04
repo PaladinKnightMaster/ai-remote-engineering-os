@@ -20,6 +20,8 @@
 //	connector-service credentials set-secret <resource-id> --key-file <path> [--passphrase <pp>]
 //	connector-service credentials unset-secret <resource-id>   # remove a stored credential (T-118b --undo)
 //	connector-service credentials migrate-legacy   # backfill ciphertext from resources.connection_secret
+//	connector-service credentials generate-pending --label <l> --account <a> --host-key-file <path>   # prints ONLY the public key (ADR-0079)
+//	connector-service credentials remove-pending --label <l>
 package main
 
 import (
@@ -31,6 +33,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -245,6 +248,10 @@ func runCredentials(dsn string, args []string) error {
 		return setSecret(ctx, pool, args[1:])
 	case "unset-secret":
 		return unsetSecret(ctx, pool, args[1:])
+	case "generate-pending":
+		return generatePending(ctx, pool, args[1:])
+	case "remove-pending":
+		return removePending(ctx, pool, args[1:])
 	case "migrate-legacy":
 		n, err := store.BackfillFromResources(ctx, pool)
 		if err != nil {
@@ -253,7 +260,7 @@ func runCredentials(dsn string, args []string) error {
 		fmt.Fprintf(os.Stderr, "connector-service: backfilled %d credential(s) from resources.connection_secret\n", n)
 		return nil
 	default:
-		return fmt.Errorf("unknown credentials subcommand %q (want set-secret|unset-secret|migrate-legacy)", args[0])
+		return fmt.Errorf("unknown credentials subcommand %q (want set-secret|unset-secret|generate-pending|remove-pending|migrate-legacy)", args[0])
 	}
 }
 
@@ -324,4 +331,50 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// generatePending creates the install-time pending key (ADR-0079 D3). stdout is
+// the PUBLIC key line and nothing else, so setup.sh can capture it directly; the
+// private half never leaves the encrypted store.
+func generatePending(ctx context.Context, pool *pgxpool.Pool, args []string) error {
+	fs := flag.NewFlagSet("generate-pending", flag.ContinueOnError)
+	label := fs.String("label", "", "pending credential label (e.g. loopback-demo)")
+	account := fs.String("account", "", "the local demo account name (non-secret metadata)")
+	hostKeyFile := fs.String("host-key-file", "", "file holding this host's SSH host public key line (non-secret metadata)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *label == "" || *account == "" || *hostKeyFile == "" {
+		return errors.New("generate-pending requires --label, --account and --host-key-file")
+	}
+	key, err := resourceSecretKey()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(*hostKeyFile)
+	if err != nil {
+		return fmt.Errorf("read host key file: %w", err)
+	}
+	pub, err := store.GeneratePending(ctx, pool, *label, *account, strings.TrimSpace(string(raw)), key, "system:setup")
+	if err != nil {
+		return err
+	}
+	fmt.Println(pub.PublicKey)
+	return nil
+}
+
+func removePending(ctx context.Context, pool *pgxpool.Pool, args []string) error {
+	fs := flag.NewFlagSet("remove-pending", flag.ContinueOnError)
+	label := fs.String("label", "", "pending credential label")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *label == "" {
+		return errors.New("--label is required")
+	}
+	if err := store.DeletePending(ctx, pool, *label); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "connector-service: removed pending credential %q (if any)\n", *label)
+	return nil
 }

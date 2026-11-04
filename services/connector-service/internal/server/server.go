@@ -39,6 +39,7 @@ func New(cfg Config) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(mw.RequireCapability(cfg.Verifier, "service-service"))
 		r.Post("/v1/credentials/lease", leaseHandler(cfg))
+		r.Group(func(r chi.Router) { mountCredentialRoutes(r, cfg) })
 	})
 	return r
 }

@@ -121,11 +121,11 @@ func TestPendingIsNeverLeasableAndBindMoves(t *testing.T) {
 	cleanup(t, pool, id, label)
 	cleanup(t, pool, other, "")
 
-	pub, err := GeneratePending(ctx, pool, label, "aireos-demo", "ssh-ed25519 AAAAhostkey", testKey)
+	pub, err := GeneratePending(ctx, pool, label, "aireos-demo", "ssh-ed25519 AAAAhostkey", testKey, testActor)
 	if err != nil {
 		t.Fatalf("pending: %v", err)
 	}
-	if _, err := GeneratePending(ctx, pool, label, "x", "y", testKey); !errors.Is(err, ErrExists) {
+	if _, err := GeneratePending(ctx, pool, label, "x", "y", testKey, testActor); !errors.Is(err, ErrExists) {
 		t.Fatalf("duplicate label = %v, want ErrExists", err)
 	}
 	meta, err := PendingMetadata(ctx, pool, label)

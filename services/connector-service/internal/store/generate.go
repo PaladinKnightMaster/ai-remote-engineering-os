@@ -74,13 +74,13 @@ func fingerprintOf(line string) (string, error) {
 	return ssh.FingerprintSHA256(pub), nil
 }
 
-func enqueue(ctx context.Context, tx pgx.Tx, actor, resourceID, outcome, evidence string) error {
+func enqueue(ctx context.Context, tx pgx.Tx, actor, target, outcome, evidence string) error {
 	w := outbox.Writer{Table: outboxTable}
 	if _, err := w.Enqueue(ctx, tx, outbox.Event{
 		Timestamp:        time.Now(),
 		Actor:            actor,
 		Edge:             "agent-remote-session",
-		Target:           "resource:" + resourceID,
+		Target:           target,
 		Outcome:          outcome,
 		EvidencePacketID: evidence,
 	}); err != nil {
@@ -137,7 +137,7 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, resourceID, key, actor st
 			return PublicInfo{}, ErrExists
 		}
 	}
-	if err := enqueue(ctx, tx, actor, resourceID, outcome, "fingerprint:"+pub.Fingerprint); err != nil {
+	if err := enqueue(ctx, tx, actor, "resource:"+resourceID, outcome, "fingerprint:"+pub.Fingerprint); err != nil {
 		return PublicInfo{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -169,8 +169,8 @@ func PublicKey(ctx context.Context, pool *pgxpool.Pool, resourceID string) (Publ
 // GeneratePending creates a key not yet bound to any resource, keyed by label,
 // with the demo account and host-key line recorded as non-secret metadata. It
 // is not leasable (the lease reads connector_credentials only). Refuses an
-// existing label.
-func GeneratePending(ctx context.Context, pool *pgxpool.Pool, label, account, hostKey, key string) (PublicInfo, error) {
+// existing label. credential.pending is audited under actor, targeting the label.
+func GeneratePending(ctx context.Context, pool *pgxpool.Pool, label, account, hostKey, key, actor string) (PublicInfo, error) {
 	for name, v := range map[string]string{"label": label, "account": account, "host key": hostKey} {
 		if strings.TrimSpace(v) == "" || strings.ContainsAny(v, "\r\n") {
 			return PublicInfo{}, fmt.Errorf("%s must be a non-empty single line", name)
@@ -184,7 +184,12 @@ func GeneratePending(ctx context.Context, pool *pgxpool.Pool, label, account, ho
 	if err != nil {
 		return PublicInfo{}, fmt.Errorf("marshal material: %w", err)
 	}
-	ct, err := pool.Exec(ctx, `
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return PublicInfo{}, fmt.Errorf("begin pending tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	ct, err := tx.Exec(ctx, `
 		INSERT INTO connector_pending_credentials (label, private_secret, public_key, account, host_key)
 		VALUES ($1, pgp_sym_encrypt($2::text, $3), $4, $5, $6)
 		ON CONFLICT (label) DO NOTHING`, label, string(blob), key, pub.PublicKey, account, hostKey)
@@ -193,6 +198,12 @@ func GeneratePending(ctx context.Context, pool *pgxpool.Pool, label, account, ho
 	}
 	if ct.RowsAffected() == 0 {
 		return PublicInfo{}, ErrExists
+	}
+	if err := enqueue(ctx, tx, actor, "credential-pending:"+label, "credential.pending", "fingerprint:"+pub.Fingerprint); err != nil {
+		return PublicInfo{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return PublicInfo{}, fmt.Errorf("commit pending: %w", err)
 	}
 	return pub, nil
 }
@@ -259,7 +270,7 @@ func Bind(ctx context.Context, pool *pgxpool.Pool, label, resourceID, actor stri
 	if _, err := tx.Exec(ctx, `DELETE FROM connector_pending_credentials WHERE label=$1`, label); err != nil {
 		return PublicInfo{}, fmt.Errorf("drop pending credential: %w", err)
 	}
-	if err := enqueue(ctx, tx, actor, resourceID, "credential.bound", "label:"+label+" fingerprint:"+fp); err != nil {
+	if err := enqueue(ctx, tx, actor, "resource:"+resourceID, "credential.bound", "label:"+label+" fingerprint:"+fp); err != nil {
 		return PublicInfo{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
