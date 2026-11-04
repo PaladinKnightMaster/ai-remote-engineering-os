@@ -22,6 +22,7 @@
 //	connector-service credentials migrate-legacy   # backfill ciphertext from resources.connection_secret
 //	connector-service credentials generate-pending --label <l> --account <a> --host-key-file <path>   # prints ONLY the public key (ADR-0079)
 //	connector-service credentials remove-pending --label <l>
+//	connector-service credentials bind-pending --label <l> --resource-id <id>   # the script path's bind: moves a pending key onto a resource the operator created in the cockpit
 package main
 
 import (
@@ -252,6 +253,8 @@ func runCredentials(dsn string, args []string) error {
 		return generatePending(ctx, pool, args[1:])
 	case "remove-pending":
 		return removePending(ctx, pool, args[1:])
+	case "bind-pending":
+		return bindPending(ctx, pool, args[1:])
 	case "migrate-legacy":
 		n, err := store.BackfillFromResources(ctx, pool)
 		if err != nil {
@@ -260,7 +263,7 @@ func runCredentials(dsn string, args []string) error {
 		fmt.Fprintf(os.Stderr, "connector-service: backfilled %d credential(s) from resources.connection_secret\n", n)
 		return nil
 	default:
-		return fmt.Errorf("unknown credentials subcommand %q (want set-secret|unset-secret|generate-pending|remove-pending|migrate-legacy)", args[0])
+		return fmt.Errorf("unknown credentials subcommand %q (want set-secret|unset-secret|generate-pending|remove-pending|bind-pending|migrate-legacy)", args[0])
 	}
 }
 
@@ -376,5 +379,27 @@ func removePending(ctx context.Context, pool *pgxpool.Pool, args []string) error
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "connector-service: removed pending credential %q (if any)\n", *label)
+	return nil
+}
+
+// bindPending is the operator-run twin of the api's bind route, for the script path
+// (setup-loopback-demo.sh bind): the cockpit's manual create form makes the resource,
+// this moves the pending key onto it. Same store.Bind, same audit event; prints nothing
+// on stdout - the public half is not needed, and the private half is never emitted.
+func bindPending(ctx context.Context, pool *pgxpool.Pool, args []string) error {
+	fs := flag.NewFlagSet("bind-pending", flag.ContinueOnError)
+	label := fs.String("label", "", "pending credential label")
+	rid := fs.String("resource-id", "", "the resource to bind it to")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *label == "" || *rid == "" {
+		return errors.New("bind-pending requires --label and --resource-id")
+	}
+	pub, err := store.Bind(ctx, pool, *label, *rid, "system:setup")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "connector-service: bound pending credential %q to resource %s (%s)\n", *label, *rid, pub.Fingerprint)
 	return nil
 }

@@ -13,32 +13,31 @@
 # writing the database directly, bypassing the governed create path ONB-4
 # requires), and the cockpit NEVER touches the filesystem.
 #
-# Two phases, not one, because of a real ordering constraint: POST /v1/resources
-# never accepts a client-supplied id (services/api/internal/server/server.go's
-# decodeInput calls json.Decoder.DisallowUnknownFields, which rejects an "id"
-# field with 400 — the id is always server-assigned). connector_credentials is
-# keyed by that same resource_id (a SOFT reference, no cross-service FK —
-# services/connector-service/migrations/0001_credentials.up.sql), so the
-# credential cannot be bound to a resource that does not exist yet:
+# v0.17.0 (ADR-0079): the KEY is generated INSIDE connector-service, which keeps the
+# private half; this script only ever receives the PUBLIC half. No private key is
+# written to disk any more. setup.sh now does this for you at install time (opt-in)
+# and the cockpit's 'Create loopback demo target' button binds the key; this script
+# remains for operators who declined the demo at setup, or who want the manual form:
 #
 #   1. generate --account <name> [--port 22]
-#        Generates an ed25519 CLIENT keypair, installs the PUBLIC half into
-#        <name>'s authorized_keys with a restricted option set (see below),
-#        and prints exactly what to paste into the cockpit's "Create loopback
-#        demo target" action: host, port, username, AND the host's own SSH
-#        host public key (ssh_host_key — see the note below; the private
-#        client key is never printed).
+#        Asks the connector for a PENDING key (`credentials generate-pending`),
+#        installs its public half into <name>'s authorized_keys with a restricted
+#        option set (see below), and prints the values the cockpit's manual form
+#        asks for: host, port, username, AND the host's own SSH host public key
+#        (ssh_host_key - see the note below). The cockpit's one-click button needs
+#        none of them.
 #
-#   2. bind --resource-id <uuid>
-#        Run AFTER the cockpit call returns the new resource's id. Loads the
-#        already-generated private key into connector-service custody via the
-#        EXISTING `connector-service credentials set-secret` CLI — no second
-#        credential path; ADR-0053 stays the sole decrypt authority.
+#   2. bind --resource-id <uuid>      (manual form only)
+#        The one-click button binds for you. After the MANUAL form, this moves the
+#        pending key onto the resource you created (`credentials bind-pending`). It
+#        also still loads a private key left on disk by a pre-v0.17.0 generate.
+#        The id is server-assigned (POST /v1/resources rejects a client-supplied
+#        id), which is why binding is a separate step from generating.
 #
-#   --undo
-#        Removes the authorized_keys entry and (if bound) the stored
-#        credential. Idempotent at any phase — safe to run repeatedly, before
-#        generate, between generate and bind, or after bind.
+#   --undo [--resource-id <uuid>]
+#        Removes the authorized_keys entry and the pending credential. For a key the
+#        cockpit already bound, add --resource-id to delete that stored credential too.
+#        Idempotent at any phase.
 #
 # A note on ssh_host_key: the release criteria's cockpit fields are named as
 # "host, port, username", but services/session-broker/internal/store/store.go
@@ -61,9 +60,8 @@
 #   AIREOS_ETC     default /etc/aireos            (aireos.env + connector.env)
 #   AIREOS_PREFIX  default /opt/aireos             (bin/connector-service)
 #   AIREOS_STATE   default /var/lib/aireos/loopback-demo
-#                  (generated keypair + the tiny ACCOUNT/PORT/RESOURCE_ID
-#                  state file this script itself owns; readable by the
-#                  aireos service user, per the brief)
+#                  (the tiny ACCOUNT/PORT/RESOURCE_ID state file this script
+#                  itself owns; readable by the aireos service user)
 #   AIREOS_SVC_USER default aireos (the service user/group the state
 #                  directory is readable by; matches install.sh's SVC_USER)
 set -euo pipefail
@@ -75,7 +73,7 @@ ETC="${AIREOS_ETC:-/etc/aireos}"
 PREFIX="${AIREOS_PREFIX:-/opt/aireos}"
 STATE_DIR="${AIREOS_STATE:-/var/lib/aireos/loopback-demo}"
 SVC_USER="${AIREOS_SVC_USER:-aireos}"
-KEY_FILE="$STATE_DIR/id_ed25519"
+KEY_FILE="$STATE_DIR/id_ed25519"   # LEGACY only: a pre-v0.17.0 generate wrote its private key here
 PUB_FILE="$STATE_DIR/id_ed25519.pub"
 STATE_FILE="$STATE_DIR/state"
 
@@ -205,6 +203,199 @@ aireos_loopback_strip_marker() {
   printf '%s\n' "$content" | grep -vE " ${marker}\$" || true
 }
 
+# ---------------------------------------------------------------------------
+# Host helpers (T-176c; ADR-0079 D3/D6/D7). FUNCTIONS ONLY: nothing runs when this
+# file is sourced. setup.sh sources it, so the install-time demo step and this
+# script's own modes share ONE implementation of the account, the restricted
+# authorized_keys entry and the connector calls - and, like everything here, they
+# are run by the OPERATOR as root; no service ever calls them.
+# ---------------------------------------------------------------------------
+
+DEMO_ACCOUNT_DEFAULT="aireos-demo"
+DEMO_LABEL="loopback-demo"   # the connector's pending-credential label AND the resource name the cockpit looks for
+DEMO_SSH_PORT=22             # fixed: POST /v1/demo-target creates the resource on 22 (Commander ruling)
+
+# aireos_demo_decision <env-value> <is-terminal 0|1> <answer> - "yes" or "no".
+# AIREOS_LOOPBACK_DEMO=yes|no decides and nothing is asked; unset: on a terminal the
+# answer decides (empty = the default, Yes), off a terminal it is no.
+aireos_demo_decision() {
+  local envv="${1,,}" tty="$2" ans="${3,,}"
+  case "$envv" in
+    yes|no) printf '%s\n' "$envv"; return 0 ;;
+    "") ;;
+    *) echo "AIREOS_LOOPBACK_DEMO must be yes or no (it is '$1')" >&2; return 1 ;;
+  esac
+  [ "$tty" = 1 ] || { echo no; return 0; }
+  case "$ans" in ""|y|yes) echo yes ;; *) echo no ;; esac
+}
+
+# aireos_loopback_ask_demo <setup-dir> - asks ONCE (setup.sh, on a terminal, AIREOS_LOOPBACK_DEMO unset), saying first
+# exactly what will be created. Sets DEMO_ANSWER; an empty answer is the default, Yes (aireos_demo_decision).
+aireos_loopback_ask_demo() {
+  {
+    printf '
+Optional: set up a local demo target, so you can try a governed action in the browser right after setup.
+'
+    printf '  This creates a local account "%s" (no password), and one restricted SSH key for it: the key can run commands
+' "$DEMO_ACCOUNT_DEFAULT"
+    printf '  but cannot open a terminal or forward ports, and its private half is generated and kept inside AI ReOS, never written to disk.
+'
+    printf '  Undo it any time with:  sudo %s/setup.sh --remove-demo
+' "$1"
+  } >&2
+  read -r -p 'Set up the demo target? [Y/n] ' DEMO_ANSWER || DEMO_ANSWER=n
+}
+
+# aireos_loopback_envval <NAME> <env-file> - the value of one line; the file is NEVER sourced.
+aireos_loopback_envval() {
+  if declare -F aireos_persisted_value >/dev/null; then aireos_persisted_value "$@"; return 0; fi
+  [ -f "$2" ] && sed -n "s/^$1=//p" "$2" | head -n1
+  return 0
+}
+
+# aireos_loopback_connector <credentials subcommand> [args...] - runs the connector CLI. The database URL and the
+# resource key reach it as ENVIRONMENT only (never argv). Stdout/stderr are the CLI's own.
+aireos_loopback_connector() {
+  local db key
+  [ -x "$PREFIX/bin/connector-service" ] || { log "connector-service CLI not found at $PREFIX/bin/connector-service"; return 1; }
+  db="$(aireos_loopback_envval DATABASE_URL "$ETC/aireos.env")"
+  key="$(aireos_loopback_envval AIREOS_RESOURCE_SECRET_KEY "$ETC/connector.env")"
+  [ -n "$db" ] && [ -n "$key" ] || { log "DATABASE_URL (in $ETC/aireos.env) or AIREOS_RESOURCE_SECRET_KEY (in $ETC/connector.env) is missing - is this an installed host?"; return 1; }
+  DATABASE_URL="$db" AIREOS_RESOURCE_SECRET_KEY="$key" "$PREFIX/bin/connector-service" credentials "$@"
+}
+
+# aireos_loopback_ssh_banner [port] - true iff something on 127.0.0.1:<port> answers with an SSH banner. An actual
+# connection, never `systemctl is-active ssh`: Ubuntu 24.04's sshd is socket-activated (ssh.socket listens, ssh.service
+# is inactive until a client arrives), so a unit check reports "no sshd" on a host where sshd is running (v0.12.0 GATE-4).
+aireos_loopback_ssh_banner() {
+  local port="${1:-22}"
+  timeout 5 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" && read -r -t 4 line <&3 && [[ "$line" == SSH-* ]]' _ "$port" 2>/dev/null
+}
+
+# aireos_loopback_host_key_file - the sshd host public key to pin (ed25519 first); the file's path on stdout.
+aireos_loopback_host_key_file() {
+  local f
+  for f in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ecdsa_key.pub /etc/ssh/ssh_host_rsa_key.pub; do
+    [ -r "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
+}
+
+# aireos_read_state <key> / aireos_write_state <key> <value> - the tiny key=value state file this script owns.
+aireos_read_state() {
+  [ -f "$STATE_FILE" ] || { printf ''; return 0; }
+  grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true
+}
+aireos_write_state() {
+  local key="$1" value="$2" tmp
+  install -d -m 750 -o root -g "$SVC_USER" "$STATE_DIR"
+  tmp="$(mktemp)"
+  if [ -f "$STATE_FILE" ]; then
+    grep -v -E "^$key=" "$STATE_FILE" > "$tmp" 2>/dev/null || true
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  install -m 640 -o root -g "$SVC_USER" "$tmp" "$STATE_FILE"
+  rm -f "$tmp"
+}
+
+# aireos_loopback_authkeys_file <account> - the account's authorized_keys path (fails if it has no usable home).
+aireos_loopback_authkeys_file() {
+  local home
+  home="$(getent passwd "$1" | cut -d: -f6)"
+  [ -n "$home" ] && [ -d "$home" ] || return 1
+  printf '%s/.ssh/authorized_keys\n' "$home"
+}
+
+# aireos_loopback_demo_present <account> - true iff the account's authorized_keys already carries our entry. The
+# entry is the real artifact of a prepared demo, so a re-run needs no state of its own to know (and never mints a second key).
+aireos_loopback_demo_present() {
+  local f
+  f="$(aireos_loopback_authkeys_file "$1")" || return 1
+  [ -f "$f" ] && grep -qE " ${MARKER}\$" "$f"
+}
+
+# aireos_loopback_install_authkey <account> <entry-line> - installs EXACTLY that restricted line, replacing any earlier
+# entry of ours and leaving every other line alone.
+aireos_loopback_install_authkey() {
+  local account="$1" entry="$2" authkeys current stripped
+  authkeys="$(aireos_loopback_authkeys_file "$account")" || { log "account '$account' has no usable home directory"; return 1; }
+  install -d -m 700 -o "$account" -g "$account" "$(dirname "$authkeys")" || { log "cannot create $(dirname "$authkeys")"; return 1; }
+  touch "$authkeys" 2>/dev/null || { log "cannot write $authkeys"; return 1; }
+  chown "$account:$account" "$authkeys"; chmod 600 "$authkeys"
+  current="$(cat "$authkeys" 2>/dev/null || true)"
+  stripped="$(aireos_loopback_strip_marker "$current" "$MARKER")"
+  { [ -n "$stripped" ] && printf '%s\n' "$stripped"; printf '%s\n' "$entry"; } > "$authkeys.new"
+  install -m 600 -o "$account" -g "$account" "$authkeys.new" "$authkeys"
+  rm -f "$authkeys.new"
+}
+
+# aireos_loopback_remove_authkey <account> - removes our entry; true if one was there, false (and nothing rewritten) if not.
+aireos_loopback_remove_authkey() {
+  local authkeys stripped
+  aireos_loopback_demo_present "$1" || return 1
+  authkeys="$(aireos_loopback_authkeys_file "$1")"
+  stripped="$(aireos_loopback_strip_marker "$(cat "$authkeys")" "$MARKER")"
+  if [ -n "$stripped" ]; then printf '%s\n' "$stripped" > "$authkeys.new"; else : > "$authkeys.new"; fi
+  install -m 600 -o "$1" -g "$1" "$authkeys.new" "$authkeys"
+  rm -f "$authkeys.new"
+}
+
+# aireos_loopback_issue <account> <port> - the connector generates the key (ADR-0079 D1); only its PUBLIC half comes
+# back, and goes into <account>'s authorized_keys with the restricted options. The private key never exists on this
+# host's disk. A pending key left by an earlier attempt that never reached authorized_keys is useless (nobody saw its
+# public half), so it is replaced rather than refused.
+aireos_loopback_issue() {
+  local account="$1" port="$2" hkf pub entry
+  hkf="$(aireos_loopback_host_key_file)" || { log "no readable sshd host public key under /etc/ssh (checked ed25519/ecdsa/rsa) - cannot pin ssh_host_key"; return 1; }
+  aireos_loopback_connector remove-pending --label "$DEMO_LABEL" >/dev/null 2>&1 || true
+  pub="$(aireos_loopback_connector generate-pending --label "$DEMO_LABEL" --account "$account" --host-key-file "$hkf")" \
+    || { log "the connector could not generate the demo key (the message above says why)"; return 1; }
+  entry="$(aireos_loopback_authkey_line "$pub" "$MARKER")" \
+    || { aireos_loopback_connector remove-pending --label "$DEMO_LABEL" >/dev/null 2>&1 || true; log "the connector returned something that is not an ssh-ed25519 public key"; return 1; }
+  aireos_loopback_install_authkey "$account" "$entry" \
+    || { aireos_loopback_connector remove-pending --label "$DEMO_LABEL" >/dev/null 2>&1 || true; return 1; }
+  aireos_write_state ACCOUNT "$account"; aireos_write_state PORT "$port"; aireos_write_state HOST_KEY "$(cat "$hkf")"
+}
+
+# aireos_loopback_prepare_demo - setup.sh's opt-in demo step (ADR-0079 D3). Returns 0 when it prepared the demo, 10
+# when it was already prepared (nothing touched), 1 when it had to skip (one plain sentence says why; the install is unaffected).
+aireos_loopback_prepare_demo() {
+  local account="$DEMO_ACCOUNT_DEFAULT"
+  if aireos_loopback_demo_present "$account"; then
+    log "The demo target is already set up for the account '$account'; nothing to do."; return 10
+  fi
+  aireos_loopback_ssh_banner "$DEMO_SSH_PORT" \
+    || { log "The demo target was skipped: no SSH server answers on 127.0.0.1:$DEMO_SSH_PORT. AI ReOS itself is installed. To add the demo later, install and start an SSH server and run setup.sh again."; return 1; }
+  if ! id "$account" >/dev/null 2>&1; then
+    # '*' = no password can ever log in, yet (unlike '!') sshd still accepts the key even where UsePAM is off.
+    useradd --create-home --shell /bin/bash -p '*' "$account" || { log "The demo target was skipped: could not create the account '$account'."; return 1; }
+    aireos_write_state ACCOUNT_CREATED yes
+    log "created the local account '$account' (no password; key login only)"
+  fi
+  aireos_loopback_issue "$account" "$DEMO_SSH_PORT" || { log "The demo target was skipped (see above). AI ReOS itself is installed."; return 1; }
+  log "prepared the demo target: a restricted SSH key for '$account' (its private half stays inside AI ReOS)"
+}
+
+# aireos_loopback_remove_demo - ADR-0079 D7. Removes our authorized_keys entry and the PENDING credential; idempotent
+# (a second run finds nothing and rewrites nothing).
+aireos_loopback_remove_demo() {
+  local account; account="$(aireos_read_state ACCOUNT)"; account="${account:-$DEMO_ACCOUNT_DEFAULT}"
+  if aireos_loopback_remove_authkey "$account"; then log "removed the demo key from the authorized_keys of '$account'"
+  else log "no demo key in the authorized_keys of '$account' - nothing to remove there"; fi
+  if aireos_loopback_connector remove-pending --label "$DEMO_LABEL" >/dev/null 2>&1; then log "removed the pending demo credential (if there was one)"
+  else log "could not reach the connector's store - a pending demo credential, if any, was NOT removed"; fi
+}
+
+# aireos_loopback_remove_account - deletes the demo account, but ONLY one this tooling created (state ACCOUNT_CREATED).
+aireos_loopback_remove_account() {
+  local account; account="$(aireos_read_state ACCOUNT)"; account="${account:-$DEMO_ACCOUNT_DEFAULT}"
+  if ! id "$account" >/dev/null 2>&1; then log "the account '$account' does not exist - nothing to remove"; return 0; fi
+  if [ "$(aireos_read_state ACCOUNT_CREATED)" != yes ]; then
+    log "the account '$account' was not created by AI ReOS setup, so it is left alone (remove it yourself if you want it gone)"; return 0
+  fi
+  if userdel --remove "$account" >/dev/null 2>&1; then log "removed the account '$account' and its home directory"; else log "could not remove the account '$account'"; fi
+}
+
 # Sourceable guard (install_profile_test.sh's own shape): a test harness can
 # `source` this file to unit-test the pure helpers above without running any
 # of the root-only, host-mutating logic below.
@@ -219,7 +410,7 @@ usage() {
 usage:
   setup-loopback-demo.sh generate --account <name> [--port 22]
   setup-loopback-demo.sh bind --resource-id <uuid>
-  setup-loopback-demo.sh --undo
+  setup-loopback-demo.sh --undo [--resource-id <uuid>]
 EOF
 }
 
@@ -229,26 +420,6 @@ MODE="${1:-}"
 [ -n "$MODE" ] || { usage >&2; exit 1; }
 shift || true
 
-# aireos_read_state <key> — reads a key=value line out of $STATE_FILE, empty
-# if the file or key is absent.
-aireos_read_state() {
-  [ -f "$STATE_FILE" ] || { printf ''; return 0; }
-  grep -E "^$1=" "$STATE_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true
-}
-
-# aireos_write_state <key> <value> — upserts a key=value line in $STATE_FILE.
-aireos_write_state() {
-  local key="$1" value="$2" tmp
-  install -d -m 750 -o root -g "$SVC_USER" "$STATE_DIR"
-  tmp="$(mktemp)"
-  if [ -f "$STATE_FILE" ]; then
-    grep -v -E "^$key=" "$STATE_FILE" > "$tmp" 2>/dev/null || true
-  fi
-  printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  install -m 640 -o root -g "$SVC_USER" "$tmp" "$STATE_FILE"
-  rm -f "$tmp"
-}
-
 case "$MODE" in
   generate)
     PARSED="$(aireos_loopback_parse_generate_args "$@")" || { usage >&2; exit 1; }
@@ -256,139 +427,62 @@ case "$MODE" in
     PORT="${PARSED##*|}"
 
     # What this script needs is a REACHABLE sshd, not a particular systemd
-    # arrangement — so test the port, and fall back to the unit check only when
-    # no TCP probe is possible.
-    #
-    # Checking `systemctl is-active ssh|sshd` alone is wrong on Ubuntu 24.04,
-    # which is this product's own primary install target: it ships sshd
-    # **socket-activated**, so `ssh.socket` listens on 0.0.0.0:22 while
-    # `ssh.service` stays *inactive* until a connection actually arrives. The
-    # unit-only check therefore reported "no sshd running" on a host where sshd
-    # was running and accepting connections — found at v0.12.0's GATE-4 §human
-    # walkthrough on a real installed stack, where it blocked the documented
-    # quickstart (ONB-5) at its first step.
-    if ! timeout 3 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+    # arrangement - so test the port by connecting (see aireos_loopback_ssh_banner),
+    # and fall back to the unit check only when no TCP probe is possible.
+    if ! aireos_loopback_ssh_banner "$PORT"; then
       systemctl is-active --quiet ssh 2>/dev/null \
         || systemctl is-active --quiet sshd 2>/dev/null \
         || systemctl is-active --quiet ssh.socket 2>/dev/null \
         || die "no sshd reachable on 127.0.0.1:$PORT (and neither the ssh/sshd service nor ssh.socket is active) — install and start one before running this script"
     fi
     id "$ACCOUNT" >/dev/null 2>&1 || die "no such account '$ACCOUNT' — create the dedicated demo account first"
-    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found (openssh-client)"
 
-    HOME_DIR="$(getent passwd "$ACCOUNT" | cut -d: -f6)"
-    [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ] || die "account '$ACCOUNT' has no usable home directory"
-    SSH_DIR="$HOME_DIR/.ssh"
-    AUTHKEYS="$SSH_DIR/authorized_keys"
-    install -d -m 700 -o "$ACCOUNT" -g "$ACCOUNT" "$SSH_DIR" \
-      || die "cannot create $SSH_DIR (is $HOME_DIR writable?)"
-    touch "$AUTHKEYS" 2>/dev/null || die "cannot write $AUTHKEYS"
-    chown "$ACCOUNT:$ACCOUNT" "$AUTHKEYS"; chmod 600 "$AUTHKEYS"
+    # FIXED (T-123): the broker constrains HostKeyAlgorithms to the pinned key's own
+    # type, so a multi-key sshd no longer makes the governed connection fail, whichever
+    # host key type is pinned.
+    log "asking the connector to generate the demo key (the private key stays inside it; nothing is written to disk here)"
+    aireos_loopback_issue "$ACCOUNT" "$PORT" || die "could not prepare the demo key (the message above says why)"
+    HOST_KEY_LINE="$(aireos_read_state HOST_KEY)"
+    rm -f "$KEY_FILE" "$PUB_FILE"   # a private key left by the pre-v0.17.0 generate: it is superseded
 
-    HOST_KEY_LINE=""
-    for f in /etc/ssh/ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ecdsa_key.pub /etc/ssh/ssh_host_rsa_key.pub; do
-      if [ -r "$f" ] && [ -z "$HOST_KEY_LINE" ]; then HOST_KEY_LINE="$(cat "$f")"; fi
-    done
-    [ -n "$HOST_KEY_LINE" ] || die "no readable sshd host public key found under /etc/ssh (checked ed25519/ecdsa/rsa) — cannot pin ssh_host_key"
-    # FIXED (was a KNOWN LIMITATION found live-testing T-118b against a stock
-    # multi-key sshd): services/session-broker/internal/sshpty/sshpty.go's
-    # dialClient used to set HostKeyCallback: ssh.FixedHostKey(pinnedKey) without
-    # constraining ssh.ClientConfig.HostKeyAlgorithms, so golang.org/x/crypto/ssh
-    # negotiated whichever host key type IT preferred (empirically
-    # ecdsa-sha2-nistp256 over ssh-ed25519), independent of which type this
-    # script pinned — a multi-key sshd could make the governed connection fail
-    # even with a correct pin. T-123 (already on dev) fixed dialClient to
-    # constrain HostKeyAlgorithms to the pinned key's own type, so this no
-    # longer needs a warning here regardless of how many host key types sshd
-    # offers.
-
-    log "generating a fresh ed25519 client keypair in $STATE_DIR"
-    install -d -m 750 -o root -g "$SVC_USER" "$STATE_DIR"
-    rm -f "$KEY_FILE" "$PUB_FILE"
-    ssh-keygen -q -t ed25519 -N "" -C "$MARKER" -f "$KEY_FILE" \
-      || die "ssh-keygen failed"
-    chown root:"$SVC_USER" "$KEY_FILE" "$PUB_FILE"; chmod 640 "$KEY_FILE"; chmod 644 "$PUB_FILE"
-
-    RAW_PUB="$(cat "$PUB_FILE")"
-    ENTRY="$(aireos_loopback_authkey_line "$RAW_PUB" "$MARKER")" \
-      || die "generated public key was not well-formed (unexpected ssh-keygen output)"
-
-    log "installing the restricted authorized_keys entry for $ACCOUNT"
-    CURRENT="$(cat "$AUTHKEYS" 2>/dev/null || true)"
-    STRIPPED="$(aireos_loopback_strip_marker "$CURRENT" "$MARKER")"
-    { [ -n "$STRIPPED" ] && printf '%s\n' "$STRIPPED"; printf '%s' "$ENTRY"; } > "$AUTHKEYS.new"
-    install -m 600 -o "$ACCOUNT" -g "$ACCOUNT" "$AUTHKEYS.new" "$AUTHKEYS"
-    rm -f "$AUTHKEYS.new"
-
-    aireos_write_state ACCOUNT "$ACCOUNT"
-    aireos_write_state PORT "$PORT"
-    aireos_write_state HOST_KEY "$HOST_KEY_LINE"
-
-    log "done — paste these into the cockpit's 'Create loopback demo target' action:"
+    log "done. The restricted authorized_keys entry is installed for $ACCOUNT."
+    log "NEXT: in the cockpit, click 'Create loopback demo target' - it creates the resource and binds the key for you."
+    log "(Prefer the manual form on port ${PORT}? These are the values it asks for:)"
     echo "  host:         127.0.0.1"
     echo "  port:         $PORT"
     echo "  username:     $ACCOUNT"
     echo "  ssh host key: $HOST_KEY_LINE"
-    log "the private key never leaves this host; after the cockpit returns the new resource's id, run: $0 bind --resource-id <id>"
+    [ "$PORT" = 22 ] || log "NOTE: the one-click button always uses port 22; for port $PORT use the manual form and then: $0 bind --resource-id <id>"
     ;;
 
   bind)
+    # The cockpit's 'Create loopback demo target' button binds the key itself. This mode remains for the MANUAL
+    # form (a resource you created by hand) and for a key left on disk by a pre-v0.17.0 generate.
     RESOURCE_ID="$(aireos_loopback_parse_bind_args "$@")" || { usage >&2; exit 1; }
-    [ -f "$KEY_FILE" ] || die "no generated key found in $STATE_DIR — run '$0 generate --account <name>' first"
-    [ -x "$PREFIX/bin/connector-service" ] || die "connector-service CLI not found at $PREFIX/bin/connector-service"
-    [ -f "$ETC/aireos.env" ] || die "$ETC/aireos.env not found — is this an installed host?"
-    [ -f "$ETC/connector.env" ] || die "$ETC/connector.env not found — is this an installed host?"
-
-    DB_URL="$(grep -E '^DATABASE_URL=' "$ETC/aireos.env" | tail -n1 | cut -d= -f2-)"
-    RESOURCE_KEY="$(grep -E '^AIREOS_RESOURCE_SECRET_KEY=' "$ETC/connector.env" | tail -n1 | cut -d= -f2-)"
-    [ -n "$DB_URL" ] || die "DATABASE_URL missing from $ETC/aireos.env"
-    [ -n "$RESOURCE_KEY" ] || die "AIREOS_RESOURCE_SECRET_KEY missing from $ETC/connector.env"
-
-    log "loading the private key into connector custody for resource $RESOURCE_ID"
-    DATABASE_URL="$DB_URL" AIREOS_RESOURCE_SECRET_KEY="$RESOURCE_KEY" \
-      "$PREFIX/bin/connector-service" credentials set-secret "$RESOURCE_ID" --key-file "$KEY_FILE"
-
+    if [ -f "$KEY_FILE" ]; then
+      log "loading the legacy on-disk private key into connector custody for resource $RESOURCE_ID"
+      aireos_loopback_connector set-secret "$RESOURCE_ID" --key-file "$KEY_FILE" || die "could not load the legacy key"
+    else
+      log "binding the connector-generated demo key to resource $RESOURCE_ID"
+      aireos_loopback_connector bind-pending --label "$DEMO_LABEL" --resource-id "$RESOURCE_ID" \
+        || die "nothing was bound. If you used the cockpit's 'Create loopback demo target' button the key is already bound and you do not need this command; otherwise run '$0 generate --account <name>' first"
+    fi
     aireos_write_state RESOURCE_ID "$RESOURCE_ID"
     log "bound — the demo resource is ready to run a governed action against"
     ;;
 
   --undo)
-    ACCOUNT="$(aireos_read_state ACCOUNT)"
-    RESOURCE_ID="$(aireos_read_state RESOURCE_ID)"
+    # --resource-id: a resource the cockpit bound (the cockpit does not tell this script its id).
+    UNDO_RID="$(aireos_read_state RESOURCE_ID)"
+    if [ "${1:-}" = "--resource-id" ]; then UNDO_RID="$(aireos_loopback_parse_bind_args "$@")" || { usage >&2; exit 1; }; fi
 
-    if [ -n "$ACCOUNT" ] && id "$ACCOUNT" >/dev/null 2>&1; then
-      HOME_DIR="$(getent passwd "$ACCOUNT" | cut -d: -f6)"
-      AUTHKEYS="$HOME_DIR/.ssh/authorized_keys"
-      if [ -f "$AUTHKEYS" ]; then
-        CURRENT="$(cat "$AUTHKEYS")"
-        STRIPPED="$(aireos_loopback_strip_marker "$CURRENT" "$MARKER")"
-        if [ -n "$STRIPPED" ]; then printf '%s\n' "$STRIPPED" > "$AUTHKEYS.new"; else : > "$AUTHKEYS.new"; fi
-        install -m 600 -o "$ACCOUNT" -g "$ACCOUNT" "$AUTHKEYS.new" "$AUTHKEYS"
-        rm -f "$AUTHKEYS.new"
-        log "removed the authorized_keys entry for $ACCOUNT (if it was present)"
-      fi
+    aireos_loopback_remove_demo   # the authorized_keys entry + the pending credential
+    if [ -n "$UNDO_RID" ]; then
+      if aireos_loopback_connector unset-secret "$UNDO_RID"; then log "removed the stored credential for resource $UNDO_RID (if it was present)"
+      else log "could not remove the stored credential for resource $UNDO_RID"; fi
     else
-      log "no known account on record (or it no longer exists) — nothing to remove from authorized_keys"
+      log "no bound resource on record - if the cockpit bound the key, add '--resource-id <id>' to also delete the stored credential"
     fi
-
-    if [ -n "$RESOURCE_ID" ]; then
-      if [ -x "$PREFIX/bin/connector-service" ] && [ -f "$ETC/aireos.env" ] && [ -f "$ETC/connector.env" ]; then
-        DB_URL="$(grep -E '^DATABASE_URL=' "$ETC/aireos.env" | tail -n1 | cut -d= -f2-)"
-        RESOURCE_KEY="$(grep -E '^AIREOS_RESOURCE_SECRET_KEY=' "$ETC/connector.env" | tail -n1 | cut -d= -f2-)"
-        if [ -n "$DB_URL" ] && [ -n "$RESOURCE_KEY" ]; then
-          DATABASE_URL="$DB_URL" AIREOS_RESOURCE_SECRET_KEY="$RESOURCE_KEY" \
-            "$PREFIX/bin/connector-service" credentials unset-secret "$RESOURCE_ID"
-          log "removed the stored credential for resource $RESOURCE_ID (if it was present)"
-        else
-          log "connector env incomplete — skipping stored-credential removal"
-        fi
-      else
-        log "connector-service CLI or env not found — skipping stored-credential removal"
-      fi
-    else
-      log "no bound resource on record — nothing to remove from connector custody"
-    fi
-
     rm -f "$KEY_FILE" "$PUB_FILE"
     log "undo complete (idempotent — safe to run again)"
     ;;

@@ -82,6 +82,9 @@ tasks:
       # needs root and SKIPS unless it is in a container (it deletes
       # /etc/aireos between legs). Run inside golang:1.26.
       - bash infra/offline/install_prompts_test.sh
+      # setup.sh's opt-in demo step and --remove-demo (T-176c, ADR-0079 D3/D7):
+      # same root-in-a-container requirement as the test above.
+      - bash infra/offline/setup_demo_test.sh
       # JS workspace unit tests (T-007a). `--if-present` skips packages
       # without a `test` script; packages/ui + packages/config have none yet.
       - pnpm -r --if-present run test
