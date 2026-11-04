@@ -87,4 +87,26 @@ describe("Sessions route", () => {
       expect(screen.getByRole("alert").textContent).toMatch(/could not load/i);
     });
   });
+
+  it("lists ssh resources under SSH keys and opens one resource's credential panel on demand (T-176d)", async () => {
+    vi.mocked(apiClient.GET).mockImplementation(((path: string) => {
+      if (path === "/v1/resources") {
+        return Promise.resolve({ data: { items: [{ id: "res-1", name: "edge-01", type: "ssh" }, { id: "res-2", name: "desk", type: "rdp" }], page: {} }, error: undefined });
+      }
+      if (path === "/v1/resources/{id}/credential") {
+        return Promise.resolve({ data: { publicKey: "ssh-ed25519 AAAA", fingerprint: "SHA256:zz", authorizedKeysLine: "restrict ssh-ed25519 AAAA" }, error: undefined, response: { status: 200 } });
+      }
+      return Promise.resolve({ data: { items: [], page: {} }, error: undefined });
+    }) as never);
+
+    renderSessions();
+    const open = await screen.findByRole("button", { name: "Key for edge-01" });
+    expect(screen.queryByRole("button", { name: "Key for desk" })).toBeNull(); // only ssh resources have a key
+    expect(apiClient.GET).not.toHaveBeenCalledWith("/v1/resources/{id}/credential", expect.anything());
+
+    fireEvent.click(open);
+
+    expect(await screen.findByText("SHA256:zz")).toBeTruthy();
+    expect(apiClient.GET).toHaveBeenCalledWith("/v1/resources/{id}/credential", { params: { path: { id: "res-1" } } });
+  });
 });

@@ -8,6 +8,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@aireos/ui";
 import type { components } from "@aireos/shared-types/generated/openapi";
 import { apiClient } from "../api";
+import { ResourceCredentialPanel } from "../components/ResourceCredentialPanel";
 
 type Session = components["schemas"]["Session"];
 type Resource = components["schemas"]["Resource"];
@@ -19,6 +20,7 @@ export function Sessions() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [openKeyFor, setOpenKeyFor] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const load = useCallback(async () => {
@@ -107,6 +109,27 @@ export function Sessions() {
         <div role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
         </div>
+      )}
+
+      {resources.some((r) => r.type === "ssh") && (
+        <section aria-label="ssh keys" className="rounded-md border border-border">
+          <h2 className="p-3 text-sm font-medium">SSH keys</h2>
+          <ul className="divide-y divide-border">
+            {resources
+              .filter((r) => r.type === "ssh")
+              .map((r) => (
+                <li key={r.id}>
+                  <div className="flex items-center justify-between p-3 text-sm">
+                    <span>{r.name}</span>
+                    <Button variant="default" size="xs" type="button" aria-expanded={openKeyFor === r.id} onClick={() => setOpenKeyFor(openKeyFor === r.id ? null : r.id)}>
+                      {openKeyFor === r.id ? "Hide key" : `Key for ${r.name}`}
+                    </Button>
+                  </div>
+                  {openKeyFor === r.id && <ResourceCredentialPanel resourceId={r.id} resourceName={r.name} />}
+                </li>
+              ))}
+          </ul>
+        </section>
       )}
 
       <section className="rounded-md border border-border">
