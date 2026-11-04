@@ -14,6 +14,13 @@
 #       audit chain / every table, the whole journal, history and bounded file trees, with a planted control in the SAME run.
 #       The env-operator unattended path (INS-6) stays covered by N-C3 (ubuntu2404); the other OSes' env path is install.sh
 #       itself, run by leg B on all three and by WD-1.
+#   (T-176c) leg D (FRX-5, SEC-66) runs setup.sh with AIREOS_LOOPBACK_DEMO=yes and no operator, then speaks HTTP through Caddy ONLY: setup,
+#       login, POST /v1/demo-target (resource.created + credential.bound), a one-step governed Run `uname -s` that must COMPLETE, the audit
+#       read; the HTTP-only phase is enforced (a state-changing exec dies; the installer-written files are checksummed before/after).
+#       Then `setup.sh --remove-demo` (entry gone; the same governed action no longer completes). TestSEC66PrivateKeyNeverLeavesTheConnector
+#       decrypts the stored key inside the test and searches every API response, the journal, every table, the ciphertext column, the file
+#       trees and history for it, with a planted control in every location in the same run. The host image carries openssh-server
+#       (HOST PROVISIONING: a server with SSH is realistic); on Ubuntu its default socket activation is left as shipped.
 #   TestINS1LaterHost                       per OS (ubuntu2404 ubuntu2604 rocky9), each on its own host:
 #       "later" is a CHECKED property: glibc/OpenSSL (+perl-base) of the host vs the companion's build floor, compared
 #       with dpkg/rpm's own version comparison — if the host is not strictly newer, the test is not measuring skew: die
@@ -56,7 +63,8 @@ CONTAINERS=()
 cleanup() { [ "${KEEP:-0}" = 1 ] || docker rm -f "${CONTAINERS[@]}" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-XB() { docker exec "$1" bash -c "$2"; }
+HTTP_ONLY=0   # leg D sets this to 1 for its HTTP-only phase: a state-changing exec then dies
+XB() { [ "${HTTP_ONLY:-0}" != 1 ] || die "[${OS:-?}] a state-changing docker exec was attempted in the HTTP-only phase: $2"; docker exec "$1" bash -c "$2"; }
 ok() { echo "  ok [$OS] $*"; }
 eq() { [ "$2" = "$3" ] || die "[$OS] $1: expected '$2', got '$3'"; ok "$1: $3"; }
 has() { grep -qF -- "$3" <<<"$2" || { echo "$2" | tail -8; die "[$OS] $1: output lacks '$3'"; }; ok "$1"; }
@@ -90,10 +98,10 @@ ARG BASE
 FROM ${BASE}
 RUN if command -v apt-get >/dev/null; then \
       export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get -y -qq full-upgrade \
-      && apt-get install -y -qq --no-install-recommends systemd systemd-sysv curl ca-certificates \
+      && apt-get install -y -qq --no-install-recommends systemd systemd-sysv curl ca-certificates openssh-server \
       && apt-get clean && rm -rf /var/lib/apt/lists/*; \
     else dnf -y -q upgrade && { rpm -q systemd >/dev/null || dnf -y -q install systemd; } \
-      && { command -v curl >/dev/null || dnf -y -q install curl; } && dnf -q clean all; fi
+      && { command -v curl >/dev/null || dnf -y -q install curl; } && { rpm -q openssh-server >/dev/null || dnf -y -q install openssh-server; } && dnf -q clean all; fi
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
 EOF
@@ -138,7 +146,7 @@ check_artifacts() {
     done
   done
   core="${CORE%.tar.gz}"
-  for t in install.sh setup.sh; do
+  for t in install.sh setup.sh setup-loopback-demo.sh; do
     [ "$(tar --force-local -xzOf "$DIST/$CORE" "$core/$t" | sha256sum | cut -d' ' -f1)" = "$(sha256sum "$REPO_ROOT/infra/offline/$t" | cut -d' ' -f1)" ] \
       || die "STALE: $CORE carries a different (or no) $t than HEAD — task offline-bundle"
   done
@@ -501,6 +509,195 @@ function TestSetupCodeReissue() {
   docker rm -f "$C" >/dev/null
 }
 
+# --- leg D: the loopback demo with NO server command after setup.sh (T-176c, FRX-5; ADR-0079) ---------------------------------
+# setup.sh runs unattended with AIREOS_LOOPBACK_DEMO=yes and NO operator in the environment (the browser path). From then on the
+# harness speaks HTTP through Caddy ONLY: setup, login, "Create loopback demo target" (POST /v1/demo-target), a governed one-step
+# Run (`uname -s`) and the audit read -- all `hxj`, whose only exec is curl. The guard is enforced, not promised: while HTTP_ONLY=1 the
+# state-changing `XB` dies, and a checksum of everything the installer wrote on the host (env files, passwd/group, the demo
+# account's authorized_keys, the installer's state file, sshd_config) must be IDENTICAL before and after (D4: the cockpit never
+# touches the host). Only after that does the operator run `--remove-demo`, as a person would.
+declare -A JAR=(); J_COOKIE=""; J_CSRF=""; ALLRESP="$(mktemp)"; trap 'rm -f "$ALLRESP"; cleanup' EXIT
+jar_update() {   # fold the Set-Cookie headers of the last response into the harness-held jar
+  local l n v
+  while IFS= read -r l; do case "${l,,}" in set-cookie:*) l="${l#*: }"; l="${l%%;*}"; n="${l%%=*}"; v="${l#*=}"; JAR[$n]="$v";; esac; done <<<"$J_HEAD"
+  J_COOKIE=""; for n in "${!JAR[@]}"; do J_COOKIE+="$n=${JAR[$n]}; "; done; J_COOKIE="${J_COOKIE%; }"; J_CSRF="${JAR[aireos_csrf]:-}"
+}
+# hxj <container> <METHOD> <path> [json] : sets J_STATUS J_HEAD J_BODY. The cookie and CSRF token travel on stdin (curl -H @-), never argv.
+# Every raw response is appended to $ALLRESP: SEC-66 searches exactly what the harness received.
+hxj() {
+  local c="$1" m="$2" p="$3" b="${4:-}" raw; local -a args=(-sk -i -X "$m" -H @- -H 'Content-Type: application/json')
+  [ -z "$b" ] || args+=(--data-binary "$b")
+  raw="$({ [ -z "$J_COOKIE" ] || printf 'Cookie: %s\n' "$J_COOKIE"; [ -z "$J_CSRF" ] || printf 'X-CSRF-Token: %s\n' "$J_CSRF"; printf 'X-Harness: leg-d\n'; } | docker exec -i "$c" curl "${args[@]}" "https://localhost$p")" \
+    || die "[$OS] curl through Caddy failed: $m $p"
+  printf '%s\n' "$raw" >>"$ALLRESP"; raw="${raw//$'\r'/}"
+  J_STATUS="$(sed -n '1s/^HTTP[^ ]* \([0-9]*\).*/\1/p' <<<"$raw")"; J_HEAD="$(sed '/^$/q' <<<"$raw")"; J_BODY="$(sed '1,/^$/d' <<<"$raw")"; jar_update
+}
+hostsum() { XB "$1" 'cd / && sha256sum etc/aireos/*.env etc/passwd etc/group etc/ssh/sshd_config var/lib/aireos/loopback-demo/state home/aireos-demo/.ssh/authorized_keys 2>&1'; }
+RESTRICT_RE='^restrict,no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 [A-Za-z0-9+/]{68} aireos-loopback-demo$'
+# wait_run <container> <run-id> : polls GET /v1/runs/<id> through Caddy until the Run is terminal; sets RUN_STATUS
+wait_run() { local i; for i in $(seq 1 90); do hxj "$1" GET "/v1/runs/$2"; RUN_STATUS="$(sed -n 's/.*"status": *"\([a-z_]*\)".*/\1/p' <<<"$J_BODY" | head -1)"; case "$RUN_STATUS" in completed|failed|cancelled|denied) return 0;; esac; sleep 2; done; die "[$OS] Run $2 never finished (last status '$RUN_STATUS')"; }
+audit_wait() {   # <container> <outcome> <target-substring> : the event is in the chain, read through the cockpit's own audit API
+  local i; for i in $(seq 1 45); do hxj "$1" GET "/v1/audit/events?outcome=$2&limit=100"; grep -qF "$3" <<<"$J_BODY" && return 0; sleep 2; done
+  die "[$OS] no $2 audit event for $3 within 90s: $(head -c 300 <<<"$J_BODY")"
+}
+
+# ---- SEC-66: the private half of a connector-generated key never leaves the connector ---------------------------------------
+# The needle is obtained ONLY for this search, by decrypting the stored ciphertext in the test with the host's OWN
+# AIREOS_RESOURCE_SECRET_KEY (env) and psql's pgp_sym_decrypt. Forms searched: the first two PEM body lines (so a PEM, wrapped or
+# JSON-escaped, is caught), the PEM body joined, base64 and hex of the raw seed and of the 64-byte key, and the longest NUL/LF-free
+# run of the seed as raw bytes (grep -P). Searched: every API response the harness received (above); the whole journal; the audit
+# chain and EVERY table; the ciphertext column itself, decoded, which must NOT hold the plaintext; /etc/aireos, /var/lib/aireos,
+# /tmp, /var/tmp, /var/log, /root, /home (incl. the demo account's home); shell history. EXCLUDED: /var/lib/aireos/pgsql (PostgreSQL's
+# own data files): the tables are searched logically through SQL, and a byte search of compressed, page-structured heap files cannot
+# discriminate (the planted control could not be made to prove it), so it would be a green that means nothing. Every location gets a
+# planted control first, in this run; an instrument that misses a planted needle invalidates the test.
+SEC66_SCAN="$(cat <<'EOF'
+dbq() { local u r p h; u=$(sed -n s/^DATABASE_URL=//p /etc/aireos/aireos.env); r=${u#*://}; p=${r#*:}; p=${p%%@*}; h=${r#*@}; h=${h#*:}; h=${h%%/*}
+  PGPASSWORD=$p /opt/aireos/pgsql/bin/psql "host=localhost port=$h dbname=cockpit user=cockpit sslmode=disable" -X -At "$@"; }
+gtxt() { grep -qaF -f <(printf '%s\n' "$NEEDLES"); }
+graw() { LC_ALL=C grep -qaP -- "$RAWP"; }
+hit() { gtxt || graw; }   # stdin
+db_all() { local t; for t in $(dbq -c "SELECT format('%I.%I', schemaname, tablename) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')"); do dbq -c "SELECT x::text FROM $t x"; done; }
+cipher() { dbq -c "SELECT encode(connection_secret,'base64') FROM connector_credentials" | while read -r l; do printf '%s' "$l" | base64 -d; done; }
+TREES="/etc/aireos /var/lib/aireos /tmp /var/tmp /var/log /root /home"
+tree_hit() { # excludes ONLY PostgreSQL's data files (see the harness comment)
+  grep -rlaI --exclude-dir=pgsql -F -f <(printf '%s\n' "$1") "$2" 2>/dev/null | head -1 | grep -q . && return 0
+  LC_ALL=C grep -rla --exclude-dir=pgsql -P -- "$RAWP" "$2" 2>/dev/null | head -1 | grep -q .; }
+case "$1" in
+  needles)   # prints the needles to the harness; the PEM never leaves this process except as these derived strings
+    pem="$(printf '\\getenv rkey RKEY\nSELECT pgp_sym_decrypt(connection_secret, :'"'"'rkey'"'"')::json->>'"'"'private_key'"'"' FROM connector_credentials WHERE resource_id = '"'"'%s'"'"';\n' "$RID" | dbq)"
+    body="$(grep -v -- '-----' <<<"$pem" | tr -d '\n')"; [ "${#body}" -gt 200 ] || { echo "INVALID: could not decrypt the stored key" >&2; exit 3; }
+    h="$(printf %s "$body" | base64 -d | od -An -v -tx1 | tr -d ' \n')"; sig=0000000b7373682d6564323535313900000020
+    rest="${h#*$sig}"; rest="${rest#*$sig}"; [ "${#rest}" -gt 200 ] || { echo "INVALID: not an ed25519 OpenSSH key" >&2; exit 3; }
+    seed="${rest:72:64}"; key="${rest:72:128}"; [ "${rest:64:8}" = 00000040 ] || { echo "INVALID: unexpected key layout" >&2; exit 3; }
+    grep -v -- '-----' <<<"$pem" | sed -n '1p;2p'; printf '%s\n' "$body"
+    # hex -> bytes without xxd (absent on a minimal host): printf's own \xHH escapes write straight into the pipe, so NUL bytes survive
+    printf "$(sed 's/../\\x&/g' <<<"$seed")" | base64 -w0; echo; printf "$(sed 's/../\\x&/g' <<<"$key")" | base64 -w0; echo; printf '%s\n%s\n' "$seed" "$key"
+    # longest run of seed bytes containing neither NUL nor LF: grep is line-oriented, a needle must not contain either
+    best=""; cur=""; for ((i=0;i<64;i+=2)); do b="${seed:i:2}"; if [ "$b" = 00 ] || [ "$b" = 0a ]; then cur=""; else cur+="\\x$b"; [ "${#cur}" -gt "${#best}" ] && best="$cur"; fi; done
+    [ "${#best}" -ge 40 ] || { echo "INVALID: the seed has no clean run of 10 bytes" >&2; exit 3; }
+    echo "RAWP=$best" ;;
+  scan)
+    journalctl --no-pager -a -o verbose ${JUNTIL:+--until "$JUNTIL"} 2>/dev/null | hit && echo "HIT journal"
+    db_all | hit && echo "HIT database"
+    cat /root/.*history* /home/*/.*history* 2>/dev/null | hit && echo "HIT history"
+    cipher | hit && echo "HIT ciphertext"
+    for d in $TREES; do tree_hit "$NEEDLES" "$d" && echo "HIT tree:$d"; done ;;
+  cipherctl) printf 'x%sx' "$(printf '%s\n' "$NEEDLES" | sed -n 1p)" | hit && echo "HIT ciphertext" ;;   # the SAME matcher on a synthetic plaintext column
+  rawctl) printf '%b' "$RAWP" | graw && echo "HIT raw" ;;
+  plant)
+    t1="$(printf '%s\n' "$NEEDLES" | sed -n 1p)"
+    printf '%s\n' "$t1" | logger -t sec66-control
+    printf '%s\n' "$t1" >> /root/.bash_history
+    for d in $TREES; do { printf '%s\n' "$t1"; } > "$d/.sec66-plant"; printf '%b' "$RAWP" > "$d/.sec66-plant-raw"; done
+    dbq -c "CREATE TABLE sec66_plant(t text); INSERT INTO sec66_plant VALUES ('$t1')" >/dev/null ;;
+  unplant)
+    for d in $TREES; do rm -f "$d/.sec66-plant" "$d/.sec66-plant-raw"; done
+    dbq -c "DROP TABLE sec66_plant" >/dev/null; : > /root/.bash_history ;;
+esac
+true
+EOF
+)"
+sec66() { local C="$1" mode="$2"; docker exec -i -e RID="${RID:-}" -e RKEY="${RKEY:-}" -e NEEDLES="${NEEDLES66:-}" -e RAWP="${RAWP66:-}" -e JUNTIL="${JUNTIL66:-}" "$C" bash -s -- "$mode" <<<"$SEC66_SCAN"; }
+
+# $1=container $2=the demo resource id
+function TestSEC66PrivateKeyNeverLeavesTheConnector() {
+  local C="$1" nd l loc planted i resp_hits
+  local -a all=(journal database history ciphertext tree:/etc/aireos tree:/var/lib/aireos tree:/tmp tree:/var/tmp tree:/var/log tree:/root tree:/home)
+  RID="$2"; RKEY="$(docker exec "$C" sed -n 's/^AIREOS_RESOURCE_SECRET_KEY=//p' /etc/aireos/connector.env)"
+  [ -n "$RKEY" ] || die "[$OS] SEC-66 INVALID: no AIREOS_RESOURCE_SECRET_KEY in /etc/aireos/connector.env"
+  nd="$(sec66 "$C" needles)" || die "[$OS] SEC-66 INVALID: could not obtain the key by decrypting the stored ciphertext"
+  RAWP66="$(sed -n 's/^RAWP=//p' <<<"$nd")"; NEEDLES66="$(grep -v '^RAWP=' <<<"$nd")"
+  [ "$(grep -c . <<<"$NEEDLES66")" -ge 7 ] && [ -n "$RAWP66" ] || die "[$OS] SEC-66 INVALID: the needle set is incomplete ($(grep -c . <<<"$NEEDLES66") text needles)"
+  ok "SEC-66 the key was decrypted from the stored ciphertext with the host's own key; needles: $(grep -c . <<<"$NEEDLES66") text forms + a $(( ${#RAWP66} / 4 ))-byte raw run (never printed)"
+  # the harness-side search of every API response received
+  resp_hits() { grep -qaF -f <(printf '%s\n' "$NEEDLES66") "$ALLRESP"; }
+  [ "$(wc -c <"$ALLRESP")" -gt 2000 ] || die "[$OS] SEC-66 INVALID: the API response capture is nearly empty"
+  ok "SEC-66 the harness holds $(wc -c <"$ALLRESP") bytes of API responses ($(grep -c '^HTTP' "$ALLRESP") responses: setup, login, demo-target, runs, audit)"
+  # Planted controls FIRST, in this same run, then the real search.
+  { cat "$ALLRESP"; printf '%s\n' "$(sed -n 1p <<<"$NEEDLES66")"; } >"$ALLRESP.ctl"; grep -qaF -f <(printf '%s\n' "$NEEDLES66") "$ALLRESP.ctl" || die "[$OS] SEC-66 INVALID: the response search is blind to a planted needle"; rm -f "$ALLRESP.ctl"
+  # A journal line cannot be un-planted, so the REAL journal search is bounded to entries from before the plant (--until T0).
+  T0="$(docker exec "$C" date '+%F %T')"; sleep 2
+  sec66 "$C" plant
+  for i in 1 2 3 4 5; do planted="$(sec66 "$C" scan)"; grep -qx 'HIT journal' <<<"$planted" && break; docker exec "$C" journalctl --sync || true; sleep 1; done
+  sec66 "$C" cipherctl | grep -qx 'HIT ciphertext' && planted+=$'\nHIT ciphertext'
+  for loc in "${all[@]}"; do grep -qx "HIT $loc" <<<"$planted" || die "[$OS] SEC-66 INVALID: the search is blind to a planted key in $loc (it found: $(tr '\n' ' ' <<<"$planted"))"; done
+  sec66 "$C" rawctl | grep -qx 'HIT raw' || die "[$OS] SEC-66 INVALID: the raw-bytes matcher is blind to a planted raw seed run"
+  sec66 "$C" unplant
+  ok "SEC-66 CONTROL: with the key planted in the journal, the database, shell history, 7 trees, the ciphertext matcher and the raw-byte matcher, the same search found all ${#all[@]} locations + raw"
+  planted="$(JUNTIL66="$T0" sec66 "$C" scan)"
+  [ -z "$planted" ] || die "[$OS] SEC-66 FAILED: the private key was found in: ${planted//$'\n'/ }"
+  ! resp_hits || die "[$OS] SEC-66 FAILED: the private key is in an API response the harness received"
+  ok "SEC-66 CLEAN on the real data"
+  echo "SEC-66 PROVED os=$OS: the demo key's private half (PEM, body, base64/hex seed+key, raw seed run) is in none of: ${#all[@]} locations + $(grep -c '^HTTP' "$ALLRESP") API responses; ciphertext column holds no plaintext; excluded: PostgreSQL data files (/var/lib/aireos/pgsql), searched logically via SQL instead; planted controls found in all"
+}
+
+function TestSetupShLegD() {
+  local os C r code id run i s0 s1 out ev
+  for os in "${OSES[@]}"; do
+    OS="$os"; C="aireos-later-d-$os"; HTTP_ONLY=0; JAR=(); J_COOKIE=""; J_CSRF=""; : >"$ALLRESP"
+    start_host "$C" "aireos-later-host-$os"; legc_layout "$C" 1
+    # An sshd is part of the host (provisioning: openssh-server was added to the later-host image). On Ubuntu it is SOCKET-ACTIVATED.
+    case "$os" in ubuntu*) eq "legD sshd is socket-activated (ssh.socket listening)" active "$(XB "$C" 'systemctl is-active ssh.socket')"
+      log "[$os] legD ssh.service before any connection: $(XB "$C" 'systemctl is-active ssh.service || true')";; *) eq "legD sshd.service active" active "$(XB "$C" 'systemctl is-active sshd')";; esac
+    log "[$os] leg D: setup.sh unattended with AIREOS_LOOPBACK_DEMO=yes and NO operator in the environment"
+    out="$(docker exec "${SETUP_ENV[@]}" -e AIREOS_LOOPBACK_DEMO=yes "$C" bash -c 'cd / && /root/dl/aireos-offline-*/setup.sh' 2>&1)" && LC_RC=0 || LC_RC=$?
+    [ "$LC_RC" = 0 ] || { echo "$out" | tail -25; die "[$os] legD: setup.sh failed (rc=$LC_RC)"; }
+    echo "$out" | tail -7
+    code="$(code_in "$out")"
+    has "legD the last line points at the cockpit button" "$(tail -n1 <<<"$out")" "Create loopback demo target"
+    ! grep -qiE 'ssh-keygen|setup-loopback-demo|credentials set-secret' <<<"$out" || die "[$os] legD: setup.sh's output tells the operator to run a server command"
+    ok "legD setup.sh's output asks for no further server command"
+    eq "legD the demo account exists with no usable password" "aireos-demo:*" "$(XB "$C" 'getent shadow aireos-demo | cut -d: -f1,2')"
+    out="$(XB "$C" 'cat /home/aireos-demo/.ssh/authorized_keys')"
+    [ "$(grep -c . <<<"$out")" = 1 ] && grep -Eq "$RESTRICT_RE" <<<"$out" || die "[$os] legD: authorized_keys is not exactly one restricted aireos-loopback-demo line: '$out'"
+    ok "legD authorized_keys holds EXACTLY one line: restrict,no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty + an ssh-ed25519 key + the marker"
+    XB "$C" '! grep -rIl "PRIVATE KEY" /var/lib/aireos/loopback-demo /home/aireos-demo' || die "[$os] legD: a private key is on disk under the state dir or the demo home"
+    ok "legD no private key under /var/lib/aireos/loopback-demo or the demo account's home"
+    # ---- from here on: HTTP through Caddy only
+    ( HTTP_ONLY=1; XB "$C" true ) >/dev/null 2>&1 && die "legD INVALID: the HTTP-only guard let a docker exec through" || ok "legD (self-test) the HTTP-only guard refuses a state-changing exec"
+    s0="$(hostsum "$C")"; [ "$(grep -c . <<<"$s0")" -ge 6 ] || die "[$os] legD (self-test) the host checksum covers too little: $s0"
+    HTTP_ONLY=1
+    hxj "$C" GET /v1/setup; eq "legD GET /v1/setup: setup required" 200 "$J_STATUS"
+    hxj "$C" POST /v1/setup/complete "$(setup_json "$code" "$OPPW")"; eq "legD the browser path creates the operator" 200 "$J_STATUS"
+    hxj "$C" POST /v1/auth/login "{\"username\":\"admin\",\"password\":\"$OPPW\"}"; eq "legD login" 200 "$J_STATUS"
+    [ -n "$J_CSRF" ] || die "[$os] legD: login set no CSRF cookie"
+    hxj "$C" POST /v1/demo-target; eq "legD POST /v1/demo-target creates the demo resource" 201 "$J_STATUS"
+    id="$(sed -n 's/.*"id": *"\([0-9a-f-]\{36\}\)".*/\1/p' <<<"$J_BODY" | head -1)"; [ -n "$id" ] || die "[$os] legD: no resource id in $J_BODY"
+    audit_wait "$C" resource.created "resource:$id"; ok "legD the chain holds resource.created for resource:$id (the governed create path ran, ONB-4)"
+    audit_wait "$C" credential.bound "resource:$id"; ok "legD the chain holds credential.bound for resource:$id (the connector bound the key)"
+    hxj "$C" POST /v1/runs "{\"steps\":[{\"resourceId\":\"$id\",\"command\":\"uname -s\"}]}"; eq "legD launch a one-step governed Run: remote.exec uname -s" 201 "$J_STATUS"
+    run="$(sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' <<<"$J_BODY" | head -1)"; [ -n "$run" ] || die "[$os] legD: no run id in $J_BODY"
+    wait_run "$C" "$run"; eq "legD the Run completed (the connector leased the key, the broker dialled sshd on 127.0.0.1:22 and ran uname)" completed "$RUN_STATUS"
+    [ "$(grep -o '"status": *"completed"' <<<"$J_BODY" | wc -l)" -ge 2 ] || die "[$os] legD: the step did not complete: $J_BODY"
+    ok "legD the step reads completed"
+    audit_wait "$C" tool.result "resource:$id"; audit_wait "$C" run.completed "run:$run"; ok "legD the chain holds tool.result for resource:$id and run.completed for run:$run"
+    HTTP_ONLY=0
+    s1="$(hostsum "$C")"
+    [ "$s0" = "$s1" ] || die "[$os] legD: the HTTP-only phase changed a host file the installer wrote:
+$(diff <(echo "$s0") <(echo "$s1"))"
+    ok "legD the HTTP-only phase changed nothing the installer wrote ($(grep -c . <<<"$s0") files checksummed: env files, passwd/group, sshd_config, authorized_keys, state)"
+    TestSEC66PrivateKeyNeverLeavesTheConnector "$C" "$id"
+    # ---- the undo, run by the operator as a person would (this IS a server command, by design)
+    log "[$os] legD: setup.sh --remove-demo (account kept)"
+    out="$(docker exec -e AIREOS_REMOVE_DEMO_ACCOUNT=no "$C" bash -c '/root/dl/aireos-offline-*/setup.sh --remove-demo' 2>&1)" || { echo "$out" | tail; die "[$os] legD: --remove-demo failed"; }
+    XB "$C" '! grep -q aireos-loopback-demo /home/aireos-demo/.ssh/authorized_keys' || die "[$os] legD: the authorized_keys entry survived --remove-demo"
+    ok "legD --remove-demo removed the authorized_keys entry; the account stays"
+    has "legD it says the stored key is separate from the resource" "$out" "NOT the stored key"
+    HTTP_ONLY=1
+    hxj "$C" POST /v1/runs "{\"steps\":[{\"resourceId\":\"$id\",\"command\":\"uname -s\"}]}"; run="$(sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' <<<"$J_BODY" | head -1)"
+    wait_run "$C" "$run"; [ "$RUN_STATUS" != completed ] || die "[$os] legD: a Run still completed after the key's authorized_keys entry was removed"
+    ok "legD negative: after --remove-demo the same governed action no longer completes (status $RUN_STATUS)"
+    HTTP_ONLY=0
+    out="$(docker exec -e AIREOS_REMOVE_DEMO_ACCOUNT=yes "$C" bash -c '/root/dl/aireos-offline-*/setup.sh --remove-demo' 2>&1)" || { echo "$out" | tail; die "[$os] legD: --remove-demo (account) failed"; }
+    XB "$C" '! getent passwd aireos-demo >/dev/null' || die "[$os] legD: the account survived AIREOS_REMOVE_DEMO_ACCOUNT=yes"
+    out="$(docker exec -e AIREOS_REMOVE_DEMO_ACCOUNT=yes "$C" bash -c '/root/dl/aireos-offline-*/setup.sh --remove-demo' 2>&1)" || die "[$os] legD: a second --remove-demo failed"
+    has "legD a second --remove-demo finds nothing to remove" "$out" "nothing to remove"
+    echo "LATER-HOST-TEST PASS os=$os legD (demo prepared by setup.sh; governed action completed over HTTP only; SEC-66; --remove-demo)"
+    docker rm -f "$C" >/dev/null
+  done
+}
+
 # --- SEC-63 ----------------------------------------------------------------------------------------------------------
 # CEO ruling 2026-11-01: the negative control is the v0.16.0 RECIPE (fetch-postgres.sh + install-postgres.sh, exactly as
 # tagged), rebuilt against Ubuntu's dated archive snapshot of 2026-09-01 — the archive state of the PUB-6 rehearsal's
@@ -622,6 +819,7 @@ for os in "${OSES[@]}"; do
 done
 if only TestINS1LaterHost; then TestINS1LaterHost; fi
 if only TestSetupShLegC; then TestSetupShLegC; fi
+if only TestSetupShLegD; then TestSetupShLegD; fi
 if only TestSetupShExistingInstall; then if has2404; then TestSetupShExistingInstall; else echo "N-C3 NOT RUN (ubuntu2404 not in this run's OS set)"; fi; fi
 if only TestSetupCodeReissue; then if has2404; then TestSetupCodeReissue; else echo "reissue NOT RUN (ubuntu2404 not in this run's OS set)"; fi; fi
 if only TestSEC63OldCompanionFailsOnLaterHost; then if has2404; then TestSEC63OldCompanionFailsOnLaterHost; else echo "SEC-63 NOT RUN (ubuntu2404 not in this run's OS set)"; fi; fi
