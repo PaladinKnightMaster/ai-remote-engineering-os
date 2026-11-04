@@ -298,47 +298,42 @@ aireos_write_state() {
   rm -f "$tmp"
 }
 
-# aireos_loopback_authkeys_file <account> - the account's authorized_keys path (fails if it has no usable home).
-aireos_loopback_authkeys_file() {
-  local home
-  home="$(getent passwd "$1" | cut -d: -f6)"
-  [ -n "$home" ] && [ -d "$home" ] || return 1
-  printf '%s/.ssh/authorized_keys\n' "$home"
+# Everything inside the demo account's home is done AS THE ACCOUNT, never as root. The account (or anything running as it)
+# owns ~/.ssh and may replace authorized_keys or ~/.ssh itself with a symlink to a root-only file; a root-run touch, chown, cat
+# or write through that link is a privilege escalation (the T-172a class, fde52f3). Run as the account, the same operation can
+# touch nothing the account could not already touch. Root only creates the account (and its home) at account-creation time.
+#
+# aireos_loopback_as_account <account> <present|install|remove> [entry-line]
+#   present  true iff authorized_keys carries our entry
+#   install  installs EXACTLY <entry-line>, replacing any earlier entry of ours, leaving every other line alone
+#   remove   removes our entry; true if one was there, false (nothing rewritten) if not
+# The new file is written inside ~/.ssh and renamed over authorized_keys: rename replaces a symlink, it never writes through one.
+aireos_loopback_as_account() {
+  local account="$1" mode="$2" entry="${3:-}" ent uid gid home
+  ent="$(getent passwd "$account")" || return 1
+  IFS=: read -r _ _ uid gid _ home _ <<<"$ent"
+  [ -n "$home" ] && [ -d "$home" ] || { log "account '$account' has no usable home directory"; return 1; }
+  command -v setpriv >/dev/null 2>&1 || { log "setpriv (util-linux) is required to edit authorized_keys as the account"; return 1; }
+  setpriv --reuid "$uid" --regid "$gid" --clear-groups bash -c "$(declare -f aireos_loopback_strip_marker)"'
+    set -eu; umask 077
+    mode="$1"; marker="$2"; entry="$3"; ssh="$4/.ssh"; f="$ssh/authorized_keys"
+    if [ "$mode" = present ]; then [ -f "$f" ] && grep -qE " ${marker}\$" "$f"; exit $?; fi
+    cur=""; [ ! -f "$f" ] || cur="$(cat "$f")"
+    if [ "$mode" = remove ]; then
+      printf "%s\n" "$cur" | grep -qE " ${marker}\$" || exit 1
+    else
+      mkdir -p "$ssh"; chmod 700 "$ssh"
+    fi
+    str="$(aireos_loopback_strip_marker "$cur" "$marker")"
+    { [ -z "$str" ] || printf "%s\n" "$str"; [ "$mode" != install ] || printf "%s\n" "$entry"; } > "$f.new"
+    chmod 600 "$f.new"; mv -f "$f.new" "$f"' _ "$mode" "$MARKER" "$entry" "$home" || return 1
 }
 
-# aireos_loopback_demo_present <account> - true iff the account's authorized_keys already carries our entry. The
-# entry is the real artifact of a prepared demo, so a re-run needs no state of its own to know (and never mints a second key).
-aireos_loopback_demo_present() {
-  local f
-  f="$(aireos_loopback_authkeys_file "$1")" || return 1
-  [ -f "$f" ] && grep -qE " ${MARKER}\$" "$f"
-}
-
-# aireos_loopback_install_authkey <account> <entry-line> - installs EXACTLY that restricted line, replacing any earlier
-# entry of ours and leaving every other line alone.
-aireos_loopback_install_authkey() {
-  local account="$1" entry="$2" authkeys current stripped
-  authkeys="$(aireos_loopback_authkeys_file "$account")" || { log "account '$account' has no usable home directory"; return 1; }
-  install -d -m 700 -o "$account" -g "$account" "$(dirname "$authkeys")" || { log "cannot create $(dirname "$authkeys")"; return 1; }
-  touch "$authkeys" 2>/dev/null || { log "cannot write $authkeys"; return 1; }
-  chown "$account:$account" "$authkeys"; chmod 600 "$authkeys"
-  current="$(cat "$authkeys" 2>/dev/null || true)"
-  stripped="$(aireos_loopback_strip_marker "$current" "$MARKER")"
-  { [ -n "$stripped" ] && printf '%s\n' "$stripped"; printf '%s\n' "$entry"; } > "$authkeys.new"
-  install -m 600 -o "$account" -g "$account" "$authkeys.new" "$authkeys"
-  rm -f "$authkeys.new"
-}
-
-# aireos_loopback_remove_authkey <account> - removes our entry; true if one was there, false (and nothing rewritten) if not.
-aireos_loopback_remove_authkey() {
-  local authkeys stripped
-  aireos_loopback_demo_present "$1" || return 1
-  authkeys="$(aireos_loopback_authkeys_file "$1")"
-  stripped="$(aireos_loopback_strip_marker "$(cat "$authkeys")" "$MARKER")"
-  if [ -n "$stripped" ]; then printf '%s\n' "$stripped" > "$authkeys.new"; else : > "$authkeys.new"; fi
-  install -m 600 -o "$1" -g "$1" "$authkeys.new" "$authkeys"
-  rm -f "$authkeys.new"
-}
+# aireos_loopback_demo_present <account> - the entry is the real artifact of a prepared demo, so a re-run needs no state of
+# its own to know (and never mints a second key).
+aireos_loopback_demo_present() { aireos_loopback_as_account "$1" present 2>/dev/null; }
+aireos_loopback_install_authkey() { aireos_loopback_as_account "$1" install "$2"; }
+aireos_loopback_remove_authkey() { aireos_loopback_as_account "$1" remove; }
 
 # aireos_loopback_issue <account> <port> - the connector generates the key (ADR-0079 D1); only its PUBLIC half comes
 # back, and goes into <account>'s authorized_keys with the restricted options. The private key never exists on this

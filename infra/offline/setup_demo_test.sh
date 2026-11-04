@@ -134,6 +134,38 @@ rm -rf "$STATE_DIR"; useradd --create-home -s /bin/bash "$ACCT"   # an account N
 AIREOS_REMOVE_DEMO_ACCOUNT=yes bash "$SCRIPT_DIR/setup.sh" --remove-demo </dev/null >/dev/null 2>&1
 id "$ACCT" >/dev/null 2>&1 && ok "an account setup did not create is never deleted" || bad "foreign account" "was deleted"
 
+echo "== the demo account must not be able to steer root: symlinked authorized_keys and symlinked ~/.ssh (T-172a class) =="
+# Root-run steps (prepare, generate, --remove-demo, --undo) must never touch a path the account planted a link to. The canary is a
+# root-only file / directory the account has no right to; its owner, mode and content (and the directory listing) must not change.
+FAKEBIN=/tmp/fakebin; mkdir -p "$FAKEBIN"; printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/systemctl"; chmod +x "$FAKEBIN/systemctl"   # "an sshd is active" for the CLI modes
+as_acct() { setpriv --reuid "$(id -u "$ACCT")" --regid "$(id -g "$ACCT")" --clear-groups "$@"; }
+canary_state() { stat -c '%U:%G %a' "$1"; cat "$1"; }
+steer_runs() {   # run every root-run mode once; all must leave the canary alone
+  aireos_loopback_prepare_demo >/dev/null 2>&1 || true
+  aireos_loopback_remove_demo >/dev/null 2>&1 || true
+  PATH="$FAKEBIN:$PATH" bash "$SCRIPT_DIR/setup-loopback-demo.sh" generate --account "$ACCT" >/dev/null 2>&1 || true
+  PATH="$FAKEBIN:$PATH" bash "$SCRIPT_DIR/setup-loopback-demo.sh" --undo >/dev/null 2>&1 || true
+  bash "$SCRIPT_DIR/setup.sh" --remove-demo </dev/null >/dev/null 2>&1 || true
+}
+cleanup_acct; aireos_loopback_ssh_banner() { banner_yes; }
+useradd --create-home --shell /bin/bash -p '*' "$ACCT"; aireos_write_state ACCOUNT_CREATED yes
+printf 'root-only canary\n' > /etc/aireos-canary; chmod 600 /etc/aireos-canary; before="$(canary_state /etc/aireos-canary)"
+# (1) ~/.ssh/authorized_keys -> a root-only file
+as_acct mkdir -p "/home/$ACCT/.ssh"; as_acct ln -sfn /etc/aireos-canary "/home/$ACCT/.ssh/authorized_keys"
+steer_runs
+[ "$(canary_state /etc/aireos-canary)" = "$before" ] && ok "authorized_keys -> /etc/<root file>: owner, mode and content unchanged after prepare, remove, generate, --undo, --remove-demo" || bad "symlinked authorized_keys" "the canary changed: $(canary_state /etc/aireos-canary)"
+# (2) ~/.ssh itself -> a root-owned directory holding an authorized_keys
+rm -rf "/home/$ACCT/.ssh"; mkdir -p /etc/aireos-canary.d; printf 'root-only canary\n' > /etc/aireos-canary.d/authorized_keys; chmod 600 /etc/aireos-canary.d/authorized_keys
+dbefore="$(canary_state /etc/aireos-canary.d/authorized_keys; ls -la /etc/aireos-canary.d)"
+as_acct ln -sfn /etc/aireos-canary.d "/home/$ACCT/.ssh"
+steer_runs
+[ "$(canary_state /etc/aireos-canary.d/authorized_keys; ls -la /etc/aireos-canary.d)" = "$dbefore" ] && ok "~/.ssh -> a root-owned directory: its file and its listing unchanged after the same five runs" || bad "symlinked ~/.ssh" "the canary directory changed"
+# the control, in the same run: the SAME runs, with the account's link pointing at a path the account CAN write, do take effect
+as_acct rm -f "/home/$ACCT/.ssh"; as_acct mkdir -p "/home/$ACCT/.ssh"; as_acct ln -sfn "/home/$ACCT/real_keys" "/home/$ACCT/.ssh/authorized_keys"; as_acct touch "/home/$ACCT/real_keys"
+aireos_loopback_prepare_demo >/dev/null 2>&1; rc=$?
+[ -f "/home/$ACCT/.ssh/authorized_keys" ] && [ ! -L "/home/$ACCT/.ssh/authorized_keys" ] && grep -q " $MARKER\$" "/home/$ACCT/.ssh/authorized_keys" && ok "control: the demo step still works over a link the account itself owns (rename replaces the link)" || bad "control" "rc=$rc $(ls -la /home/$ACCT/.ssh)"
+rm -rf /etc/aireos-canary /etc/aireos-canary.d
+
 echo "== skip: no SSH server on 22 -> nothing created, connector never called =="
 cleanup_acct; aireos_loopback_ssh_banner() { banner_no; }
 aireos_loopback_prepare_demo; rc=$?
