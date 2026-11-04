@@ -51,6 +51,7 @@ func Set(ctx context.Context, pool *pgxpool.Pool, resourceID, key string, m Mate
 		VALUES ($1, pgp_sym_encrypt($2::text, $3))
 		ON CONFLICT (resource_id)
 		DO UPDATE SET connection_secret = EXCLUDED.connection_secret,
+		              public_key = NULL, -- an import supersedes any generated key: never serve a stale public half
 		              updated_at = now()`, resourceID, string(blob), key)
 	if err != nil {
 		return fmt.Errorf("encrypt+store credential: %w", err)
