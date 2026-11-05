@@ -103,11 +103,12 @@ reading source is worse than one that says them up front.
 
 ## Status
 
-**Pre-1.0.** Fifteen releases have shipped and been tagged locally (`v0.1.0`
-through `v0.15.0`); this release, **v0.16.0 "Public Readiness,"** is the
-sixteenth, and its entire purpose is making the repository something a stranger
-can install and verify without any of the internal context that produced it — this
-is the first version of the README written for that reader.
+**Pre-1.0.** Sixteen releases have shipped and been tagged (`v0.1.0` through
+`v0.16.0`). The current one, **v0.17.0 "Install & First-Run Experience,"** is a
+release candidate: its tag waits for the maintainer's signature and for a first
+install by someone who did not write these documents. Its purpose is that a
+stranger can go from the downloaded files to a completed, audited action by typing
+three commands on the server and doing the rest in the browser.
 
 The **v1.0.0** line is where the governed-harness integration (B-041, above) is
 planned to land, along with an API surface freeze. Neither has happened yet.
