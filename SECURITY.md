@@ -51,13 +51,16 @@ companion matters most: its installer runs as root.** Verification needs **only 
 (already present on the target host) and the release public key; there is no bespoke verifier
 binary to trust.
 
-**The commands are in one place: step 1 of the
-[install guide](docs/devops/offline-install-v3.md#1-verify-the-downloads).** It has you
-(1) compute the public key's SHA-256 fingerprint and compare it with the one published in that
-release's notes, **obtained through a different channel than the artifacts themselves**, and
-(2) verify the signature of **both** artifacts. Both must print
-`Signature Verified Successfully`; **a missing `.sig`, or any other output, means stop** — do
-not extract or run anything from that artifact.
+**The command is in one place: command 1 of the
+[install guide](docs/devops/offline-install-v3.md#1-check-the-downloads-one-line).** It is one
+shell line that (1) computes the public key's SHA-256 fingerprint and compares it with the one
+published in that release's notes, **obtained through a different channel than the artifacts
+themselves**, and (2) verifies the signature of **every** `aireos-*.tar.gz` in the folder —
+both artifacts — with `openssl pkeyutl -verify`. It prints `ALL VERIFIED:` followed by the
+archives it checked, or `NOT VERIFIED:` followed by what failed. **Only `ALL VERIFIED`, naming
+both archives, means go on; a missing `.sig`, or anything else, means stop** — do not extract or
+run anything from that artifact. (The guide's Reference also shows the plain fingerprint command,
+to compare by eye.)
 
 What a passing check proves: the artifact was produced by whoever holds the release key, and
 has not been altered since. It does **not** prove the build was clean or tie the artifact to a

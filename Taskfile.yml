@@ -147,6 +147,11 @@ tasks:
     cmds:
       - bash infra/offline/postgres/later-host-test.sh {{.CLI_ARGS}}
 
+  docs-rehearsal:
+    desc: "DOC-41 / HUM-1 (T-177): the install guide's server command lines, EXTRACTED from the guide between its rehearsal markers, counted (at most 3, `cd` counts) and run verbatim, in order, as root on a fresh ubuntu2404 later host (the later-host-test image) with a throwaway-key download folder laid out as the guide says; asserts ALL VERIFIED, a printed setup code, and GET /v1/setup answering setup-required through Caddy. Negative controls: a 4-line guide fails the count, a wrong tar name fails the run; the verification line must print NOT VERIFIED for a flipped byte, a missing .sig, a wrong fingerprint and the unreplaced placeholder. Needs Docker, the later-host image (LHT_ONLY=none bash infra/offline/postgres/later-host-test.sh ubuntu2404 builds it) and dist/offline/ artifacts. Usage: task docs-rehearsal"
+    cmds:
+      - bash infra/offline/docs-rehearsal.sh
+
   sign-release:
     desc: "HOST-SIDE, out-of-band step (ADR-0070 D1/D3, T-129a): detached Ed25519 signatures over BOTH shipped offline artifacts (core bundle + postgres companion). NEVER run inside build-bundle.sh or any build container — the release key must never enter a build context. Usage: task sign-release -- --key /path/to/release-key.pem [artifact.tar.gz ...] (defaults to every dist/offline/*.tar.gz). The production key is minted out-of-band by the CEO and is NEVER created by this task — see docs/devops/offline-install-v3.md 'Release key custody'; a fixture key for tests lives at infra/offline/testdata/fixture-release-key/. NOTE: this task signs whatever artifact filename/VERSION is on disk — offline-bundle's BUNDLE_VERSION was bumped to 0.13.0 on 2026-08-18 (moved earlier than its original T-136 slot, because T-133's quickstart gate consumes the built bundle); still verify the artifact name matches the real release before signing for an actual release."
     cmds:

@@ -117,37 +117,31 @@ planned to land, along with an API surface freeze. Neither has happened yet.
 ## Install
 
 **What you get:** the cockpit running on your own Linux server and you signed in to it, then one
-real command run through it and its audit record on screen. **Time:** about 15–20 minutes to
-install, then about 10 for the first governed action. No internet is needed on the server once
-the files are copied over, and there is no container registry. Supported today: **Ubuntu 24.04**
-and **Rocky/RHEL-family 9**, `amd64` (Windows is a browser client only).
+real command run through it and its audit record on screen. **Time:** about 15 minutes to
+install, then a few minutes for the first governed action. No internet is needed on the server
+once the files are copied over, and there is no container registry. Supported today:
+**Ubuntu 24.04, Ubuntu 26.04 and Rocky/RHEL-family 9**, `amd64` (Windows is a browser client
+only).
 
-1. **Download** the five release files from this repository's
+1. **Download** the release files from this repository's
    [**Releases** page](https://github.com/PaladinKnightMaster/ai-remote-engineering-os/releases/latest)
-   — the application bundle and the postgres companion, a `.sig` for each, and the public key
-   `aireos-release.pub` — and copy them to your server (for example with `scp`; it is built into
-   Windows 10/11 PowerShell).
-2. **Follow the [install guide](docs/devops/offline-install-v3.md).** It takes you through
-   verifying the downloads (step 1 — do not skip it: a missing `.sig`, or any result other than
-   `Signature Verified Successfully`, means stop), installing PostgreSQL, installing the
-   application, and checking it works. ⚠ This release's prebuilt postgres companion is
-   **Ubuntu-only**; on Rocky/RHEL 9 see the [postgres guide](docs/devops/offline-postgres-install.md).
+   into one folder — the application bundle, the PostgreSQL companion **for your OS**
+   (`aireos-postgres-ubuntu2404`, `-ubuntu2604` or `-rocky9`), a `.sig` for each, and the public
+   key `aireos-release.pub` — and copy them to your server (for example with `scp`; it is built
+   into Windows 10/11 PowerShell).
+2. **Follow the [install guide](docs/devops/offline-install-v3.md).** It is **three commands on the
+   server**: one line that checks the key's fingerprint and the signature of every download
+   (do not skip it: anything other than `ALL VERIFIED` means stop), one `tar`, and one
+   `sudo ./aireos-offline-<version>/setup.sh`. The script installs PostgreSQL and the application
+   and prints a one-time setup code; you create the operator account in your browser.
 3. **Walk through your first governed action** — the
-   [quickstart](docs/devops/quickstart-first-governed-action.md) takes you from the running
-   install to a completed, audited action, with a screenshot at each browser step. Only the
-   `lan-only` deployment profile is proven end to end today.
+   [quickstart](docs/devops/quickstart-first-governed-action.md) is one click on a demo target,
+   a governed Run and the audit timeline, all in the browser, with a screenshot at each step.
+   Only the `lan-only` deployment profile is proven end to end today.
 
-> ⚠ **Known install limitation (v0.16.0) — read before step 2.** The prebuilt
-> postgres companion carries operating-system packages pinned to the versions that
-> were current on the day it was built. On a host that has applied OS security
-> updates since then — which is every well-maintained server — its install stops
-> with an unmet dependency such as
-> `perl : Depends: perl-base (= …) but … is to be installed`.
-> **Workaround:** install **PostgreSQL 16 with `pgcrypto`** from your organisation's
-> own package mirror and point the installer at it — see
-> [bring your own PostgreSQL](docs/devops/offline-postgres-install.md#bring-your-own-postgresql-16).
-> Everything after postgres installs and runs fully offline. A proper fix is planned
-> for a later release.
+Your own PostgreSQL 16 is still supported, and the older step-by-step flow is kept as Reference:
+see the [database reference](docs/devops/offline-postgres-install.md) and the install guide's
+Reference section.
 
 Building the bundle from source is a maintainer task, described at the end of the install
 guide; a bundle you build yourself has no published signature to check against.
