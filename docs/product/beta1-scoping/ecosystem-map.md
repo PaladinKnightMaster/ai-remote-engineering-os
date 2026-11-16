@@ -1,7 +1,10 @@
 # v1.0.0 Beta 1 — scoping input: the ecosystem map
 
 **Commander seat, 2026-11-16.** ⚠ **A scoping INPUT, not a scope.** It decides nothing; the CEO ranks §7
-and the ranking becomes Beta 1's criteria. Companion input:
+and the ranking becomes Beta 1's criteria.
+
+⭐ **RULED by the CEO, 2026-11-16: Beta 1 = A1 (agent onboarding in the browser) + A2 (missing MVP basics) +
+B (B-041 governed harness integration), gated by a non-CEO stranger test. C (teams) is the next release.** Companion input:
 [`terminal-inventory.md`](terminal-inventory.md) — every journey, step by step, browser vs terminal.
 
 ## 1. The question
@@ -78,7 +81,10 @@ the seam but not the integration in 5.** That matches the CEO's read.
 1. **A stranger test is a precondition** (v0.17.0 waived HUM-1; `docs/releases/v0.17.0/hum1-run.md`).
 2. **Governance of third-party harnesses is cooperative** until B-040 lands — it must be *stated*.
 3. **The API surface is not frozen in Beta 1** (ratified 2026-09-01); v1.0.0 final carries its own freeze.
-4. **Resolve DOC-17 first** — the epic catalog still contains stale text calling containment a prerequisite.
+4. ~~Resolve DOC-17 first~~ — **already resolved at v0.16.0** (T-162, annotated in place)
+   [read: `docs/releases/v0.16.0/v0.16.0-release-criteria.md` DOC-17 row]. ⚠ The first draft of this map
+   carried it as open, `[inherited:]` from `docs/spike/b041-remaining-work.md` (2026-09-01) without opening
+   the source — the exact failure rule 11 names.
 5. **Deliberate terminal steps stay** unless an ADR changes them (the operator-run trust split, root-only
    setup code, no self-service signup or reset UI) — see the inventory's "deliberate" list.
 
@@ -127,5 +133,5 @@ decision.
 2. **Confirm the MVP sentence**, e.g. *"An operator installs it in three lines, adds their own server and
    connects one agent from the browser, and watches that agent do governed work on that server — with every
    action on a ledger an outsider can verify offline."*
-3. Then the Commander runs, in order: DOC-17; the A1 ADR (agent onboarding / credential model); the B-041
-   deep verification pass; the Beta 1 criteria.
+3. Then the Commander runs: the A1 ADR (agent onboarding / credential model) and the B-041 deep
+   verification pass (in parallel), then the Beta 1 criteria.
