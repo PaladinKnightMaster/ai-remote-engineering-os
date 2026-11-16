@@ -172,6 +172,9 @@ bundled** [read: ladder T-171], so OpenSSL fixes come with your OS updates.
 
 - **The profile prompt.** `setup.sh` asks the deployment profile first; the reader types `lan-only`. An
   answer, not a command line, but it is a step HUM-1 is meant to judge.
+- **⚠ HUM-1 (the stranger test) was WAIVED for this release by the CEO (2026-11-16).** The CEO's own two-VM rehearsal of the signed
+  pre-release passed; a test by someone who is not the CEO is deferred to v1.0.0 Beta 1, which must run it. Until then, nobody outside
+  the project has followed this guide end to end — see `hum1-run.md`.
 - **The certificate-viewer steps are unverified until HUM-1.** The guide says where to find the
   intermediate's fingerprint in a browser's certificate viewer; the native browser UI could not be driven
   by the tests, so those menu steps are `[assumed]` until a human follows them.
@@ -202,12 +205,12 @@ coverage gate, the quickstart and setup browser gates, and the instrument gates:
 
 | | |
 |---|---|
-| Tag | `v0.17.0` → TBD (derived from the artifact) |
+| Tag | `v0.17.0` → `436b3837a41f08c9649d8b0742d78d4ceaa00861` (derived from the artifacts' `vcs.revision`; tag object `aaeb4e2`) |
 | Release-key fingerprint (SHA-256 of the DER public key) | `968a29b3623fa79a6d12e37dfe4c9e156b6c66c716b0e57a076026a9d1bc0bbf` — **no new keypair** |
-| `aireos-offline-0.17.0.tar.gz` | SHA-256 `TBD at sign` |
-| `aireos-postgres-ubuntu2404.tar.gz` | SHA-256 `TBD at sign` |
-| `aireos-postgres-ubuntu2604.tar.gz` | SHA-256 `TBD at sign` |
-| `aireos-postgres-rocky9.tar.gz` | SHA-256 `TBD at sign` |
+| `aireos-offline-0.17.0.tar.gz` | SHA-256 `0703fc1bfeb6ff5bcfa231a4606949f30b4189754aa1866c7b31f18a11528fb7` |
+| `aireos-postgres-ubuntu2404.tar.gz` | SHA-256 `b77fb2e6ebee82a41c38d22a8bb1be74e6594683e503f2872c144379f1926a1c` |
+| `aireos-postgres-ubuntu2604.tar.gz` | SHA-256 `2c2b9ce3fa0e2ff798baebfe099371195ad0c36f70ee7578669d838a70cc413a` |
+| `aireos-postgres-rocky9.tar.gz` | SHA-256 `7afcd5fa688cc931e0aa0d6d002c5c4de70e7cacd688844f75cfc760e0a09535` |
 
 Hashes are deliberately not recorded in the commit that gets tagged (recording them would be circular: they
 come from artifacts built from that commit); they land in the closure commit after signing, as at v0.16.0.

@@ -78,25 +78,25 @@ git rev-parse HEAD
 
 | Gate | Command | Positive marker | Result |
 |---|---|---|---|
-| **Compose WD-1..15** | `MSYS_NO_PATHCONV=1 task e2e` | `ok aireos.local/tests/e2e`, N PASS / 0 FAIL, `INTACT+ATTESTED` | pending |
-| **Browser smoke** | `MSYS_NO_PATHCONV=1 task smoke` | Playwright `N passed`, 0 failed | pending |
-| **Installed stack** | `MSYS_NO_PATHCONV=1 task wd1` | `ok aireos.local/tests/e2e`, `INTACT+ATTESTED`, SEC-43 forged chain → BROKEN on both verifiers | pending |
-| **Later-host test** (INS-1, N-C1..3, SEC-63/66/67; legs A–D) | `bash infra/offline/postgres/later-host-test.sh ubuntu2404` · `… ubuntu2604` · `… rocky9` (per OS) | `LATER-HOST-TEST PASS` per OS; `SEC-63 PROVED`; `SEC-66 PROVED`; SEC-67 | pending |
-| **Docs rehearsal** (DOC-41) | `task docs-rehearsal` | `DOCS-REHEARSAL PASS`, 3 server lines, `ALL VERIFIED` | pending |
-| **Companion install** | `task pgsql-install-test` | its PASS summary (INS-2/3/4/8) | pending |
-| **SBOM coverage self-test** | `bash infra/offline/sbom/check_coverage_test.sh` | its PASS summary (incl. the v0.16.0 package-closure control refused) | pending |
-| **SBOM coverage over all four** | `node infra/offline/sbom/check-coverage.mjs` over each artifact + SBOM | coverage OK on core + 3 companions | pending |
-| **Quickstart shell gate** | `bash infra/offline/wd1/quickstart-shell-gate.sh` | exit 0 (generate / bind / `--undo`) | pending |
-| **Quickstart browser gate** | `bash infra/offline/wd1/quickstart-browser-gate.sh` | exit 0; both specs; completion marker | pending |
-| **Setup browser gate** | `bash infra/offline/wd1/setup-browser-gate.sh` | exit 0; setup page → code → dashboard → page gone | pending |
-| **block-criterion-check** | `task block-criterion-check` | exit 0, **fully green** (SEC-63…67 all resolve to real tests) | pending |
-| **history-secret-scan** | `task history-secret-scan` | exit 0 | pending |
-| **doc-check** | `task doc-check` | exit 0 | pending |
-| **staleness-check** | `task staleness-check` | `staleness-check OK … release 0.17.0` | pending |
-| **adr-ledger-check** | `task adr-ledger-check` | exit 0 | pending |
-| **go-deps-check** | `task go-deps-check` | exit 0 | pending |
-| **forbidden-features-check** | `cd tools/forbidden-features-check && go run .` (as `task lint` runs it) | exit 0 | pending |
-| **provenance-check, UNSIGNED (sanity)** | `task provenance-check` | **FAILS** with "NO signature" and for no other reason — a check of the gate, not a pass | pending |
+| **Compose WD-1..15** | `MSYS_NO_PATHCONV=1 task e2e` | `ok aireos.local/tests/e2e`, N PASS / 0 FAIL, `INTACT+ATTESTED` | ✅ exit 0 — `ok aireos.local/tests/e2e`, 0 FAIL, `INTACT+ATTESTED` 719 events (`dist/a2-e2e.log`) |
+| **Browser smoke** | `MSYS_NO_PATHCONV=1 task smoke` | Playwright `N passed`, 0 failed | ✅ exit 0 — 25 passed, 4 skipped (run in their own gates), 0 failed |
+| **Installed stack** | `MSYS_NO_PATHCONV=1 task wd1` | `ok aireos.local/tests/e2e`, `INTACT+ATTESTED`, SEC-43 forged chain → BROKEN on both verifiers | ✅ exit 0 — all `*InstalledStack` PASS, `INTACT+ATTESTED` 237 events, SEC-43 BROKEN on both verifiers |
+| **Later-host test** (INS-1, N-C1..3, SEC-63/66/67; legs A–D) | `bash infra/offline/postgres/later-host-test.sh ubuntu2404` · `… ubuntu2604` · `… rocky9` (per OS) | `LATER-HOST-TEST PASS` per OS; `SEC-63 PROVED`; `SEC-66 PROVED`; SEC-67 | ✅ exit 0 ×3 — ubuntu2404 legs A–D + N-C1..3 + SEC-63/66/67 PROVED; ubuntu2604 + rocky9 legs A–D + SEC-66/67 PROVED |
+| **Docs rehearsal** (DOC-41) | `task docs-rehearsal` | `DOCS-REHEARSAL PASS`, 3 server lines, `ALL VERIFIED` | ✅ exit 0 — `DOCS-REHEARSAL PASS`, 3 lines, `ALL VERIFIED` |
+| **Companion install** | `task pgsql-install-test` | its PASS summary (INS-2/3/4/8) | ✅ exit 0 — PASS on ubuntu2404/ubuntu2604/rocky9 + N4 |
+| **SBOM coverage self-test** | `bash infra/offline/sbom/check_coverage_test.sh` | its PASS summary (incl. the v0.16.0 package-closure control refused) | ✅ exit 0 — 2 passes, 8 controls each failing with its cause |
+| **SBOM coverage over all four** | `node infra/offline/sbom/check-coverage.mjs` over each artifact + SBOM | coverage OK on core + 3 companions | ✅ exit 0 ×4 |
+| **Quickstart shell gate** | `bash infra/offline/wd1/quickstart-shell-gate.sh` | exit 0 (generate / bind / `--undo`) | ✅ exit 0 — `T-133a PASS` |
+| **Quickstart browser gate** | `bash infra/offline/wd1/quickstart-browser-gate.sh` | exit 0; both specs; completion marker | ✅ exit 0 — `T-176d PASS` |
+| **Setup browser gate** | `bash infra/offline/wd1/setup-browser-gate.sh` | exit 0; setup page → code → dashboard → page gone | ✅ exit 0 — `T-175d PASS` |
+| **block-criterion-check** | `task block-criterion-check` | exit 0, **fully green** (SEC-63…67 all resolve to real tests) | ✅ exit 0 — SEC-63…67 OK |
+| **history-secret-scan** | `task history-secret-scan` | exit 0 | ✅ exit 0 — NO FINDINGS |
+| **doc-check** | `task doc-check` | exit 0 | ✅ exit 0 |
+| **staleness-check** | `task staleness-check` | `staleness-check OK … release 0.17.0` | ✅ exit 0 — release 0.17.0 |
+| **adr-ledger-check** | `task adr-ledger-check` | exit 0 | ✅ exit 0 — 79 ADRs |
+| **go-deps-check** | `task go-deps-check` | exit 0 | ✅ exit 0 |
+| **forbidden-features-check** | `cd tools/forbidden-features-check && go run .` (as `task lint` runs it) | exit 0 | ✅ exit 0 |
+| **provenance-check, UNSIGNED (sanity)** | `task provenance-check` | **FAILS** with "NO signature" and for no other reason — a check of the gate, not a pass | ✅ failed as designed — exactly four `NO signature` lines |
 
 The results column is filled in **in the closure commit**, not before. Any red gate stops the cut: a fix is a
 commit, a commit is a rebuild, and a rebuild repeats this step.
@@ -178,3 +178,14 @@ ladder row for T-178.
 **Push, and the GitHub Release (carrying all four archives, all four `.sig`, all SBOMs, `aireos-release.pub`, and
 the fingerprint in its notes), only on the CEO's explicit direction.** Only `main` and release tags are pushed;
 check `git log --format=%ae` first — noreply address only.
+
+
+---
+
+## Cut record — 2026-11-05 / 2026-11-16
+
+- **Gates (Step 1):** all green on the artifacts built from `436b383` (results column above) [ran: T-178 part A, 2026-11-04/05; Commander re-verified hashes, `vcs.revision` and a clean tree].
+- **Signed (Step 2):** 2026-11-05 with the production key (fingerprint `968a29b3…0bc0bbf`, no new keypair). The CEO's PowerShell `task sign-release` resolved `bash` to WSL and never ran; the Commander ran the same `sign-release.sh` through Git Bash on that direction. `provenance-check` **VERIFIED** all four; `sec45-check` **PROVED** all four (28 passed, 0 failed).
+- **Pre-released:** `v0.17.0-rc1` → `436b383`, GitHub pre-release with 13 assets (sizes and downloaded hashes verified), 2026-11-05.
+- **HUM-1 (Step 3): WAIVED by the CEO, 2026-11-16** — see `hum1-run.md`.
+- **Tagged (Step 4):** `v0.17.0` → `436b383`, derived from the artifacts' `vcs.revision` with the clean-HEAD guard, 2026-11-16.
