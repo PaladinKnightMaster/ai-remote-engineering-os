@@ -223,6 +223,10 @@ def main() -> int:
     # this covers the markdown in the same directory (currently just
     # epic_story_catalog_v4.md, the live planning record DOC-17 corrects).
     sources += sorted((ROOT / "docs" / "requirements").glob("*.md"))
+    # docs/product/ added 2026-11-16: the Beta 1 scoping inputs live in a NESTED
+    # subdirectory (docs/product/beta1-scoping/), and a planted broken path there
+    # did not fire this gate (found by the terminal-inventory author) -- rglob().
+    sources += sorted((ROOT / "docs" / "product").rglob("*.md"))
     # Root-level public documents added at T-161 (PUB-3/PUB-4/PUB-8): the docs
     # a stranger reads first, previously scanned by nothing at all.
     sources += [ROOT / "README.md", ROOT / "SECURITY.md", ROOT / "CONTRIBUTING.md"]

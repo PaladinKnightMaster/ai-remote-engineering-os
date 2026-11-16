@@ -175,6 +175,15 @@ bundled** [read: ladder T-171], so OpenSSL fixes come with your OS updates.
 - **⚠ HUM-1 (the stranger test) was WAIVED for this release by the CEO (2026-11-16).** The CEO's own two-VM rehearsal of the signed
   pre-release passed; a test by someone who is not the CEO is deferred to v1.0.0 Beta 1, which must run it. Until then, nobody outside
   the project has followed this guide end to end — see `hum1-run.md`.
+- **A lost operator password cannot be recovered from the browser** — deliberately: there is no reset
+  UI (ADR-0046, unchanged by ADR-0078). *Erratum added 2026-11-16 — ADR-0078 requires these notes to
+  say so, and the first edition did not (found by the Beta 1 terminal inventory).* Recovery is a root
+  action on the server: re-run the installer with `AIREOS_BOOTSTRAP_OPERATOR_USER` and
+  `AIREOS_BOOTSTRAP_OPERATOR_PASSWORD` set, because an operator in the environment always wins over
+  the one created in the browser (ADR-0078 D4). ⚠ **This procedure was not exercised on v0.17.0**
+  [read: `docs/adr/ADR-0078-first-run-setup-code.md` D4; `infra/offline/install.sh`] — and typed
+  naively it puts the password in shell history. A tested procedure that keeps it out is a Beta 1
+  item (`docs/product/beta1-scoping/ecosystem-map.md`, theme A2).
 - **The certificate-viewer steps are unverified until HUM-1.** The guide says where to find the
   intermediate's fingerprint in a browser's certificate viewer; the native browser UI could not be driven
   by the tests, so those menu steps are `[assumed]` until a human follows them.

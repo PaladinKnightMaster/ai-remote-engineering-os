@@ -38,10 +38,11 @@ feasibility finding plus its own ADR — preference is not a trigger. See
 Every path an operator or an AI agent can use to touch a remote resource passes
 through the same chain: **policy decision → (optional) human approval → a governed
 connector that holds the only decryption key → an append-only, chained-hash audit
-event.** Concretely, as of the latest shipped release (v0.15.0):
+event.** Concretely, as of the latest shipped release (v0.17.0):
 
-- **Remote Execution Cockpit** — a browser-based SSH terminal and SFTP session,
-  audited per input line.
+- **Remote Execution Cockpit** — a browser-based SSH terminal session, audited per
+  input line. (File transfer is an agent tool — `remote.file.*` below — not an
+  operator session; there is no remote desktop yet.)
 - **Typed MCP Gateway** — the surface an AI agent client connects to. It exposes a
   small, explicit tool set (`remote.exec`, `remote.file.read/write/list`,
   `run.launch`, `workstream.poll`, `plan.submit`, `memory.read`, `context.search`)
@@ -66,7 +67,7 @@ event.** Concretely, as of the latest shipped release (v0.15.0):
   hash-linked, with signed chain heads anchored outside the database and an
   offline verifier that needs neither a live database nor a network connection.
 
-Fifteen tagged releases (`v0.1.0` → `v0.15.0`) built this incrementally; see
+Seventeen tagged releases (`v0.1.0` → `v0.17.0`) built this incrementally; see
 `docs/releases/` for what shipped at each one.
 
 ---
