@@ -283,13 +283,18 @@ SSH slice ticket scope.
 
 ## What the spike code is and isn't
 
+> ⓘ **Historical (annotated 2026-11-17):** the spike code below was throwaway and **was never committed** —
+> `git log --all` has no record of these three files. Their paths are kept as plain text so the record
+> stays readable without pointing a reader at files that do not exist (found when `doc-check` began
+> scanning `docs/spike/`).
+
 **Is:**
-- `services/session-broker/internal/server/spike.go` — the SSH-over-WS
+- services/session-broker/internal/server/spike.go (not committed) — the SSH-over-WS
   pipe handler.
 - `tools/spike-latency/` — measurement tool.
-- `apps/web/src/spike/Spike.tsx` — browser-side terminal using
+- apps/web/src/spike/Spike.tsx (not committed) — browser-side terminal using
   xterm.js for manual sanity testing (not on the measurement path).
-- `infra/docker-compose/docker-compose.spike.yml` — the SSH target
+- infra/docker-compose/docker-compose.spike.yml (not committed) — the SSH target
   container.
 
 **Isn't:**
