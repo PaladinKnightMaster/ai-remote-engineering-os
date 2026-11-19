@@ -2,10 +2,11 @@
 
 ## Status
 
-**Proposed** — 2026-11-17 (v1.0.0 Beta 1, theme A1 "agent onboarding in the browser"). Commander seat.
+**Accepted** — 2026-11-19 (CEO). Proposed 2026-11-17 (v1.0.0 Beta 1, theme A1 "agent onboarding in the
+browser"). Commander seat.
 **Decider: CEO.**
 
-**Revised 2026-11-18 (still Proposed).** Two CEO directions shaped the revision:
+**Revised 2026-11-18, before acceptance.** Two CEO directions shaped the revision:
 - **"Check, then revise"** produced D7, the local `aireos-mcp-bridge`. Cline ran through a prototype for
   14 minutes across two token renewals [ran: `docs/spike/bridge-check-2026-11-18.md`].
 - **"Manage keys like other MCP servers (Jira, Confluence): 30, 60, 90 days, never, custom"** produced D2,

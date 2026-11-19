@@ -7,7 +7,7 @@
 
 **The reverse index is the point.** Gate **G2** forbids editing an Accepted ADR, so an ADR whose clause is later superseded carries **no forward pointer** — a reader of ADR-0041 cannot learn that its Go-version clause is dead. *Named by* below supplies that pointer **additively, outside the ADR files**, satisfying both G2 and the MADR convention that a superseded decision must link forward.
 
-**80 ADRs.** **Accepted: 71** · **Proposed: 9**
+**80 ADRs.** **Accepted: 72** · **Proposed: 8**
 
 ## Known corpus defects (measured, not impressions)
 
@@ -99,4 +99,4 @@
 | [ADR-0077](ADR-0077-self-contained-postgres-companion.md) | ADR-0077 — Self-contained PostgreSQL companion | **Accepted** | 2026-10-26 | Decider: CEO. Refines ADR-0052 decisions 2 and 3 — how the postgres companion is packaged (decision 2) and, added before acceptance at the CEO's request, which OSes it is built for (decision 3: Ubu… | — |
 | [ADR-0078](ADR-0078-first-run-setup-code.md) | The first operator is created in the browser, gated by a one-time setup code that only root on the server can print | **Accepted** | 2026-10-26 | Decider: CEO. Refines ADR-0046 (operator authentication at P0) — where the single bootstrap operator's credentials are stored and how they are first set. | — |
 | [ADR-0079](ADR-0079-connector-generated-target-credentials.md) | Target SSH keys are generated inside connector-service; the host's SSH trust is touched only by the operator-run installer | **Accepted** | 2026-10-26 | Decider: CEO. Extends ADR-0053 (connector-service is the sole custody and decrypt authority for target credentials) with a generation path and a bind path — custody stays single. | — |
-| [ADR-0080](ADR-0080-enrolled-agents.md) | Agents get a revocable access key in the browser; a local bridge turns it into short-lived tokens | **Proposed** | 2026-11-17 | Refines ADR-0046 (auth adapter): the agent tier keeps its 5-minute token, but renewing it no longer needs a live operator session — the same kind of declared divergence ADR-0068 D4 made for paired … | — |
+| [ADR-0080](ADR-0080-enrolled-agents.md) | Agents get a revocable access key in the browser; a local bridge turns it into short-lived tokens | **Accepted** | 2026-11-19 | Refines ADR-0046 (auth adapter): the agent tier keeps its 5-minute token, but renewing it no longer needs a live operator session — the same kind of declared divergence ADR-0068 D4 made for paired … | — |
